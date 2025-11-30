@@ -93,6 +93,27 @@ const enclave = new Enclave({
 });
 ```
 
+## Local LLM Scoring
+
+Use the built-in AI scoring gate to evaluate executions with a local model.
+
+```typescript
+import { LocalLlmScorer } from 'enclave-vm/scoring';
+
+const scorer = new LocalLlmScorer({
+  modelId: 'Xenova/codebert-base',
+  mode: 'classification',
+  cacheDir: '~/.enclave/models'
+});
+```
+
+### `LocalLlmConfig`
+
+- `modelId` (required): Hugging Face model identifier such as `Xenova/codebert-base`
+- `mode` (optional): `'classification'` (default) or `'similarity'`
+- `cacheDir` (optional): Override where models are stored on disk — defaults to `~/.enclave/models`
+- `vectoriaConfig` (optional): Configure VectoriaDB when `mode` is `'similarity'`
+
 ## Links
 
 - [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclave-vm)
