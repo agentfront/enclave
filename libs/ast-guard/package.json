@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "description": "A production-ready AST security guard for JavaScript - validate, protect, and enforce code safety with extensible rules",
   "author": "AgentFront <info@agentfront.dev>",
-  "homepage": "https://github.com/agentfront/frontmcp/tree/main/libs/ast-guard",
+  "homepage": "https://github.com/agentfront/enclave/tree/main/libs/ast-guard",
   "license": "Apache-2.0",
   "keywords": [
     "ast",
@@ -20,11 +20,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agentfront/frontmcp.git",
+    "url": "git+https://github.com/agentfront/enclave.git",
     "directory": "libs/ast-guard"
   },
   "bugs": {
-    "url": "https://github.com/agentfront/frontmcp/issues"
+    "url": "https://github.com/agentfront/enclave/issues"
   },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

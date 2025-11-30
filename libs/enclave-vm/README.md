@@ -442,7 +442,6 @@ nx test enclave --coverage
 ## Related Packages
 
 - [`ast-guard`](../ast-guard) - AST validation rules used by enclave
-- [`@frontmcp/plugins`](../plugins) - CodeCall plugin that uses enclave
 
 ## License
 

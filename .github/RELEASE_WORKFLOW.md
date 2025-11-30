@@ -1,6 +1,6 @@
 # Release Workflow Documentation
 
-This document describes the complete release workflow for FrontMCP, including documentation versioning, package versioning, and publishing.
+This document describes the complete release workflow for Enclave, including documentation versioning, package versioning, and publishing.
 
 ## Overview
 
@@ -189,7 +189,7 @@ Updates live documentation when changes are pushed to release branches.
 
 - `docs/live/docs/**` - Production markdown files
 - `docs/live/updates.mdx` - Production release notes with:
-  - One `<Update>` component for FrontMCP (synchronized packages)
+  - One `<Update>` component for Enclave (synchronized packages)
   - Separate `<Update>` components for each independent library published
   - Preserves critical frontmatter metadata for Mintlify
 - `docs/live/docs.json` - Production navigation

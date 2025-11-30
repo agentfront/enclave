@@ -376,7 +376,7 @@ export interface LocalLlmConfig {
 
   /**
    * Model cache directory
-   * @default '~/.frontmcp/models'
+   * @default '~/.enclave/models'
    */
   cacheDir?: string;
 

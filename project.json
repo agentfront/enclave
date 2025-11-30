@@ -1,5 +1,5 @@
 {
-  "name": "@frontmcp/source",
+  "name": "enclave",
   "$schema": "node_modules/nx/schemas/project-schema.json",
   "targets": {
     "local-registry": {

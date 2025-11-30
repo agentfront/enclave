@@ -2,7 +2,7 @@
  * enclave-vm - Safe AgentScript Execution Environment
  *
  * Provides sandboxed execution for AgentScript code with:
- * - AST validation using @frontmcp/ast-guard
+ * - AST validation using ast-guard
  * - Code transformation (whitelist-based)
  * - Runtime safety wrappers (__safe_* functions)
  * - Resource limits (timeout, memory, iterations, tool calls)

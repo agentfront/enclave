@@ -225,7 +225,7 @@ jobs:
           output-file: ${{ env.CODEX_OUTPUT }}
           model: "gpt-5.1-codex"
           output-schema-file: .github/codex/schemas/release-output.json
-          full-auto: true
+          codex-args: "--full-auto"
 
       - name: Apply version bumps from Codex
         id: versions

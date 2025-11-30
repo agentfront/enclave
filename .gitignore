@@ -47,6 +47,11 @@ test-output
 
 .codex-docs
 
+# Codex release workflow (generated during CI)
+.codex-release/
+.github/codex/prompts/*.txt
+.github/codex/prompts/*.patch
+
 # Docs backup (local development only)
 docs/docs.backup.json
 

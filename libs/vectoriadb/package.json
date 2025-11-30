@@ -20,11 +20,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agentfront/frontmcp.git",
+    "url": "git+https://github.com/agentfront/enclave.git",
     "directory": "libs/vectoriadb"
   },
   "bugs": {
-    "url": "https://github.com/agentfront/frontmcp/issues"
+    "url": "https://github.com/agentfront/enclave/issues"
   },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
