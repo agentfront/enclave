@@ -221,7 +221,6 @@ jobs:
           prompt-file: .github/codex/prompts/analyze-version-bump.md
           output-file: ${{ env.CODEX_VERSION_OUT }}
           model: "gpt-5.1-codex"
-          sandbox: read-only
           output-schema-file: .github/codex/schemas/version-bump-output.json
 
       - name: Apply version bumps from Codex
@@ -288,7 +287,6 @@ jobs:
           prompt-file: .github/codex/prompts/update-docs.md
           output-file: ${{ env.CODEX_DOCS_OUT }}
           model: "gpt-5.1-codex"
-          sandbox: read-write
           output-schema-file: .github/codex/schemas/docs-update-output.json
 
       - name: Log docs update result
