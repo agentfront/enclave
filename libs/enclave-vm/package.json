@@ -36,11 +36,11 @@
     }
   },
   "dependencies": {
-    "ast-guard": "^1.0.0",
+    "ast-guard": "0.0.1",
     "acorn": "8.15.0",
     "acorn-walk": "8.3.4",
     "astring": "1.9.0",
-    "zod": "^3.24.5"
+    "zod": "^4.1.13"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^3.0.0"
