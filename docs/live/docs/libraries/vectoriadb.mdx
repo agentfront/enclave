@@ -1,0 +1,106 @@
+---
+title: 'vectoriadb'
+description: 'Lightweight in-memory vector database for semantic search'
+---
+
+# vectoriadb
+
+Lightweight, production-ready in-memory vector database for semantic search with HNSW indexing.
+
+## Installation
+
+```bash
+npm install vectoriadb
+```
+
+## Quick Start
+
+```typescript
+import { VectoriaDB } from 'vectoriadb';
+
+const db = new VectoriaDB();
+await db.initialize();
+
+// Insert documents
+await db.insert({ id: '1', text: 'Hello world', metadata: {} });
+await db.insert({ id: '2', text: 'Goodbye world', metadata: {} });
+
+// Search
+const results = await db.search('greeting', 5);
+console.log(results);
+```
+
+## Features
+
+- **HNSW Indexing**: Hierarchical Navigable Small World for fast approximate nearest neighbor search
+- **Multiple Embeddings**: TF-IDF and transformer-based options
+- **Persistence**: File and Redis adapters for data persistence
+- **Security**: Built-in input validation
+
+## Embedding Options
+
+### TF-IDF (Default)
+
+Fast, lightweight embeddings suitable for most use cases.
+
+```typescript
+const db = new VectoriaDB({
+  embedding: 'tfidf'
+});
+```
+
+### Transformer-based
+
+Uses Hugging Face transformers for higher quality embeddings.
+
+```typescript
+const db = new VectoriaDB({
+  embedding: 'transformer',
+  model: 'Xenova/all-MiniLM-L6-v2'
+});
+```
+
+## Persistence
+
+### File Adapter
+
+```typescript
+import { VectoriaDB, FileAdapter } from 'vectoriadb';
+
+const db = new VectoriaDB({
+  adapter: new FileAdapter('./data/vectors.json')
+});
+```
+
+### Redis Adapter
+
+```typescript
+import { VectoriaDB, RedisAdapter } from 'vectoriadb';
+
+const db = new VectoriaDB({
+  adapter: new RedisAdapter({ host: 'localhost', port: 6379 })
+});
+```
+
+## API
+
+### `insert(document)`
+
+Insert a document into the database.
+
+### `search(query, k)`
+
+Search for the k nearest documents to the query.
+
+### `delete(id)`
+
+Delete a document by ID.
+
+### `clear()`
+
+Clear all documents from the database.
+
+## Links
+
+- [GitHub](https://github.com/agentfront/enclave/tree/main/libs/vectoriadb)
+- [npm](https://www.npmjs.com/package/vectoriadb)

@@ -1,0 +1,52 @@
+---
+title: 'Installation'
+description: 'How to install Enclave libraries'
+---
+
+# Installation
+
+Each library in the Enclave monorepo can be installed independently.
+
+## Prerequisites
+
+- **Node.js**: >= 22.0.0
+- **npm**: >= 10 (or yarn/pnpm equivalent)
+
+## Installing Libraries
+
+### ast-guard
+
+```bash
+npm install ast-guard
+```
+
+### vectoriadb
+
+```bash
+npm install vectoriadb
+```
+
+### @frontmcp/enclave
+
+```bash
+npm install @frontmcp/enclave
+```
+
+## Development Setup
+
+To work on the Enclave monorepo itself:
+
+```bash
+# Clone the repository
+git clone https://github.com/agentfront/enclave.git
+cd enclave
+
+# Install dependencies
+yarn install
+
+# Build all libraries
+yarn build
+
+# Run tests
+yarn test
+```

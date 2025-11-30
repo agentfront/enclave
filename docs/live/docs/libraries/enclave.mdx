@@ -1,0 +1,99 @@
+---
+title: '@frontmcp/enclave'
+description: 'Secure AgentScript execution environment with defense-in-depth'
+---
+
+# @frontmcp/enclave
+
+Secure AgentScript execution environment with defense-in-depth architecture for running LLM-generated JavaScript safely.
+
+## Installation
+
+```bash
+npm install @frontmcp/enclave
+```
+
+## Quick Start
+
+```typescript
+import { Enclave } from '@frontmcp/enclave';
+
+const enclave = new Enclave({ securityLevel: 'SECURE' });
+
+const result = await enclave.execute(`
+  const sum = 1 + 2;
+  return sum;
+`);
+
+console.log(result.value); // 3
+```
+
+## Features
+
+- **Bank-grade Security**: 516+ security tests, 81+ blocked attack vectors
+- **Defense-in-depth**: 6 security layers
+- **Worker Pool Adapter**: Isolated execution in separate processes
+- **Reference Sidecar**: Sandboxed environments for untrusted code
+
+## Security Levels
+
+| Level | Description |
+|-------|-------------|
+| `STRICT` | Maximum security, minimal features |
+| `SECURE` | Balanced security for most use cases |
+| `STANDARD` | Standard security with more features |
+| `PERMISSIVE` | Minimal restrictions |
+
+## Defense Layers
+
+1. **AST Validation** - Static analysis of code structure
+2. **Pre-scanner** - Pattern-based threat detection
+3. **Runtime Proxy** - Intercepts dangerous operations
+4. **Globals Validation** - Restricts global access
+5. **Value Sanitization** - Cleans return values
+6. **Timeout/Memory Limits** - Resource constraints
+
+## API
+
+### `execute(code, options)`
+
+Execute JavaScript code in a secure environment.
+
+```typescript
+const result = await enclave.execute(code, {
+  timeout: 5000,
+  maxMemory: 128 * 1024 * 1024
+});
+
+if (result.success) {
+  console.log(result.value);
+} else {
+  console.log(result.error);
+}
+```
+
+### `dispose()`
+
+Clean up resources.
+
+```typescript
+enclave.dispose();
+```
+
+## Worker Pool Adapter
+
+For complete process isolation:
+
+```typescript
+import { Enclave, WorkerPoolAdapter } from '@frontmcp/enclave';
+
+const enclave = new Enclave({
+  securityLevel: 'SECURE',
+  adapter: new WorkerPoolAdapter({ poolSize: 4 })
+});
+```
+
+## Links
+
+- [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclave)
+- [npm](https://www.npmjs.com/package/@frontmcp/enclave)

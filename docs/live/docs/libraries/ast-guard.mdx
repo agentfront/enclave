@@ -1,0 +1,75 @@
+---
+title: 'ast-guard'
+description: 'Production-ready AST security guard for JavaScript validation'
+---
+
+# ast-guard
+
+Production-ready AST security guard for JavaScript validation and code safety. Blocks all known vm2/isolated-vm/node-vm CVE exploits.
+
+## Installation
+
+```bash
+npm install ast-guard
+```
+
+## Quick Start
+
+```typescript
+import { validate, PRESETS } from 'ast-guard';
+
+const result = validate('const x = 1 + 2;', PRESETS.SECURE);
+console.log(result.valid); // true
+```
+
+## Features
+
+- **100% CVE Coverage**: Blocks all known vm2, isolated-vm, and node-vm exploits
+- **613+ Security Tests**: Comprehensive test suite with 95%+ code coverage
+- **Security Presets**: STRICT, SECURE, STANDARD, PERMISSIVE
+- **Zero Dependencies**: Only uses acorn for parsing
+
+## Security Presets
+
+| Preset | Description |
+|--------|-------------|
+| `STRICT` | Maximum security, minimal features |
+| `SECURE` | Balanced security for most use cases |
+| `STANDARD` | Standard security with more features |
+| `PERMISSIVE` | Minimal restrictions |
+
+## API
+
+### `validate(code, preset)`
+
+Validates JavaScript code against a security preset.
+
+```typescript
+import { validate, PRESETS } from 'ast-guard';
+
+const result = validate(code, PRESETS.SECURE);
+
+if (result.valid) {
+  // Code is safe to execute
+} else {
+  console.log(result.errors);
+}
+```
+
+### `transform(code, options)`
+
+Transforms code to add safety features like loop guards.
+
+```typescript
+import { transform } from 'ast-guard';
+
+const transformed = transform(code, {
+  maxIterations: 10000,
+  maxDepth: 100
+});
+```
+
+## Links
+
+- [GitHub](https://github.com/agentfront/enclave/tree/main/libs/ast-guard)
+- [npm](https://www.npmjs.com/package/ast-guard)

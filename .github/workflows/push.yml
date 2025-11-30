@@ -1,0 +1,45 @@
+name: CI
+
+on: push
+
+concurrency:
+  group: enclave-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      NX_DAEMON: "false"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".nvmrc"
+          cache: "yarn"
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Set Nx SHAs
+        uses: nrwl/nx-set-shas@v4
+
+      - name: Run linter
+        run: npx nx affected -t lint
+        continue-on-error: true
+
+      - name: Run prettier
+        run: npx prettier --check .
+        continue-on-error: true
+
+      - name: Build libraries
+        run: npx nx affected -t build
+
+      - name: Test libraries
+        run: npx nx affected -t test --passWithNoTests

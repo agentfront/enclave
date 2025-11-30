@@ -1,0 +1,254 @@
+name: Create release branch (next/{semver})
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Semver bump"
+        required: true
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    environment: release
+    env:
+      NX_DAEMON: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".nvmrc"
+          cache: "yarn"
+          registry-url: "https://registry.npmjs.org/"
+
+      - name: Install deps
+        run: yarn
+
+      - name: Configure git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute next semver from root package.json
+        id: next
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          NEXT=$(BUMP="${{ inputs.bump }}" node - << 'EOF'
+          const fs = require('fs');
+
+          const bump = (process.env.BUMP || 'patch').trim();
+
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const raw = String(pkg.version || '0.0.0').trim();
+
+          const parts = raw.split('.').map((n) => {
+            const v = Number.parseInt(n, 10);
+            return Number.isFinite(v) ? v : 0;
+          });
+
+          let [M, m, p] = [parts[0] || 0, parts[1] || 0, parts[2] || 0];
+
+          if (bump === 'major') {
+            M += 1;
+            m = 0;
+            p = 0;
+          } else if (bump === 'minor') {
+            m += 1;
+            p = 0;
+          } else {
+            p += 1;
+          }
+
+          const next = [M, m, p].join('.');
+          process.stdout.write(next);
+          EOF
+          )
+
+          echo "Next version: $NEXT"
+          echo "value=$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: Get last release version
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LAST_TAG=$(git tag --list "v*" --sort=-version:refname | head -n1 || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            LAST_VERSION="${LAST_TAG#v}"
+          else
+            LAST_VERSION=""
+          fi
+
+          echo "last_version=$LAST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Last release: $LAST_VERSION"
+
+      - name: Create branch next/${{ steps.next.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="main"
+          NEXT="${{ steps.next.outputs.value }}"
+
+          git fetch origin "$BASE" --tags
+          git switch -c "next/$NEXT" "origin/$BASE"
+
+          echo "Created branch next/$NEXT from $BASE"
+
+      - name: Identify affected independent libraries
+        id: independent
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ALL_INDEPENDENT=$(node -e "
+            const { execSync } = require('child_process');
+            try {
+              const out = execSync('npx nx show projects -p tag:versioning:independent --type lib --json', { encoding: 'utf8' });
+              const arr = JSON.parse(out);
+              process.stdout.write(arr.join(','));
+            } catch (e) {
+              process.stdout.write('');
+            }
+          ")
+
+          if [ -z "$ALL_INDEPENDENT" ]; then
+            echo 'independent_projects=' >> "$GITHUB_OUTPUT"
+            echo "No independent libraries found"
+            exit 0
+          fi
+
+          echo "All independent libs: $ALL_INDEPENDENT"
+
+          LAST_TAG="${{ steps.versions.outputs.last_version }}"
+          if [ -n "$LAST_TAG" ]; then
+            LAST_TAG="v$LAST_TAG"
+          else
+            LAST_TAG=$(git rev-list --max-parents=0 HEAD)
+          fi
+
+          AFFECTED=$(node -e "
+            const { execSync } = require('child_process');
+            try {
+              const out = execSync('npx nx show projects --affected --base=\"${LAST_TAG}\" --type lib --json', { encoding: 'utf8' });
+              const arr = JSON.parse(out);
+              process.stdout.write(arr.join(','));
+            } catch (e) {
+              process.stdout.write('');
+            }
+          ")
+
+          AFFECTED_INDEPENDENT=$(node -e "
+            const all = '$ALL_INDEPENDENT'.split(',').filter(Boolean);
+            const affected = '$AFFECTED'.split(',').filter(Boolean);
+            const intersection = all.filter(lib => affected.includes(lib));
+            process.stdout.write(intersection.join(','));
+          ")
+
+          echo "independent_projects=$AFFECTED_INDEPENDENT" >> "$GITHUB_OUTPUT"
+          if [ -n "$AFFECTED_INDEPENDENT" ]; then
+            echo "Affected independent libs: $AFFECTED_INDEPENDENT"
+          else
+            echo "No affected independent libraries"
+          fi
+
+      - name: Bump synchronized libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEXT="${{ steps.next.outputs.value }}"
+
+          echo "Bumping synchronized libraries to version $NEXT..."
+          node scripts/bump-synchronized-versions.mjs "$NEXT"
+
+      - name: Bump affected independent libraries
+        if: ${{ steps.independent.outputs.independent_projects != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IFS=',' read -ra LIBS <<< "${{ steps.independent.outputs.independent_projects }}"
+          for lib in "${LIBS[@]}"; do
+            echo "Bumping $lib with patch version..."
+            node scripts/bump-version.mjs "$lib" patch
+          done
+
+      - name: Commit release preparation
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEXT="${{ steps.next.outputs.value }}"
+
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+
+            cat > /tmp/commit-msg <<COMMITMSG
+          chore(release): prepare v$NEXT
+
+          - Bump synchronized libs to v$NEXT
+          - Bump affected independent libs
+          COMMITMSG
+
+            git commit -F /tmp/commit-msg
+            echo "Created release preparation commit"
+          else
+            echo "No changes to commit"
+            git commit --allow-empty -m "chore(release): prepare v$NEXT"
+          fi
+
+      - name: Push branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEXT="${{ steps.next.outputs.value }}"
+          git push --set-upstream origin "next/$NEXT"
+
+      - name: Open PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEXT="${{ steps.next.outputs.value }}"
+          BASE="main"
+          HEAD="next/$NEXT"
+          TITLE="v$NEXT"
+
+          EXISTING_PR=$(gh pr list \
+            --base "$BASE" \
+            --head "$HEAD" \
+            --state open \
+            --json number \
+            --jq '.[0].number' || echo "")
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "PR #$EXISTING_PR already exists"
+            exit 0
+          fi
+
+          gh pr create \
+            --base "$BASE" \
+            --head "$HEAD" \
+            --title "$TITLE" \
+            --body "Release $TITLE"
+
+      - name: Summary
+        run: |
+          echo "Created branch: next/${{ steps.next.outputs.value }}"
+          echo "Bump: ${{ inputs.bump }}"
+          echo "PR title: v${{ steps.next.outputs.value }}"

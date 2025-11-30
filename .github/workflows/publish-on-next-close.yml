@@ -1,0 +1,252 @@
+name: Publish libs on next/* merge
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+concurrency:
+  group: publish-next-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'next/') &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    environment: release
+    env:
+      NX_DAEMON: "false"
+
+    steps:
+      - name: Determine release ref
+        id: release_ref
+        shell: bash
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${MERGE_SHA:-}" ] && [ "$MERGE_SHA" != "null" ]; then
+            REF="$MERGE_SHA"
+          else
+            REF="$BASE_REF"
+          fi
+
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.release_ref.outputs.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".nvmrc"
+          cache: "yarn"
+          registry-url: "https://registry.npmjs.org/"
+
+      - name: Update npm CLI for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Resolve synchronized libs
+        id: synchronized
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECTS=$(node -e "
+            const { execSync } = require('child_process');
+            const out = execSync('npx nx show projects -p tag:versioning:synchronized --type lib --json', { encoding: 'utf8' });
+            const arr = JSON.parse(out);
+            process.stdout.write(arr.join(','));
+          ")
+          if [ -z "$PROJECTS" ]; then
+            echo 'synchronized_projects=' >> "$GITHUB_OUTPUT"
+          else
+            echo "synchronized_projects=$PROJECTS" >> "$GITHUB_OUTPUT"
+            echo "Found synchronized libs: $PROJECTS"
+          fi
+
+      - name: Resolve affected independent libs
+        id: independent
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ALL_INDEPENDENT=$(node -e "
+            const { execSync } = require('child_process');
+            const out = execSync('npx nx show projects -p tag:versioning:independent --type lib --json', { encoding: 'utf8' });
+            const arr = JSON.parse(out);
+            process.stdout.write(arr.join(','));
+          ")
+
+          if [ -z "$ALL_INDEPENDENT" ]; then
+            echo 'independent_projects=' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          AFFECTED=$(node -e "
+            const { execSync } = require('child_process');
+            try {
+              const out = execSync('npx nx show projects --affected --type lib --json', { encoding: 'utf8' });
+              const arr = JSON.parse(out);
+              process.stdout.write(arr.join(','));
+            } catch (e) {
+              process.stdout.write('');
+            }
+          ")
+
+          if [ -z "$AFFECTED" ]; then
+            echo 'independent_projects=' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          AFFECTED_INDEPENDENT=$(node -e "
+            const all = '$ALL_INDEPENDENT'.split(',');
+            const affected = '$AFFECTED'.split(',');
+            const intersection = all.filter(lib => affected.includes(lib));
+            process.stdout.write(intersection.join(','));
+          ")
+
+          echo "independent_projects=$AFFECTED_INDEPENDENT" >> "$GITHUB_OUTPUT"
+          if [ -n "$AFFECTED_INDEPENDENT" ]; then
+            echo "Affected independent libs to publish: $AFFECTED_INDEPENDENT"
+          fi
+
+      - name: Collect all projects to publish
+        id: to_publish
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SYNC="${{ steps.synchronized.outputs.synchronized_projects }}"
+          INDEP="${{ steps.independent.outputs.independent_projects }}"
+
+          if [ -n "$SYNC" ] && [ -n "$INDEP" ]; then
+            ALL="$SYNC,$INDEP"
+          elif [ -n "$SYNC" ]; then
+            ALL="$SYNC"
+          elif [ -n "$INDEP" ]; then
+            ALL="$INDEP"
+          else
+            ALL=""
+          fi
+
+          echo "projects=$ALL" >> "$GITHUB_OUTPUT"
+          if [ -n "$ALL" ]; then
+            echo "Projects to publish: $ALL"
+          else
+            echo "No projects to publish"
+          fi
+
+      - name: Stop if nothing to publish
+        if: ${{ steps.to_publish.outputs.projects == '' }}
+        run: echo "Nothing to publish."
+
+      - name: Determine release version
+        id: version
+        shell: bash
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          HEADREF="$PR_HEAD_REF"
+
+          if [[ "$HEADREF" =~ ^next/([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+          else
+            VERSION=$(node -e "try{console.log(require('./package.json').version||'0.0.0')}catch{console.log('0.0.0')}")
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release version: $VERSION"
+
+      - name: Determine release target SHA
+        id: release_sha
+        shell: bash
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${MERGE_SHA:-}" ] && [ "$MERGE_SHA" != "null" ]; then
+            SHA="$MERGE_SHA"
+          else
+            SHA=$(git rev-parse HEAD)
+          fi
+
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Configure git user
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push git tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v$VERSION"
+          TARGET_SHA="${{ steps.release_sha.outputs.sha }}"
+
+          git fetch --tags
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists."
+          else
+            echo "Creating tag $TAG at $TARGET_SHA"
+            git tag -a "$TAG" "$TARGET_SHA" -m "Release $TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Build all packages to publish
+        if: ${{ steps.to_publish.outputs.projects != '' }}
+        run: |
+          npx nx run-many --targets=build --projects="${{ steps.to_publish.outputs.projects }}" --parallel
+
+      - name: Publish to npm
+        if: ${{ steps.to_publish.outputs.projects != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Publishing selected projects via npm trusted publishing..."
+
+          IFS=',' read -ra PROJECTS <<< "${{ steps.to_publish.outputs.projects }}"
+          for project in "${PROJECTS[@]}"; do
+            echo "Publishing $project..."
+            yarn nx run "$project:publish"
+          done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          echo "Published projects: ${{ steps.to_publish.outputs.projects }}"
+          echo "Synchronized libs: ${{ steps.synchronized.outputs.synchronized_projects }}"
+          echo "Independent libs (affected): ${{ steps.independent.outputs.independent_projects }}"
+          echo "Release tag: v${{ steps.version.outputs.version }}"
+          echo "Release commit: ${{ steps.release_sha.outputs.sha }}"

@@ -1,0 +1,65 @@
+{
+  "name": "@enclave/source",
+  "version": "1.0.0",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "nx run-many -t build",
+    "test": "nx run-many -t test",
+    "lint": "nx run-many -t lint",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx,json,css,scss,md,html,yml,yaml}": "prettier --write"
+  },
+  "private": true,
+  "dependencies": {
+    "@huggingface/transformers": "^3.2.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.8.0",
+    "@mdx-js/mdx": "^3.1.1",
+    "@nx/eslint": "21.6.3",
+    "@nx/eslint-plugin": "21.6.3",
+    "@nx/jest": "21.6.3",
+    "@nx/js": "21.6.3",
+    "@nx/nest": "21.6.3",
+    "@nx/node": "21.6.3",
+    "@nx/web": "21.6.3",
+    "@nx/webpack": "21.6.3",
+    "@nx/workspace": "21.6.3",
+    "@swc-node/register": "~1.9.1",
+    "@swc/core": "~1.5.7",
+    "@swc/helpers": "~0.5.11",
+    "@swc/jest": "~0.2.38",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.8.0",
+    "eslint-config-prettier": "^10.0.0",
+    "husky": "^9.1.7",
+    "jest": "^30.0.2",
+    "jest-environment-node": "^30.0.2",
+    "jest-util": "^30.0.2",
+    "jsonc-eslint-parser": "^2.1.0",
+    "lint-staged": "^16.2.7",
+    "mint": "^4.2.207",
+    "nx": "21.6.3",
+    "prettier": "^2.6.2",
+    "ts-jest": "^29.4.0",
+    "ts-node": "10.9.1",
+    "tslib": "^2.3.0",
+    "typescript": "~5.9.2",
+    "typescript-eslint": "^8.40.0",
+    "verdaccio": "^6.0.5",
+    "webpack-cli": "^5.1.4"
+  },
+  "workspaces": [
+    "apps/*",
+    "libs/*"
+  ],
+  "nx": {
+    "includedScripts": []
+  }
+}
