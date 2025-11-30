@@ -14,8 +14,7 @@ jobs:
     environment: release
     env:
       NX_DAEMON: "false"
-      CODEX_VERSION_OUT: .codex-release/version-output.json
-      CODEX_DOCS_OUT: .codex-release/docs-output.json
+      CODEX_OUTPUT: .codex-release/release-output.json
 
     steps:
       - name: Checkout
@@ -211,17 +210,22 @@ jobs:
           # ISO date
           date -u +"%Y-%m-%d" > .github/codex/prompts/date.txt
 
-      - name: Run Codex for version analysis
+      # ========================================
+      # Single Codex call for version analysis + docs update
+      # (Cannot run sequential Codex actions due to sudo restrictions)
+      # ========================================
+      - name: Run Codex for release analysis
         if: steps.affected.outputs.projects != ''
-        id: codex_version
+        id: codex
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.CODEX_OPENAI_KEY }}
           codex-home: ${{ steps.mcp.outputs.codex_home }}
-          prompt-file: .github/codex/prompts/analyze-version-bump.md
-          output-file: ${{ env.CODEX_VERSION_OUT }}
+          prompt-file: .github/codex/prompts/analyze-release.md
+          output-file: ${{ env.CODEX_OUTPUT }}
           model: "gpt-5.1-codex"
-          output-schema-file: .github/codex/schemas/version-bump-output.json
+          output-schema-file: .github/codex/schemas/release-output.json
+          full-auto: true
 
       - name: Apply version bumps from Codex
         id: versions
@@ -232,18 +236,18 @@ jobs:
 
           echo "Applying version bumps from Codex analysis..."
 
-          if [ ! -f "${{ env.CODEX_VERSION_OUT }}" ]; then
+          if [ ! -f "${{ env.CODEX_OUTPUT }}" ]; then
             echo "::error::Codex output file not found"
             exit 1
           fi
 
           echo "Codex output:"
-          cat "${{ env.CODEX_VERSION_OUT }}"
+          cat "${{ env.CODEX_OUTPUT }}"
 
           # Parse Codex JSON output and update package.json files
           RESULT=$(node -e "
           const fs = require('fs');
-          const output = JSON.parse(fs.readFileSync('${{ env.CODEX_VERSION_OUT }}', 'utf8'));
+          const output = JSON.parse(fs.readFileSync('${{ env.CODEX_OUTPUT }}', 'utf8'));
 
           let maxVersion = '0.0.0';
           const bumpedProjects = [];
@@ -264,6 +268,12 @@ jobs:
             }
           }
 
+          // Log docs update summary
+          if (output.docs && output.docs.updated) {
+            console.error('Documentation updated: ' + output.docs.summary);
+            console.error('Files modified: ' + output.docs.files.join(', '));
+          }
+
           // Output for GitHub Actions
           console.log(JSON.stringify({ maxVersion, bumpedProjects: bumpedProjects.join(',') }));
           ")
@@ -277,27 +287,23 @@ jobs:
           echo "Max version: $MAX_VERSION"
           echo "Bumped projects: $BUMPED"
 
-      - name: Run Codex for docs update
-        if: steps.affected.outputs.projects != ''
-        id: codex_docs
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.CODEX_OPENAI_KEY }}
-          codex-home: ${{ steps.mcp.outputs.codex_home }}
-          prompt-file: .github/codex/prompts/update-docs.md
-          output-file: ${{ env.CODEX_DOCS_OUT }}
-          model: "gpt-5.1-codex"
-          output-schema-file: .github/codex/schemas/docs-update-output.json
-
-      - name: Log docs update result
+      - name: Log release analysis result
         if: steps.affected.outputs.projects != ''
         shell: bash
         run: |
-          if [ -f "${{ env.CODEX_DOCS_OUT }}" ]; then
-            echo "Documentation update result:"
-            cat "${{ env.CODEX_DOCS_OUT }}"
-          else
-            echo "No documentation updates were made"
+          if [ -f "${{ env.CODEX_OUTPUT }}" ]; then
+            echo "Release analysis result:"
+            cat "${{ env.CODEX_OUTPUT }}"
+
+            # Extract and display docs summary
+            DOCS_UPDATED=$(node -e "const o = require('./${{ env.CODEX_OUTPUT }}'); console.log(o.docs?.updated || false)")
+            if [ "$DOCS_UPDATED" = "true" ]; then
+              echo ""
+              echo "Documentation was updated:"
+              node -e "const o = require('./${{ env.CODEX_OUTPUT }}'); console.log('  Summary: ' + o.docs.summary); console.log('  Files: ' + o.docs.files.join(', '))"
+            else
+              echo "No documentation updates were made"
+            fi
           fi
 
       - name: Create release branch

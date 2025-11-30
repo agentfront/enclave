@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Release Output",
+  "description": "Combined output schema for Codex release analysis (version bumps + docs updates)",
+  "type": "object",
+  "properties": {
+    "projects": {
+      "type": "array",
+      "description": "Array of version bump decisions for each affected project",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The project name (e.g., 'ast-guard', 'vectoriadb')"
+          },
+          "bump": {
+            "type": "string",
+            "enum": ["major", "minor", "patch", "none"],
+            "description": "The type of version bump to apply"
+          },
+          "newVersion": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+            "description": "The new semantic version string (e.g., '1.2.0')"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Brief explanation for the version bump decision"
+          }
+        },
+        "required": ["name", "bump", "newVersion", "reason"],
+        "additionalProperties": false
+      }
+    },
+    "docs": {
+      "type": "object",
+      "description": "Documentation update results",
+      "properties": {
+        "updated": {
+          "type": "boolean",
+          "description": "Whether any documentation files were modified"
+        },
+        "files": {
+          "type": "array",
+          "description": "List of file paths that were modified or created",
+          "items": {
+            "type": "string"
+          }
+        },
+        "summary": {
+          "type": "string",
+          "description": "Brief summary of the documentation changes made"
+        }
+      },
+      "required": ["updated", "files", "summary"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["projects", "docs"],
+  "additionalProperties": false
+}
