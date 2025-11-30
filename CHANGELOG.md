@@ -10,13 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Initial release of the Enclave monorepo
-- Migrated `ast-guard`, `vectoriadb`, and `@frontmcp/enclave` from FrontMCP monorepo
+- Migrated `ast-guard`, `vectoriadb`, and `enclavejs` from FrontMCP monorepo
 - Set up Nx workspace with independent versioning for ast-guard and vectoriadb
-- Set up synchronized versioning for @frontmcp/enclave
+- Set up synchronized versioning for enclavejs
 - CI/CD workflows for build, test, and publish
 
 ### Libraries Included
 
 - **ast-guard** v1.0.0 - AST-based JavaScript validator with 100% CVE protection
 - **vectoriadb** v1.0.0 - In-memory vector database for semantic search
-- **@frontmcp/enclave** v0.4.0 - Secure AgentScript execution environment
+- **enclavejs** v0.4.0 - Secure AgentScript execution environment

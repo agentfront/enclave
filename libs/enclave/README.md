@@ -1,6 +1,6 @@
-# @frontmcp/enclave
+# enclavejs
 
-[![npm version](https://img.shields.io/npm/v/@frontmcp/enclave.svg)](https://www.npmjs.com/package/@frontmcp/enclave)
+[![npm version](https://img.shields.io/npm/v/enclavejs.svg)](https://www.npmjs.com/package/enclavejs)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 
@@ -33,17 +33,17 @@ For the full security audit report, see [SECURITY-AUDIT.md](./SECURITY-AUDIT.md)
 ## Installation
 
 ```bash
-npm install @frontmcp/enclave
+npm install enclavejs
 # or
-yarn add @frontmcp/enclave
+yarn add enclavejs
 # or
-pnpm add @frontmcp/enclave
+pnpm add enclavejs
 ```
 
 ## Quick Start
 
 ```typescript
-import { Enclave } from '@frontmcp/enclave';
+import { Enclave } from 'enclavejs';
 
 // Create enclave with a tool handler
 const enclave = new Enclave({
@@ -111,7 +111,7 @@ interface CreateEnclaveOptions {
 | `PERMISSIVE` | Minimal restrictions                        | Internal/development |
 
 ```typescript
-import { Enclave, SecurityLevel } from '@frontmcp/enclave';
+import { Enclave, SecurityLevel } from 'enclavejs';
 
 const enclave = new Enclave({
   securityLevel: SecurityLevel.STRICT,
@@ -126,7 +126,7 @@ const enclave = new Enclave({
 For environments requiring **OS-level memory isolation**, enable the Worker Pool Adapter. This provides a dual-layer sandbox with hard halt capability:
 
 ```typescript
-import { Enclave } from '@frontmcp/enclave';
+import { Enclave } from 'enclavejs';
 
 const enclave = new Enclave({
   adapter: 'worker_threads', // Enable Worker Pool

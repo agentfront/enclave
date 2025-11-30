@@ -1,5 +1,5 @@
 /**
- * @frontmcp/enclave - Safe AgentScript Execution Environment
+ * enclavejs - Safe AgentScript Execution Environment
  *
  * Provides sandboxed execution for AgentScript code with:
  * - AST validation using @frontmcp/ast-guard

@@ -121,7 +121,7 @@ function buildReferenceConfig(
  *
  * @example
  * ```typescript
- * import { Enclave } from '@frontmcp/enclave';
+ * import { Enclave } from 'enclavejs';
  *
  * // Create enclave with tool handler
  * const enclave = new Enclave({

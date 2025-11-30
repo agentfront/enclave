@@ -6,7 +6,7 @@
  *
  * @example
  * ```typescript
- * import { ScoringGate } from '@frontmcp/enclave';
+ * import { ScoringGate } from 'enclavejs';
  *
  * const gate = new ScoringGate({
  *   scorer: 'rule-based',

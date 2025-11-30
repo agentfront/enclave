@@ -15,11 +15,11 @@
 
 Enclave is a monorepo containing security-focused libraries for building safe AI agent systems:
 
-| Library                                 | Description                                                    | Version                                                                                                       |
-| --------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| [**ast-guard**](./libs/ast-guard)       | AST-based JavaScript validator with 100% CVE protection        | [![npm](https://img.shields.io/npm/v/ast-guard.svg)](https://www.npmjs.com/package/ast-guard)                 |
-| [**vectoriadb**](./libs/vectoriadb)     | Lightweight in-memory vector database for semantic search      | [![npm](https://img.shields.io/npm/v/vectoriadb.svg)](https://www.npmjs.com/package/vectoriadb)               |
-| [**@frontmcp/enclave**](./libs/enclave) | Secure AgentScript execution environment with defense-in-depth | [![npm](https://img.shields.io/npm/v/@frontmcp/enclave.svg)](https://www.npmjs.com/package/@frontmcp/enclave) |
+| Library                             | Description                                                    | Version                                                                                         |
+| ----------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [**ast-guard**](./libs/ast-guard)   | AST-based JavaScript validator with 100% CVE protection        | [![npm](https://img.shields.io/npm/v/ast-guard.svg)](https://www.npmjs.com/package/ast-guard)   |
+| [**vectoriadb**](./libs/vectoriadb) | Lightweight in-memory vector database for semantic search      | [![npm](https://img.shields.io/npm/v/vectoriadb.svg)](https://www.npmjs.com/package/vectoriadb) |
+| [**enclavejs**](./libs/enclave)     | Secure AgentScript execution environment with defense-in-depth | [![npm](https://img.shields.io/npm/v/enclavejs.svg)](https://www.npmjs.com/package/enclavejs)   |
 
 ---
 
@@ -72,12 +72,12 @@ const results = await db.search('greeting', 5);
 
 ---
 
-### @frontmcp/enclave
+### enclavejs
 
 Secure AgentScript execution environment with defense-in-depth architecture for running LLM-generated JavaScript safely.
 
 ```typescript
-import { Enclave } from '@frontmcp/enclave';
+import { Enclave } from 'enclavejs';
 
 const enclave = new Enclave({ securityLevel: 'SECURE' });
 
@@ -133,7 +133,7 @@ npm install ast-guard
 npm install vectoriadb
 
 # enclave
-npm install @frontmcp/enclave
+npm install enclavejs
 ```
 
 ---

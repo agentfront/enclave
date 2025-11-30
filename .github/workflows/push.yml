@@ -2,6 +2,10 @@ name: CI
 
 on: push
 
+permissions:
+  actions: read
+  contents: read
+
 concurrency:
   group: enclave-ci-${{ github.ref }}
   cancel-in-progress: true

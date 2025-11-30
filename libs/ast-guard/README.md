@@ -441,7 +441,7 @@ const rules = createAgentScriptPreset({
 });
 ```
 
-The AgentScript preset is used internally by the `@frontmcp/enclave` package for secure code execution.
+The AgentScript preset is used internally by the `enclavejs` package for secure code execution.
 
 ## Built-in Rules
 

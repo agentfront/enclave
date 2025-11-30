@@ -1,22 +1,22 @@
 ---
-title: '@frontmcp/enclave'
+title: 'enclavejs'
 description: 'Secure AgentScript execution environment with defense-in-depth'
 ---
 
-# @frontmcp/enclave
+# enclavejs
 
 Secure AgentScript execution environment with defense-in-depth architecture for running LLM-generated JavaScript safely.
 
 ## Installation
 
 ```bash
-npm install @frontmcp/enclave
+npm install enclavejs
 ```
 
 ## Quick Start
 
 ```typescript
-import { Enclave } from '@frontmcp/enclave';
+import { Enclave } from 'enclavejs';
 
 const enclave = new Enclave({ securityLevel: 'SECURE' });
 
@@ -85,7 +85,7 @@ enclave.dispose();
 For complete process isolation:
 
 ```typescript
-import { Enclave, WorkerPoolAdapter } from '@frontmcp/enclave';
+import { Enclave, WorkerPoolAdapter } from 'enclavejs';
 
 const enclave = new Enclave({
   securityLevel: 'SECURE',
@@ -96,4 +96,4 @@ const enclave = new Enclave({
 ## Links
 
 - [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclave)
-- [npm](https://www.npmjs.com/package/@frontmcp/enclave)
+- [npm](https://www.npmjs.com/package/enclavejs)
