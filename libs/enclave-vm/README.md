@@ -1,12 +1,12 @@
-# enclavejs
+# enclave-vm
 
-[![npm version](https://img.shields.io/npm/v/enclavejs.svg)](https://www.npmjs.com/package/enclavejs)
+[![npm version](https://img.shields.io/npm/v/enclave-vm.svg)](https://www.npmjs.com/package/enclave-vm)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 
 > Secure AgentScript execution environment with defense-in-depth architecture
 
-The enclave package provides a hardened execution environment for running LLM-generated JavaScript code (AgentScript) safely. It combines AST validation, code transformation, runtime guards, and VM sandboxing to prevent sandbox escapes and resource exhaustion.
+The enclave-vm package provides a hardened execution environment for running LLM-generated JavaScript code (AgentScript) safely. It combines AST validation, code transformation, runtime guards, and VM sandboxing to prevent sandbox escapes and resource exhaustion.
 
 ## Bank-Grade Security
 
@@ -33,17 +33,17 @@ For the full security audit report, see [SECURITY-AUDIT.md](./SECURITY-AUDIT.md)
 ## Installation
 
 ```bash
-npm install enclavejs
+npm install enclave-vm
 # or
-yarn add enclavejs
+yarn add enclave-vm
 # or
-pnpm add enclavejs
+pnpm add enclave-vm
 ```
 
 ## Quick Start
 
 ```typescript
-import { Enclave } from 'enclavejs';
+import { Enclave } from 'enclave-vm';
 
 // Create enclave with a tool handler
 const enclave = new Enclave({
@@ -111,7 +111,7 @@ interface CreateEnclaveOptions {
 | `PERMISSIVE` | Minimal restrictions                        | Internal/development |
 
 ```typescript
-import { Enclave, SecurityLevel } from 'enclavejs';
+import { Enclave, SecurityLevel } from 'enclave-vm';
 
 const enclave = new Enclave({
   securityLevel: SecurityLevel.STRICT,
@@ -126,7 +126,7 @@ const enclave = new Enclave({
 For environments requiring **OS-level memory isolation**, enable the Worker Pool Adapter. This provides a dual-layer sandbox with hard halt capability:
 
 ```typescript
-import { Enclave } from 'enclavejs';
+import { Enclave } from 'enclave-vm';
 
 const enclave = new Enclave({
   adapter: 'worker_threads', // Enable Worker Pool

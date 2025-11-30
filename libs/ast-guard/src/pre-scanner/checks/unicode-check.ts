@@ -63,17 +63,10 @@ export const ALL_INVISIBLE_CHARS = Object.values(INVISIBLE_CHARS);
 /**
  * Regex pattern matching invisible characters
  * Note: We allow ZWNJ and ZWJ in some contexts for legitimate use
+ * Using unicode escapes for security-relevant invisible character detection
  */
-export const INVISIBLE_PATTERN = new RegExp(
-  `[${[
-    INVISIBLE_CHARS.ZWSP,
-    INVISIBLE_CHARS.WORD_JOINER,
-    INVISIBLE_CHARS.FEFF,
-    INVISIBLE_CHARS.SHY,
-    INVISIBLE_CHARS.CGJ,
-  ].join('')}]`,
-  'g',
-);
+// eslint-disable-next-line no-misleading-character-class -- Intentionally matching combining characters for security detection
+export const INVISIBLE_PATTERN = /[\u200B\u2060\uFEFF\u00AD\u034F]/gu;
 
 /**
  * Check for BiDi override characters (Trojan Source attacks).

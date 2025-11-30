@@ -49,7 +49,7 @@
               },
               {
                 "group": "Libraries",
-                "pages": ["docs/libraries/ast-guard", "docs/libraries/vectoriadb", "docs/libraries/enclave"]
+                "pages": ["docs/libraries/ast-guard", "docs/libraries/vectoriadb", "docs/libraries/enclave-vm"]
               }
             ]
           }

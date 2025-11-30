@@ -254,7 +254,10 @@ describe('ProgressiveScorer', () => {
       const config: ProgressiveScoringConfig = {
         strategy: 'progressive',
         fast: { type: 'rule-based' },
-        detailed: { type: 'external-api', externalApi: { endpoint: 'http://test' } },
+        detailed: {
+          type: 'external-api',
+          externalApi: { endpoint: 'http://test', timeoutMs: 100, retries: 0 },
+        },
         escalationThreshold: 20,
       };
 
@@ -282,7 +285,10 @@ describe('ProgressiveScorer', () => {
       const config: ProgressiveScoringConfig = {
         strategy: 'progressive',
         fast: { type: 'rule-based' },
-        detailed: { type: 'external-api', externalApi: { endpoint: 'http://invalid-url' } },
+        detailed: {
+          type: 'external-api',
+          externalApi: { endpoint: 'http://invalid-url', timeoutMs: 100, retries: 0 },
+        },
         escalationThreshold: 10,
       };
 

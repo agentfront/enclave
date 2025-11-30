@@ -196,13 +196,8 @@ export function validateGlobalValue(
         );
       }
 
-      try {
-        const propValue = (obj as Record<string, unknown>)[prop];
-        validateGlobalValue(key, propValue, options, [...path, prop], visited);
-      } catch (e) {
-        // Re-throw validation errors
-        throw e;
-      }
+      const propValue = (obj as Record<string, unknown>)[prop];
+      validateGlobalValue(key, propValue, options, [...path, prop], visited);
     }
 
     return;

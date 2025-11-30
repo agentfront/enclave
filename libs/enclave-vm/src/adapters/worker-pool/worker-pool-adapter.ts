@@ -10,9 +10,8 @@
 import crypto from 'crypto';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../../types';
 import type { WorkerPoolConfig, ResourceUsage, WorkerPoolMetrics } from './config';
-import { buildWorkerPoolConfig, DEFAULT_WORKER_POOL_CONFIG } from './config';
+import { buildWorkerPoolConfig } from './config';
 import type {
-  MainToWorkerMessage,
   WorkerToMainMessage,
   ExecutionResultMessage,
   ToolCallMessage,
@@ -365,9 +364,6 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       // Pending tool calls for this execution
       const pendingToolCalls = new Map<string, boolean>();
 
-      // Declare watchdogId before cleanup to avoid TDZ confusion
-      let watchdogId: ReturnType<typeof setTimeout>;
-
       // Cleanup function to remove handlers
       const cleanup = () => {
         clearTimeout(watchdogId);
@@ -407,7 +403,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
 
       // Set up watchdog timeout (VM timeout + buffer)
       const watchdogTimeout = context.config.timeout + 5000;
-      watchdogId = setTimeout(() => {
+      const watchdogId: ReturnType<typeof setTimeout> = setTimeout(() => {
         this._timeoutExecutions++;
         this._forcedTerminations++;
         cleanup();

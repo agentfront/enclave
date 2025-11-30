@@ -371,7 +371,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
 
     it('Vector 24: should block constructor access on tool results', async () => {
       const enclave = new Enclave({
-        toolHandler: async (name, args) => ({
+        toolHandler: async () => ({
           data: { value: 42 },
         }),
       });

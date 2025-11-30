@@ -13,6 +13,7 @@ const UNICODE_ATTACK_PATTERNS = {
    * - Word Joiner (U+2060)
    * - Zero Width No-Break Space (U+FEFF) - BOM
    */
+  // eslint-disable-next-line no-misleading-character-class -- Intentionally matching zero-width characters for security detection
   zeroWidth: /[\u200B\u200C\u200D\u2060\uFEFF]/,
 
   /**
@@ -162,6 +163,7 @@ const UNICODE_ATTACK_PATTERNS = {
   /**
    * Invisible/formatting characters that can hide code
    */
+  // eslint-disable-next-line no-misleading-character-class -- Intentionally matching invisible/combining characters for security detection
   invisible: /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u3164\uFFA0]/,
 
   /**

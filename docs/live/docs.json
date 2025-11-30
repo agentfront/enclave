@@ -55,7 +55,7 @@
                 "pages": [
                   "docs/libraries/ast-guard",
                   "docs/libraries/vectoriadb",
-                  "docs/libraries/enclave"
+                  "docs/libraries/enclave-vm"
                 ]
               }
             ]

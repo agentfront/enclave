@@ -264,8 +264,6 @@ describe('AI Context Attack Tests', () => {
     });
 
     it('should prevent callback-based exploitation', async () => {
-      const capturedCallbacks: Array<() => void> = [];
-
       const enclave = new Enclave({
         toolHandler: async (name: string, args: unknown) => {
           // Tool handlers should not accept function arguments

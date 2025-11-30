@@ -102,6 +102,7 @@ describe('Serialization Security Tests', () => {
     it('should strip constructor key from tool return values', async () => {
       const enclave = new Enclave({
         toolHandler: async () => ({
+          // eslint-disable-next-line @typescript-eslint/no-empty-function
           constructor: function EvilConstructor() {},
           data: 'safe',
         }),
@@ -152,8 +153,10 @@ describe('Serialization Security Tests', () => {
 
   describe('Value Sanitizer Unit Tests', () => {
     it('should reject functions in return values', () => {
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
       expect(() => sanitizeValue(() => {})).toThrow('function');
-      expect(() => sanitizeValue({ fn: () => {} })).toThrow('function');
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
+      expect(() => sanitizeValue({ fn() {} })).toThrow('function');
     });
 
     it('should reject symbols in return values', () => {
@@ -169,6 +172,7 @@ describe('Serialization Security Tests', () => {
     });
 
     it('should strip constructor keys', () => {
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
       const malicious = { constructor: () => {}, safe: 'data' };
       const sanitized = sanitizeValue(malicious) as Record<string, unknown>;
       expect(sanitized['constructor']).toBeUndefined();
@@ -243,8 +247,10 @@ describe('Serialization Security Tests', () => {
     });
 
     it('canSanitize should return false for functions', () => {
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
       expect(canSanitize(() => {})).toBe(false);
-      expect(canSanitize({ fn: () => {} })).toBe(false);
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
+      expect(canSanitize({ fn() {} })).toBe(false);
     });
 
     it('canSanitize should return true for safe values', () => {

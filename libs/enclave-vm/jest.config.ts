@@ -1,10 +1,10 @@
 export default {
-  displayName: 'enclave',
+  displayName: 'enclave-vm',
   preset: '../../jest.preset.js',
   testEnvironment: 'node',
   transform: {
     '^.+\\.[tj]s$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.spec.json' }],
   },
   moduleFileExtensions: ['ts', 'js', 'html'],
-  coverageDirectory: '../../coverage/libs/enclave',
+  coverageDirectory: '../../coverage/libs/enclave-vm',
 };

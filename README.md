@@ -19,7 +19,7 @@ Enclave is a monorepo containing security-focused libraries for building safe AI
 | ----------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | [**ast-guard**](./libs/ast-guard)   | AST-based JavaScript validator with 100% CVE protection        | [![npm](https://img.shields.io/npm/v/ast-guard.svg)](https://www.npmjs.com/package/ast-guard)   |
 | [**vectoriadb**](./libs/vectoriadb) | Lightweight in-memory vector database for semantic search      | [![npm](https://img.shields.io/npm/v/vectoriadb.svg)](https://www.npmjs.com/package/vectoriadb) |
-| [**enclavejs**](./libs/enclave)     | Secure AgentScript execution environment with defense-in-depth | [![npm](https://img.shields.io/npm/v/enclavejs.svg)](https://www.npmjs.com/package/enclavejs)   |
+| [**enclave-vm**](libs/enclave-vm)   | Secure AgentScript execution environment with defense-in-depth | [![npm](https://img.shields.io/npm/v/enclave-vm.svg)](https://www.npmjs.com/package/enclave-vm) |
 
 ---
 
@@ -72,12 +72,12 @@ const results = await db.search('greeting', 5);
 
 ---
 
-### enclavejs
+### enclave-vm
 
 Secure AgentScript execution environment with defense-in-depth architecture for running LLM-generated JavaScript safely.
 
 ```typescript
-import { Enclave } from 'enclavejs';
+import { Enclave } from 'enclave-vm';
 
 const enclave = new Enclave({ securityLevel: 'SECURE' });
 
@@ -95,7 +95,7 @@ console.log(result.value); // 3
 - Worker Pool Adapter for isolated execution
 - Reference Sidecar for sandboxed environments
 
-[Read more →](./libs/enclave)
+[Read more →](libs/enclave-vm)
 
 ---
 
@@ -133,7 +133,7 @@ npm install ast-guard
 npm install vectoriadb
 
 # enclave
-npm install enclavejs
+npm install enclave-vm
 ```
 
 ---

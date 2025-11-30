@@ -47,7 +47,7 @@ describe('Stack Trace Sanitization', () => {
       expect(result.success).toBe(false);
       if (result.error?.stack) {
         // node_modules paths should be redacted
-        expect(result.error.stack).not.toMatch(/node_modules\/[^\s\[\]]+/);
+        expect(result.error.stack).not.toMatch(/node_modules\/[^\s[\]]+/);
       }
 
       enclave.dispose();
@@ -174,7 +174,7 @@ describe('Stack Trace Sanitization', () => {
 
       expect(result.success).toBe(false);
       // When sanitization is disabled, stack trace may contain paths
-      // (We can't reliably test for paths being present since it depends on environment)
+      // (We can't reliably test, for paths being present since it depends on the environment)
 
       enclave.dispose();
     });
@@ -363,7 +363,7 @@ describe('Stack Trace Sanitization', () => {
       { input: '127.0.0.1:8080', pattern: 'loopback with port' },
     ];
 
-    // Import the patterns array for testing - we'll just verify config works
+    // Import the pattern array for testing - we'll just verify the config works
     it('should have documented all sensitive pattern categories', () => {
       // This test just documents that we have comprehensive patterns
       expect(testPatterns.length).toBeGreaterThan(40);

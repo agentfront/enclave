@@ -1,13 +1,13 @@
 # Enclave Security Audit Report
 
 **Date:** 2025-11-28
-**Package:** `enclavejs` v0.6.0
+**Package:** `enclave-vm` v0.6.0
 **Test Suite:** 690 security tests
 **Pass Rate:** 690/690 passing (100%)
 
 ## Executive Summary
 
-The enclavejs package provides a **defense-in-depth security architecture** for safe AgentScript execution. The package successfully blocks **all major attack vectors** including code injection, prototype pollution, sandbox escapes, resource exhaustion attacks, **AI Scoring Gate** for semantic security analysis, and now includes the optional **Worker Pool Adapter** for OS-level memory isolation.
+The enclave-vm package provides a **defense-in-depth security architecture** for safe AgentScript execution. The package successfully blocks **all major attack vectors** including code injection, prototype pollution, sandbox escapes, resource exhaustion attacks, **AI Scoring Gate** for semantic security analysis, and now includes the optional **Worker Pool Adapter** for OS-level memory isolation.
 
 ## Security Test Results
 
@@ -440,7 +440,7 @@ None identified. Core security is solid.
 
 ## Conclusion
 
-The enclavejs package provides **bank-grade security** for AgentScript execution with:
+The enclave-vm package provides **bank-grade security** for AgentScript execution with:
 
 - ✅ **Zero code injection vulnerabilities**
 - ✅ **Complete global access isolation**

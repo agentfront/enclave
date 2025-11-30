@@ -6,6 +6,7 @@
     "moduleResolution": "NodeNext",
     "forceConsistentCasingInFileNames": true,
     "strict": true,
+    "allowJs": true,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
     "strictNullChecks": true,

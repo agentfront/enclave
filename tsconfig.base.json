@@ -21,7 +21,7 @@
     "skipLibCheck": true,
     "skipDefaultLibCheck": true,
     "paths": {
-      "enclavejs": ["libs/enclave/src/index.ts"],
+      "enclave-vm": ["libs/enclave-vm/src/index.ts"],
       "ast-guard": ["libs/ast-guard/src/index.ts"],
       "vectoriadb": ["libs/vectoriadb/src/index.ts"]
     }

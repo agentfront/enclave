@@ -8,7 +8,7 @@
  * @packageDocumentation
  */
 
-import { ReferenceSidecar, SidecarLimitError } from './reference-sidecar';
+import { ReferenceSidecar } from './reference-sidecar';
 import { ReferenceConfig, isReferenceId } from './reference-config';
 
 /**

@@ -1,13 +1,13 @@
 /**
- * enclavejs Demo
+ * enclave Demo
  *
  * Demonstrates secure JavaScript execution with defense-in-depth
  */
 
-import { Enclave, ToolHandler } from 'enclavejs';
+import { Enclave, ToolHandler } from 'enclave';
 
 async function main() {
-  console.log('=== enclavejs Demo ===\n');
+  console.log('=== enclave Demo ===\n');
 
   // Create enclave with SECURE security level
   console.log('1. Creating secure enclave...');

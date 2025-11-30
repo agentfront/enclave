@@ -6,9 +6,9 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "nx run-many -t build",
-    "test": "nx run-many -t test",
-    "lint": "nx run-many -t lint",
+    "build": "nx run-many -t build --outputStyle stream",
+    "test": "nx run-many -t test --outputStyle stream",
+    "lint": "nx run-many -t lint --outputStyle stream",
     "prepare": "husky"
   },
   "lint-staged": {
