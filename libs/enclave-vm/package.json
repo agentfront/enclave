@@ -40,7 +40,7 @@
     "acorn": "8.15.0",
     "acorn-walk": "8.3.4",
     "astring": "1.9.0",
-    "zod": "^4.1.13"
+    "zod": "^3.24.5"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^3.0.0"

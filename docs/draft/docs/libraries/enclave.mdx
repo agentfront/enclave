@@ -1,9 +1,9 @@
 ---
-title: 'enclave'
+title: 'enclave-vm'
 description: 'Secure AgentScript execution environment with defense-in-depth'
 ---
 
-# enclave
+# enclave-vm
 
 Secure AgentScript execution environment with defense-in-depth architecture for running LLM-generated JavaScript safely.
 
@@ -16,7 +16,7 @@ npm install enclave
 ## Quick Start
 
 ```typescript
-import { Enclave } from 'enclave';
+import { Enclave } from 'enclave-vm';
 
 const enclave = new Enclave({ securityLevel: 'SECURE' });
 
@@ -85,7 +85,7 @@ enclave.dispose();
 For complete process isolation:
 
 ```typescript
-import { Enclave, WorkerPoolAdapter } from 'enclave';
+import { Enclave, WorkerPoolAdapter } from 'enclave-vm';
 
 const enclave = new Enclave({
   securityLevel: 'SECURE',
