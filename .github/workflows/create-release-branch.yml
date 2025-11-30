@@ -14,14 +14,22 @@ jobs:
     environment: release
     env:
       NX_DAEMON: "false"
-      CODEX_VERSION_OUT: /tmp/codex-version-output.json
-      CODEX_DOCS_OUT: /tmp/codex-docs-output.json
+      CODEX_VERSION_OUT: .codex-release/version-output.json
+      CODEX_DOCS_OUT: .codex-release/docs-output.json
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # Fail fast if env secret is not available
+      - name: Ensure CODEX_OPENAI_KEY secret is set
+        run: |
+          if [ -z "${{ secrets.CODEX_OPENAI_KEY }}" ]; then
+            echo "::error::CODEX_OPENAI_KEY (env: release) is not set. Add it under Settings → Environments → release → Secrets." >&2
+            exit 1
+          fi
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -120,17 +128,92 @@ jobs:
           echo "No affected projects to release."
           exit 0
 
-      - name: Setup MCP for Codex
+      # ========================================
+      # MCP Integration: Configure Codex home with MCP servers
+      # ========================================
+      - name: Prepare Codex home with MCP config
         id: mcp
-        uses: anthropics/setup-mcp@v1
-        with:
-          servers: |
-            filesystem:
-              command: npx
-              args: ["-y", "@anthropic/mcp-fs", "--root", "${{ github.workspace }}"]
+        shell: bash
+        run: |
+          set -euo pipefail
+          CODEX_HOME="${RUNNER_TEMP}/codex-home"
+          mkdir -p "$CODEX_HOME"
+
+          echo "Setting up Codex home with MCP servers..."
+
+          cat > "$CODEX_HOME/config.toml" << 'EOF'
+          [features]
+          # Enable the Rust MCP client (needed for HTTP/OAuth MCP support)
+          rmcp_client = true
+
+          # --- Mintlify Documentation Server ---
+          # Provides access to Mintlify documentation best practices
+          [mcp_servers.mintlify_docs]
+          url = "https://mintlify.com/docs/mcp"
+          http_headers = { "X-MCP-Readonly" = "true" }
+          startup_timeout_sec = 30
+          tool_timeout_sec = 60
+          EOF
+
+          echo "✓ Codex home configured with MCP servers"
+          echo "codex_home=${CODEX_HOME}" >> "$GITHUB_OUTPUT"
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+
+      - name: Prepare diff context for Codex
+        id: ctx
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .github/codex/prompts .codex-release
+
+          BASE_REF="${{ steps.last_release.outputs.last_tag }}"
+          PROJECTS="${{ steps.affected.outputs.projects }}"
+          IS_FIRST="${{ steps.last_release.outputs.is_first_release }}"
+
+          echo "Preparing diff context..."
+          echo "Base ref: $BASE_REF"
+          echo "Projects: $PROJECTS"
+          echo "Is first release: $IS_FIRST"
+
+          # Save context files for Codex
+          echo "$BASE_REF" > .github/codex/prompts/base.txt
+          echo "$PROJECTS" > .github/codex/prompts/projects.txt
+          echo "$IS_FIRST" > .github/codex/prompts/is-first-release.txt
+
+          # Get current versions for each affected project
+          echo "Current versions:" > .github/codex/prompts/current-versions.txt
+          IFS=',' read -ra LIBS <<< "$PROJECTS"
+          for lib in "${LIBS[@]}"; do
+            if [ -f "libs/$lib/package.json" ]; then
+              VERSION=$(node -e "console.log(require('./libs/$lib/package.json').version || '0.0.0')")
+              echo "$lib=$VERSION" >> .github/codex/prompts/current-versions.txt
+            fi
+          done
+
+          # Generate unified diff for affected projects
+          # Filter to source files only to reduce token usage
+          git diff "$BASE_REF"...HEAD --unified=3 \
+            -- \
+            'libs/**/*.ts' \
+            'libs/**/package.json' \
+            ':!**/*.spec.ts' \
+            ':!**/*.test.ts' \
+            ':!**/__tests__/**' \
+            > .github/codex/prompts/diff.patch || true
+
+          DIFF_SIZE=$(wc -c < .github/codex/prompts/diff.patch || echo "0")
+          echo "Diff size: $DIFF_SIZE bytes"
+
+          # Commit list for context
+          git log "$BASE_REF"...HEAD --pretty=format:'%H%x09%s' -n 50 > .github/codex/prompts/commits.txt || true
+
+          # ISO date
+          date -u +"%Y-%m-%d" > .github/codex/prompts/date.txt
 
       - name: Run Codex for version analysis
         if: steps.affected.outputs.projects != ''
+        id: codex_version
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.CODEX_OPENAI_KEY }}
@@ -139,11 +222,8 @@ jobs:
           output-file: ${{ env.CODEX_VERSION_OUT }}
           model: "gpt-5.1-codex"
           sandbox: read-only
+          safety-strategy: drop-sudo
           output-schema-file: .github/codex/schemas/version-bump-output.json
-        env:
-          AFFECTED_PROJECTS: ${{ steps.affected.outputs.projects }}
-          BASE_REF: ${{ steps.last_release.outputs.last_tag }}
-          IS_FIRST_RELEASE: ${{ steps.last_release.outputs.is_first_release }}
 
       - name: Apply version bumps from Codex
         id: versions
@@ -153,6 +233,14 @@ jobs:
           set -euo pipefail
 
           echo "Applying version bumps from Codex analysis..."
+
+          if [ ! -f "${{ env.CODEX_VERSION_OUT }}" ]; then
+            echo "::error::Codex output file not found"
+            exit 1
+          fi
+
+          echo "Codex output:"
+          cat "${{ env.CODEX_VERSION_OUT }}"
 
           # Parse Codex JSON output and update package.json files
           RESULT=$(node -e "
@@ -193,6 +281,7 @@ jobs:
 
       - name: Run Codex for docs update
         if: steps.affected.outputs.projects != ''
+        id: codex_docs
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.CODEX_OPENAI_KEY }}
@@ -201,9 +290,8 @@ jobs:
           output-file: ${{ env.CODEX_DOCS_OUT }}
           model: "gpt-5.1-codex"
           sandbox: read-write
+          safety-strategy: drop-sudo
           output-schema-file: .github/codex/schemas/docs-update-output.json
-        env:
-          AFFECTED_PROJECTS: ${{ steps.affected.outputs.projects }}
 
       - name: Log docs update result
         if: steps.affected.outputs.projects != ''
@@ -310,6 +398,14 @@ jobs:
             --head "$BRANCH_NAME" \
             --title "$TITLE" \
             --body "$BODY"
+
+      - name: Upload artifacts (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-release-artifacts
+          path: |
+            .codex-release/**
+            .github/codex/prompts/**
 
       - name: Summary
         run: |
