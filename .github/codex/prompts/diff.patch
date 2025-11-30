@@ -1,0 +1,396 @@
+diff --git a/libs/ast-guard/package.json b/libs/ast-guard/package.json
+index a32988c..59db23e 100644
+--- a/libs/ast-guard/package.json
++++ b/libs/ast-guard/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "ast-guard",
+-  "version": "1.0.0",
++  "version": "0.0.1",
+   "description": "A production-ready AST security guard for JavaScript - validate, protect, and enforce code safety with extensible rules",
+   "author": "AgentFront <info@agentfront.dev>",
+   "homepage": "https://github.com/agentfront/frontmcp/tree/main/libs/ast-guard",
+@@ -40,8 +40,7 @@
+   "dependencies": {
+     "acorn": "8.15.0",
+     "acorn-walk": "8.3.4",
+-    "astring": "1.9.0",
+-    "tslib": "^2.3.0"
++    "astring": "1.9.0"
+   },
+   "devDependencies": {
+     "typescript": "^5.9.3"
+diff --git a/libs/ast-guard/src/pre-scanner/checks/unicode-check.ts b/libs/ast-guard/src/pre-scanner/checks/unicode-check.ts
+index 5f3521d..fb3ed3d 100644
+--- a/libs/ast-guard/src/pre-scanner/checks/unicode-check.ts
++++ b/libs/ast-guard/src/pre-scanner/checks/unicode-check.ts
+@@ -63,17 +63,10 @@ export const ALL_INVISIBLE_CHARS = Object.values(INVISIBLE_CHARS);
+ /**
+  * Regex pattern matching invisible characters
+  * Note: We allow ZWNJ and ZWJ in some contexts for legitimate use
++ * Using unicode escapes for security-relevant invisible character detection
+  */
+-export const INVISIBLE_PATTERN = new RegExp(
+-  `[${[
+-    INVISIBLE_CHARS.ZWSP,
+-    INVISIBLE_CHARS.WORD_JOINER,
+-    INVISIBLE_CHARS.FEFF,
+-    INVISIBLE_CHARS.SHY,
+-    INVISIBLE_CHARS.CGJ,
+-  ].join('')}]`,
+-  'g',
+-);
++// eslint-disable-next-line no-misleading-character-class -- Intentionally matching combining characters for security detection
++export const INVISIBLE_PATTERN = /[\u200B\u2060\uFEFF\u00AD\u034F]/gu;
+ 
+ /**
+  * Check for BiDi override characters (Trojan Source attacks).
+diff --git a/libs/ast-guard/src/rules/unicode-security.rule.ts b/libs/ast-guard/src/rules/unicode-security.rule.ts
+index 57094fa..fdf6b8e 100644
+--- a/libs/ast-guard/src/rules/unicode-security.rule.ts
++++ b/libs/ast-guard/src/rules/unicode-security.rule.ts
+@@ -13,6 +13,7 @@ const UNICODE_ATTACK_PATTERNS = {
+    * - Word Joiner (U+2060)
+    * - Zero Width No-Break Space (U+FEFF) - BOM
+    */
++  // eslint-disable-next-line no-misleading-character-class -- Intentionally matching zero-width characters for security detection
+   zeroWidth: /[\u200B\u200C\u200D\u2060\uFEFF]/,
+ 
+   /**
+@@ -162,6 +163,7 @@ const UNICODE_ATTACK_PATTERNS = {
+   /**
+    * Invisible/formatting characters that can hide code
+    */
++  // eslint-disable-next-line no-misleading-character-class -- Intentionally matching invisible/combining characters for security detection
+   invisible: /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u3164\uFFA0]/,
+ 
+   /**
+diff --git a/libs/enclave/jest.config.ts b/libs/enclave-vm/jest.config.ts
+similarity index 72%
+rename from libs/enclave/jest.config.ts
+rename to libs/enclave-vm/jest.config.ts
+index 8ed3b56..e96d844 100644
+--- a/libs/enclave/jest.config.ts
++++ b/libs/enclave-vm/jest.config.ts
+@@ -1,10 +1,10 @@
+ export default {
+-  displayName: 'enclave',
++  displayName: 'enclave-vm',
+   preset: '../../jest.preset.js',
+   testEnvironment: 'node',
+   transform: {
+     '^.+\\.[tj]s$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.spec.json' }],
+   },
+   moduleFileExtensions: ['ts', 'js', 'html'],
+-  coverageDirectory: '../../coverage/libs/enclave',
++  coverageDirectory: '../../coverage/libs/enclave-vm',
+ };
+diff --git a/libs/enclave/package.json b/libs/enclave-vm/package.json
+similarity index 76%
+rename from libs/enclave/package.json
+rename to libs/enclave-vm/package.json
+index 16b5ed7..c821b3d 100644
+--- a/libs/enclave/package.json
++++ b/libs/enclave-vm/package.json
+@@ -1,14 +1,15 @@
+ {
+-  "name": "enclavejs",
+-  "version": "1.0.0",
++  "name": "enclave-vm",
++  "version": "0.0.1",
+   "description": "Sandbox runtime for secure JavaScript code execution",
+   "author": "AgentFront <info@agentfront.dev>",
+-  "homepage": "https://github.com/agentfront/enclave/tree/main/libs/enclave",
++  "homepage": "https://github.com/agentfront/enclave",
+   "license": "Apache-2.0",
+   "keywords": [
+     "sandbox",
+     "vm",
+     "enclave",
++    "enclave-vm",
+     "agentscript",
+     "llm",
+     "javascript",
+@@ -18,8 +19,7 @@
+   ],
+   "repository": {
+     "type": "git",
+-    "url": "git+https://github.com/agentfront/enclave.git",
+-    "directory": "libs/enclave"
++    "url": "git+https://github.com/agentfront/enclave.git"
+   },
+   "bugs": {
+     "url": "https://github.com/agentfront/enclave/issues"
+@@ -36,7 +36,11 @@
+     }
+   },
+   "dependencies": {
+-    "tslib": "^2.3.0"
++    "ast-guard": "0.0.1",
++    "acorn": "8.15.0",
++    "acorn-walk": "8.3.4",
++    "astring": "1.9.0",
++    "zod": "^4.1.13"
+   },
+   "optionalDependencies": {
+     "@huggingface/transformers": "^3.0.0"
+diff --git a/libs/enclave/src/adapters/vm-adapter.ts b/libs/enclave-vm/src/adapters/vm-adapter.ts
+similarity index 100%
+rename from libs/enclave/src/adapters/vm-adapter.ts
+rename to libs/enclave-vm/src/adapters/vm-adapter.ts
+diff --git a/libs/enclave/src/adapters/worker-pool/config.ts b/libs/enclave-vm/src/adapters/worker-pool/config.ts
+similarity index 100%
+rename from libs/enclave/src/adapters/worker-pool/config.ts
+rename to libs/enclave-vm/src/adapters/worker-pool/config.ts
+diff --git a/libs/enclave/src/adapters/worker-pool/errors.ts b/libs/enclave-vm/src/adapters/worker-pool/errors.ts
+similarity index 100%
+rename from libs/enclave/src/adapters/worker-pool/errors.ts
+rename to libs/enclave-vm/src/adapters/worker-pool/errors.ts
+diff --git a/libs/enclave/src/adapters/worker-pool/execution-queue.ts b/libs/enclave-vm/src/adapters/worker-pool/execution-queue.ts
+similarity index 100%
+rename from libs/enclave/src/adapters/worker-pool/execution-queue.ts
+rename to libs/enclave-vm/src/adapters/worker-pool/execution-queue.ts
+diff --git a/libs/enclave/src/adapters/worker-pool/index.ts b/libs/enclave-vm/src/adapters/worker-pool/index.ts
+similarity index 100%
+rename from libs/enclave/src/adapters/worker-pool/index.ts
+rename to libs/enclave-vm/src/adapters/worker-pool/index.ts
+diff --git a/libs/enclave/src/adapters/worker-pool/memory-monitor.ts b/libs/enclave-vm/src/adapters/worker-pool/memory-monitor.ts
+similarity index 100%
+rename from libs/enclave/src/adapters/worker-pool/memory-monitor.ts
+rename to libs/enclave-vm/src/adapters/worker-pool/memory-monitor.ts
+diff --git a/libs/enclave/src/adapters/worker-pool/protocol.ts b/libs/enclave-vm/src/adapters/worker-pool/protocol.ts
+similarity index 100%
+rename from libs/enclave/src/adapters/worker-pool/protocol.ts
+rename to libs/enclave-vm/src/adapters/worker-pool/protocol.ts
+diff --git a/libs/enclave/src/adapters/worker-pool/rate-limiter.ts b/libs/enclave-vm/src/adapters/worker-pool/rate-limiter.ts
+similarity index 100%
+rename from libs/enclave/src/adapters/worker-pool/rate-limiter.ts
+rename to libs/enclave-vm/src/adapters/worker-pool/rate-limiter.ts
+diff --git a/libs/enclave/src/adapters/worker-pool/safe-deserialize.ts b/libs/enclave-vm/src/adapters/worker-pool/safe-deserialize.ts
+similarity index 100%
+rename from libs/enclave/src/adapters/worker-pool/safe-deserialize.ts
+rename to libs/enclave-vm/src/adapters/worker-pool/safe-deserialize.ts
+diff --git a/libs/enclave/src/adapters/worker-pool/worker-pool-adapter.ts b/libs/enclave-vm/src/adapters/worker-pool/worker-pool-adapter.ts
+similarity index 98%
+rename from libs/enclave/src/adapters/worker-pool/worker-pool-adapter.ts
+rename to libs/enclave-vm/src/adapters/worker-pool/worker-pool-adapter.ts
+index a6be79f..dcd9ac6 100644
+--- a/libs/enclave/src/adapters/worker-pool/worker-pool-adapter.ts
++++ b/libs/enclave-vm/src/adapters/worker-pool/worker-pool-adapter.ts
+@@ -10,9 +10,8 @@
+ import crypto from 'crypto';
+ import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../../types';
+ import type { WorkerPoolConfig, ResourceUsage, WorkerPoolMetrics } from './config';
+-import { buildWorkerPoolConfig, DEFAULT_WORKER_POOL_CONFIG } from './config';
++import { buildWorkerPoolConfig } from './config';
+ import type {
+-  MainToWorkerMessage,
+   WorkerToMainMessage,
+   ExecutionResultMessage,
+   ToolCallMessage,
+@@ -365,9 +364,6 @@ export class WorkerPoolAdapter implements SandboxAdapter {
+       // Pending tool calls for this execution
+       const pendingToolCalls = new Map<string, boolean>();
+ 
+-      // Declare watchdogId before cleanup to avoid TDZ confusion
+-      let watchdogId: ReturnType<typeof setTimeout>;
+-
+       // Cleanup function to remove handlers
+       const cleanup = () => {
+         clearTimeout(watchdogId);
+@@ -407,7 +403,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
+ 
+       // Set up watchdog timeout (VM timeout + buffer)
+       const watchdogTimeout = context.config.timeout + 5000;
+-      watchdogId = setTimeout(() => {
++      const watchdogId: ReturnType<typeof setTimeout> = setTimeout(() => {
+         this._timeoutExecutions++;
+         this._forcedTerminations++;
+         cleanup();
+diff --git a/libs/enclave/src/adapters/worker-pool/worker-script.ts b/libs/enclave-vm/src/adapters/worker-pool/worker-script.ts
+similarity index 100%
+rename from libs/enclave/src/adapters/worker-pool/worker-script.ts
+rename to libs/enclave-vm/src/adapters/worker-pool/worker-script.ts
+diff --git a/libs/enclave/src/adapters/worker-pool/worker-slot.ts b/libs/enclave-vm/src/adapters/worker-pool/worker-slot.ts
+similarity index 100%
+rename from libs/enclave/src/adapters/worker-pool/worker-slot.ts
+rename to libs/enclave-vm/src/adapters/worker-pool/worker-slot.ts
+diff --git a/libs/enclave/src/enclave.ts b/libs/enclave-vm/src/enclave.ts
+similarity index 99%
+rename from libs/enclave/src/enclave.ts
+rename to libs/enclave-vm/src/enclave.ts
+index ab6bfbc..7e79d74 100644
+--- a/libs/enclave/src/enclave.ts
++++ b/libs/enclave-vm/src/enclave.ts
+@@ -121,7 +121,7 @@ function buildReferenceConfig(
+  *
+  * @example
+  * ```typescript
+- * import { Enclave } from '@frontmcp/enclave';
++ * import { Enclave } from 'enclave-vm';
+  *
+  * // Create enclave with tool handler
+  * const enclave = new Enclave({
+diff --git a/libs/enclave/src/globals-validator.ts b/libs/enclave-vm/src/globals-validator.ts
+similarity index 97%
+rename from libs/enclave/src/globals-validator.ts
+rename to libs/enclave-vm/src/globals-validator.ts
+index 632ef55..a253fec 100644
+--- a/libs/enclave/src/globals-validator.ts
++++ b/libs/enclave-vm/src/globals-validator.ts
+@@ -196,13 +196,8 @@ export function validateGlobalValue(
+         );
+       }
+ 
+-      try {
+-        const propValue = (obj as Record<string, unknown>)[prop];
+-        validateGlobalValue(key, propValue, options, [...path, prop], visited);
+-      } catch (e) {
+-        // Re-throw validation errors
+-        throw e;
+-      }
++      const propValue = (obj as Record<string, unknown>)[prop];
++      validateGlobalValue(key, propValue, options, [...path, prop], visited);
+     }
+ 
+     return;
+diff --git a/libs/enclave/src/index.ts b/libs/enclave-vm/src/index.ts
+similarity index 98%
+rename from libs/enclave/src/index.ts
+rename to libs/enclave-vm/src/index.ts
+index dab5c06..5ae8ade 100644
+--- a/libs/enclave/src/index.ts
++++ b/libs/enclave-vm/src/index.ts
+@@ -1,5 +1,5 @@
+ /**
+- * @frontmcp/enclave - Safe AgentScript Execution Environment
++ * enclave-vm - Safe AgentScript Execution Environment
+  *
+  * Provides sandboxed execution for AgentScript code with:
+  * - AST validation using @frontmcp/ast-guard
+diff --git a/libs/enclave/src/safe-runtime.ts b/libs/enclave-vm/src/safe-runtime.ts
+similarity index 100%
+rename from libs/enclave/src/safe-runtime.ts
+rename to libs/enclave-vm/src/safe-runtime.ts
+diff --git a/libs/enclave/src/scoring/cache.ts b/libs/enclave-vm/src/scoring/cache.ts
+similarity index 100%
+rename from libs/enclave/src/scoring/cache.ts
+rename to libs/enclave-vm/src/scoring/cache.ts
+diff --git a/libs/enclave/src/scoring/feature-extractor.ts b/libs/enclave-vm/src/scoring/feature-extractor.ts
+similarity index 100%
+rename from libs/enclave/src/scoring/feature-extractor.ts
+rename to libs/enclave-vm/src/scoring/feature-extractor.ts
+diff --git a/libs/enclave/src/scoring/index.ts b/libs/enclave-vm/src/scoring/index.ts
+similarity index 96%
+rename from libs/enclave/src/scoring/index.ts
+rename to libs/enclave-vm/src/scoring/index.ts
+index 341d4e3..0de9cb9 100644
+--- a/libs/enclave/src/scoring/index.ts
++++ b/libs/enclave-vm/src/scoring/index.ts
+@@ -6,7 +6,7 @@
+  *
+  * @example
+  * ```typescript
+- * import { ScoringGate } from '@frontmcp/enclave';
++ * import { ScoringGate } from 'enclave-vm';
+  *
+  * const gate = new ScoringGate({
+  *   scorer: 'rule-based',
+diff --git a/libs/enclave/src/scoring/scorer.interface.ts b/libs/enclave-vm/src/scoring/scorer.interface.ts
+similarity index 100%
+rename from libs/enclave/src/scoring/scorer.interface.ts
+rename to libs/enclave-vm/src/scoring/scorer.interface.ts
+diff --git a/libs/enclave/src/scoring/scorers/disabled.scorer.ts b/libs/enclave-vm/src/scoring/scorers/disabled.scorer.ts
+similarity index 100%
+rename from libs/enclave/src/scoring/scorers/disabled.scorer.ts
+rename to libs/enclave-vm/src/scoring/scorers/disabled.scorer.ts
+diff --git a/libs/enclave/src/scoring/scorers/external-api.scorer.ts b/libs/enclave-vm/src/scoring/scorers/external-api.scorer.ts
+similarity index 100%
+rename from libs/enclave/src/scoring/scorers/external-api.scorer.ts
+rename to libs/enclave-vm/src/scoring/scorers/external-api.scorer.ts
+diff --git a/libs/enclave/src/scoring/scorers/index.ts b/libs/enclave-vm/src/scoring/scorers/index.ts
+similarity index 100%
+rename from libs/enclave/src/scoring/scorers/index.ts
+rename to libs/enclave-vm/src/scoring/scorers/index.ts
+diff --git a/libs/enclave/src/scoring/scorers/local-llm.scorer.ts b/libs/enclave-vm/src/scoring/scorers/local-llm.scorer.ts
+similarity index 100%
+rename from libs/enclave/src/scoring/scorers/local-llm.scorer.ts
+rename to libs/enclave-vm/src/scoring/scorers/local-llm.scorer.ts
+diff --git a/libs/enclave/src/scoring/scorers/progressive.scorer.ts b/libs/enclave-vm/src/scoring/scorers/progressive.scorer.ts
+similarity index 100%
+rename from libs/enclave/src/scoring/scorers/progressive.scorer.ts
+rename to libs/enclave-vm/src/scoring/scorers/progressive.scorer.ts
+diff --git a/libs/enclave/src/scoring/scorers/rule-based.scorer.ts b/libs/enclave-vm/src/scoring/scorers/rule-based.scorer.ts
+similarity index 100%
+rename from libs/enclave/src/scoring/scorers/rule-based.scorer.ts
+rename to libs/enclave-vm/src/scoring/scorers/rule-based.scorer.ts
+diff --git a/libs/enclave/src/scoring/scoring-gate.ts b/libs/enclave-vm/src/scoring/scoring-gate.ts
+similarity index 100%
+rename from libs/enclave/src/scoring/scoring-gate.ts
+rename to libs/enclave-vm/src/scoring/scoring-gate.ts
+diff --git a/libs/enclave/src/scoring/types.ts b/libs/enclave-vm/src/scoring/types.ts
+similarity index 100%
+rename from libs/enclave/src/scoring/types.ts
+rename to libs/enclave-vm/src/scoring/types.ts
+diff --git a/libs/enclave/src/secure-proxy.ts b/libs/enclave-vm/src/secure-proxy.ts
+similarity index 100%
+rename from libs/enclave/src/secure-proxy.ts
+rename to libs/enclave-vm/src/secure-proxy.ts
+diff --git a/libs/enclave/src/sidecar/index.ts b/libs/enclave-vm/src/sidecar/index.ts
+similarity index 100%
+rename from libs/enclave/src/sidecar/index.ts
+rename to libs/enclave-vm/src/sidecar/index.ts
+diff --git a/libs/enclave/src/sidecar/reference-config.ts b/libs/enclave-vm/src/sidecar/reference-config.ts
+similarity index 100%
+rename from libs/enclave/src/sidecar/reference-config.ts
+rename to libs/enclave-vm/src/sidecar/reference-config.ts
+diff --git a/libs/enclave/src/sidecar/reference-resolver.ts b/libs/enclave-vm/src/sidecar/reference-resolver.ts
+similarity index 99%
+rename from libs/enclave/src/sidecar/reference-resolver.ts
+rename to libs/enclave-vm/src/sidecar/reference-resolver.ts
+index adf455b..e3ac7e2 100644
+--- a/libs/enclave/src/sidecar/reference-resolver.ts
++++ b/libs/enclave-vm/src/sidecar/reference-resolver.ts
+@@ -8,7 +8,7 @@
+  * @packageDocumentation
+  */
+ 
+-import { ReferenceSidecar, SidecarLimitError } from './reference-sidecar';
++import { ReferenceSidecar } from './reference-sidecar';
+ import { ReferenceConfig, isReferenceId } from './reference-config';
+ 
+ /**
+diff --git a/libs/enclave/src/sidecar/reference-sidecar.ts b/libs/enclave-vm/src/sidecar/reference-sidecar.ts
+similarity index 100%
+rename from libs/enclave/src/sidecar/reference-sidecar.ts
+rename to libs/enclave-vm/src/sidecar/reference-sidecar.ts
+diff --git a/libs/enclave/src/types.ts b/libs/enclave-vm/src/types.ts
+similarity index 100%
+rename from libs/enclave/src/types.ts
+rename to libs/enclave-vm/src/types.ts
+diff --git a/libs/enclave/src/value-sanitizer.ts b/libs/enclave-vm/src/value-sanitizer.ts
+similarity index 100%
+rename from libs/enclave/src/value-sanitizer.ts
+rename to libs/enclave-vm/src/value-sanitizer.ts
+diff --git a/libs/vectoriadb/package.json b/libs/vectoriadb/package.json
+index c9c7daa..7428dd1 100644
+--- a/libs/vectoriadb/package.json
++++ b/libs/vectoriadb/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "vectoriadb",
+-  "version": "1.0.0",
++  "version": "0.0.1",
+   "description": "VectoriaDB - A lightweight, production-ready in-memory vector database for semantic search",
+   "author": "AgentFront <info@agentfront.dev>",
+   "homepage": "https://github.com/agentfront/frontmcp/tree/main/libs/vectoriadb",
+@@ -38,8 +38,7 @@
+     }
+   },
+   "dependencies": {
+-    "@huggingface/transformers": "^3.2.2",
+-    "tslib": "^2.3.0"
++    "@huggingface/transformers": "^3.2.2"
+   },
+   "devDependencies": {
+     "typescript": "^5.9.3"

@@ -1,0 +1,12 @@
+{
+  "projects": [
+    { "name": "enclave-vm", "bump": "major", "newVersion": "1.0.0", "reason": "Initial release" },
+    { "name": "vectoriadb", "bump": "major", "newVersion": "1.0.0", "reason": "Initial release" },
+    { "name": "ast-guard", "bump": "major", "newVersion": "1.0.0", "reason": "Initial release" }
+  ],
+  "docs": {
+    "updated": false,
+    "files": [],
+    "summary": "Code changes did not impact the documented public APIs, so no documentation updates were required this release."
+  }
+}

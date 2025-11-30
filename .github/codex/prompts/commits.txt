@@ -1,0 +1,9 @@
+d0ded6bb50994124e9affe9310ce3ad85405f5f7	feat: add release analysis and documentation update functionality
+10536a76fd0ec3ed923054104d11660a406b71bb	refactor: remove sandbox permissions from Codex tasks in create-release-branch workflow
+908afa2c8a9d03605e819262f0e5a28d752881a1	refactor: remove safety-strategy from Codex tasks in create-release-branch workflow
+fda9c07ad31c80533994afbbef1abbc97c699f18	fix: update ast-guard to specific version and upgrade zod to 4.1.13
+2a690dd093bb72e04b1fc72a5d1c9375c5fcad54	feat: enhance create-release-branch workflow with Codex integration and output handling
+87a6aed942153ec6f3353ee2993522b160592da7	feat: add version bump analysis and documentation update scripts
+ae16d599a2a434e7349f098616560602808b69da	refactor: update import statements and documentation to use enclave-vm
+b9a63f7b5c37d381b5db46e307d4ddfdbe9857e5	refactor: rename enclavejs to enclave-vm and update related documentation
+05c5a1e9063fe45ba4d355463ecae47aa6c587ee	refactor: rename @frontmcp/enclave to enclavejs and update related documentation

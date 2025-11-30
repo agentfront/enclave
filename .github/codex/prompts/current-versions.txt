@@ -1,0 +1,4 @@
+Current versions:
+enclave-vm=0.0.1
+vectoriadb=0.0.1
+ast-guard=0.0.1
