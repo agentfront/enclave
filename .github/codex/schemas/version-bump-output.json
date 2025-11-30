@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Version Bump Output",
+  "description": "Output schema for Codex version bump analysis",
+  "type": "object",
+  "properties": {
+    "projects": {
+      "type": "array",
+      "description": "Array of version bump decisions for each affected project",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The project name (e.g., 'ast-guard', 'vectoriadb')"
+          },
+          "bump": {
+            "type": "string",
+            "enum": ["major", "minor", "patch", "none"],
+            "description": "The type of version bump to apply"
+          },
+          "newVersion": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+            "description": "The new semantic version string (e.g., '1.2.0')"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Brief explanation for the version bump decision"
+          }
+        },
+        "required": ["name", "bump", "newVersion", "reason"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["projects"],
+  "additionalProperties": false
+}

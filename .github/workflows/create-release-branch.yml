@@ -1,14 +1,8 @@
-name: Create release branch (next/{semver})
+name: Create release branch
 
 on:
   workflow_dispatch:
-    inputs:
-      bump:
-        description: "Semver bump"
-        required: true
-        type: choice
-        options: [patch, minor, major]
-        default: patch
+    # No inputs - version bump is AI-detected by Codex
 
 permissions:
   contents: write
@@ -20,6 +14,8 @@ jobs:
     environment: release
     env:
       NX_DAEMON: "false"
+      CODEX_VERSION_OUT: /tmp/codex-version-output.json
+      CODEX_DOCS_OUT: /tmp/codex-docs-output.json
 
     steps:
       - name: Checkout
@@ -42,196 +38,246 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Compute next semver from root package.json
-        id: next
+      - name: Get last release info
+        id: last_release
         shell: bash
         run: |
           set -euo pipefail
 
-          NEXT=$(BUMP="${{ inputs.bump }}" node - << 'EOF'
-          const fs = require('fs');
-
-          const bump = (process.env.BUMP || 'patch').trim();
-
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const raw = String(pkg.version || '0.0.0').trim();
-
-          const parts = raw.split('.').map((n) => {
-            const v = Number.parseInt(n, 10);
-            return Number.isFinite(v) ? v : 0;
-          });
-
-          let [M, m, p] = [parts[0] || 0, parts[1] || 0, parts[2] || 0];
-
-          if (bump === 'major') {
-            M += 1;
-            m = 0;
-            p = 0;
-          } else if (bump === 'minor') {
-            m += 1;
-            p = 0;
-          } else {
-            p += 1;
-          }
-
-          const next = [M, m, p].join('.');
-          process.stdout.write(next);
-          EOF
-          )
-
-          echo "Next version: $NEXT"
-          echo "value=$NEXT" >> "$GITHUB_OUTPUT"
-
-      - name: Get last release version
-        id: versions
-        shell: bash
-        run: |
-          set -euo pipefail
-
+          # Check for any release tags
           LAST_TAG=$(git tag --list "v*" --sort=-version:refname | head -n1 || echo "")
+
           if [ -n "$LAST_TAG" ]; then
-            LAST_VERSION="${LAST_TAG#v}"
+            echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
+            echo "is_first_release=false" >> "$GITHUB_OUTPUT"
+            echo "Last release tag: $LAST_TAG"
           else
-            LAST_VERSION=""
+            FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
+            echo "last_tag=$FIRST_COMMIT" >> "$GITHUB_OUTPUT"
+            echo "is_first_release=true" >> "$GITHUB_OUTPUT"
+            echo "First release - using first commit as base: ${FIRST_COMMIT:0:8}"
           fi
 
-          echo "last_version=$LAST_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Last release: $LAST_VERSION"
-
-      - name: Create branch next/${{ steps.next.outputs.value }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASE="main"
-          NEXT="${{ steps.next.outputs.value }}"
-
-          git fetch origin "$BASE" --tags
-          git switch -c "next/$NEXT" "origin/$BASE"
-
-          echo "Created branch next/$NEXT from $BASE"
-
-      - name: Identify affected independent libraries
-        id: independent
+      - name: Find affected projects
+        id: affected
         shell: bash
         run: |
           set -euo pipefail
 
-          ALL_INDEPENDENT=$(node -e "
-            const { execSync } = require('child_process');
-            try {
-              const out = execSync('npx nx show projects -p tag:versioning:independent --type lib --json', { encoding: 'utf8' });
-              const arr = JSON.parse(out);
-              process.stdout.write(arr.join(','));
-            } catch (e) {
-              process.stdout.write('');
-            }
+          BASE_REF="${{ steps.last_release.outputs.last_tag }}"
+
+          # Get all publishable libs
+          ALL_LIBS=$(node -e "
+          const { execSync } = require('child_process');
+          try {
+            const out = execSync('npx nx show projects -p tag:scope:publishable --type lib --json', { encoding: 'utf8' });
+            const arr = JSON.parse(out);
+            process.stdout.write(arr.join(','));
+          } catch (e) {
+            process.stdout.write('');
+          }
           ")
 
-          if [ -z "$ALL_INDEPENDENT" ]; then
-            echo 'independent_projects=' >> "$GITHUB_OUTPUT"
-            echo "No independent libraries found"
+          if [ -z "$ALL_LIBS" ]; then
+            echo "projects=" >> "$GITHUB_OUTPUT"
+            echo "No publishable libraries found"
             exit 0
           fi
 
-          echo "All independent libs: $ALL_INDEPENDENT"
+          echo "All publishable libs: $ALL_LIBS"
 
-          LAST_TAG="${{ steps.versions.outputs.last_version }}"
-          if [ -n "$LAST_TAG" ]; then
-            LAST_TAG="v$LAST_TAG"
-          else
-            LAST_TAG=$(git rev-list --max-parents=0 HEAD)
-          fi
-
+          # Get affected libs since last release
           AFFECTED=$(node -e "
-            const { execSync } = require('child_process');
-            try {
-              const out = execSync('npx nx show projects --affected --base=\"${LAST_TAG}\" --type lib --json', { encoding: 'utf8' });
-              const arr = JSON.parse(out);
-              process.stdout.write(arr.join(','));
-            } catch (e) {
-              process.stdout.write('');
-            }
+          const { execSync } = require('child_process');
+          try {
+            const out = execSync('npx nx show projects --affected --base=\"${BASE_REF}\" --type lib --json', { encoding: 'utf8' });
+            const arr = JSON.parse(out);
+            process.stdout.write(arr.join(','));
+          } catch (e) {
+            process.stdout.write('');
+          }
           ")
 
-          AFFECTED_INDEPENDENT=$(node -e "
-            const all = '$ALL_INDEPENDENT'.split(',').filter(Boolean);
-            const affected = '$AFFECTED'.split(',').filter(Boolean);
-            const intersection = all.filter(lib => affected.includes(lib));
-            process.stdout.write(intersection.join(','));
+          # Filter to only publishable affected libs
+          AFFECTED_PUBLISHABLE=$(node -e "
+          const all = '$ALL_LIBS'.split(',').filter(Boolean);
+          const affected = '$AFFECTED'.split(',').filter(Boolean);
+          const intersection = all.filter(lib => affected.includes(lib));
+          process.stdout.write(intersection.join(','));
           ")
 
-          echo "independent_projects=$AFFECTED_INDEPENDENT" >> "$GITHUB_OUTPUT"
-          if [ -n "$AFFECTED_INDEPENDENT" ]; then
-            echo "Affected independent libs: $AFFECTED_INDEPENDENT"
+          echo "projects=$AFFECTED_PUBLISHABLE" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$AFFECTED_PUBLISHABLE" ]; then
+            echo "Affected publishable libs: $AFFECTED_PUBLISHABLE"
           else
-            echo "No affected independent libraries"
+            echo "No affected publishable libraries"
           fi
 
-      - name: Bump synchronized libraries
+      - name: Stop if no affected projects
+        if: steps.affected.outputs.projects == ''
+        run: |
+          echo "No affected projects to release."
+          exit 0
+
+      - name: Setup MCP for Codex
+        id: mcp
+        uses: anthropics/setup-mcp@v1
+        with:
+          servers: |
+            filesystem:
+              command: npx
+              args: ["-y", "@anthropic/mcp-fs", "--root", "${{ github.workspace }}"]
+
+      - name: Run Codex for version analysis
+        if: steps.affected.outputs.projects != ''
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.CODEX_OPENAI_KEY }}
+          codex-home: ${{ steps.mcp.outputs.codex_home }}
+          prompt-file: .github/codex/prompts/analyze-version-bump.md
+          output-file: ${{ env.CODEX_VERSION_OUT }}
+          model: "gpt-5.1-codex"
+          sandbox: read-only
+          output-schema-file: .github/codex/schemas/version-bump-output.json
+        env:
+          AFFECTED_PROJECTS: ${{ steps.affected.outputs.projects }}
+          BASE_REF: ${{ steps.last_release.outputs.last_tag }}
+          IS_FIRST_RELEASE: ${{ steps.last_release.outputs.is_first_release }}
+
+      - name: Apply version bumps from Codex
+        id: versions
+        if: steps.affected.outputs.projects != ''
         shell: bash
         run: |
           set -euo pipefail
-          NEXT="${{ steps.next.outputs.value }}"
 
-          echo "Bumping synchronized libraries to version $NEXT..."
-          node scripts/bump-synchronized-versions.mjs "$NEXT"
+          echo "Applying version bumps from Codex analysis..."
 
-      - name: Bump affected independent libraries
-        if: ${{ steps.independent.outputs.independent_projects != '' }}
+          # Parse Codex JSON output and update package.json files
+          RESULT=$(node -e "
+          const fs = require('fs');
+          const output = JSON.parse(fs.readFileSync('${{ env.CODEX_VERSION_OUT }}', 'utf8'));
+
+          let maxVersion = '0.0.0';
+          const bumpedProjects = [];
+
+          for (const proj of output.projects) {
+            if (proj.bump !== 'none') {
+              const pkgPath = 'libs/' + proj.name + '/package.json';
+              const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+              pkg.version = proj.newVersion;
+              fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+              console.error('Updated ' + proj.name + ' to ' + proj.newVersion + ' (' + proj.bump + '): ' + proj.reason);
+              bumpedProjects.push(proj.name);
+
+              // Track max version
+              if (proj.newVersion.localeCompare(maxVersion, undefined, { numeric: true, sensitivity: 'base' }) > 0) {
+                maxVersion = proj.newVersion;
+              }
+            }
+          }
+
+          // Output for GitHub Actions
+          console.log(JSON.stringify({ maxVersion, bumpedProjects: bumpedProjects.join(',') }));
+          ")
+
+          MAX_VERSION=$(echo "$RESULT" | jq -r '.maxVersion')
+          BUMPED=$(echo "$RESULT" | jq -r '.bumpedProjects')
+
+          echo "max_version=$MAX_VERSION" >> "$GITHUB_OUTPUT"
+          echo "bumped_projects=$BUMPED" >> "$GITHUB_OUTPUT"
+
+          echo "Max version: $MAX_VERSION"
+          echo "Bumped projects: $BUMPED"
+
+      - name: Run Codex for docs update
+        if: steps.affected.outputs.projects != ''
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.CODEX_OPENAI_KEY }}
+          codex-home: ${{ steps.mcp.outputs.codex_home }}
+          prompt-file: .github/codex/prompts/update-docs.md
+          output-file: ${{ env.CODEX_DOCS_OUT }}
+          model: "gpt-5.1-codex"
+          sandbox: read-write
+          output-schema-file: .github/codex/schemas/docs-update-output.json
+        env:
+          AFFECTED_PROJECTS: ${{ steps.affected.outputs.projects }}
+
+      - name: Log docs update result
+        if: steps.affected.outputs.projects != ''
+        shell: bash
+        run: |
+          if [ -f "${{ env.CODEX_DOCS_OUT }}" ]; then
+            echo "Documentation update result:"
+            cat "${{ env.CODEX_DOCS_OUT }}"
+          else
+            echo "No documentation updates were made"
+          fi
+
+      - name: Create release branch
+        id: branch
+        if: steps.versions.outputs.bumped_projects != ''
         shell: bash
         run: |
           set -euo pipefail
 
-          IFS=',' read -ra LIBS <<< "${{ steps.independent.outputs.independent_projects }}"
-          for lib in "${LIBS[@]}"; do
-            echo "Bumping $lib with patch version..."
-            node scripts/bump-version.mjs "$lib" patch
-          done
+          MAX_VERSION="${{ steps.versions.outputs.max_version }}"
+          BRANCH_NAME="next/$MAX_VERSION"
 
-      - name: Commit release preparation
+          git fetch origin main --tags
+          git switch -c "$BRANCH_NAME" origin/main
+
+          echo "branch_name=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+          echo "Created branch: $BRANCH_NAME"
+
+      - name: Commit version bumps and docs
+        if: steps.versions.outputs.bumped_projects != ''
         shell: bash
         run: |
           set -euo pipefail
-          NEXT="${{ steps.next.outputs.value }}"
+
+          MAX_VERSION="${{ steps.versions.outputs.max_version }}"
+          BUMPED="${{ steps.versions.outputs.bumped_projects }}"
 
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
-
-            cat > /tmp/commit-msg <<COMMITMSG
-          chore(release): prepare v$NEXT
-
-          - Bump synchronized libs to v$NEXT
-          - Bump affected independent libs
-          COMMITMSG
-
-            git commit -F /tmp/commit-msg
+            git commit -m "chore(release): prepare release v$MAX_VERSION" \
+              -m "Bumped versions for: $BUMPED" \
+              -m "Version analysis and docs updates by Codex AI."
             echo "Created release preparation commit"
           else
             echo "No changes to commit"
-            git commit --allow-empty -m "chore(release): prepare v$NEXT"
+            git commit --allow-empty -m "chore(release): prepare release v$MAX_VERSION"
           fi
 
       - name: Push branch
+        if: steps.versions.outputs.bumped_projects != ''
         shell: bash
         run: |
           set -euo pipefail
-          NEXT="${{ steps.next.outputs.value }}"
-          git push --set-upstream origin "next/$NEXT"
+          BRANCH_NAME="${{ steps.branch.outputs.branch_name }}"
+          git push --set-upstream origin "$BRANCH_NAME"
 
-      - name: Open PR
+      - name: Create PR
+        if: steps.versions.outputs.bumped_projects != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          NEXT="${{ steps.next.outputs.value }}"
-          BASE="main"
-          HEAD="next/$NEXT"
-          TITLE="v$NEXT"
 
+          MAX_VERSION="${{ steps.versions.outputs.max_version }}"
+          BUMPED="${{ steps.versions.outputs.bumped_projects }}"
+          BRANCH_NAME="${{ steps.branch.outputs.branch_name }}"
+          BASE="main"
+          TITLE="Release v$MAX_VERSION"
+
+          # Check for existing PR
           EXISTING_PR=$(gh pr list \
             --base "$BASE" \
-            --head "$HEAD" \
+            --head "$BRANCH_NAME" \
             --state open \
             --json number \
             --jq '.[0].number' || echo "")
@@ -241,14 +287,36 @@ jobs:
             exit 0
           fi
 
+          # Create PR body
+          BODY=$(cat <<EOF
+          ## Release v$MAX_VERSION
+
+          ### Projects to publish
+          $(echo "$BUMPED" | tr ',' '\n' | sed 's/^/- /')
+
+          ### Version analysis
+          Versions determined by Codex AI based on semantic analysis of code changes.
+
+          ### Documentation
+          Documentation updates included if applicable.
+
+          ---
+          Merge this PR to publish the affected packages to npm.
+          EOF
+          )
+
           gh pr create \
             --base "$BASE" \
-            --head "$HEAD" \
+            --head "$BRANCH_NAME" \
             --title "$TITLE" \
-            --body "Release $TITLE"
+            --body "$BODY"
 
       - name: Summary
         run: |
-          echo "Created branch: next/${{ steps.next.outputs.value }}"
-          echo "Bump: ${{ inputs.bump }}"
-          echo "PR title: v${{ steps.next.outputs.value }}"
+          echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ steps.branch.outputs.branch_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Max Version:** ${{ steps.versions.outputs.max_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Projects:** ${{ steps.versions.outputs.bumped_projects }}" >> $GITHUB_STEP_SUMMARY
+          echo "**First Release:** ${{ steps.last_release.outputs.is_first_release }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Analysis:** Codex AI (gpt-5.1-codex)" >> $GITHUB_STEP_SUMMARY

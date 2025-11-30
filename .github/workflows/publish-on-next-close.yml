@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   publish:
-    if: >
+    if: |
       github.event_name == 'pull_request' &&
       github.event.action == 'closed' &&
       github.event.pull_request.merged == true &&
@@ -63,98 +63,66 @@ jobs:
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
-      - name: Resolve synchronized libs
-        id: synchronized
-        shell: bash
-        run: |
-          set -euo pipefail
-          PROJECTS=$(node -e "
-            const { execSync } = require('child_process');
-            const out = execSync('npx nx show projects -p tag:versioning:synchronized --type lib --json', { encoding: 'utf8' });
-            const arr = JSON.parse(out);
-            process.stdout.write(arr.join(','));
-          ")
-          if [ -z "$PROJECTS" ]; then
-            echo 'synchronized_projects=' >> "$GITHUB_OUTPUT"
-          else
-            echo "synchronized_projects=$PROJECTS" >> "$GITHUB_OUTPUT"
-            echo "Found synchronized libs: $PROJECTS"
-          fi
-
-      - name: Resolve affected independent libs
-        id: independent
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ALL_INDEPENDENT=$(node -e "
-            const { execSync } = require('child_process');
-            const out = execSync('npx nx show projects -p tag:versioning:independent --type lib --json', { encoding: 'utf8' });
-            const arr = JSON.parse(out);
-            process.stdout.write(arr.join(','));
-          ")
-
-          if [ -z "$ALL_INDEPENDENT" ]; then
-            echo 'independent_projects=' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          AFFECTED=$(node -e "
-            const { execSync } = require('child_process');
-            try {
-              const out = execSync('npx nx show projects --affected --type lib --json', { encoding: 'utf8' });
-              const arr = JSON.parse(out);
-              process.stdout.write(arr.join(','));
-            } catch (e) {
-              process.stdout.write('');
-            }
-          ")
-
-          if [ -z "$AFFECTED" ]; then
-            echo 'independent_projects=' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          AFFECTED_INDEPENDENT=$(node -e "
-            const all = '$ALL_INDEPENDENT'.split(',');
-            const affected = '$AFFECTED'.split(',');
-            const intersection = all.filter(lib => affected.includes(lib));
-            process.stdout.write(intersection.join(','));
-          ")
-
-          echo "independent_projects=$AFFECTED_INDEPENDENT" >> "$GITHUB_OUTPUT"
-          if [ -n "$AFFECTED_INDEPENDENT" ]; then
-            echo "Affected independent libs to publish: $AFFECTED_INDEPENDENT"
-          fi
-
-      - name: Collect all projects to publish
+      - name: Find affected publishable libs
         id: to_publish
         shell: bash
         run: |
           set -euo pipefail
 
-          SYNC="${{ steps.synchronized.outputs.synchronized_projects }}"
-          INDEP="${{ steps.independent.outputs.independent_projects }}"
+          # Get all publishable libs
+          ALL_PUBLISHABLE=$(node -e "
+          const { execSync } = require('child_process');
+          try {
+            const out = execSync('npx nx show projects -p tag:scope:publishable --type lib --json', { encoding: 'utf8' });
+            const arr = JSON.parse(out);
+            process.stdout.write(arr.join(','));
+          } catch (e) {
+            process.stdout.write('');
+          }
+          ")
 
-          if [ -n "$SYNC" ] && [ -n "$INDEP" ]; then
-            ALL="$SYNC,$INDEP"
-          elif [ -n "$SYNC" ]; then
-            ALL="$SYNC"
-          elif [ -n "$INDEP" ]; then
-            ALL="$INDEP"
-          else
-            ALL=""
+          if [ -z "$ALL_PUBLISHABLE" ]; then
+            echo "projects=" >> "$GITHUB_OUTPUT"
+            echo "No publishable libraries found"
+            exit 0
           fi
 
-          echo "projects=$ALL" >> "$GITHUB_OUTPUT"
-          if [ -n "$ALL" ]; then
-            echo "Projects to publish: $ALL"
+          # Get affected libs
+          AFFECTED=$(node -e "
+          const { execSync } = require('child_process');
+          try {
+            const out = execSync('npx nx show projects --affected --type lib --json', { encoding: 'utf8' });
+            const arr = JSON.parse(out);
+            process.stdout.write(arr.join(','));
+          } catch (e) {
+            process.stdout.write('');
+          }
+          ")
+
+          if [ -z "$AFFECTED" ]; then
+            echo "projects=" >> "$GITHUB_OUTPUT"
+            echo "No affected libraries"
+            exit 0
+          fi
+
+          # Intersection of publishable and affected
+          PROJECTS=$(node -e "
+          const all = '$ALL_PUBLISHABLE'.split(',').filter(Boolean);
+          const affected = '$AFFECTED'.split(',').filter(Boolean);
+          const intersection = all.filter(lib => affected.includes(lib));
+          process.stdout.write(intersection.join(','));
+          ")
+
+          echo "projects=$PROJECTS" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$PROJECTS" ]; then
+            echo "Projects to publish: $PROJECTS"
           else
             echo "No projects to publish"
           fi
 
       - name: Stop if nothing to publish
-        if: ${{ steps.to_publish.outputs.projects == '' }}
+        if: steps.to_publish.outputs.projects == ''
         run: echo "Nothing to publish."
 
       - name: Determine release version
@@ -176,7 +144,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Release version: $VERSION"
 
-      - name: Determine release target SHA
+      - name: Determine release SHA
         id: release_sha
         shell: bash
         env:
@@ -198,31 +166,52 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Create and push git tag
+      - name: Create git tags
         shell: bash
         run: |
           set -euo pipefail
+
           VERSION="${{ steps.version.outputs.version }}"
-          TAG="v$VERSION"
           TARGET_SHA="${{ steps.release_sha.outputs.sha }}"
+          PROJECTS="${{ steps.to_publish.outputs.projects }}"
 
           git fetch --tags
 
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists."
+          # Create global version tag
+          GLOBAL_TAG="v$VERSION"
+          if git rev-parse "$GLOBAL_TAG" >/dev/null 2>&1; then
+            echo "Tag $GLOBAL_TAG already exists."
           else
-            echo "Creating tag $TAG at $TARGET_SHA"
-            git tag -a "$TAG" "$TARGET_SHA" -m "Release $TAG"
-            git push origin "$TAG"
+            echo "Creating global tag $GLOBAL_TAG at $TARGET_SHA"
+            git tag -a "$GLOBAL_TAG" "$TARGET_SHA" -m "Release $GLOBAL_TAG"
+            git push origin "$GLOBAL_TAG"
           fi
 
-      - name: Build all packages to publish
-        if: ${{ steps.to_publish.outputs.projects != '' }}
-        run: |
-          npx nx run-many --targets=build --projects="${{ steps.to_publish.outputs.projects }}" --parallel
+          # Create per-project tags
+          if [ -n "$PROJECTS" ]; then
+            IFS=',' read -ra LIBS <<< "$PROJECTS"
+            for lib in "${LIBS[@]}"; do
+              # Read project version from package.json
+              LIB_VERSION=$(node -e "const pkg = require('./libs/$lib/package.json'); console.log(pkg.version || '$VERSION');")
+
+              PROJECT_TAG="${lib}@${LIB_VERSION}"
+
+              if git rev-parse "$PROJECT_TAG" >/dev/null 2>&1; then
+                echo "Tag $PROJECT_TAG already exists."
+              else
+                echo "Creating project tag $PROJECT_TAG at $TARGET_SHA"
+                git tag -a "$PROJECT_TAG" "$TARGET_SHA" -m "Release $PROJECT_TAG"
+                git push origin "$PROJECT_TAG"
+              fi
+            done
+          fi
+
+      - name: Build packages
+        if: steps.to_publish.outputs.projects != ''
+        run: npx nx run-many --targets=build --projects="${{ steps.to_publish.outputs.projects }}" --parallel
 
       - name: Publish to npm
-        if: ${{ steps.to_publish.outputs.projects != '' }}
+        if: steps.to_publish.outputs.projects != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -245,8 +234,8 @@ jobs:
 
       - name: Summary
         run: |
-          echo "Published projects: ${{ steps.to_publish.outputs.projects }}"
-          echo "Synchronized libs: ${{ steps.synchronized.outputs.synchronized_projects }}"
-          echo "Independent libs (affected): ${{ steps.independent.outputs.independent_projects }}"
-          echo "Release tag: v${{ steps.version.outputs.version }}"
-          echo "Release commit: ${{ steps.release_sha.outputs.sha }}"
+          echo "## Publish Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Published projects:** ${{ steps.to_publish.outputs.projects }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Release tag:** v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Release commit:** ${{ steps.release_sha.outputs.sha }}" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Documentation Update Output",
+  "description": "Output schema for Codex documentation update task",
+  "type": "object",
+  "properties": {
+    "updated": {
+      "type": "boolean",
+      "description": "Whether any documentation files were modified"
+    },
+    "files": {
+      "type": "array",
+      "description": "List of file paths that were modified or created",
+      "items": {
+        "type": "string"
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "Brief summary of the documentation changes made"
+    }
+  },
+  "required": ["updated", "files", "summary"],
+  "additionalProperties": false
+}

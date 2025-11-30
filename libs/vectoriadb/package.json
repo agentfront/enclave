@@ -1,6 +1,6 @@
 {
   "name": "vectoriadb",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "VectoriaDB - A lightweight, production-ready in-memory vector database for semantic search",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/frontmcp/tree/main/libs/vectoriadb",
