@@ -1,6 +1,6 @@
 # Analyze Release
 
-Analyze the git diff for the affected libraries, determine semantic version bumps, and update documentation.
+Analyze the git diff for the affected libraries, determine semantic version bumps, generate changelog entries, and update documentation.
 
 ## Context
 
@@ -63,7 +63,40 @@ Use patch bump when:
 
 ---
 
-## Part 2: Documentation Updates
+## Part 2: Changelog Generation
+
+Generate changelog entries following the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format.
+
+### Changelog Structure
+
+Each library has its own changelog at `libs/{project}/CHANGELOG.md`, plus there's a global changelog at `CHANGELOG.md` in the repo root.
+
+### Changelog Categories
+
+Use these categories (only include categories that have entries):
+
+- **Added** - New features
+- **Changed** - Changes in existing functionality
+- **Deprecated** - Soon-to-be removed features
+- **Removed** - Removed features
+- **Fixed** - Bug fixes
+- **Security** - Vulnerability fixes
+
+### Changelog Instructions
+
+1. For each project with a version bump:
+
+   - Generate changelog entries based on the actual code changes
+   - Be specific about what changed (function names, behaviors, etc.)
+   - Group entries by category
+
+2. For the global changelog:
+   - Include a summary entry for each bumped project
+   - Reference the project name and version
+
+---
+
+## Part 3: Documentation Updates
 
 Update the Mintlify documentation based on the code changes in this release. Documentation lives in the `/docs` directory and uses Mintlify format.
 
@@ -92,10 +125,6 @@ Update the Mintlify documentation based on the code changes in this release. Doc
    - Update any guides in `/docs/guides/` that reference changed functionality
    - Add new guides for major new features if appropriate
 
-5. **Update Changelog**
-   - If a changelog exists, add entries for this release
-   - Group changes by type (Added, Changed, Fixed, Removed)
-
 ### Documentation Guidelines
 
 - Keep documentation concise and accurate
@@ -110,12 +139,24 @@ Update the Mintlify documentation based on the code changes in this release. Doc
 
 Return a JSON object matching the output schema with:
 
-### `projects` array (version bumps)
+### `projects` array (version bumps + changelog)
 
 - `name`: Project name (e.g., "ast-guard")
 - `bump`: One of "major", "minor", "patch", or "none"
 - `newVersion`: The calculated new version string (e.g., "1.2.0")
 - `reason`: Brief explanation of why this bump type was chosen
+- `changelog`: Object with changelog entries for this project
+  - `added`: Array of strings (new features)
+  - `changed`: Array of strings (changes to existing functionality)
+  - `deprecated`: Array of strings (soon-to-be removed features)
+  - `removed`: Array of strings (removed features)
+  - `fixed`: Array of strings (bug fixes)
+  - `security`: Array of strings (security fixes)
+
+### `globalChangelog` object
+
+- `summary`: Brief summary for the global CHANGELOG.md
+- `projects`: Array of `{ name, version, summary }` for each bumped project
 
 ### `docs` object (documentation updates)
 
@@ -132,15 +173,38 @@ Return a JSON object matching the output schema with:
       "name": "ast-guard",
       "bump": "minor",
       "newVersion": "1.1.0",
-      "reason": "Added new sanitizeHtml export function"
+      "reason": "Added new sanitizeHtml export function",
+      "changelog": {
+        "added": ["New `sanitizeHtml()` function for HTML content validation"],
+        "changed": [],
+        "deprecated": [],
+        "removed": [],
+        "fixed": [],
+        "security": []
+      }
     },
     {
       "name": "vectoriadb",
       "bump": "patch",
       "newVersion": "1.0.1",
-      "reason": "Fixed memory leak in vector storage"
+      "reason": "Fixed memory leak in vector storage",
+      "changelog": {
+        "added": [],
+        "changed": [],
+        "deprecated": [],
+        "removed": [],
+        "fixed": ["Fixed memory leak when deleting vectors from namespace"],
+        "security": []
+      }
     }
   ],
+  "globalChangelog": {
+    "summary": "Minor updates to ast-guard and vectoriadb",
+    "projects": [
+      { "name": "ast-guard", "version": "1.1.0", "summary": "Added sanitizeHtml function" },
+      { "name": "vectoriadb", "version": "1.0.1", "summary": "Fixed memory leak" }
+    ]
+  },
   "docs": {
     "updated": true,
     "files": ["docs/api/ast-guard.mdx", "docs/examples/basic-usage.mdx"],
@@ -154,3 +218,4 @@ Return a JSON object matching the output schema with:
 - If no documentation updates are needed, return `docs.updated: false` with empty files array
 - Focus on accuracy over comprehensiveness
 - Prioritize API documentation over marketing copy
+- Changelog entries should be human-readable and useful to developers

@@ -227,14 +227,14 @@ jobs:
           output-schema-file: .github/codex/schemas/release-output.json
           codex-args: "--full-auto"
 
-      - name: Apply version bumps from Codex
+      - name: Apply version bumps and changelogs from Codex
         id: versions
         if: steps.affected.outputs.projects != ''
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Applying version bumps from Codex analysis..."
+          echo "Applying version bumps and changelogs from Codex analysis..."
 
           if [ ! -f "${{ env.CODEX_OUTPUT }}" ]; then
             echo "::error::Codex output file not found"
@@ -244,16 +244,47 @@ jobs:
           echo "Codex output:"
           cat "${{ env.CODEX_OUTPUT }}"
 
-          # Parse Codex JSON output and update package.json files
-          RESULT=$(node -e "
+          # Parse Codex JSON output, update package.json files, and update changelogs
+          RESULT=$(node << 'NODEJS_SCRIPT'
           const fs = require('fs');
           const output = JSON.parse(fs.readFileSync('${{ env.CODEX_OUTPUT }}', 'utf8'));
+          const today = new Date().toISOString().split('T')[0];
 
           let maxVersion = '0.0.0';
           const bumpedProjects = [];
 
+          // Helper to generate changelog entry
+          function generateChangelogEntry(version, changelog) {
+            const categories = [
+              { key: 'added', title: 'Added' },
+              { key: 'changed', title: 'Changed' },
+              { key: 'deprecated', title: 'Deprecated' },
+              { key: 'removed', title: 'Removed' },
+              { key: 'fixed', title: 'Fixed' },
+              { key: 'security', title: 'Security' }
+            ];
+
+            let entry = '## [' + version + '] - ' + today + '\n';
+            let hasContent = false;
+
+            for (const cat of categories) {
+              const items = changelog[cat.key] || [];
+              if (items.length > 0) {
+                entry += '\n### ' + cat.title + '\n\n';
+                for (const item of items) {
+                  entry += '- ' + item + '\n';
+                }
+                hasContent = true;
+              }
+            }
+
+            return hasContent ? entry : null;
+          }
+
+          // Update per-library changelogs
           for (const proj of output.projects) {
             if (proj.bump !== 'none') {
+              // Update package.json
               const pkgPath = 'libs/' + proj.name + '/package.json';
               const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
               pkg.version = proj.newVersion;
@@ -265,6 +296,52 @@ jobs:
               if (proj.newVersion.localeCompare(maxVersion, undefined, { numeric: true, sensitivity: 'base' }) > 0) {
                 maxVersion = proj.newVersion;
               }
+
+              // Update per-lib changelog
+              const changelogPath = 'libs/' + proj.name + '/CHANGELOG.md';
+              if (fs.existsSync(changelogPath) && proj.changelog) {
+                const entry = generateChangelogEntry(proj.newVersion, proj.changelog);
+                if (entry) {
+                  let content = fs.readFileSync(changelogPath, 'utf8');
+                  // Insert after ## [Unreleased] section
+                  const unreleasedMatch = content.match(/## \[Unreleased\]\n*/);
+                  if (unreleasedMatch) {
+                    const insertPos = unreleasedMatch.index + unreleasedMatch[0].length;
+                    content = content.slice(0, insertPos) + '\n' + entry + '\n' + content.slice(insertPos);
+                  } else {
+                    // No Unreleased section, insert after header
+                    const headerEnd = content.indexOf('\n\n') + 2;
+                    content = content.slice(0, headerEnd) + '## [Unreleased]\n\n' + entry + '\n' + content.slice(headerEnd);
+                  }
+                  fs.writeFileSync(changelogPath, content);
+                  console.error('Updated changelog: ' + changelogPath);
+                }
+              }
+            }
+          }
+
+          // Update global changelog
+          if (output.globalChangelog && bumpedProjects.length > 0) {
+            const globalPath = 'CHANGELOG.md';
+            if (fs.existsSync(globalPath)) {
+              let content = fs.readFileSync(globalPath, 'utf8');
+
+              // Build global entry
+              let globalEntry = '## [' + maxVersion + '] - ' + today + '\n\n';
+              globalEntry += output.globalChangelog.summary + '\n\n';
+              globalEntry += '### Updated Libraries\n\n';
+              for (const p of output.globalChangelog.projects) {
+                globalEntry += '- **' + p.name + '** v' + p.version + ' - ' + p.summary + '\n';
+              }
+
+              // Insert after ## [Unreleased] section
+              const unreleasedMatch = content.match(/## \[Unreleased\]\n*/);
+              if (unreleasedMatch) {
+                const insertPos = unreleasedMatch.index + unreleasedMatch[0].length;
+                content = content.slice(0, insertPos) + '\n' + globalEntry + '\n' + content.slice(insertPos);
+              }
+              fs.writeFileSync(globalPath, content);
+              console.error('Updated global changelog');
             }
           }
 
@@ -276,7 +353,8 @@ jobs:
 
           // Output for GitHub Actions
           console.log(JSON.stringify({ maxVersion, bumpedProjects: bumpedProjects.join(',') }));
-          ")
+          NODEJS_SCRIPT
+          )
 
           MAX_VERSION=$(echo "$RESULT" | jq -r '.maxVersion')
           BUMPED=$(echo "$RESULT" | jq -r '.bumpedProjects')

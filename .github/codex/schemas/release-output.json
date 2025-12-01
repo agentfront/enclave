@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Release Output",
-  "description": "Combined output schema for Codex release analysis (version bumps + docs updates)",
+  "description": "Combined output schema for Codex release analysis (version bumps + changelogs + docs updates)",
   "type": "object",
   "properties": {
     "projects": {
@@ -27,11 +27,84 @@
           "reason": {
             "type": "string",
             "description": "Brief explanation for the version bump decision"
+          },
+          "changelog": {
+            "type": "object",
+            "description": "Changelog entries for this project following Keep a Changelog format",
+            "properties": {
+              "added": {
+                "type": "array",
+                "description": "New features",
+                "items": { "type": "string" }
+              },
+              "changed": {
+                "type": "array",
+                "description": "Changes in existing functionality",
+                "items": { "type": "string" }
+              },
+              "deprecated": {
+                "type": "array",
+                "description": "Soon-to-be removed features",
+                "items": { "type": "string" }
+              },
+              "removed": {
+                "type": "array",
+                "description": "Removed features",
+                "items": { "type": "string" }
+              },
+              "fixed": {
+                "type": "array",
+                "description": "Bug fixes",
+                "items": { "type": "string" }
+              },
+              "security": {
+                "type": "array",
+                "description": "Security fixes",
+                "items": { "type": "string" }
+              }
+            },
+            "required": ["added", "changed", "deprecated", "removed", "fixed", "security"],
+            "additionalProperties": false
           }
         },
-        "required": ["name", "bump", "newVersion", "reason"],
+        "required": ["name", "bump", "newVersion", "reason", "changelog"],
         "additionalProperties": false
       }
+    },
+    "globalChangelog": {
+      "type": "object",
+      "description": "Global changelog summary for the root CHANGELOG.md",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "description": "Brief summary of this release"
+        },
+        "projects": {
+          "type": "array",
+          "description": "Summary for each bumped project",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Project name"
+              },
+              "version": {
+                "type": "string",
+                "description": "New version"
+              },
+              "summary": {
+                "type": "string",
+                "description": "Brief summary of changes"
+              }
+            },
+            "required": ["name", "version", "summary"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["summary", "projects"],
+      "additionalProperties": false
     },
     "docs": {
       "type": "object",
@@ -57,6 +130,6 @@
       "additionalProperties": false
     }
   },
-  "required": ["projects", "docs"],
+  "required": ["projects", "globalChangelog", "docs"],
   "additionalProperties": false
 }
