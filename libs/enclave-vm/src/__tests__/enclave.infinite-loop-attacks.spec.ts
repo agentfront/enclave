@@ -948,6 +948,81 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
+  describe('Microtask Queue Flooding Attacks', () => {
+    it('should block recursive queueMicrotask flooding', async () => {
+      const enclave = new Enclave({
+        ...STRICT_LIMITS,
+        timeout: 500,
+      });
+
+      const code = `
+        let count = 0;
+        function flood() {
+          count++;
+          queueMicrotask(flood);
+        }
+        flood();
+        return count;
+      `;
+
+      const result = await enclave.run(code);
+
+      // Should either block queueMicrotask (UNKNOWN_GLOBAL) or timeout
+      expect(result.success).toBe(false);
+      enclave.dispose();
+    });
+
+    it('should block Promise.resolve microtask flooding', async () => {
+      const enclave = new Enclave({
+        ...STRICT_LIMITS,
+        timeout: 500,
+      });
+
+      const code = `
+        let count = 0;
+        function flood() {
+          count++;
+          Promise.resolve().then(flood);
+        }
+        flood();
+        return new Promise(resolve => setTimeout(() => resolve(count), 100));
+      `;
+
+      const result = await enclave.run(code);
+
+      // Should block Promise or timeout
+      expect(result.success).toBe(false);
+      enclave.dispose();
+    });
+
+    it('should block mutual microtask recursion', async () => {
+      const enclave = new Enclave({
+        ...STRICT_LIMITS,
+        timeout: 500,
+      });
+
+      const code = `
+        let count = 0;
+        function floodA() {
+          count++;
+          queueMicrotask(floodB);
+        }
+        function floodB() {
+          count++;
+          queueMicrotask(floodA);
+        }
+        floodA();
+        return count;
+      `;
+
+      const result = await enclave.run(code);
+
+      // Should either block queueMicrotask or timeout
+      expect(result.success).toBe(false);
+      enclave.dispose();
+    });
+  });
+
   describe('Edge Cases', () => {
     it('should handle empty for-of loop', async () => {
       const enclave = new Enclave(STRICT_LIMITS);

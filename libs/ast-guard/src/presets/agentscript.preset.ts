@@ -298,6 +298,15 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
     'indexedDB',
     'crypto',
     'performance',
+    'structuredClone', // Object cloning API
+    'AbortController', // Async control flow manipulation
+    'AbortSignal', // Async control flow manipulation
+    'MessageChannel', // Cross-context messaging
+    'MessagePort', // Cross-context messaging
+    'BroadcastChannel', // Cross-tab communication
+    'TextEncoder', // Binary encoding
+    'TextDecoder', // Binary decoding
+    'Intl', // Environment fingerprinting (timezone/locale)
 
     // Timers (timing attacks)
     'setTimeout',
@@ -306,6 +315,7 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
     'clearTimeout',
     'clearInterval',
     'clearImmediate',
+    'queueMicrotask', // Microtask flooding attacks
 
     // WebAssembly (native code execution)
     'WebAssembly',
