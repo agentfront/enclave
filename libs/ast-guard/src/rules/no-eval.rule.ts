@@ -9,6 +9,7 @@ import { ValidationRule, ValidationContext, ValidationSeverity } from '../interf
  * - new Function() calls
  * - setTimeout/setInterval with string arguments
  * - with statements (scope manipulation)
+ * - dynamic import() expressions (code loading)
  */
 export class NoEvalRule implements ValidationRule {
   readonly name = 'no-eval';
@@ -76,6 +77,20 @@ export class NoEvalRule implements ValidationRule {
         context.report({
           code: 'NO_EVAL',
           message: 'Use of with statement is not allowed (manipulates scope)',
+          location: node.loc
+            ? {
+                line: node.loc.start.line,
+                column: node.loc.start.column,
+              }
+            : undefined,
+        });
+      },
+
+      ImportExpression: (node: any) => {
+        // Check for dynamic import() expressions
+        context.report({
+          code: 'NO_EVAL',
+          message: 'Dynamic import() is not allowed (enables dynamic code loading)',
           location: node.loc
             ? {
                 line: node.loc.start.line,

@@ -138,6 +138,71 @@ describe('Enclave Attack Matrix', () => {
       expect(result.success).toBe(false);
       enclave.dispose();
     });
+
+    it('ATK-72: should block structuredClone web API', async () => {
+      const enclave = new Enclave();
+      const code = `return typeof structuredClone;`;
+
+      const result = await enclave.run(code);
+
+      // structuredClone should be blocked by UnknownGlobalRule
+      if (result.success) {
+        expect(result.value).toBe('undefined');
+      }
+      enclave.dispose();
+    });
+
+    it('ATK-73: should block AbortController web API', async () => {
+      const enclave = new Enclave();
+      const code = `return typeof AbortController;`;
+
+      const result = await enclave.run(code);
+
+      // AbortController should be blocked by UnknownGlobalRule
+      if (result.success) {
+        expect(result.value).toBe('undefined');
+      }
+      enclave.dispose();
+    });
+
+    it('ATK-74: should block MessageChannel web API', async () => {
+      const enclave = new Enclave();
+      const code = `return typeof MessageChannel;`;
+
+      const result = await enclave.run(code);
+
+      // MessageChannel should be blocked by UnknownGlobalRule
+      if (result.success) {
+        expect(result.value).toBe('undefined');
+      }
+      enclave.dispose();
+    });
+
+    it('ATK-75: should block BroadcastChannel web API', async () => {
+      const enclave = new Enclave();
+      const code = `return typeof BroadcastChannel;`;
+
+      const result = await enclave.run(code);
+
+      // BroadcastChannel should be blocked by UnknownGlobalRule
+      if (result.success) {
+        expect(result.value).toBe('undefined');
+      }
+      enclave.dispose();
+    });
+
+    it('ATK-76: should block Intl API to prevent fingerprinting', async () => {
+      const enclave = new Enclave();
+      const code = `return typeof Intl;`;
+
+      const result = await enclave.run(code);
+
+      // Intl should be blocked by UnknownGlobalRule
+      if (result.success) {
+        expect(result.value).toBe('undefined');
+      }
+      enclave.dispose();
+    });
   });
 
   describe('Constructor Chain Escapes (ATK-3, ATK-17, ATK-18, ATK-23, ATK-31, ATK-32)', () => {
