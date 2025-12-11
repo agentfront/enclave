@@ -252,6 +252,22 @@ jobs:
 
           let maxVersion = '0.0.0';
           const bumpedProjects = [];
+          const internalVersions = {};
+
+          // Helper to increment patch version
+          function bumpPatch(version) {
+            const parts = version.split('.');
+            if (parts.length < 3 || isNaN(parseInt(parts[2], 10))) {
+              throw new Error('Invalid semantic version: ' + version);
+            }
+            parts[2] = String(parseInt(parts[2], 10) + 1);
+            return parts.join('.');
+          }
+
+          // Helper to check if version is exact (no range specifier)
+          function isExactVersion(version) {
+            return /^\d+\.\d+\.\d+$/.test(version);
+          }
 
           // Helper to generate changelog entry
           function generateChangelogEntry(version, changelog) {
@@ -291,6 +307,7 @@ jobs:
               fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
               console.error('Updated ' + proj.name + ' to ' + proj.newVersion + ' (' + proj.bump + '): ' + proj.reason);
               bumpedProjects.push(proj.name);
+              internalVersions[proj.name] = proj.newVersion;
 
               // Track max version
               if (proj.newVersion.localeCompare(maxVersion, undefined, { numeric: true, sensitivity: 'base' }) > 0) {
@@ -317,6 +334,57 @@ jobs:
                   console.error('Updated changelog: ' + changelogPath);
                 }
               }
+            }
+          }
+
+          // Second pass: Sync internal dependencies across ALL publishable packages
+          // If a package depends on a bumped package, update the dep version and patch-bump the dependent
+          const { execSync } = require('child_process');
+          let allLibs = [];
+          try {
+            const allPublishable = execSync('npx nx show projects -p tag:scope:publishable --type lib --json', { encoding: 'utf8' });
+            allLibs = JSON.parse(allPublishable);
+          } catch (e) {
+            console.error('Warning: Could not get publishable libs for dependency sync');
+          }
+
+          for (const libName of allLibs) {
+            const pkgPath = 'libs/' + libName + '/package.json';
+            if (!fs.existsSync(pkgPath)) continue;
+
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            let modified = false;
+            let needsBump = false;
+
+            // Check if any internal dependency was bumped
+            // Only update exact-pinned versions (internal deps), skip range specifiers (external deps)
+            if (pkg.dependencies) {
+              for (const [dep, version] of Object.entries(pkg.dependencies)) {
+                if (internalVersions[dep] && isExactVersion(version) && version !== internalVersions[dep]) {
+                  pkg.dependencies[dep] = internalVersions[dep];
+                  modified = true;
+                  needsBump = true;
+                  console.error('Updated ' + libName + ' dep ' + dep + ' to ' + internalVersions[dep]);
+                }
+              }
+            }
+
+            // If this package wasn't already bumped but has updated deps, patch bump it
+            if (needsBump && !internalVersions[libName]) {
+              const newVersion = bumpPatch(pkg.version);
+              pkg.version = newVersion;
+              internalVersions[libName] = newVersion;
+              bumpedProjects.push(libName);
+              console.error('Patch bumped ' + libName + ' to ' + newVersion + ' (dependency update)');
+
+              // Update max version
+              if (newVersion.localeCompare(maxVersion, undefined, { numeric: true, sensitivity: 'base' }) > 0) {
+                maxVersion = newVersion;
+              }
+            }
+
+            if (modified) {
+              fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
             }
           }
 

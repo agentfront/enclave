@@ -63,6 +63,9 @@ jobs:
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
+      - name: Set Nx SHAs
+        uses: nrwl/nx-set-shas@v4
+
       - name: Find affected publishable libs
         id: to_publish
         shell: bash
@@ -223,11 +226,41 @@ jobs:
             yarn nx run "$project:publish"
           done
 
+      - name: Generate release body
+        id: release_body
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECTS="${{ steps.to_publish.outputs.projects }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          if [ -n "$PROJECTS" ]; then
+            # Build release body with published packages info
+            BODY="## Published Packages\n\n"
+
+            IFS=',' read -ra LIBS <<< "$PROJECTS"
+            for lib in "${LIBS[@]}"; do
+              if [ -f "libs/$lib/package.json" ]; then
+                LIB_VERSION=$(node -e "console.log(require('./libs/$lib/package.json').version)")
+                BODY+="- **${lib}** v${LIB_VERSION} - [npm](https://www.npmjs.com/package/${lib}/v/${LIB_VERSION})\n"
+              fi
+            done
+
+            BODY+="\n---\n\n"
+          else
+            BODY="*No packages published in this release.*\n\n---\n\n"
+          fi
+
+          # Save body to file for multiline support
+          echo -e "$BODY" > /tmp/release_body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
+          body_path: /tmp/release_body.md
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
