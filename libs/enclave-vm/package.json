@@ -43,7 +43,7 @@
     "zod": "^4.1.13"
   },
   "peerDependencies": {
-    "@huggingface/transformers": "^3.0.0"
+    "@huggingface/transformers": "^3.2.2"
   },
   "peerDependenciesMeta": {
     "@huggingface/transformers": {
