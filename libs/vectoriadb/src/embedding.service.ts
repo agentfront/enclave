@@ -2,6 +2,7 @@ import { EmbeddingError, ConfigurationError } from './errors';
 
 // Dynamic import type for @huggingface/transformers
 type PipelineFunction = typeof import('@huggingface/transformers').pipeline;
+type FeatureExtractionPipeline = Awaited<ReturnType<PipelineFunction>>;
 
 /**
  * Service for generating embeddings using transformers.js
@@ -12,7 +13,7 @@ type PipelineFunction = typeof import('@huggingface/transformers').pipeline;
  * For a zero-dependency alternative, use TFIDFEmbeddingService instead.
  */
 export class EmbeddingService {
-  private pipeline: any = null;
+  private pipeline: FeatureExtractionPipeline | null = null;
   private modelName: string;
   private cacheDir: string;
   private dimensions = 384; // default for all-MiniLM-L6-v2
