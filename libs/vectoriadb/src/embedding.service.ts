@@ -9,6 +9,25 @@ import { EmbeddingError, ConfigurationError } from './errors';
  * For a zero-dependency alternative, use TFIDFEmbeddingService instead.
  */
 export class EmbeddingService {
+  // Static transformers module for dependency injection (used in testing)
+  private static _transformersModule: any = null;
+
+  /**
+   * Inject a transformers module (for testing purposes)
+   * @internal
+   */
+  static setTransformersModule(module: any): void {
+    EmbeddingService._transformersModule = module;
+  }
+
+  /**
+   * Clear the injected transformers module
+   * @internal
+   */
+  static clearTransformersModule(): void {
+    EmbeddingService._transformersModule = null;
+  }
+
   // Using 'any' because @huggingface/transformers is an optional dependency
   private pipeline: any = null;
   private modelName: string;
@@ -27,8 +46,14 @@ export class EmbeddingService {
    * This allows the package to be optional - only loaded when actually used
    */
   private async loadTransformers(): Promise<any> {
+    // Use injected module if available (for testing)
+    if (EmbeddingService._transformersModule) {
+      return EmbeddingService._transformersModule.pipeline;
+    }
+
     try {
       // Dynamic import - package may not be installed
+      // Using Function() to bypass TypeScript's static analysis for optional dependency
       const transformers = await (Function('return import("@huggingface/transformers")')() as Promise<any>);
       return transformers.pipeline;
     } catch (_error) {
