@@ -257,8 +257,16 @@ jobs:
           // Helper to increment patch version
           function bumpPatch(version) {
             const parts = version.split('.');
+            if (parts.length < 3 || isNaN(parseInt(parts[2], 10))) {
+              throw new Error('Invalid semantic version: ' + version);
+            }
             parts[2] = String(parseInt(parts[2], 10) + 1);
             return parts.join('.');
+          }
+
+          // Helper to check if version is exact (no range specifier)
+          function isExactVersion(version) {
+            return /^\d+\.\d+\.\d+$/.test(version);
           }
 
           // Helper to generate changelog entry
@@ -348,10 +356,11 @@ jobs:
             let modified = false;
             let needsBump = false;
 
-            // Check if any dependency was bumped
+            // Check if any internal dependency was bumped
+            // Only update exact-pinned versions (internal deps), skip range specifiers (external deps)
             if (pkg.dependencies) {
               for (const [dep, version] of Object.entries(pkg.dependencies)) {
-                if (internalVersions[dep] && version !== internalVersions[dep]) {
+                if (internalVersions[dep] && isExactVersion(version) && version !== internalVersions[dep]) {
                   pkg.dependencies[dep] = internalVersions[dep];
                   modified = true;
                   needsBump = true;
