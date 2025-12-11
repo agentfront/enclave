@@ -29,6 +29,14 @@ console.log(result.valid); // true
 - **Security Presets**: STRICT, SECURE, STANDARD, PERMISSIVE
 - **Zero Dependencies**: Only uses acorn for parsing
 
+## AgentScript preset hardening
+
+Use `createAgentScriptPreset()` when you want AST validation to match Enclave's runtime sandbox. The preset now:
+
+- Blocks modern browser primitives like `structuredClone`, `AbortController`/`AbortSignal`, `MessageChannel`/`MessagePort`, `BroadcastChannel`, `TextEncoder`/`TextDecoder`, and `Intl` so those capabilities never reach execution.
+- Treats `queueMicrotask` the same way as timers to guard against microtask flooding attacks.
+- Reports dynamic `import()` expressions through `NoEvalRule`, preventing untrusted code from lazy-loading modules.
+
 ## Security Presets
 
 | Preset | Description |

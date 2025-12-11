@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2025-12-11
+
+Hardened ast-guard’s AgentScript preset with additional browser primitive blocks and dynamic import enforcement.
+
+### Updated Libraries
+
+- **ast-guard** v1.1.0 - AgentScript preset now blocks structuredClone/messaging APIs, queueMicrotask, and import() expressions for parity with the Enclave sandbox.
+
 ### Changed
 
 - Updated the documented cache directory default for `LocalLlmConfig` to `~/.enclave/models` in `libs/enclave-vm/src/scoring/types.ts:377` to match the new Enclave pathing.
