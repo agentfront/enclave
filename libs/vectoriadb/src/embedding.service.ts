@@ -2,7 +2,6 @@ import { EmbeddingError, ConfigurationError } from './errors';
 
 // Dynamic import type for @huggingface/transformers
 type PipelineFunction = typeof import('@huggingface/transformers').pipeline;
-type FeatureExtractionPipeline = Awaited<ReturnType<PipelineFunction>>;
 
 /**
  * Service for generating embeddings using transformers.js
@@ -13,7 +12,9 @@ type FeatureExtractionPipeline = Awaited<ReturnType<PipelineFunction>>;
  * For a zero-dependency alternative, use TFIDFEmbeddingService instead.
  */
 export class EmbeddingService {
-  private pipeline: FeatureExtractionPipeline | null = null;
+  // Using 'any' because the pipeline return type is a complex union that TypeScript cannot represent
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private pipeline: any = null;
   private modelName: string;
   private cacheDir: string;
   private dimensions = 384; // default for all-MiniLM-L6-v2
