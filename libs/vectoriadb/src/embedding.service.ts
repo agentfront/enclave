@@ -1,8 +1,5 @@
 import { EmbeddingError, ConfigurationError } from './errors';
 
-// Dynamic import type for @huggingface/transformers
-type PipelineFunction = typeof import('@huggingface/transformers').pipeline;
-
 /**
  * Service for generating embeddings using transformers.js
  *
@@ -12,8 +9,7 @@ type PipelineFunction = typeof import('@huggingface/transformers').pipeline;
  * For a zero-dependency alternative, use TFIDFEmbeddingService instead.
  */
 export class EmbeddingService {
-  // Using 'any' because the pipeline return type is a complex union that TypeScript cannot represent
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // Using 'any' because @huggingface/transformers is an optional dependency
   private pipeline: any = null;
   private modelName: string;
   private cacheDir: string;
@@ -30,11 +26,12 @@ export class EmbeddingService {
    * Dynamically import @huggingface/transformers
    * This allows the package to be optional - only loaded when actually used
    */
-  private async loadTransformers(): Promise<PipelineFunction> {
+  private async loadTransformers(): Promise<any> {
     try {
-      const transformers = await import('@huggingface/transformers');
+      // Dynamic import - package may not be installed
+      const transformers = await (Function('return import("@huggingface/transformers")')() as Promise<any>);
       return transformers.pipeline;
-    } catch (error) {
+    } catch (_error) {
       throw new ConfigurationError(
         '@huggingface/transformers is not installed. ' +
           'Install it with: npm install @huggingface/transformers\n' +

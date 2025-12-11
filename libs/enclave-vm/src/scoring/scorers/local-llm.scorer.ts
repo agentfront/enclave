@@ -103,8 +103,10 @@ export class LocalLlmScorer extends BaseScorer {
    */
   private async _initialize(): Promise<void> {
     try {
-      // Dynamic import to avoid bundling issues
-      const { pipeline } = await import('@huggingface/transformers');
+      // Dynamic import using Function to avoid TypeScript checking for the optional dependency
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const transformers = await (Function('return import("@huggingface/transformers")')() as Promise<any>);
+      const { pipeline } = transformers;
 
       // Use feature-extraction pipeline for both modes
       // (classification mode uses embeddings + heuristics, similarity mode uses embeddings + VectoriaDB)
