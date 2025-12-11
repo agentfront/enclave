@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.1.0] - 2025-12-11
+
+### Added
+
+- AgentScript preset now blocks structuredClone, AbortController/AbortSignal, MessageChannel/MessagePort, BroadcastChannel, TextEncoder/TextDecoder, and Intl before code hits runtime (libs/ast-guard/src/presets/agentscript.preset.ts:292).
+- AgentScript preset treats queueMicrotask as a disallowed timer primitive to mitigate microtask flooding attacks (libs/ast-guard/src/presets/agentscript.preset.ts:311).
+
+### Security
+
+- NoEvalRule now reports dynamic import() expressions so untrusted code cannot lazy-load modules (libs/ast-guard/src/rules/no-eval.rule.ts:4).
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
