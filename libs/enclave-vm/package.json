@@ -1,6 +1,6 @@
 {
   "name": "enclave-vm",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Sandbox runtime for secure JavaScript code execution",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",
@@ -36,7 +36,7 @@
     }
   },
   "dependencies": {
-    "ast-guard": "1.0.0",
+    "ast-guard": "1.1.0",
     "acorn": "8.15.0",
     "acorn-walk": "8.3.4",
     "astring": "1.9.0",
