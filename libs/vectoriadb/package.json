@@ -37,8 +37,13 @@
       "default": "./dist/src/index.js"
     }
   },
-  "dependencies": {
-    "@huggingface/transformers": "^3.2.2"
+  "peerDependencies": {
+    "@huggingface/transformers": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@huggingface/transformers": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "typescript": "^5.9.3"
