@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2025-12-12
+
+### Changed
+
+- Declared @huggingface/transformers as an optional peer dependency so it is only required when local scoring is enabled.
+
+### Fixed
+
+- LocalLlmScorer now imports @huggingface/transformers via a dynamic Function() call, preventing TypeScript and bundler failures when the optional dependency is absent.
+
 ### Changed
 
 - Updated the documented cache directory default for `LocalLlmConfig` to `~/.enclave/models`
