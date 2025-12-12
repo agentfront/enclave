@@ -128,25 +128,6 @@ jobs:
         if: steps.to_publish.outputs.projects == ''
         run: echo "Nothing to publish."
 
-      - name: Determine release version
-        id: version
-        shell: bash
-        env:
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: |
-          set -euo pipefail
-
-          HEADREF="$PR_HEAD_REF"
-
-          if [[ "$HEADREF" =~ ^next/([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            VERSION="${BASH_REMATCH[1]}"
-          else
-            VERSION=$(node -e "try{console.log(require('./package.json').version||'0.0.0')}catch{console.log('0.0.0')}")
-          fi
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Release version: $VERSION"
-
       - name: Determine release SHA
         id: release_sha
         shell: bash

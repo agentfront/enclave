@@ -33,7 +33,19 @@ async function main() {
   console.log(`Reading Codex output from: ${codexOutputPath}`);
   console.log(`Dry run: ${dryRun}`);
 
-  const codexOutput = JSON.parse(fs.readFileSync(codexOutputPath, 'utf8'));
+  let codexOutput;
+  try {
+    codexOutput = JSON.parse(fs.readFileSync(codexOutputPath, 'utf8'));
+  } catch (err) {
+    console.error(`Error: Failed to parse Codex output file: ${err.message}`);
+    process.exit(1);
+  }
+
+  if (!codexOutput.projects || !Array.isArray(codexOutput.projects)) {
+    console.error('Error: Codex output missing or invalid "projects" array');
+    process.exit(1);
+  }
+
   const versionResults = {};
   const today = new Date().toISOString().split('T')[0];
 
@@ -57,7 +69,7 @@ async function main() {
     try {
       // Use Nx Release to bump version and sync dependencies
       // Git operations are disabled here - the workflow handles git commit/tag
-      const { projectsVersionData } = await releaseVersion({
+      await releaseVersion({
         specifier: project.newVersion,
         projects: [project.name],
         dryRun,
@@ -79,14 +91,11 @@ async function main() {
             const unreleasedIdx = content.indexOf('## [Unreleased]');
             if (unreleasedIdx !== -1) {
               const afterUnreleased = content.indexOf('\n', unreleasedIdx) + 1;
-              content =
-                content.slice(0, afterUnreleased) +
-                '\n' +
-                entry +
-                '\n' +
-                content.slice(afterUnreleased);
+              content = content.slice(0, afterUnreleased) + '\n' + entry + '\n' + content.slice(afterUnreleased);
               fs.writeFileSync(changelogPath, content);
               console.log(`✓ Updated changelog: ${changelogPath}`);
+            } else {
+              console.log(`⚠ Skipped changelog update for ${project.name}: missing "## [Unreleased]" section`);
             }
           }
         }
@@ -149,9 +158,9 @@ function updateGlobalChangelog(globalChangelog, versionResults, date) {
   const versions = Object.values(versionResults);
   if (versions.length === 0) return;
 
-  // Find max version
-  const maxVersion = versions.sort((a, b) =>
-    b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' })
+  // Find max version (spread to avoid mutating original array)
+  const maxVersion = [...versions].sort((a, b) =>
+    b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }),
   )[0];
 
   let content = fs.readFileSync(globalPath, 'utf8');
@@ -166,8 +175,7 @@ function updateGlobalChangelog(globalChangelog, versionResults, date) {
   const unreleasedIdx = content.indexOf('## [Unreleased]');
   if (unreleasedIdx !== -1) {
     const afterUnreleased = content.indexOf('\n', unreleasedIdx) + 1;
-    content =
-      content.slice(0, afterUnreleased) + '\n' + globalEntry + '\n' + content.slice(afterUnreleased);
+    content = content.slice(0, afterUnreleased) + '\n' + globalEntry + '\n' + content.slice(afterUnreleased);
     fs.writeFileSync(globalPath, content);
     console.log('✓ Updated global changelog');
   }
