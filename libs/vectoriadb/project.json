@@ -22,11 +22,11 @@
         "command": "node scripts/strip-dist-from-pkg.js libs/vectoriadb/dist/package.json"
       }
     },
-    "publish": {
-      "executor": "nx:run-commands",
+    "nx-release-publish": {
+      "executor": "@nx/js:release-publish",
       "dependsOn": ["build"],
       "options": {
-        "command": "npm publish libs/vectoriadb/dist --access public --registry=https://registry.npmjs.org/"
+        "packageRoot": "libs/vectoriadb/dist"
       }
     }
   }
