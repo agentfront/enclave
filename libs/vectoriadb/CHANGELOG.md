@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2025-12-12
+
+### Added
+
+- Added EmbeddingService.setTransformersModule() and clearTransformersModule() to allow injecting custom transformer pipelines (primarily for testing).
+
+### Changed
+
+- Transformer embeddings now lazy-load @huggingface/transformers and emit a ConfigurationError with installation guidance when the package is not installed.
+- @huggingface/transformers is now distributed as an optional peer dependency and must be added explicitly when using transformer embeddings.
+
 ## [1.0.0] - 2025-11-30
 
 ### Added

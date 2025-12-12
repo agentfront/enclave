@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2025-12-12
+
+Transformer-dependent features now load Hugging Face models lazily, with enclave-vm fixing its scorer import path and vectoriadb requiring explicit opt-in for transformer embeddings.
+
+### Updated Libraries
+
+- **enclave-vm** v1.0.2 - LocalLlmScorer lazily imports @huggingface/transformers and treats it as an optional peer dependency.
+- **vectoriadb** v2.0.0 - EmbeddingService now loads transformers dynamically, adds injection hooks, and requires you to install the optional peer when using transformer embeddings.
+
 ## [1.1.0] - 2025-12-11
 
 Hardened ast-guard’s AgentScript preset with additional browser primitive blocks and dynamic import enforcement.
