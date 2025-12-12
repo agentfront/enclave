@@ -53,6 +53,12 @@ const db = new VectoriaDB({
 
 Uses Hugging Face transformers for higher quality embeddings.
 
+**Note:** Transformer embeddings require installing the optional dependency:
+
+```bash
+npm install @huggingface/transformers
+```
+
 ```typescript
 const db = new VectoriaDB({
   embedding: 'transformer',

@@ -1,10 +1,34 @@
-import { pipeline } from '@huggingface/transformers';
-import { EmbeddingError } from './errors';
+import { EmbeddingError, ConfigurationError } from './errors';
 
 /**
  * Service for generating embeddings using transformers.js
+ *
+ * NOTE: This service requires @huggingface/transformers to be installed.
+ * Install it with: npm install @huggingface/transformers
+ *
+ * For a zero-dependency alternative, use TFIDFEmbeddingService instead.
  */
 export class EmbeddingService {
+  // Static transformers module for dependency injection (used in testing)
+  private static _transformersModule: any = null;
+
+  /**
+   * Inject a transformers module (for testing purposes)
+   * @internal
+   */
+  static setTransformersModule(module: any): void {
+    EmbeddingService._transformersModule = module;
+  }
+
+  /**
+   * Clear the injected transformers module
+   * @internal
+   */
+  static clearTransformersModule(): void {
+    EmbeddingService._transformersModule = null;
+  }
+
+  // Using 'any' because @huggingface/transformers is an optional dependency
   private pipeline: any = null;
   private modelName: string;
   private cacheDir: string;
@@ -15,6 +39,30 @@ export class EmbeddingService {
   constructor(modelName = 'Xenova/all-MiniLM-L6-v2', cacheDir = './.cache/transformers') {
     this.modelName = modelName;
     this.cacheDir = cacheDir;
+  }
+
+  /**
+   * Dynamically import @huggingface/transformers
+   * This allows the package to be optional - only loaded when actually used
+   */
+  private async loadTransformers(): Promise<any> {
+    // Use injected module if available (for testing)
+    if (EmbeddingService._transformersModule) {
+      return EmbeddingService._transformersModule.pipeline;
+    }
+
+    try {
+      // Dynamic import - package may not be installed
+      // Using Function() to bypass TypeScript's static analysis for optional dependency
+      const transformers = await (Function('return import("@huggingface/transformers")')() as Promise<any>);
+      return transformers.pipeline;
+    } catch (_error) {
+      throw new ConfigurationError(
+        '@huggingface/transformers is not installed. ' +
+          'Install it with: npm install @huggingface/transformers\n' +
+          'Or use TFIDFVectoria/TFIDFEmbeddingService for a zero-dependency alternative.',
+      );
+    }
   }
 
   /**
@@ -36,8 +84,11 @@ export class EmbeddingService {
 
   private async _initialize(): Promise<void> {
     try {
+      // Dynamically load transformers
+      const pipelineFn = await this.loadTransformers();
+
       // Create feature extraction pipeline
-      this.pipeline = await pipeline('feature-extraction', this.modelName, {
+      this.pipeline = await pipelineFn('feature-extraction', this.modelName, {
         // Use local models directory to cache models
         cache_dir: this.cacheDir,
         // // Don't require progress bars in production
@@ -54,6 +105,9 @@ export class EmbeddingService {
       this.isInitialized = true;
     } catch (error) {
       this.initializationPromise = null;
+      if (error instanceof ConfigurationError) {
+        throw error;
+      }
       throw new EmbeddingError(
         `Failed to initialize embedding model: ${error instanceof Error ? error.message : String(error)}`,
         error instanceof Error ? error : undefined,

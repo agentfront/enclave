@@ -43,7 +43,16 @@ jobs:
         continue-on-error: true
 
       - name: Build libraries
+        id: build
         run: npx nx affected -t build
+        continue-on-error: true
+
+      - name: Retry build with cache reset
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "Build failed, resetting NX cache and retrying..."
+          npx nx reset
+          npx nx affected -t build --skip-nx-cache
 
       - name: Test libraries
         run: npx nx affected -t test --passWithNoTests

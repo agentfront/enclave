@@ -42,11 +42,8 @@
     "astring": "1.9.0",
     "zod": "^4.1.13"
   },
-  "optionalDependencies": {
-    "@huggingface/transformers": "^3.0.0"
-  },
   "peerDependencies": {
-    "@huggingface/transformers": "^3.0.0"
+    "@huggingface/transformers": "^3.2.2"
   },
   "peerDependenciesMeta": {
     "@huggingface/transformers": {
