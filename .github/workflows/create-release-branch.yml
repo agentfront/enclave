@@ -227,14 +227,14 @@ jobs:
           output-schema-file: .github/codex/schemas/release-output.json
           codex-args: "--full-auto"
 
-      - name: Apply version bumps and changelogs from Codex
+      - name: Apply version bumps and changelogs via Nx Release
         id: versions
         if: steps.affected.outputs.projects != ''
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Applying version bumps and changelogs from Codex analysis..."
+          echo "Applying version bumps via Nx Release..."
 
           if [ ! -f "${{ env.CODEX_OUTPUT }}" ]; then
             echo "::error::Codex output file not found"
@@ -244,185 +244,19 @@ jobs:
           echo "Codex output:"
           cat "${{ env.CODEX_OUTPUT }}"
 
-          # Parse Codex JSON output, update package.json files, and update changelogs
-          RESULT=$(node << 'NODEJS_SCRIPT'
-          const fs = require('fs');
-          const output = JSON.parse(fs.readFileSync('${{ env.CODEX_OUTPUT }}', 'utf8'));
-          const today = new Date().toISOString().split('T')[0];
+          # Run Nx Release script to bump versions and update changelogs
+          node scripts/nx-release.mjs
 
-          let maxVersion = '0.0.0';
-          const bumpedProjects = [];
-          const internalVersions = {};
-
-          // Helper to increment patch version
-          function bumpPatch(version) {
-            const parts = version.split('.');
-            if (parts.length < 3 || isNaN(parseInt(parts[2], 10))) {
-              throw new Error('Invalid semantic version: ' + version);
-            }
-            parts[2] = String(parseInt(parts[2], 10) + 1);
-            return parts.join('.');
-          }
-
-          // Helper to check if version is exact (no range specifier)
-          function isExactVersion(version) {
-            return /^\d+\.\d+\.\d+$/.test(version);
-          }
-
-          // Helper to generate changelog entry
-          function generateChangelogEntry(version, changelog) {
-            const categories = [
-              { key: 'added', title: 'Added' },
-              { key: 'changed', title: 'Changed' },
-              { key: 'deprecated', title: 'Deprecated' },
-              { key: 'removed', title: 'Removed' },
-              { key: 'fixed', title: 'Fixed' },
-              { key: 'security', title: 'Security' }
-            ];
-
-            let entry = '## [' + version + '] - ' + today + '\n';
-            let hasContent = false;
-
-            for (const cat of categories) {
-              const items = changelog[cat.key] || [];
-              if (items.length > 0) {
-                entry += '\n### ' + cat.title + '\n\n';
-                for (const item of items) {
-                  entry += '- ' + item + '\n';
-                }
-                hasContent = true;
-              }
-            }
-
-            return hasContent ? entry : null;
-          }
-
-          // Update per-library changelogs
-          for (const proj of output.projects) {
-            if (proj.bump !== 'none') {
-              // Update package.json
-              const pkgPath = 'libs/' + proj.name + '/package.json';
-              const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-              pkg.version = proj.newVersion;
-              fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
-              console.error('Updated ' + proj.name + ' to ' + proj.newVersion + ' (' + proj.bump + '): ' + proj.reason);
-              bumpedProjects.push(proj.name);
-              internalVersions[proj.name] = proj.newVersion;
-
-              // Track max version
-              if (proj.newVersion.localeCompare(maxVersion, undefined, { numeric: true, sensitivity: 'base' }) > 0) {
-                maxVersion = proj.newVersion;
-              }
-
-              // Update per-lib changelog
-              const changelogPath = 'libs/' + proj.name + '/CHANGELOG.md';
-              if (fs.existsSync(changelogPath) && proj.changelog) {
-                const entry = generateChangelogEntry(proj.newVersion, proj.changelog);
-                if (entry) {
-                  let content = fs.readFileSync(changelogPath, 'utf8');
-                  // Insert after ## [Unreleased] section
-                  const unreleasedMatch = content.match(/## \[Unreleased\]\n*/);
-                  if (unreleasedMatch) {
-                    const insertPos = unreleasedMatch.index + unreleasedMatch[0].length;
-                    content = content.slice(0, insertPos) + '\n' + entry + '\n' + content.slice(insertPos);
-                  } else {
-                    // No Unreleased section, insert after header
-                    const headerEnd = content.indexOf('\n\n') + 2;
-                    content = content.slice(0, headerEnd) + '## [Unreleased]\n\n' + entry + '\n' + content.slice(headerEnd);
-                  }
-                  fs.writeFileSync(changelogPath, content);
-                  console.error('Updated changelog: ' + changelogPath);
-                }
-              }
-            }
-          }
-
-          // Second pass: Sync internal dependencies across ALL publishable packages
-          // If a package depends on a bumped package, update the dep version and patch-bump the dependent
-          const { execSync } = require('child_process');
-          let allLibs = [];
-          try {
-            const allPublishable = execSync('npx nx show projects -p tag:scope:publishable --type lib --json', { encoding: 'utf8' });
-            allLibs = JSON.parse(allPublishable);
-          } catch (e) {
-            console.error('Warning: Could not get publishable libs for dependency sync');
-          }
-
-          for (const libName of allLibs) {
-            const pkgPath = 'libs/' + libName + '/package.json';
-            if (!fs.existsSync(pkgPath)) continue;
-
-            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-            let modified = false;
-            let needsBump = false;
-
-            // Check if any internal dependency was bumped
-            // Only update exact-pinned versions (internal deps), skip range specifiers (external deps)
-            if (pkg.dependencies) {
-              for (const [dep, version] of Object.entries(pkg.dependencies)) {
-                if (internalVersions[dep] && isExactVersion(version) && version !== internalVersions[dep]) {
-                  pkg.dependencies[dep] = internalVersions[dep];
-                  modified = true;
-                  needsBump = true;
-                  console.error('Updated ' + libName + ' dep ' + dep + ' to ' + internalVersions[dep]);
-                }
-              }
-            }
-
-            // If this package wasn't already bumped but has updated deps, patch bump it
-            if (needsBump && !internalVersions[libName]) {
-              const newVersion = bumpPatch(pkg.version);
-              pkg.version = newVersion;
-              internalVersions[libName] = newVersion;
-              bumpedProjects.push(libName);
-              console.error('Patch bumped ' + libName + ' to ' + newVersion + ' (dependency update)');
-
-              // Update max version
-              if (newVersion.localeCompare(maxVersion, undefined, { numeric: true, sensitivity: 'base' }) > 0) {
-                maxVersion = newVersion;
-              }
-            }
-
-            if (modified) {
-              fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
-            }
-          }
-
-          // Update global changelog
-          if (output.globalChangelog && bumpedProjects.length > 0) {
-            const globalPath = 'CHANGELOG.md';
-            if (fs.existsSync(globalPath)) {
-              let content = fs.readFileSync(globalPath, 'utf8');
-
-              // Build global entry
-              let globalEntry = '## [' + maxVersion + '] - ' + today + '\n\n';
-              globalEntry += output.globalChangelog.summary + '\n\n';
-              globalEntry += '### Updated Libraries\n\n';
-              for (const p of output.globalChangelog.projects) {
-                globalEntry += '- **' + p.name + '** v' + p.version + ' - ' + p.summary + '\n';
-              }
-
-              // Insert after ## [Unreleased] section
-              const unreleasedMatch = content.match(/## \[Unreleased\]\n*/);
-              if (unreleasedMatch) {
-                const insertPos = unreleasedMatch.index + unreleasedMatch[0].length;
-                content = content.slice(0, insertPos) + '\n' + globalEntry + '\n' + content.slice(insertPos);
-              }
-              fs.writeFileSync(globalPath, content);
-              console.error('Updated global changelog');
-            }
-          }
-
-          // Log docs update summary
-          if (output.docs && output.docs.updated) {
-            console.error('Documentation updated: ' + output.docs.summary);
-            console.error('Files modified: ' + output.docs.files.join(', '));
-          }
-
-          // Output for GitHub Actions
-          console.log(JSON.stringify({ maxVersion, bumpedProjects: bumpedProjects.join(',') }));
-          NODEJS_SCRIPT
-          )
+          # Extract max version and bumped projects from Codex output
+          RESULT=$(node -e "
+            const fs = require('fs');
+            const output = JSON.parse(fs.readFileSync('${{ env.CODEX_OUTPUT }}', 'utf8'));
+            const bumped = output.projects.filter(p => p.bump !== 'none');
+            const maxVersion = bumped.map(p => p.newVersion)
+              .sort((a,b) => b.localeCompare(a, undefined, {numeric: true}))[0] || '0.0.0';
+            const bumpedProjects = bumped.map(p => p.name).join(',');
+            console.log(JSON.stringify({ maxVersion, bumpedProjects }));
+          ")
 
           MAX_VERSION=$(echo "$RESULT" | jq -r '.maxVersion')
           BUMPED=$(echo "$RESULT" | jq -r '.bumpedProjects')
@@ -432,6 +266,8 @@ jobs:
 
           echo "Max version: $MAX_VERSION"
           echo "Bumped projects: $BUMPED"
+        env:
+          CODEX_OUTPUT: ${{ env.CODEX_OUTPUT }}
 
       - name: Log release analysis result
         if: steps.affected.outputs.projects != ''
