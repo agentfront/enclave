@@ -164,8 +164,25 @@ jobs:
           # Create per-project tags (independent versioning)
           IFS=',' read -ra LIBS <<< "$PROJECTS"
           for lib in "${LIBS[@]}"; do
-            # Read project version from package.json
-            LIB_VERSION=$(node -e "const pkg = require('./libs/$lib/package.json'); console.log(pkg.version);")
+            # Read project version from package.json with error handling
+            LIB_VERSION=$(node -e "
+              try {
+                const pkg = require('./libs/$lib/package.json');
+                if (!pkg.version) {
+                  console.error('No version field in package.json');
+                  process.exit(1);
+                }
+                console.log(pkg.version);
+              } catch (err) {
+                console.error('Failed to read package.json:', err.message);
+                process.exit(1);
+              }
+            ")
+
+            if [ -z "$LIB_VERSION" ]; then
+              echo "Error: Failed to extract version for $lib"
+              exit 1
+            fi
 
             PROJECT_TAG="${lib}@${LIB_VERSION}"
 
@@ -216,12 +233,15 @@ jobs:
           EOF
               )
 
-              # Create release using gh CLI
-              gh release create "$TAG_NAME" \
-                --title "$TAG_NAME" \
-                --notes "$BODY" \
-                --generate-notes \
-                || echo "Release $TAG_NAME may already exist, skipping..."
+              # Create release using gh CLI (check if exists first)
+              if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+                echo "Release $TAG_NAME already exists, skipping..."
+              else
+                gh release create "$TAG_NAME" \
+                  --title "$TAG_NAME" \
+                  --notes "$BODY" \
+                  --generate-notes
+              fi
             fi
           done
 

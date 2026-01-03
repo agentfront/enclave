@@ -83,21 +83,25 @@ async function main() {
 
       // Apply Codex-generated changelog (Nx doesn't handle this)
       if (project.changelog && !dryRun) {
-        const changelogPath = path.join('libs', project.name, 'CHANGELOG.md');
-        if (fs.existsSync(changelogPath)) {
-          const entry = formatChangelogEntry(project.newVersion, project.changelog, today);
-          if (entry) {
-            let content = fs.readFileSync(changelogPath, 'utf8');
-            const unreleasedIdx = content.indexOf('## [Unreleased]');
-            if (unreleasedIdx !== -1) {
-              const afterUnreleased = content.indexOf('\n', unreleasedIdx) + 1;
-              content = content.slice(0, afterUnreleased) + '\n' + entry + '\n' + content.slice(afterUnreleased);
-              fs.writeFileSync(changelogPath, content);
-              console.log(`✓ Updated changelog: ${changelogPath}`);
-            } else {
-              console.log(`⚠ Skipped changelog update for ${project.name}: missing "## [Unreleased]" section`);
+        try {
+          const changelogPath = path.join('libs', project.name, 'CHANGELOG.md');
+          if (fs.existsSync(changelogPath)) {
+            const entry = formatChangelogEntry(project.newVersion, project.changelog, today);
+            if (entry) {
+              let content = fs.readFileSync(changelogPath, 'utf8');
+              const unreleasedIdx = content.indexOf('## [Unreleased]');
+              if (unreleasedIdx !== -1) {
+                const afterUnreleased = content.indexOf('\n', unreleasedIdx) + 1;
+                content = content.slice(0, afterUnreleased) + '\n' + entry + '\n' + content.slice(afterUnreleased);
+                fs.writeFileSync(changelogPath, content);
+                console.log(`✓ Updated changelog: ${changelogPath}`);
+              } else {
+                console.log(`⚠ Skipped changelog update for ${project.name}: missing "## [Unreleased]" section`);
+              }
             }
           }
+        } catch (err) {
+          console.error(`⚠ Failed to update changelog for ${project.name}: ${err.message}`);
         }
       }
     } catch (error) {
@@ -158,26 +162,30 @@ function updateGlobalChangelog(globalChangelog, versionResults, date) {
   const versions = Object.values(versionResults);
   if (versions.length === 0) return;
 
-  // Find max version (spread to avoid mutating original array)
-  const maxVersion = [...versions].sort((a, b) =>
-    b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }),
-  )[0];
+  try {
+    // Find max version (spread to avoid mutating original array)
+    const maxVersion = [...versions].sort((a, b) =>
+      b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }),
+    )[0];
 
-  let content = fs.readFileSync(globalPath, 'utf8');
+    let content = fs.readFileSync(globalPath, 'utf8');
 
-  let globalEntry = `## [${maxVersion}] - ${date}\n\n`;
-  globalEntry += globalChangelog.summary + '\n\n';
-  globalEntry += '### Updated Libraries\n\n';
-  for (const p of globalChangelog.projects || []) {
-    globalEntry += `- **${p.name}** v${p.version} - ${p.summary}\n`;
-  }
+    let globalEntry = `## [${maxVersion}] - ${date}\n\n`;
+    globalEntry += globalChangelog.summary + '\n\n';
+    globalEntry += '### Updated Libraries\n\n';
+    for (const p of globalChangelog.projects || []) {
+      globalEntry += `- **${p.name}** v${p.version} - ${p.summary}\n`;
+    }
 
-  const unreleasedIdx = content.indexOf('## [Unreleased]');
-  if (unreleasedIdx !== -1) {
-    const afterUnreleased = content.indexOf('\n', unreleasedIdx) + 1;
-    content = content.slice(0, afterUnreleased) + '\n' + globalEntry + '\n' + content.slice(afterUnreleased);
-    fs.writeFileSync(globalPath, content);
-    console.log('✓ Updated global changelog');
+    const unreleasedIdx = content.indexOf('## [Unreleased]');
+    if (unreleasedIdx !== -1) {
+      const afterUnreleased = content.indexOf('\n', unreleasedIdx) + 1;
+      content = content.slice(0, afterUnreleased) + '\n' + globalEntry + '\n' + content.slice(afterUnreleased);
+      fs.writeFileSync(globalPath, content);
+      console.log('✓ Updated global changelog');
+    }
+  } catch (err) {
+    console.error(`⚠ Failed to update global changelog: ${err.message}`);
   }
 }
 
