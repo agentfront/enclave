@@ -82,8 +82,20 @@
   },
   "release": {
     "projects": ["libs/*"],
+    "projectsRelationship": "independent",
+    "releaseTagPattern": "{projectName}@{version}",
     "version": {
-      "preVersionCommand": "npx nx run-many -t build"
+      "conventionalCommits": false,
+      "preVersionCommand": "npx nx run-many -t build",
+      "git": {
+        "commit": true,
+        "tag": true,
+        "commitMessage": "chore(release): bump versions\n\n{projectName}@{version}"
+      }
+    },
+    "changelog": {
+      "projectChangelogs": false,
+      "workspaceChangelog": false
     }
   }
 }

@@ -23,11 +23,11 @@
         "command": "node scripts/strip-dist-from-pkg.js libs/enclave-vm/dist/package.json"
       }
     },
-    "publish": {
-      "executor": "nx:run-commands",
+    "nx-release-publish": {
+      "executor": "@nx/js:release-publish",
       "dependsOn": ["build"],
       "options": {
-        "command": "npm publish libs/enclave-vm/dist --access public --registry=https://registry.npmjs.org/"
+        "packageRoot": "libs/enclave-vm/dist"
       }
     }
   }

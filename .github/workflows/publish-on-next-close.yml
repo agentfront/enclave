@@ -128,25 +128,6 @@ jobs:
         if: steps.to_publish.outputs.projects == ''
         run: echo "Nothing to publish."
 
-      - name: Determine release version
-        id: version
-        shell: bash
-        env:
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: |
-          set -euo pipefail
-
-          HEADREF="$PR_HEAD_REF"
-
-          if [[ "$HEADREF" =~ ^next/([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            VERSION="${BASH_REMATCH[1]}"
-          else
-            VERSION=$(node -e "try{console.log(require('./package.json').version||'0.0.0')}catch{console.log('0.0.0')}")
-          fi
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Release version: $VERSION"
-
       - name: Determine release SHA
         id: release_sha
         shell: bash
@@ -169,106 +150,155 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Create git tags
+      - name: Create git tags (per-project)
+        if: steps.to_publish.outputs.projects != ''
         shell: bash
         run: |
           set -euo pipefail
 
-          VERSION="${{ steps.version.outputs.version }}"
           TARGET_SHA="${{ steps.release_sha.outputs.sha }}"
           PROJECTS="${{ steps.to_publish.outputs.projects }}"
 
           git fetch --tags
 
-          # Create global version tag
-          GLOBAL_TAG="v$VERSION"
-          if git rev-parse "$GLOBAL_TAG" >/dev/null 2>&1; then
-            echo "Tag $GLOBAL_TAG already exists."
-          else
-            echo "Creating global tag $GLOBAL_TAG at $TARGET_SHA"
-            git tag -a "$GLOBAL_TAG" "$TARGET_SHA" -m "Release $GLOBAL_TAG"
-            git push origin "$GLOBAL_TAG"
-          fi
+          # Create per-project tags (independent versioning)
+          IFS=',' read -ra LIBS <<< "$PROJECTS"
+          for lib in "${LIBS[@]}"; do
+            # Read project version from package.json with error handling
+            LIB_VERSION=$(node -e "
+              try {
+                const pkg = require('./libs/$lib/package.json');
+                if (!pkg.version) {
+                  console.error('No version field in package.json');
+                  process.exit(1);
+                }
+                console.log(pkg.version);
+              } catch (err) {
+                console.error('Failed to read package.json:', err.message);
+                process.exit(1);
+              }
+            ")
 
-          # Create per-project tags
-          if [ -n "$PROJECTS" ]; then
-            IFS=',' read -ra LIBS <<< "$PROJECTS"
-            for lib in "${LIBS[@]}"; do
-              # Read project version from package.json
-              LIB_VERSION=$(node -e "const pkg = require('./libs/$lib/package.json'); console.log(pkg.version || '$VERSION');")
+            if [ -z "$LIB_VERSION" ]; then
+              echo "Error: Failed to extract version for $lib"
+              exit 1
+            fi
 
-              PROJECT_TAG="${lib}@${LIB_VERSION}"
+            PROJECT_TAG="${lib}@${LIB_VERSION}"
 
-              if git rev-parse "$PROJECT_TAG" >/dev/null 2>&1; then
-                echo "Tag $PROJECT_TAG already exists."
-              else
-                echo "Creating project tag $PROJECT_TAG at $TARGET_SHA"
-                git tag -a "$PROJECT_TAG" "$TARGET_SHA" -m "Release $PROJECT_TAG"
-                git push origin "$PROJECT_TAG"
-              fi
-            done
-          fi
+            if git rev-parse "$PROJECT_TAG" >/dev/null 2>&1; then
+              echo "Tag $PROJECT_TAG already exists."
+            else
+              echo "Creating project tag $PROJECT_TAG at $TARGET_SHA"
+              git tag -a "$PROJECT_TAG" "$TARGET_SHA" -m "Release $PROJECT_TAG"
+              git push origin "$PROJECT_TAG"
+            fi
+          done
 
       - name: Build packages
         if: steps.to_publish.outputs.projects != ''
         run: yarn nx run-many --targets=build --projects="${{ steps.to_publish.outputs.projects }}" --parallel
 
-      - name: Publish to npm
+      - name: Publish to npm via Nx Release
         if: steps.to_publish.outputs.projects != ''
         shell: bash
         run: |
           set -euo pipefail
-          echo "Publishing selected projects via npm trusted publishing..."
+          echo "Publishing selected projects via Nx Release..."
+          npx nx release publish --projects="${{ steps.to_publish.outputs.projects }}"
 
-          IFS=',' read -ra PROJECTS <<< "${{ steps.to_publish.outputs.projects }}"
-          for project in "${PROJECTS[@]}"; do
-            echo "Publishing $project..."
-            yarn nx run "$project:publish"
-          done
-
-      - name: Generate release body
-        id: release_body
+      - name: Create GitHub Releases (per-project)
+        if: steps.to_publish.outputs.projects != ''
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
+          # Helper function to extract version with error handling
+          get_lib_version() {
+            local lib="$1"
+            node -e "
+              try {
+                const pkg = require('./libs/$lib/package.json');
+                if (!pkg.version) {
+                  console.error('No version field in package.json');
+                  process.exit(1);
+                }
+                console.log(pkg.version);
+              } catch (err) {
+                console.error('Failed to read package.json:', err.message);
+                process.exit(1);
+              }
+            "
+          }
+
           PROJECTS="${{ steps.to_publish.outputs.projects }}"
-          VERSION="${{ steps.version.outputs.version }}"
 
-          if [ -n "$PROJECTS" ]; then
-            # Build release body with published packages info
-            BODY="## Published Packages\n\n"
-
-            IFS=',' read -ra LIBS <<< "$PROJECTS"
-            for lib in "${LIBS[@]}"; do
-              if [ -f "libs/$lib/package.json" ]; then
-                LIB_VERSION=$(node -e "console.log(require('./libs/$lib/package.json').version)")
-                BODY+="- **${lib}** v${LIB_VERSION} - [npm](https://www.npmjs.com/package/${lib}/v/${LIB_VERSION})\n"
+          IFS=',' read -ra LIBS <<< "$PROJECTS"
+          for lib in "${LIBS[@]}"; do
+            if [ -f "libs/$lib/package.json" ]; then
+              LIB_VERSION=$(get_lib_version "$lib")
+              if [ -z "$LIB_VERSION" ]; then
+                echo "Error: Failed to extract version for $lib"
+                exit 1
               fi
-            done
+              TAG_NAME="${lib}@${LIB_VERSION}"
 
-            BODY+="\n---\n\n"
-          else
-            BODY="*No packages published in this release.*\n\n---\n\n"
-          fi
+              echo "Creating GitHub Release for $TAG_NAME..."
 
-          # Save body to file for multiline support
-          echo -e "$BODY" > /tmp/release_body.md
+              # Generate release body using heredoc
+              BODY=$(cat <<EOF
+          ## ${lib} v${LIB_VERSION}
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
-          body_path: /tmp/release_body.md
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          Published to npm: [${lib}@${LIB_VERSION}](https://www.npmjs.com/package/${lib}/v/${LIB_VERSION})
+          EOF
+              )
+
+              # Create release using gh CLI (check if exists first)
+              if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+                echo "Release $TAG_NAME already exists, skipping..."
+              else
+                gh release create "$TAG_NAME" \
+                  --title "$TAG_NAME" \
+                  --notes "$BODY" \
+                  --generate-notes
+              fi
+            fi
+          done
 
       - name: Summary
+        if: steps.to_publish.outputs.projects != ''
+        shell: bash
         run: |
+          # Helper function to extract version with error handling
+          get_lib_version() {
+            local lib="$1"
+            node -e "
+              try {
+                const pkg = require('./libs/$lib/package.json');
+                if (!pkg.version) {
+                  console.error('No version field in package.json');
+                  process.exit(1);
+                }
+                console.log(pkg.version);
+              } catch (err) {
+                console.error('Failed to read package.json:', err.message);
+                process.exit(1);
+              }
+            "
+          }
+
           echo "## Publish Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Published projects:** ${{ steps.to_publish.outputs.projects }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Release tag:** v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "**Release commit:** ${{ steps.release_sha.outputs.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Release Tags" >> $GITHUB_STEP_SUMMARY
+          IFS=',' read -ra LIBS <<< "${{ steps.to_publish.outputs.projects }}"
+          for lib in "${LIBS[@]}"; do
+            if [ -f "libs/$lib/package.json" ]; then
+              LIB_VERSION=$(get_lib_version "$lib" 2>/dev/null) || LIB_VERSION="unknown"
+              echo "- ${lib}@${LIB_VERSION}" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
