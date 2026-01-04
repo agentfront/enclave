@@ -27,9 +27,11 @@ import type {
   SecurityLevel,
   ReferenceSidecarOptions,
   SecureProxyLevelConfig,
+  DoubleVmConfig,
+  PartialDoubleVmConfig,
 } from './types';
 import type { WorkerPoolConfig } from './adapters/worker-pool';
-import { SECURITY_LEVEL_CONFIGS } from './types';
+import { SECURITY_LEVEL_CONFIGS, DEFAULT_DOUBLE_VM_CONFIG } from './types';
 import { validateGlobals } from './globals-validator';
 import { ReferenceSidecar } from './sidecar';
 import { REFERENCE_CONFIGS, ReferenceConfig } from './sidecar';
@@ -160,6 +162,7 @@ export class Enclave {
   private readonly transformCode: boolean;
   private readonly referenceConfig?: ReferenceConfig;
   private readonly scoringGate?: ScoringGate;
+  private readonly doubleVmConfig: DoubleVmConfig;
   private adapter?: SandboxAdapter;
 
   constructor(options: CreateEnclaveOptions = {}) {
@@ -253,7 +256,32 @@ export class Enclave {
       this.scoringGate = new ScoringGate(options.scoringGate);
     }
 
+    // Build double VM config (default enabled for all adapters)
+    this.doubleVmConfig = this.buildDoubleVmConfig(options.doubleVm);
+
     // Adapter will be lazy-loaded based on config.adapter
+  }
+
+  /**
+   * Build double VM configuration from user options
+   *
+   * Merges user options with defaults, handling nested validation config.
+   */
+  private buildDoubleVmConfig(options?: PartialDoubleVmConfig): DoubleVmConfig {
+    if (!options) {
+      return { ...DEFAULT_DOUBLE_VM_CONFIG };
+    }
+
+    return {
+      enabled: options.enabled ?? DEFAULT_DOUBLE_VM_CONFIG.enabled,
+      parentTimeoutBuffer: options.parentTimeoutBuffer ?? DEFAULT_DOUBLE_VM_CONFIG.parentTimeoutBuffer,
+      parentValidation: {
+        ...DEFAULT_DOUBLE_VM_CONFIG.parentValidation,
+        ...options.parentValidation,
+        // Merge suspicious patterns: default patterns + user patterns
+        suspiciousPatterns: [...(options.parentValidation?.suspiciousPatterns ?? [])],
+      },
+    };
   }
 
   /**
@@ -479,18 +507,40 @@ export class Enclave {
 
   /**
    * Get or create the sandbox adapter
+   *
+   * When double VM is enabled (default), the base adapter is wrapped
+   * with a double VM layer that provides:
+   * - Nested VM isolation (Parent VM + Inner VM)
+   * - Enhanced tool call validation
+   * - Suspicious pattern detection
+   * - Defense-in-depth against VM escape attacks
    */
   private async getAdapter(): Promise<SandboxAdapter> {
     if (this.adapter) {
       return this.adapter;
     }
 
+    // If double VM is enabled, use the double VM wrapper directly
+    // The double VM wrapper creates its own VM structure
+    if (this.doubleVmConfig.enabled) {
+      const { wrapWithDoubleVm } = await import('./double-vm/index.js');
+      // Pass undefined as base adapter since DoubleVmWrapper creates its own VMs
+      this.adapter = wrapWithDoubleVm(undefined as unknown as SandboxAdapter, this.doubleVmConfig, this.securityLevel);
+      return this.adapter;
+    }
+
+    // Double VM disabled - use base adapter with security warning
+    // (warning is logged by wrapWithDoubleVm when enabled=false)
+    const { wrapWithDoubleVm } = await import('./double-vm/index.js');
+
+    let baseAdapter: SandboxAdapter;
+
     // Lazy-load adapter based on configuration
     switch (this.config.adapter) {
       case 'vm': {
         const { VmAdapter } = await import('./adapters/vm-adapter.js');
-        this.adapter = new VmAdapter(this.securityLevel);
-        return this.adapter!;
+        baseAdapter = new VmAdapter(this.securityLevel);
+        break;
       }
 
       case 'isolated-vm':
@@ -498,14 +548,18 @@ export class Enclave {
 
       case 'worker_threads': {
         const { WorkerPoolAdapter } = await import('./adapters/worker-pool/index.js');
-        this.adapter = new WorkerPoolAdapter(this.config.workerPoolConfig, this.securityLevel);
-        await (this.adapter as { initialize?: () => Promise<void> }).initialize?.();
-        return this.adapter!;
+        baseAdapter = new WorkerPoolAdapter(this.config.workerPoolConfig, this.securityLevel);
+        await (baseAdapter as { initialize?: () => Promise<void> }).initialize?.();
+        break;
       }
 
       default:
         throw new Error(`Unknown adapter: ${this.config.adapter}`);
     }
+
+    // This will log a security warning and return the base adapter unchanged
+    this.adapter = wrapWithDoubleVm(baseAdapter, this.doubleVmConfig, this.securityLevel);
+    return this.adapter;
   }
 
   /**
