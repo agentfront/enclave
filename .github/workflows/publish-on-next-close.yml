@@ -165,24 +165,7 @@ jobs:
           IFS=',' read -ra LIBS <<< "$PROJECTS"
           for lib in "${LIBS[@]}"; do
             # Read project version from package.json with error handling
-            LIB_VERSION=$(node -e "
-              try {
-                const pkg = require('./libs/$lib/package.json');
-                if (!pkg.version) {
-                  console.error('No version field in package.json');
-                  process.exit(1);
-                }
-                console.log(pkg.version);
-              } catch (err) {
-                console.error('Failed to read package.json:', err.message);
-                process.exit(1);
-              }
-            ")
-
-            if [ -z "$LIB_VERSION" ]; then
-              echo "Error: Failed to extract version for $lib"
-              exit 1
-            fi
+            LIB_VERSION=$(./scripts/get-lib-version.sh "$lib")
 
             PROJECT_TAG="${lib}@${LIB_VERSION}"
 
@@ -215,34 +198,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Helper function to extract version with error handling
-          get_lib_version() {
-            local lib="$1"
-            node -e "
-              try {
-                const pkg = require('./libs/$lib/package.json');
-                if (!pkg.version) {
-                  console.error('No version field in package.json');
-                  process.exit(1);
-                }
-                console.log(pkg.version);
-              } catch (err) {
-                console.error('Failed to read package.json:', err.message);
-                process.exit(1);
-              }
-            "
-          }
-
           PROJECTS="${{ steps.to_publish.outputs.projects }}"
 
           IFS=',' read -ra LIBS <<< "$PROJECTS"
           for lib in "${LIBS[@]}"; do
             if [ -f "libs/$lib/package.json" ]; then
-              LIB_VERSION=$(get_lib_version "$lib")
-              if [ -z "$LIB_VERSION" ]; then
-                echo "Error: Failed to extract version for $lib"
-                exit 1
-              fi
+              LIB_VERSION=$(./scripts/get-lib-version.sh "$lib")
               TAG_NAME="${lib}@${LIB_VERSION}"
 
               echo "Creating GitHub Release for $TAG_NAME..."
@@ -271,23 +232,7 @@ jobs:
         if: steps.to_publish.outputs.projects != ''
         shell: bash
         run: |
-          # Helper function to extract version with error handling
-          get_lib_version() {
-            local lib="$1"
-            node -e "
-              try {
-                const pkg = require('./libs/$lib/package.json');
-                if (!pkg.version) {
-                  console.error('No version field in package.json');
-                  process.exit(1);
-                }
-                console.log(pkg.version);
-              } catch (err) {
-                console.error('Failed to read package.json:', err.message);
-                process.exit(1);
-              }
-            "
-          }
+          set -euo pipefail
 
           echo "## Publish Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -298,7 +243,7 @@ jobs:
           IFS=',' read -ra LIBS <<< "${{ steps.to_publish.outputs.projects }}"
           for lib in "${LIBS[@]}"; do
             if [ -f "libs/$lib/package.json" ]; then
-              LIB_VERSION=$(get_lib_version "$lib" 2>/dev/null) || LIB_VERSION="unknown"
+              LIB_VERSION=$(./scripts/get-lib-version.sh "$lib")
               echo "- ${lib}@${LIB_VERSION}" >> $GITHUB_STEP_SUMMARY
             fi
           done

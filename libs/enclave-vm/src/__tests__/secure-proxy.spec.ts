@@ -399,3 +399,143 @@ describe('SecureProxy', () => {
     });
   });
 });
+
+// Import additional exports for testing
+import {
+  getBlockedPropertiesForLevel,
+  buildBlockedPropertiesFromConfig,
+  createSafeReflect,
+  BLOCKED_PROPERTY_CATEGORIES,
+} from '../secure-proxy';
+
+describe('getBlockedPropertiesForLevel', () => {
+  it('should return empty set for PERMISSIVE level', () => {
+    const blocked = getBlockedPropertiesForLevel('PERMISSIVE');
+    // PERMISSIVE level should not block core prototype properties
+    expect(blocked.has('constructor')).toBe(false);
+  });
+
+  it('should block prototype properties for STANDARD level', () => {
+    const blocked = getBlockedPropertiesForLevel('STANDARD');
+    expect(blocked.has('constructor')).toBe(true);
+    expect(blocked.has('__proto__')).toBe(true);
+    expect(blocked.has('prototype')).toBe(true);
+  });
+
+  it('should block prototype and iterator helpers for SECURE level', () => {
+    const blocked = getBlockedPropertiesForLevel('SECURE');
+    expect(blocked.has('constructor')).toBe(true);
+    expect(blocked.has('toArray')).toBe(true);
+    expect(blocked.has('forEach')).toBe(true);
+  });
+
+  it('should block everything for STRICT level', () => {
+    const blocked = getBlockedPropertiesForLevel('STRICT');
+    expect(blocked.has('constructor')).toBe(true);
+    expect(blocked.has('toArray')).toBe(true);
+    expect(blocked.has('getPrototypeOf')).toBe(true);
+    expect(blocked.has('hrtime')).toBe(true);
+  });
+});
+
+describe('buildBlockedPropertiesFromConfig', () => {
+  it('should build set based on config flags', () => {
+    const config = {
+      blockConstructor: true,
+      blockPrototype: false,
+      blockLegacyAccessors: false,
+      proxyMaxDepth: 10,
+    };
+    const blocked = buildBlockedPropertiesFromConfig(config);
+
+    expect(blocked.has('constructor')).toBe(true);
+    expect(blocked.has('__proto__')).toBe(false);
+    expect(blocked.has('__defineGetter__')).toBe(false);
+  });
+
+  it('should block prototype properties when blockPrototype is true', () => {
+    const config = {
+      blockConstructor: false,
+      blockPrototype: true,
+      blockLegacyAccessors: false,
+      proxyMaxDepth: 10,
+    };
+    const blocked = buildBlockedPropertiesFromConfig(config);
+
+    expect(blocked.has('__proto__')).toBe(true);
+    expect(blocked.has('prototype')).toBe(true);
+    expect(blocked.has('constructor')).toBe(false);
+  });
+
+  it('should block legacy accessors when blockLegacyAccessors is true', () => {
+    const config = {
+      blockConstructor: false,
+      blockPrototype: false,
+      blockLegacyAccessors: true,
+      proxyMaxDepth: 10,
+    };
+    const blocked = buildBlockedPropertiesFromConfig(config);
+
+    expect(blocked.has('__defineGetter__')).toBe(true);
+    expect(blocked.has('__defineSetter__')).toBe(true);
+    expect(blocked.has('__lookupGetter__')).toBe(true);
+    expect(blocked.has('__lookupSetter__')).toBe(true);
+  });
+});
+
+describe('createSafeReflect', () => {
+  it('should return undefined for STRICT level', () => {
+    const safeReflect = createSafeReflect('STRICT');
+    expect(safeReflect).toBeUndefined();
+  });
+
+  it('should return safe Reflect for SECURE level', () => {
+    const safeReflect = createSafeReflect('SECURE');
+    expect(safeReflect).toBeDefined();
+    // Should have safe methods
+    expect(typeof safeReflect?.get).toBe('function');
+    expect(typeof safeReflect?.has).toBe('function');
+  });
+
+  it('should return safe Reflect for STANDARD level', () => {
+    const safeReflect = createSafeReflect('STANDARD');
+    expect(safeReflect).toBeDefined();
+    expect(typeof safeReflect?.apply).toBe('function');
+  });
+
+  it('should return safe Reflect for PERMISSIVE level', () => {
+    const safeReflect = createSafeReflect('PERMISSIVE');
+    expect(safeReflect).toBeDefined();
+  });
+
+  it('should block dangerous setPrototypeOf', () => {
+    const safeReflect = createSafeReflect('SECURE');
+    const obj = { a: 1 };
+
+    // setPrototypeOf is blocked by returning undefined for it
+    // When calling undefined as a function, it throws TypeError
+    expect(safeReflect?.setPrototypeOf).toBeUndefined();
+  });
+});
+
+describe('BLOCKED_PROPERTY_CATEGORIES', () => {
+  it('should have PROTOTYPE category', () => {
+    expect(BLOCKED_PROPERTY_CATEGORIES.PROTOTYPE).toBeDefined();
+    expect(BLOCKED_PROPERTY_CATEGORIES.PROTOTYPE.has('constructor')).toBe(true);
+  });
+
+  it('should have ITERATOR_HELPERS category', () => {
+    expect(BLOCKED_PROPERTY_CATEGORIES.ITERATOR_HELPERS).toBeDefined();
+    expect(BLOCKED_PROPERTY_CATEGORIES.ITERATOR_HELPERS.has('toArray')).toBe(true);
+  });
+
+  it('should have REFLECTION category', () => {
+    expect(BLOCKED_PROPERTY_CATEGORIES.REFLECTION).toBeDefined();
+    expect(BLOCKED_PROPERTY_CATEGORIES.REFLECTION.has('getPrototypeOf')).toBe(true);
+  });
+
+  it('should have TIMING category', () => {
+    expect(BLOCKED_PROPERTY_CATEGORIES.TIMING).toBeDefined();
+    expect(BLOCKED_PROPERTY_CATEGORIES.TIMING.has('hrtime')).toBe(true);
+  });
+});

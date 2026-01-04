@@ -52,6 +52,63 @@ console.log(result.value); // 3
 4. **Globals Validation** - Restricts global access
 5. **Value Sanitization** - Cleans return values
 6. **Timeout/Memory Limits** - Resource constraints
+7. **Double VM Layer** - Nested VM isolation (new)
+
+## Double VM Layer
+
+The Double VM layer provides enhanced security through nested VM isolation:
+
+- **Parent VM**: Security barrier with operation validation
+- **Inner VM**: Isolated execution environment for user code
+- **Tool call flow**: Inner VM → Parent VM validation → Host handler
+
+```typescript
+const enclave = new Enclave({
+  securityLevel: 'SECURE',
+  doubleVm: {
+    enabled: true, // Default: true
+    parentTimeoutBuffer: 1000, // Extra timeout for parent VM (ms)
+    parentValidation: {
+      validateOperationNames: true,
+      allowedOperationPattern: /^[a-z]+:[a-z]+$/i, // Optional whitelist
+      blockedOperationPatterns: [/^admin:/i], // Blacklist patterns
+      maxOperationsPerSecond: 100, // Rate limiting
+      blockSuspiciousSequences: true, // Detect attack patterns
+    },
+  },
+});
+```
+
+### Built-in Suspicious Pattern Detection
+
+| Pattern | Description |
+|---------|-------------|
+| `EXFIL_LIST_SEND` | List/query followed by send/export |
+| `RAPID_ENUMERATION` | Same operation called >10 times in 5s |
+| `CREDENTIAL_EXFIL` | Credential access + external operation |
+| `BULK_OPERATION` | Bulk/batch/mass operation names |
+| `DELETE_AFTER_ACCESS` | Delete operation after data access |
+
+### Custom Patterns
+
+```typescript
+const enclave = new Enclave({
+  doubleVm: {
+    parentValidation: {
+      suspiciousPatterns: [
+        {
+          id: 'CUSTOM_PATTERN',
+          description: 'Custom detection logic',
+          detect: (operationName, args, history) => {
+            // Return true if suspicious
+            return operationName.includes('dangerous');
+          },
+        },
+      ],
+    },
+  },
+});
+```
 
 ## API
 
@@ -78,6 +135,42 @@ Clean up resources.
 
 ```typescript
 enclave.dispose();
+```
+
+## Reference Sidecar
+
+For handling large data efficiently without bloating the VM context:
+
+```typescript
+import {
+  REF_ID_PREFIX,  // '__REF_'
+  REF_ID_SUFFIX,  // '__'
+  isReferenceId,
+  REFERENCE_CONFIGS
+} from 'enclave-vm';
+
+// Reference IDs follow format: __REF_[UUIDv4]__
+const isRef = isReferenceId('__REF_12345678-1234-1234-1234-123456789abc__'); // true
+
+// Get config for security level
+const strictConfig = REFERENCE_CONFIGS['STRICT'];
+// strictConfig.maxTotalSize = 16MB, maxReferenceSize = 4MB, etc.
+```
+
+## Secure Proxy
+
+Runtime property access protection with configurable blocking:
+
+```typescript
+import {
+  BlockedPropertyCategory,  // 'CONSTRUCTOR' | 'PROTOTYPE' | 'LEGACY_ACCESSOR' | ...
+  BLOCKED_PROPERTY_CATEGORIES,
+  createSecureProxy
+} from 'enclave-vm';
+
+// Available categories: CONSTRUCTOR, PROTOTYPE, LEGACY_ACCESSOR, DUNDER_PROTO, TIMING
+const allBlockedProps = BLOCKED_PROPERTY_CATEGORIES.CONSTRUCTOR;
+// Set { 'constructor' }
 ```
 
 ## Worker Pool Adapter

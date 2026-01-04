@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Double VM Layer**: New security layer providing defense-in-depth through nested VM isolation
+  - `doubleVm` configuration option in `CreateEnclaveOptions`
+  - Operation validation with whitelist/blacklist patterns
+  - Rate limiting for enumeration attack prevention
+  - Suspicious pattern detection (exfiltration, credential theft, bulk operations)
+- **BlockedPropertyCategory**: Type export for categorized property blocking
+- **REF_ID_SUFFIX**: New constant for reference ID construction (complements REF_ID_PREFIX)
+
+### Changed
+
+- **BREAKING**: `clearProxyCache()` now throws an error instead of being a silent no-op
+  - Migration: Remove calls to this deprecated function - WeakMap/WeakSet entries are automatically garbage collected
+- **BREAKING**: Removed `allowFunctionBinding` option from `SecureProxyOptions`
+  - Migration: This option was never implemented - remove from any custom configurations
+- Sanitization limits (`maxDepth`, `maxProperties`) now respect security level configuration instead of using hardcoded values
+
+### Fixed
+
+- Code injection validation added to `generatePatternDetectorsCode` to detect dangerous patterns in custom detectors
+- JSON.stringify circular reference handling in BULK_OPERATION pattern detector
+- Error cause preservation in tool call proxy for better debugging
+- Console assignment in parent VM now uses Object.defineProperty for consistency
+
 ## [1.0.2] - 2025-12-12
 
 ### Changed

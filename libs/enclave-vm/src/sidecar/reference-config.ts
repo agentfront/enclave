@@ -133,12 +133,18 @@ export const REFERENCE_CONFIGS: Record<SecurityLevel, ReferenceConfig> = {
 };
 
 /**
- * Reference ID format constant
+ * Reference ID prefix constant
  *
  * Reference IDs follow the format: __REF_[UUIDv4]__
  * The __REF_ prefix is protected by ReservedPrefixRule in ast-guard
  */
 export const REF_ID_PREFIX = '__REF_';
+
+/**
+ * Reference ID suffix constant
+ *
+ * Used with REF_ID_PREFIX to form complete reference IDs: __REF_[UUIDv4]__
+ */
 export const REF_ID_SUFFIX = '__';
 
 /**

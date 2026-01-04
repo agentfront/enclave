@@ -895,11 +895,15 @@ describe('Enclave Attack Matrix', () => {
 
       const result = await enclave.run(code);
 
-      // Should be stopped by tool call limit
+      // Should be stopped by either tool call limit OR suspicious pattern detection
+      // Double VM has enhanced security that may detect rapid enumeration first
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('tool call limit');
-      // Tool calls should be exactly at the limit
-      expect(toolCallCount).toBe(50);
+      expect(
+        result.error?.message.includes('tool call limit') ||
+          result.error?.message.includes('Suspicious pattern detected'),
+      ).toBe(true);
+      // Tool calls should be capped by one of the limits
+      expect(toolCallCount).toBeLessThanOrEqual(50);
       enclave.dispose();
     }, 10000);
 
@@ -945,9 +949,13 @@ describe('Enclave Attack Matrix', () => {
 
       const result = await enclave.run(code);
 
-      // Should be stopped by tool call limit (50) before completing 100 calls
+      // Should be stopped by either tool call limit OR suspicious pattern detection
+      // Double VM has enhanced security that may detect rapid enumeration first
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('tool call limit');
+      expect(
+        result.error?.message.includes('tool call limit') ||
+          result.error?.message.includes('Suspicious pattern detected'),
+      ).toBe(true);
       enclave.dispose();
     }, 10000);
   });

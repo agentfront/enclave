@@ -537,6 +537,7 @@ import type { ReferenceSidecar } from './sidecar/reference-sidecar';
 import type { ReferenceConfig } from './sidecar/reference-config';
 import type { ScoringGateConfig, ScoringGateResult } from './scoring/types';
 import type { WorkerPoolConfig } from './adapters/worker-pool/config';
+import type { DoubleVmConfig, PartialDoubleVmConfig, ParentValidationConfig } from './double-vm/types';
 
 /**
  * Internal execution context (tracks state during execution)
@@ -837,10 +838,81 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * ```
    */
   secureProxyConfig?: Partial<SecureProxyLevelConfig>;
+
+  /**
+   * Double VM configuration for enhanced security isolation
+   *
+   * When enabled (default), user code runs inside a nested VM structure:
+   * - Parent VM: Security barrier with enhanced validation
+   * - Inner VM: Where user code actually executes
+   *
+   * This provides defense-in-depth: even if malicious code exploits a VM
+   * vulnerability, it only escapes to another sandboxed VM rather than
+   * the host process.
+   *
+   * The parent VM provides additional security:
+   * - Operation name validation (whitelist/blacklist patterns)
+   * - Rate limiting (max operations per second)
+   * - Suspicious pattern detection (exfiltration, enumeration)
+   * - Double sanitization of operation arguments
+   *
+   * @default { enabled: true }
+   *
+   * @example
+   * ```typescript
+   * // Use with custom validation (default is enabled)
+   * const enclave = new Enclave({
+   *   doubleVm: {
+   *     parentValidation: {
+   *       allowedOperationPattern: /^[a-z]+:[a-z]+$/i,
+   *       maxOperationsPerSecond: 50,
+   *     },
+   *   },
+   * });
+   *
+   * // SECURITY WARNING: Disable (not recommended for production)
+   * const enclave = new Enclave({
+   *   doubleVm: { enabled: false },
+   * });
+   * ```
+   */
+  doubleVm?: PartialDoubleVmConfig;
 }
 
-// Re-export scoring types for convenience
+/**
+ * Re-exported scoring types for convenience
+ * @see {@link ScoringGateConfig} Configuration for the AI scoring gate
+ * @see {@link ScoringGateResult} Result from scoring gate evaluation
+ */
 export type { ScoringGateConfig, ScoringGateResult };
 
-// Re-export worker pool types for convenience
+/**
+ * Re-exported worker pool configuration type
+ * @see {@link WorkerPoolConfig} Configuration for worker pool adapter
+ */
 export type { WorkerPoolConfig };
+
+/**
+ * Re-exported double VM types for convenience
+ * @see {@link DoubleVmConfig} Full configuration for double VM layer
+ * @see {@link PartialDoubleVmConfig} Partial configuration with defaults
+ * @see {@link ParentValidationConfig} Parent VM validation settings
+ */
+export type { DoubleVmConfig, PartialDoubleVmConfig, ParentValidationConfig };
+
+/**
+ * Default double VM configuration
+ *
+ * Double VM is enabled by default for all adapters.
+ * This provides defense-in-depth security through nested VM isolation.
+ */
+export const DEFAULT_DOUBLE_VM_CONFIG: DoubleVmConfig = {
+  enabled: true,
+  parentTimeoutBuffer: 1000,
+  parentValidation: {
+    validateOperationNames: true,
+    maxOperationsPerSecond: 100,
+    blockSuspiciousSequences: true,
+    suspiciousPatterns: [], // Default patterns added at runtime
+  },
+};

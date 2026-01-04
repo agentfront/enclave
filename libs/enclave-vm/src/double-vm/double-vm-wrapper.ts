@@ -1,0 +1,346 @@
+/**
+ * Double VM Wrapper
+ *
+ * Wraps a base sandbox adapter with a double VM layer for enhanced security.
+ * User code runs in an Inner VM which is isolated inside a Parent VM,
+ * providing defense-in-depth against VM escape attacks.
+ *
+ * @packageDocumentation
+ */
+
+import * as vm from 'vm';
+import type { SandboxAdapter, ExecutionContext, ExecutionResult, ExecutionStats, SecurityLevel } from '../types';
+import { sanitizeValue } from '../value-sanitizer';
+import { getBlockedPropertiesForLevel, buildBlockedPropertiesFromConfig } from '../secure-proxy';
+import { ReferenceResolver } from '../sidecar/reference-resolver';
+import type { DoubleVmConfig, SerializableParentValidationConfig } from './types';
+import { generateParentVmBootstrap } from './parent-vm-bootstrap';
+import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-patterns';
+
+/**
+ * Sensitive patterns to redact from stack traces
+ * (Same as vm-adapter for consistency)
+ */
+const SENSITIVE_STACK_PATTERNS = [
+  /\/Users\/[^/]+\/[^\s):]*/gi,
+  /\/home\/[^/]+\/[^\s):]*/gi,
+  /\/var\/[^\s):]*/gi,
+  /node_modules\/[^\s):]+/gi,
+];
+
+/**
+ * Sanitize stack trace by removing host file system paths
+ */
+function sanitizeStackTrace(stack: string | undefined, sanitize = true): string | undefined {
+  if (!stack || !sanitize) return stack;
+
+  let sanitized = stack;
+  for (const pattern of SENSITIVE_STACK_PATTERNS) {
+    pattern.lastIndex = 0;
+    sanitized = sanitized.replace(pattern, '[REDACTED]');
+  }
+
+  // Remove line/column numbers
+  sanitized = sanitized.replace(/at\s+([^\s]+)\s+\([^)]*:\d+:\d+\)/g, 'at $1 ([REDACTED])');
+  sanitized = sanitized.replace(/at\s+[^\s]+:\d+:\d+/g, 'at [REDACTED]');
+
+  return sanitized;
+}
+
+/**
+ * Double VM Wrapper
+ *
+ * Creates a nested VM structure:
+ * - Parent VM: Security barrier with enhanced validation
+ * - Inner VM: Where user code actually executes
+ */
+export class DoubleVmWrapper implements SandboxAdapter {
+  private parentContext?: vm.Context;
+
+  constructor(private readonly config: DoubleVmConfig, private readonly securityLevel: SecurityLevel) {}
+
+  /**
+   * Execute code in the double VM structure
+   */
+  async execute<T = unknown>(code: string, executionContext: ExecutionContext): Promise<ExecutionResult<T>> {
+    const { stats, config } = executionContext;
+    const startTime = Date.now();
+
+    try {
+      // Create parent VM context
+      const parentContext = this.createParentContext(executionContext);
+      this.parentContext = parentContext;
+
+      // Generate the parent VM bootstrap script
+      const parentScript = this.buildParentScript(code, executionContext);
+
+      // Compile and execute in parent VM
+      const script = new vm.Script(parentScript, {
+        filename: 'parent-vm.js',
+      });
+
+      // Parent VM timeout = inner VM timeout + buffer
+      const parentTimeout = config.timeout + this.config.parentTimeoutBuffer;
+
+      const resultPromise = script.runInContext(parentContext, {
+        timeout: parentTimeout,
+        breakOnSigint: true,
+      });
+
+      // Wait for result
+      const value = await resultPromise;
+
+      // Update stats
+      stats.duration = Date.now() - startTime;
+      stats.endTime = Date.now();
+
+      return {
+        success: true,
+        value: value as T,
+        stats,
+      };
+    } catch (error: unknown) {
+      const err = error as Error;
+
+      // Update stats
+      stats.duration = Date.now() - startTime;
+      stats.endTime = Date.now();
+
+      // Determine whether to sanitize stack traces
+      const shouldSanitize = config.sanitizeStackTraces ?? true;
+
+      return {
+        success: false,
+        error: {
+          name: err.name || 'DoubleVMExecutionError',
+          message: err.message || 'Unknown double VM execution error',
+          stack: sanitizeStackTrace(err.stack, shouldSanitize),
+          code: 'DOUBLE_VM_EXECUTION_ERROR',
+        },
+        stats,
+      };
+    }
+  }
+
+  /**
+   * Create the parent VM context
+   *
+   * The parent VM gets controlled access to:
+   * - The vm module (to create inner VM)
+   * - A tool call proxy to the host
+   * - Stats and config references
+   */
+  private createParentContext(executionContext: ExecutionContext): vm.Context {
+    const { stats, config, toolHandler } = executionContext;
+
+    // Create isolated context for parent VM
+    const parentContext = vm.createContext({});
+
+    // Inject controlled vm module access
+    // CRITICAL: Only expose createContext and Script, nothing else
+    const safeVm = {
+      createContext: vm.createContext.bind(vm),
+      Script: vm.Script,
+    };
+
+    Object.defineProperty(parentContext, '__host_vm_module__', {
+      value: safeVm,
+      writable: false,
+      configurable: false,
+    });
+
+    // Inject tool call proxy to host
+    const hostCallTool = this.createHostCallToolProxy(executionContext);
+    Object.defineProperty(parentContext, '__host_callTool__', {
+      value: hostCallTool,
+      writable: false,
+      configurable: false,
+    });
+
+    // Inject mutable stats reference so parent can update counts
+    Object.defineProperty(parentContext, '__host_stats__', {
+      value: stats,
+      writable: false,
+      configurable: false,
+    });
+
+    // Inject abort check function
+    Object.defineProperty(parentContext, '__host_abort_check__', {
+      value: () => executionContext.aborted,
+      writable: false,
+      configurable: false,
+    });
+
+    // Inject config (for globals and console limits)
+    Object.defineProperty(parentContext, '__host_config__', {
+      value: {
+        globals: config.globals,
+        maxConsoleOutputBytes: config.maxConsoleOutputBytes,
+        maxConsoleCalls: config.maxConsoleCalls,
+      },
+      writable: false,
+      configurable: false,
+    });
+
+    // Add console for parent VM (for debugging only, not a security risk since
+    // user code runs in the inner VM, not the parent VM)
+    Object.defineProperty(parentContext, 'console', {
+      value: console,
+      writable: false,
+      configurable: false,
+    });
+
+    return parentContext;
+  }
+
+  /**
+   * Create the tool call proxy function that runs in the HOST
+   *
+   * This is called BY the parent VM's innerCallTool function
+   * when it wants to forward a validated call to the actual host.
+   *
+   * The proxy handles:
+   * - Sidecar reference resolution (args with __REF_...__ are resolved)
+   * - Large result lifting (strings > threshold are stored in sidecar)
+   * - Value sanitization
+   */
+  private createHostCallToolProxy(executionContext: ExecutionContext) {
+    const { config, toolHandler, sidecar, referenceConfig } = executionContext;
+
+    // Create resolver for sidecar references if available
+    const resolver = sidecar && referenceConfig ? new ReferenceResolver(sidecar, referenceConfig) : undefined;
+
+    return async (toolName: string, args: Record<string, unknown>): Promise<unknown> => {
+      // Double check abort status
+      if (executionContext.aborted) {
+        throw new Error('Execution aborted');
+      }
+
+      // Check for tool handler
+      if (!toolHandler) {
+        throw new Error('No tool handler configured. Cannot execute tool calls.');
+      }
+
+      // Resolve sidecar references if present
+      let resolvedArgs = args;
+      if (resolver && resolver.containsReferences(args)) {
+        // Predictive check - fail fast before allocation
+        if (resolver.wouldExceedLimit(args)) {
+          throw new Error(
+            `Arguments would exceed maximum resolved size when references are expanded. ` +
+              `Pass large data directly to tool arguments instead of constructing them.`,
+          );
+        }
+        // Resolve all references to actual data
+        resolvedArgs = resolver.resolve(args) as Record<string, unknown>;
+      }
+
+      // Execute the tool call
+      try {
+        const result = await toolHandler(toolName, resolvedArgs);
+
+        // Sanitize the return value using configured limits from security level
+        const sanitized = sanitizeValue(result, {
+          maxDepth: config.maxSanitizeDepth,
+          maxProperties: config.maxSanitizeProperties,
+          allowDates: true,
+          allowErrors: true,
+        });
+
+        // Lift large string results to sidecar if configured
+        if (sidecar && referenceConfig && typeof sanitized === 'string') {
+          const size = Buffer.byteLength(sanitized, 'utf-8');
+          if (size >= referenceConfig.extractionThreshold) {
+            try {
+              const refId = sidecar.store(sanitized, 'tool-result', { origin: toolName });
+              return refId;
+            } catch (storageError) {
+              // If storage fails (e.g., sidecar limits reached), log and return original value
+              if (process.env['NODE_ENV'] !== 'production') {
+                console.debug(
+                  `[DoubleVmWrapper] Sidecar storage failed for tool "${toolName}": ${(storageError as Error).message}`,
+                );
+              }
+              return sanitized;
+            }
+          }
+        }
+
+        return sanitized;
+      } catch (error: unknown) {
+        const err = error as Error;
+        // Preserve the original error as cause for better debugging
+        const wrappedError = new Error(`Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`);
+        wrappedError.cause = err;
+        throw wrappedError;
+      }
+    };
+  }
+
+  /**
+   * Build the parent VM script with embedded user code
+   */
+  private buildParentScript(code: string, executionContext: ExecutionContext): string {
+    const { config, secureProxyConfig, referenceConfig } = executionContext;
+
+    // Serialize validation config for passing to parent VM
+    const serializableConfig = this.serializeValidationConfig();
+
+    // Get all suspicious patterns (defaults + custom)
+    const allPatterns = [...DEFAULT_SUSPICIOUS_PATTERNS, ...(this.config.parentValidation.suspiciousPatterns || [])];
+    const serializedPatterns = serializePatterns(allPatterns);
+
+    // Get blocked properties for secure proxy
+    // Use explicit secureProxyConfig override if available, otherwise use security level defaults
+    let blockedPropertiesSet: Set<string>;
+    if (secureProxyConfig) {
+      blockedPropertiesSet = buildBlockedPropertiesFromConfig(secureProxyConfig);
+    } else {
+      blockedPropertiesSet = getBlockedPropertiesForLevel(this.securityLevel);
+    }
+    const blockedProperties = Array.from(blockedPropertiesSet);
+
+    // Whether composite reference handles are allowed
+    const allowComposites = referenceConfig?.allowComposites ?? false;
+
+    return generateParentVmBootstrap({
+      userCode: code,
+      innerTimeout: config.timeout,
+      maxIterations: config.maxIterations,
+      maxToolCalls: config.maxToolCalls,
+      securityLevel: this.securityLevel,
+      validationConfig: serializableConfig,
+      suspiciousPatterns: serializedPatterns,
+      blockedProperties,
+      allowComposites,
+    });
+  }
+
+  /**
+   * Serialize validation config for passing to parent VM
+   *
+   * RegExp objects cannot be passed across VM boundaries,
+   * so we extract their source and flags.
+   */
+  private serializeValidationConfig(): SerializableParentValidationConfig {
+    const pv = this.config.parentValidation;
+
+    return {
+      validateOperationNames: pv.validateOperationNames,
+      allowedOperationPatternSource: pv.allowedOperationPattern?.source,
+      allowedOperationPatternFlags: pv.allowedOperationPattern?.flags,
+      blockedOperationPatternSources: pv.blockedOperationPatterns?.map((p) => p.source),
+      blockedOperationPatternFlags: pv.blockedOperationPatterns?.map((p) => p.flags),
+      maxOperationsPerSecond: pv.maxOperationsPerSecond,
+      blockSuspiciousSequences: pv.blockSuspiciousSequences,
+      suspiciousPatterns: [], // Will be populated separately
+    };
+  }
+
+  /**
+   * Dispose resources
+   */
+  dispose(): void {
+    this.parentContext = undefined;
+  }
+}
