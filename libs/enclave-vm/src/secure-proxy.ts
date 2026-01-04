@@ -261,16 +261,6 @@ export interface SecureProxyOptions {
   additionalBlocked?: string[];
 
   /**
-   * Whether to allow Function.prototype.bind/call/apply
-   * Default: true (allows them for array methods like .map, .filter)
-   *
-   * @reserved Reserved for future use. Currently not implemented - bind/call/apply
-   * are always allowed to support array methods. Set FUNCTION_BLOCKED_PROPERTIES
-   * to add these if needed for stricter security.
-   */
-  allowFunctionBinding?: boolean;
-
-  /**
    * Maximum depth for recursive proxying
    * Default: 10
    */
@@ -702,9 +692,9 @@ export function isSecureProxy(obj: unknown): boolean {
 /**
  * Clear the proxy cache
  *
- * @deprecated This function is a no-op. WeakMap and WeakSet entries are automatically
- * garbage collected when their target objects become unreachable. There is no need
- * to manually clear the cache.
+ * @deprecated This function always throws an error. WeakMap and WeakSet entries are
+ * automatically garbage collected when their target objects become unreachable.
+ * Manual cache clearing is not supported or necessary.
  *
  * @throws {Error} Always throws to inform callers that this operation is not supported
  */

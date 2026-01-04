@@ -182,8 +182,13 @@ export class DoubleVmWrapper implements SandboxAdapter {
       configurable: false,
     });
 
-    // Add console for parent VM (for debugging only)
-    parentContext['console'] = console;
+    // Add console for parent VM (for debugging only, not a security risk since
+    // user code runs in the inner VM, not the parent VM)
+    Object.defineProperty(parentContext, 'console', {
+      value: console,
+      writable: false,
+      configurable: false,
+    });
 
     return parentContext;
   }
@@ -234,10 +239,10 @@ export class DoubleVmWrapper implements SandboxAdapter {
       try {
         const result = await toolHandler(toolName, resolvedArgs);
 
-        // Sanitize the return value
+        // Sanitize the return value using configured limits from security level
         const sanitized = sanitizeValue(result, {
-          maxDepth: 20,
-          maxProperties: 10000,
+          maxDepth: config.maxSanitizeDepth,
+          maxProperties: config.maxSanitizeProperties,
           allowDates: true,
           allowErrors: true,
         });
