@@ -159,22 +159,19 @@ function updateGlobalChangelog(globalChangelog, versionResults, date) {
     return;
   }
 
-  const versions = Object.values(versionResults);
-  if (versions.length === 0) return;
+  const projects = globalChangelog.projects || [];
+  if (projects.length === 0) return;
 
   try {
-    // Find max version (spread to avoid mutating original array)
-    const maxVersion = [...versions].sort((a, b) =>
-      b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }),
-    )[0];
-
     let content = fs.readFileSync(globalPath, 'utf8');
 
-    let globalEntry = `## [${maxVersion}] - ${date}\n\n`;
+    // Build date-based entry with package table
+    let globalEntry = `## ${date}\n\n`;
     globalEntry += globalChangelog.summary + '\n\n';
-    globalEntry += '### Updated Libraries\n\n';
-    for (const p of globalChangelog.projects || []) {
-      globalEntry += `- **${p.name}** v${p.version} - ${p.summary}\n`;
+    globalEntry += '| Package | Version | Highlights |\n';
+    globalEntry += '|---------|---------|------------|\n';
+    for (const p of projects) {
+      globalEntry += `| ${p.name} | ${p.version} | ${p.summary} |\n`;
     }
 
     const unreleasedIdx = content.indexOf('## [Unreleased]');
