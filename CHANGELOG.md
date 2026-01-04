@@ -1,46 +1,46 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to the Enclave monorepo will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+For detailed changes to individual packages, see their respective changelogs:
+
+- [enclave-vm](libs/enclave-vm/CHANGELOG.md)
+- [ast-guard](libs/ast-guard/CHANGELOG.md)
+- [vectoriadb](libs/vectoriadb/CHANGELOG.md)
 
 ## [Unreleased]
 
-## [2.0.0] - 2025-12-12
+## 2026-01-04
 
-Transformer-dependent features now load Hugging Face models lazily, with enclave-vm fixing its scorer import path and vectoriadb requiring explicit opt-in for transformer embeddings.
+Major enclave-vm update introducing the default double VM isolation layer with operation validation.
 
-### Updated Libraries
+| Package    | Version | Highlights                                                                |
+| ---------- | ------- | ------------------------------------------------------------------------- |
+| enclave-vm | 2.0.0   | Double VM wrapper default, nested isolation, suspicious-pattern detection |
 
-- **enclave-vm** v1.0.2 - LocalLlmScorer lazily imports @huggingface/transformers and treats it as an optional peer dependency.
-- **vectoriadb** v2.0.0 - EmbeddingService now loads transformers dynamically, adds injection hooks, and requires you to install the optional peer when using transformer embeddings.
+## 2025-12-12
 
-## [1.1.0] - 2025-12-11
+Transformer-dependent features now load Hugging Face models lazily with optional peer dependency.
 
-Hardened ast-guard’s AgentScript preset with additional browser primitive blocks and dynamic import enforcement.
+| Package    | Version | Highlights                                                       |
+| ---------- | ------- | ---------------------------------------------------------------- |
+| enclave-vm | 1.0.2   | LocalLlmScorer lazy-loads transformers, optional peer dependency |
+| vectoriadb | 2.0.0   | EmbeddingService dynamic loading, injection hooks, optional peer |
 
-### Updated Libraries
+## 2025-12-11
 
-- **ast-guard** v1.1.0 - AgentScript preset now blocks structuredClone/messaging APIs, queueMicrotask, and import() expressions for parity with the Enclave sandbox.
+Hardened ast-guard AgentScript preset with additional browser primitive blocks.
 
-### Changed
+| Package   | Version | Highlights                                                      |
+| --------- | ------- | --------------------------------------------------------------- |
+| ast-guard | 1.1.0   | Blocks structuredClone/messaging APIs, queueMicrotask, import() |
 
-- Updated the documented cache directory default for `LocalLlmConfig` to `~/.enclave/models` in `libs/enclave-vm/src/scoring/types.ts:377` to match the new Enclave pathing.
-- Added Local LLM scoring guidance (including the new cacheDir default) to the library docs in `docs/live/docs/libraries/enclave.mdx:96` and `docs/draft/docs/libraries/enclave.mdx:96`.
+## 2025-11-30
 
-## [1.0.0] - 2025-11-30
+Initial release of the Enclave monorepo.
 
-### Added
-
-- Initial release of the Enclave monorepo
-- Migrated `ast-guard`, `vectoriadb`, and `enclave-vm` from FrontMCP monorepo
-- Set up Nx workspace with independent versioning for ast-guard and vectoriadb
-- Set up synchronized versioning for enclave-vm
-- CI/CD workflows for build, test, and publish
-
-### Libraries Included
-
-- **ast-guard** v1.0.0 - AST-based JavaScript validator with 100% CVE protection
-- **vectoriadb** v1.0.0 - In-memory vector database for semantic search
-- **enclave-vm** v1.0.0 - Secure AgentScript execution environment
+| Package    | Version | Highlights                                         |
+| ---------- | ------- | -------------------------------------------------- |
+| ast-guard  | 1.0.0   | AST-based JavaScript validator with CVE protection |
+| vectoriadb | 1.0.0   | In-memory vector database for semantic search      |
+| enclave-vm | 1.0.0   | Secure AgentScript execution environment           |

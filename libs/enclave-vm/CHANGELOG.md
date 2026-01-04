@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-01-04
+
+### Added
+
+- Introduced the `DoubleVmWrapper`, parent bootstrap generator, suspicious-pattern serializers, and adapter wrapper so user code now runs inside parent+inner VMs with strict tool-call validation and sanitized host proxies (`libs/enclave-vm/src/double-vm/**/*.ts`).
+- Exposed the `doubleVm` configuration plus reusable `DoubleVmConfig`/`ParentValidationConfig` defaults so callers can tune the new layer (`libs/enclave-vm/src/types.ts:842-918`).
+
+### Changed
+
+- **Breaking:** `Enclave` always routes execution through the double VM wrapper unless you explicitly disable it, so adapter selections only apply after opting out of the new layer (`libs/enclave-vm/src/enclave.ts:259-563`).
+- Tool calls now flow through the parent VM proxy that resolves reference handles, sanitizes values, and redacts stack traces before returning to the host (`libs/enclave-vm/src/double-vm/double-vm-wrapper.ts:82-224`).
+
+### Removed
+
+- **Breaking:** Removed the unused `allowFunctionBinding` toggle from `SecureProxyOptions`; function binding is now managed entirely inside the secure proxy (`libs/enclave-vm/src/secure-proxy.ts:254-260`).
+
+### Security
+
+- Built-in suspicious-pattern detectors now block common exfiltration, enumeration, and credential-leak sequences before tool calls reach the host (`libs/enclave-vm/src/double-vm/suspicious-patterns.ts:1-304`).
+
 ### Added
 
 - **Double VM Layer**: New security layer providing defense-in-depth through nested VM isolation

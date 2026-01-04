@@ -208,13 +208,32 @@ jobs:
 
               echo "Creating GitHub Release for $TAG_NAME..."
 
-              # Generate release body using heredoc
-              BODY=$(cat <<EOF
-          ## ${lib} v${LIB_VERSION}
+              # Extract changelog entry for this version
+              CHANGELOG_PATH="libs/$lib/CHANGELOG.md"
+              CHANGELOG_ENTRY=""
+              if [ -f "$CHANGELOG_PATH" ]; then
+                # Extract content between ## [version] and next ## [
+                CHANGELOG_ENTRY=$(node -e "
+                  const fs = require('fs');
+                  const content = fs.readFileSync('$CHANGELOG_PATH', 'utf8');
+                  const version = '$LIB_VERSION';
+                  const pattern = new RegExp('## \\\\[' + version.replace(/\\./g, '\\\\.') + '\\\\][^\\n]*\\n([\\\\s\\\\S]*?)(?=\\n## \\\\[|$)');
+                  const match = content.match(pattern);
+                  if (match) {
+                    console.log(match[1].trim());
+                  }
+                " 2>/dev/null || echo "")
+              fi
 
-          Published to npm: [${lib}@${LIB_VERSION}](https://www.npmjs.com/package/${lib}/v/${LIB_VERSION})
-          EOF
-              )
+              # Build release body
+              BODY="## ${lib} v${LIB_VERSION}"
+              BODY+=$'\n\n'
+              BODY+="📦 **npm:** [\`${lib}@${LIB_VERSION}\`](https://www.npmjs.com/package/${lib}/v/${LIB_VERSION})"
+
+              if [ -n "$CHANGELOG_ENTRY" ]; then
+                BODY+=$'\n\n---\n\n'
+                BODY+="$CHANGELOG_ENTRY"
+              fi
 
               # Create release using gh CLI (check if exists first)
               if gh release view "$TAG_NAME" >/dev/null 2>&1; then
@@ -222,8 +241,7 @@ jobs:
               else
                 gh release create "$TAG_NAME" \
                   --title "$TAG_NAME" \
-                  --notes "$BODY" \
-                  --generate-notes
+                  --notes "$BODY"
               fi
             fi
           done
