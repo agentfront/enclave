@@ -879,13 +879,25 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
   doubleVm?: PartialDoubleVmConfig;
 }
 
-// Re-export scoring types for convenience
+/**
+ * Re-exported scoring types for convenience
+ * @see {@link ScoringGateConfig} Configuration for the AI scoring gate
+ * @see {@link ScoringGateResult} Result from scoring gate evaluation
+ */
 export type { ScoringGateConfig, ScoringGateResult };
 
-// Re-export worker pool types for convenience
+/**
+ * Re-exported worker pool configuration type
+ * @see {@link WorkerPoolConfig} Configuration for worker pool adapter
+ */
 export type { WorkerPoolConfig };
 
-// Re-export double VM types for convenience
+/**
+ * Re-exported double VM types for convenience
+ * @see {@link DoubleVmConfig} Full configuration for double VM layer
+ * @see {@link PartialDoubleVmConfig} Partial configuration with defaults
+ * @see {@link ParentValidationConfig} Parent VM validation settings
+ */
 export type { DoubleVmConfig, PartialDoubleVmConfig, ParentValidationConfig };
 
 /**

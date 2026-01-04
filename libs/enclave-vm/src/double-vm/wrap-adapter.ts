@@ -21,19 +21,27 @@ import { DoubleVmWrapper } from './double-vm-wrapper';
  * When disabled, a security warning is logged and the original adapter
  * is returned unchanged. This is NOT recommended for production use.
  *
- * @param baseAdapter - The original adapter (returned when double VM is disabled;
- *   when enabled, a new DoubleVmWrapper is created instead of wrapping this adapter)
+ * @param baseAdapter - The original adapter. When double VM is enabled, this parameter
+ *   is not used (a new DoubleVmWrapper is created). When disabled, this must be provided
+ *   and will be returned directly. Pass undefined when double VM is enabled.
  * @param config - Double VM configuration
  * @param securityLevel - The security level for dangerous global removal
  * @returns The wrapped adapter (or original if disabled)
+ * @throws Error if double VM is disabled and baseAdapter is not provided
  */
 export function wrapWithDoubleVm(
-  baseAdapter: SandboxAdapter,
+  baseAdapter: SandboxAdapter | undefined,
   config: DoubleVmConfig,
   securityLevel: SecurityLevel,
 ): SandboxAdapter {
   // If disabled, warn and return original adapter
   if (!config.enabled) {
+    if (!baseAdapter) {
+      throw new Error(
+        'baseAdapter is required when double VM is disabled. ' +
+          'Either enable double VM (recommended) or provide a base adapter.',
+      );
+    }
     console.warn(
       '[SECURITY WARNING] Double VM is disabled. ' +
         'This reduces security isolation and is NOT recommended for production. ' +
@@ -44,7 +52,7 @@ export function wrapWithDoubleVm(
   }
 
   // Create the double VM wrapper
-  // Note: The base adapter is not used - DoubleVmWrapper creates its own VMs
+  // Note: When enabled, baseAdapter is not used - DoubleVmWrapper creates its own VMs
   // This is intentional: the double VM replaces the base adapter rather than wrapping it
   return new DoubleVmWrapper(config, securityLevel);
 }

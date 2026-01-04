@@ -526,7 +526,7 @@ export class Enclave {
     if (this.doubleVmConfig.enabled) {
       const { wrapWithDoubleVm } = await import('./double-vm/index.js');
       // Pass undefined as base adapter since DoubleVmWrapper creates its own VMs
-      this.adapter = wrapWithDoubleVm(undefined as unknown as SandboxAdapter, this.doubleVmConfig, this.securityLevel);
+      this.adapter = wrapWithDoubleVm(undefined, this.doubleVmConfig, this.securityLevel);
       return this.adapter;
     }
 

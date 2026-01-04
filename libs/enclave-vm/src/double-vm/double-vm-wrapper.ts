@@ -264,7 +264,10 @@ export class DoubleVmWrapper implements SandboxAdapter {
         return sanitized;
       } catch (error: unknown) {
         const err = error as Error;
-        throw new Error(`Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`);
+        // Preserve the original error as cause for better debugging
+        const wrappedError = new Error(`Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`);
+        wrappedError.cause = err;
+        throw wrappedError;
       }
     };
   }

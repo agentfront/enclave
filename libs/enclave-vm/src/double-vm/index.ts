@@ -6,7 +6,9 @@
  * @packageDocumentation
  */
 
-// Types
+/**
+ * Type exports for double VM configuration and runtime
+ */
 export type {
   DoubleVmConfig,
   PartialDoubleVmConfig,
@@ -18,13 +20,27 @@ export type {
   DoubleVmStats,
 } from './types';
 
-// Wrapper
+/**
+ * Core wrapper class for double VM execution
+ */
 export { DoubleVmWrapper } from './double-vm-wrapper';
+
+/**
+ * Utility functions for adapter wrapping
+ */
 export { wrapWithDoubleVm, isDoubleVmEnabled } from './wrap-adapter';
 
-// Patterns
+/**
+ * Suspicious pattern detection exports
+ */
 export { DEFAULT_SUSPICIOUS_PATTERNS, serializePattern, serializePatterns } from './suspicious-patterns';
 
-// Bootstrap (for testing)
+/**
+ * Bootstrap generation for parent VM (primarily for testing)
+ */
 export { generateParentVmBootstrap } from './parent-vm-bootstrap';
+
+/**
+ * Bootstrap options type
+ */
 export type { ParentVmBootstrapOptions } from './parent-vm-bootstrap';

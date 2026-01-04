@@ -11,10 +11,14 @@
  * @packageDocumentation
  */
 
-// Main adapter
+/**
+ * Main worker pool adapter class
+ */
 export { WorkerPoolAdapter } from './worker-pool-adapter';
 
-// Configuration
+/**
+ * Configuration types and defaults for worker pool
+ */
 export {
   WorkerPoolConfig,
   WorkerSlotStatus,
@@ -25,7 +29,9 @@ export {
   buildWorkerPoolConfig,
 } from './config';
 
-// Errors
+/**
+ * Error classes for worker pool operations
+ */
 export {
   WorkerPoolError,
   WorkerTimeoutError,
@@ -42,7 +48,9 @@ export {
   TooManyPendingCallsError,
 } from './errors';
 
-// Protocol types
+/**
+ * Protocol types for main thread to worker communication
+ */
 export type {
   SerializedError,
   SerializedConfig,
@@ -55,9 +63,27 @@ export type {
   ToolResponseMessage,
 } from './protocol';
 
-// Utility exports for advanced usage
+/**
+ * Worker slot management for advanced usage
+ */
 export { WorkerSlot } from './worker-slot';
+
+/**
+ * Execution queue for request management
+ */
 export { ExecutionQueue, QueueStats } from './execution-queue';
+
+/**
+ * Memory monitoring utilities
+ */
 export { MemoryMonitor, MemoryMonitorStats } from './memory-monitor';
+
+/**
+ * Rate limiting utilities
+ */
 export { RateLimiter, createRateLimiter } from './rate-limiter';
+
+/**
+ * Safe serialization utilities for cross-thread communication
+ */
 export { safeDeserialize, safeSerialize, sanitizeObject } from './safe-deserialize';

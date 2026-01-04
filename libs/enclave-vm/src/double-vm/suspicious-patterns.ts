@@ -92,9 +92,15 @@ const BULK_OPERATION: SuspiciousPattern = {
 
     // Check for suspicious arguments that indicate bulk access
     if (typeof args === 'object' && args !== null) {
-      const argStr = JSON.stringify(args).toLowerCase();
-      const hasBulkArgs = /limit.*[0-9]{4,}|"\*"|no[_-]?limit/i.test(argStr);
-      if (hasBulkArgs) return true;
+      try {
+        const argStr = JSON.stringify(args).toLowerCase();
+        const hasBulkArgs = /limit.*[0-9]{4,}|"\*"|no[_-]?limit/i.test(argStr);
+        if (hasBulkArgs) return true;
+      } catch {
+        // If args contains circular references or is not serializable,
+        // we can't check for bulk patterns - return false to allow the call
+        // (the call will fail later if args are truly malformed)
+      }
     }
 
     return isBulkOperation;
@@ -218,12 +224,70 @@ export function serializePatterns(patterns: SuspiciousPattern[]): SerializableSu
 }
 
 /**
+ * Dangerous patterns that should not appear in detectBody
+ *
+ * These patterns could indicate code injection attempts:
+ * - Function/class declarations trying to break out of the function body
+ * - Module system access (require, import)
+ * - Global object access
+ */
+const DANGEROUS_BODY_PATTERNS = [
+  /\bfunction\s+[a-zA-Z_$][a-zA-Z0-9_$]*\s*\(/g, // Named function declarations
+  /\bclass\s+[a-zA-Z_$]/g, // Class declarations
+  /\brequire\s*\(/g, // CommonJS require
+  /\bimport\s*\(/g, // Dynamic import
+  /\bimport\s+/g, // Static import
+  /\bglobal\b/g, // Global object
+  /\bglobalThis\b/g, // GlobalThis object
+  /\bprocess\b/g, // Node.js process
+];
+
+/**
+ * Validate detectBody for potential code injection
+ *
+ * @param detectBody - The function body string to validate
+ * @param patternId - Pattern ID for error messages
+ * @throws Error if dangerous patterns are detected
+ */
+function validateDetectBody(detectBody: string, patternId: string): void {
+  for (const pattern of DANGEROUS_BODY_PATTERNS) {
+    pattern.lastIndex = 0;
+    if (pattern.test(detectBody)) {
+      throw new Error(
+        `Pattern "${patternId}": detectBody contains potentially dangerous code. ` +
+          `Custom patterns should only contain detection logic, not function declarations, ` +
+          `imports, or global object access.`,
+      );
+    }
+  }
+}
+
+/**
  * Create detection function source code for parent VM
  *
  * This generates JavaScript code that recreates the detection functions
  * inside the parent VM context.
+ *
+ * @remarks
+ * **Security Warning**: Custom patterns are provided by developers (not end users)
+ * and execute in the parent VM context. The parent VM is trusted infrastructure
+ * with limited capabilities (no require, no global). However, patterns should
+ * be reviewed carefully as they become part of the security validation layer.
+ *
+ * Basic validation is performed to detect obvious injection attempts, but
+ * determined attackers with code-level access could potentially bypass this.
+ * Only use patterns from trusted sources.
+ *
+ * @param patterns - Serialized patterns to generate code for
+ * @returns JavaScript code string defining the pattern array
+ * @throws Error if any pattern contains dangerous code
  */
 export function generatePatternDetectorsCode(patterns: SerializableSuspiciousPattern[]): string {
+  // Validate all pattern bodies before generating code
+  for (const p of patterns) {
+    validateDetectBody(p.detectBody, p.id);
+  }
+
   const patternDefs = patterns
     .map(
       (p) => `{

@@ -70,6 +70,12 @@ export const BLOCKED_PROPERTY_CATEGORIES = {
   TIMING: new Set(['hrtime', 'timeOrigin']),
 } as const;
 
+/**
+ * Type representing the available blocked property categories
+ *
+ * Each category groups related dangerous properties that can be selectively
+ * blocked based on security level requirements.
+ */
 export type BlockedPropertyCategory = keyof typeof BLOCKED_PROPERTY_CATEGORIES;
 
 /**
