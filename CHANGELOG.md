@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-01-04
+
+Major enclave-vm update introducing the default double VM isolation layer with new validation capabilities.
+
+### Updated Libraries
+
+- **enclave-vm** v2.0.0 - Double VM wrapper is now the default runtime, adding nested VM isolation plus suspicious-pattern enforcement.
+
 ## [2.0.0] - 2025-12-12
 
 Transformer-dependent features now load Hugging Face models lazily, with enclave-vm fixing its scorer import path and vectoriadb requiring explicit opt-in for transformer embeddings.
