@@ -101,7 +101,9 @@ export interface ParentValidationConfig {
 
   /**
    * Custom suspicious pattern detectors
-   * Added to the default patterns
+   *
+   * These are combined with DEFAULT_SUSPICIOUS_PATTERNS at runtime
+   * by DoubleVmWrapper when building the parent VM bootstrap.
    */
   suspiciousPatterns: SuspiciousPattern[];
 }

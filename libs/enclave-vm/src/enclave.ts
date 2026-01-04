@@ -278,7 +278,8 @@ export class Enclave {
       parentValidation: {
         ...DEFAULT_DOUBLE_VM_CONFIG.parentValidation,
         ...options.parentValidation,
-        // Merge suspicious patterns: default patterns + user patterns
+        // User-provided custom patterns (default patterns from DEFAULT_SUSPICIOUS_PATTERNS
+        // are automatically added by DoubleVmWrapper during bootstrap)
         suspiciousPatterns: [...(options.parentValidation?.suspiciousPatterns ?? [])],
       },
     };

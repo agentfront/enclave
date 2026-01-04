@@ -21,7 +21,8 @@ import { DoubleVmWrapper } from './double-vm-wrapper';
  * When disabled, a security warning is logged and the original adapter
  * is returned unchanged. This is NOT recommended for production use.
  *
- * @param baseAdapter - The original adapter to wrap (vm, worker_threads, etc.)
+ * @param baseAdapter - The original adapter (returned when double VM is disabled;
+ *   when enabled, a new DoubleVmWrapper is created instead of wrapping this adapter)
  * @param config - Double VM configuration
  * @param securityLevel - The security level for dangerous global removal
  * @returns The wrapped adapter (or original if disabled)

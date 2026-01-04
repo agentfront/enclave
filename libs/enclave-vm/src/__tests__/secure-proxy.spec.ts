@@ -512,10 +512,9 @@ describe('createSafeReflect', () => {
     const safeReflect = createSafeReflect('SECURE');
     const obj = { a: 1 };
 
-    // setPrototypeOf should throw or be blocked
-    expect(() => {
-      safeReflect?.setPrototypeOf(obj, { evil: true });
-    }).toThrow();
+    // setPrototypeOf is blocked by returning undefined for it
+    // When calling undefined as a function, it throws TypeError
+    expect(safeReflect?.setPrototypeOf).toBeUndefined();
   });
 });
 

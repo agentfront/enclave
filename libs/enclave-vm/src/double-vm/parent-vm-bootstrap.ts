@@ -306,8 +306,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
    * Validate an operation before forwarding to host
    */
   function validateOperation(operationName, args) {
-    // Rate limiting check
+    // Rate limiting check with sliding window cleanup
     const now = Date.now();
+    // Clean up old entries to prevent unbounded growth (keep only last 2 seconds)
+    while (operationHistory.length > 0 && now - operationHistory[0].timestamp > 2000) {
+      operationHistory.shift();
+    }
     const recentOperations = operationHistory.filter(function(h) { return now - h.timestamp < 1000; });
     if (recentOperations.length >= validationConfig.maxOperationsPerSecond) {
       throw new Error('Operation rate limit exceeded (' + validationConfig.maxOperationsPerSecond + ' operations/second)');
@@ -340,13 +344,16 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         var pattern = suspiciousPatterns[j];
         try {
           if (pattern.detect(operationName, args, operationHistory)) {
-            throw new Error('Suspicious pattern detected: ' + pattern.description + ' [' + pattern.id + ']');
+            var patternError = new Error('Suspicious pattern detected: ' + pattern.description + ' [' + pattern.id + ']');
+            patternError.__suspiciousPatternError = true;
+            throw patternError;
           }
         } catch (e) {
-          if (e.message.indexOf('Suspicious pattern') === 0) {
+          // Only propagate errors from our own pattern detection (using marker property)
+          if (e.__suspiciousPatternError === true) {
             throw e;
           }
-          // Ignore detection errors - pattern may have bugs
+          // Ignore detection errors from user-provided patterns - they may have bugs
         }
       }
     }
@@ -670,20 +677,41 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     decodeURIComponent: decodeURIComponent
   };
 
+  // Define safeGlobals as non-writable for consistency with safeRuntime
+  // Skip globals that the user is providing their own version of
   for (var gKey in safeGlobals) {
     if (safeGlobals.hasOwnProperty(gKey)) {
-      innerContext[gKey] = safeGlobals[gKey];
+      // If user provides this global, skip so their version takes precedence
+      if (hostConfig.globals && hostConfig.globals.hasOwnProperty(gKey)) {
+        continue;
+      }
+      Object.defineProperty(innerContext, gKey, {
+        value: safeGlobals[gKey],
+        writable: false,
+        configurable: false,
+        enumerable: true
+      });
     }
   }
 
-  // Add user-provided globals if any (also wrapped with secure proxy)
+  // Add user-provided globals if any (also wrapped with secure proxy and non-writable)
   if (hostConfig.globals) {
     for (var uKey in hostConfig.globals) {
       if (hostConfig.globals.hasOwnProperty(uKey)) {
         var wrappedGlobal = createSecureProxy(hostConfig.globals[uKey]);
-        innerContext[uKey] = wrappedGlobal;
+        Object.defineProperty(innerContext, uKey, {
+          value: wrappedGlobal,
+          writable: false,
+          configurable: false,
+          enumerable: true
+        });
         // Also add __safe_ prefixed version
-        innerContext['__safe_' + uKey] = wrappedGlobal;
+        Object.defineProperty(innerContext, '__safe_' + uKey, {
+          value: wrappedGlobal,
+          writable: false,
+          configurable: false,
+          enumerable: true
+        });
       }
     }
   }

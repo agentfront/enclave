@@ -47,11 +47,10 @@ function createMockContext(
     maxConsoleCalls: 1000,
     globals: overrides.globals ?? {},
     secureProxyConfig: {
-      blockConstructors: true,
+      blockConstructor: true,
       blockPrototype: true,
-      blockDunderProto: true,
-      blockIteratorHelpers: false,
       blockLegacyAccessors: true,
+      proxyMaxDepth: 10,
     },
   };
 

@@ -20,6 +20,13 @@ if [ $# -lt 1 ]; then
 fi
 
 lib="$1"
+
+# Validate library name to prevent path traversal attacks
+if [[ ! "$lib" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  echo "Error: Invalid library name. Only alphanumeric characters, hyphens, and underscores allowed." >&2
+  exit 1
+fi
+
 pkg_path="./libs/$lib/package.json"
 
 if [ ! -f "$pkg_path" ]; then
@@ -27,9 +34,12 @@ if [ ! -f "$pkg_path" ]; then
   exit 1
 fi
 
+# Use explicit JSON parsing instead of require() for security
 node -e "
+  const fs = require('fs');
   try {
-    const pkg = require('$pkg_path');
+    const content = fs.readFileSync('$pkg_path', 'utf-8');
+    const pkg = JSON.parse(content);
     if (!pkg.version) {
       console.error('Error: No version field in package.json');
       process.exit(1);

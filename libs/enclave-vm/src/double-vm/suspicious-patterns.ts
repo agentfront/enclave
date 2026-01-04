@@ -143,32 +143,64 @@ export const DEFAULT_SUSPICIOUS_PATTERNS: SuspiciousPattern[] = [
  *
  * Since functions cannot be passed across VM boundaries,
  * we extract the function body as a string.
+ *
+ * @remarks
+ * This function expects standard JavaScript function definitions. It may not work
+ * correctly with:
+ * - Minified/bundled code where functions are transformed
+ * - Native functions (returns "[native code]")
+ * - Functions with unusual formatting
+ *
+ * @throws {Error} If the function cannot be serialized or appears malformed
  */
 export function serializePattern(pattern: SuspiciousPattern): SerializableSuspiciousPattern {
+  if (typeof pattern.detect !== 'function') {
+    throw new Error(`Pattern "${pattern.id}": detect must be a function`);
+  }
+
   const funcStr = pattern.detect.toString();
+
+  // Validate the function string is usable
+  if (funcStr.includes('[native code]')) {
+    throw new Error(`Pattern "${pattern.id}": Cannot serialize native functions`);
+  }
 
   // Extract the function body
   // Handles arrow functions: (a, b, c) => { body } or (a, b, c) => expr
   // Handles regular functions: function(a, b, c) { body }
   let detectBody: string;
 
-  if (funcStr.includes('=>')) {
-    // Arrow function
-    const arrowIndex = funcStr.indexOf('=>');
-    const bodyPart = funcStr.substring(arrowIndex + 2).trim();
+  try {
+    if (funcStr.includes('=>')) {
+      // Arrow function
+      const arrowIndex = funcStr.indexOf('=>');
+      const bodyPart = funcStr.substring(arrowIndex + 2).trim();
 
-    if (bodyPart.startsWith('{')) {
-      // Block body - extract contents
-      detectBody = bodyPart.slice(1, -1).trim();
+      if (bodyPart.startsWith('{')) {
+        // Block body - extract contents
+        detectBody = bodyPart.slice(1, -1).trim();
+      } else {
+        // Expression body - wrap in return
+        detectBody = `return ${bodyPart};`;
+      }
     } else {
-      // Expression body - wrap in return
-      detectBody = `return ${bodyPart};`;
+      // Regular function - extract body between first { and last }
+      const firstBrace = funcStr.indexOf('{');
+      const lastBrace = funcStr.lastIndexOf('}');
+
+      if (firstBrace === -1 || lastBrace === -1 || firstBrace >= lastBrace) {
+        throw new Error('Could not extract function body');
+      }
+
+      detectBody = funcStr.substring(firstBrace + 1, lastBrace).trim();
     }
-  } else {
-    // Regular function - extract body between first { and last }
-    const firstBrace = funcStr.indexOf('{');
-    const lastBrace = funcStr.lastIndexOf('}');
-    detectBody = funcStr.substring(firstBrace + 1, lastBrace).trim();
+
+    // Basic validation that extracted body is not empty
+    if (!detectBody || detectBody.length === 0) {
+      throw new Error('Extracted function body is empty');
+    }
+  } catch (error) {
+    throw new Error(`Pattern "${pattern.id}": Failed to serialize detect function - ${(error as Error).message}`);
   }
 
   return {

@@ -249,8 +249,13 @@ export class DoubleVmWrapper implements SandboxAdapter {
             try {
               const refId = sidecar.store(sanitized, 'tool-result', { origin: toolName });
               return refId;
-            } catch {
-              // If storage fails (limits), return original value
+            } catch (storageError) {
+              // If storage fails (e.g., sidecar limits reached), log and return original value
+              if (process.env['NODE_ENV'] !== 'production') {
+                console.debug(
+                  `[DoubleVmWrapper] Sidecar storage failed for tool "${toolName}": ${(storageError as Error).message}`,
+                );
+              }
               return sanitized;
             }
           }
