@@ -12,7 +12,7 @@
  *   DRY_RUN=true - Preview changes without applying them
  */
 
-import { releaseVersion } from 'nx/release';
+import { releaseVersion } from 'nx/release/index.js';
 import fs from 'fs';
 import path from 'path';
 
