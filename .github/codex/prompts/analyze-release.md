@@ -4,7 +4,11 @@ Analyze the git diff for the affected libraries, determine semantic version bump
 
 ## Context
 
-You are analyzing code changes in an Nx monorepo. The affected projects are provided via the `AFFECTED_PROJECTS` environment variable (comma-separated list). The base reference for comparison is in `BASE_REF`. If `IS_FIRST_RELEASE` is "true", this is the first release and all projects should be set to version `1.0.0`.
+You are analyzing code changes in an Nx monorepo. The affected projects are listed in `.github/codex/prompts/projects.txt` (comma-separated).
+
+**CRITICAL**: The file `.github/codex/prompts/last-released-versions.txt` contains the LAST RELEASED VERSION for each project (from git tags). You MUST read this file and use these versions as the BASE for calculating new versions. The format is `project=version` (e.g., `enclave-vm=2.0.0`).
+
+If a project has `version=0.0.0`, it means there is no prior release tag and this is the first release - set it to `1.0.0`.
 
 ---
 
@@ -45,20 +49,26 @@ Use patch bump when:
 
 ### Version Analysis Instructions
 
-1. For each project in `AFFECTED_PROJECTS`:
+1. **Read the last released versions** from `.github/codex/prompts/last-released-versions.txt`
 
-   - Read the project's current `package.json` to get the current version
-   - Analyze the git diff for files in `libs/{project}/`
+   - This file contains `project=version` entries (e.g., `enclave-vm=2.0.0`)
+   - These are the versions FROM which you must bump
+
+2. For each project in the affected list:
+
+   - Get the last released version from the file above
+   - Analyze the git diff in `.github/codex/prompts/diff.patch` for that project
    - Focus on changes to `src/` files (ignore tests, docs, configs)
    - Determine if changes are breaking (major), feature additions (minor), or fixes (patch)
-   - Calculate the new version based on the bump type
+   - Calculate the NEW version by incrementing the last released version based on bump type
+   - Example: if last released was `2.0.0` and bump is `minor`, new version is `2.1.0`
 
-2. If `IS_FIRST_RELEASE` is "true":
+3. If a project has `version=0.0.0` (no prior release tag):
 
-   - Set all projects to version `1.0.0`
+   - Set it to version `1.0.0`
    - Use reason: "Initial release"
 
-3. If no meaningful changes are detected for a project:
+4. If no meaningful changes are detected for a project:
    - Use `bump: "none"` to skip that project
 
 ---

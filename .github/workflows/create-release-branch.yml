@@ -45,33 +45,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Get last release info
-        id: last_release
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Check for any release tags
-          LAST_TAG=$(git tag --list "v*" --sort=-version:refname | head -n1 || echo "")
-
-          if [ -n "$LAST_TAG" ]; then
-            echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
-            echo "is_first_release=false" >> "$GITHUB_OUTPUT"
-            echo "Last release tag: $LAST_TAG"
-          else
-            FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
-            echo "last_tag=$FIRST_COMMIT" >> "$GITHUB_OUTPUT"
-            echo "is_first_release=true" >> "$GITHUB_OUTPUT"
-            echo "First release - using first commit as base: ${FIRST_COMMIT:0:8}"
-          fi
-
-      - name: Find affected projects
+      - name: Find affected projects with per-package version detection
         id: affected
         shell: bash
         run: |
           set -euo pipefail
 
-          BASE_REF="${{ steps.last_release.outputs.last_tag }}"
+          FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
 
           # Get all publishable libs
           ALL_LIBS=$(node -e "
@@ -87,36 +67,57 @@ jobs:
 
           if [ -z "$ALL_LIBS" ]; then
             echo "projects=" >> "$GITHUB_OUTPUT"
+            echo "project_versions=" >> "$GITHUB_OUTPUT"
             echo "No publishable libraries found"
             exit 0
           fi
 
           echo "All publishable libs: $ALL_LIBS"
 
-          # Get affected libs since last release
-          AFFECTED=$(node -e "
-          const { execSync } = require('child_process');
-          try {
-            const out = execSync('npx nx show projects --affected --base=\"${BASE_REF}\" --type lib --json', { encoding: 'utf8' });
-            const arr = JSON.parse(out);
-            process.stdout.write(arr.join(','));
-          } catch (e) {
-            process.stdout.write('');
-          }
-          ")
+          # For each lib, find its last release tag and check if affected
+          AFFECTED_LIBS=""
+          PROJECT_VERSIONS=""
 
-          # Filter to only publishable affected libs
-          AFFECTED_PUBLISHABLE=$(node -e "
-          const all = '$ALL_LIBS'.split(',').filter(Boolean);
-          const affected = '$AFFECTED'.split(',').filter(Boolean);
-          const intersection = all.filter(lib => affected.includes(lib));
-          process.stdout.write(intersection.join(','));
-          ")
+          IFS=',' read -ra LIBS <<< "$ALL_LIBS"
+          for lib in "${LIBS[@]}"; do
+            # Find the last release tag for this specific package (e.g., enclave-vm@2.0.0)
+            LAST_TAG=$(git tag --list "${lib}@*" --sort=-version:refname | head -n1 || echo "")
 
-          echo "projects=$AFFECTED_PUBLISHABLE" >> "$GITHUB_OUTPUT"
+            if [ -n "$LAST_TAG" ]; then
+              BASE_REF="$LAST_TAG"
+              # Extract version from tag (e.g., enclave-vm@2.0.0 -> 2.0.0)
+              LAST_VERSION="${LAST_TAG#*@}"
+              echo "  $lib: last release tag=$LAST_TAG (v$LAST_VERSION)"
+            else
+              BASE_REF="$FIRST_COMMIT"
+              LAST_VERSION="0.0.0"
+              echo "  $lib: no release tag found, using first commit (first release)"
+            fi
 
-          if [ -n "$AFFECTED_PUBLISHABLE" ]; then
-            echo "Affected publishable libs: $AFFECTED_PUBLISHABLE"
+            # Check if this lib has changes since its last release
+            CHANGES=$(git diff --name-only "$BASE_REF"...HEAD -- "libs/$lib/" 2>/dev/null | head -1 || echo "")
+
+            if [ -n "$CHANGES" ]; then
+              echo "  $lib: has changes since $BASE_REF"
+              if [ -n "$AFFECTED_LIBS" ]; then
+                AFFECTED_LIBS="${AFFECTED_LIBS},$lib"
+                PROJECT_VERSIONS="${PROJECT_VERSIONS},$lib=$LAST_VERSION"
+              else
+                AFFECTED_LIBS="$lib"
+                PROJECT_VERSIONS="$lib=$LAST_VERSION"
+              fi
+            else
+              echo "  $lib: no changes since $BASE_REF"
+            fi
+          done
+
+          echo "projects=$AFFECTED_LIBS" >> "$GITHUB_OUTPUT"
+          echo "project_versions=$PROJECT_VERSIONS" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$AFFECTED_LIBS" ]; then
+            echo ""
+            echo "Affected publishable libs: $AFFECTED_LIBS"
+            echo "Last released versions: $PROJECT_VERSIONS"
           else
             echo "No affected publishable libraries"
           fi
@@ -166,46 +167,58 @@ jobs:
           set -euo pipefail
           mkdir -p .github/codex/prompts .codex-release
 
-          BASE_REF="${{ steps.last_release.outputs.last_tag }}"
           PROJECTS="${{ steps.affected.outputs.projects }}"
-          IS_FIRST="${{ steps.last_release.outputs.is_first_release }}"
+          PROJECT_VERSIONS="${{ steps.affected.outputs.project_versions }}"
+          FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
 
           echo "Preparing diff context..."
-          echo "Base ref: $BASE_REF"
           echo "Projects: $PROJECTS"
-          echo "Is first release: $IS_FIRST"
+          echo "Last released versions: $PROJECT_VERSIONS"
 
           # Save context files for Codex
-          echo "$BASE_REF" > .github/codex/prompts/base.txt
           echo "$PROJECTS" > .github/codex/prompts/projects.txt
-          echo "$IS_FIRST" > .github/codex/prompts/is-first-release.txt
 
-          # Get current versions for each affected project
-          echo "Current versions:" > .github/codex/prompts/current-versions.txt
+          # Save last released versions (from tags) - this is what Codex should bump FROM
+          echo "Last released versions (bump from these):" > .github/codex/prompts/last-released-versions.txt
+          echo "$PROJECT_VERSIONS" | tr ',' '\n' >> .github/codex/prompts/last-released-versions.txt
+
+          # Generate per-project diffs and combined diff
+          > .github/codex/prompts/diff.patch
+          > .github/codex/prompts/commits.txt
+
           IFS=',' read -ra LIBS <<< "$PROJECTS"
           for lib in "${LIBS[@]}"; do
-            if [ -f "libs/$lib/package.json" ]; then
-              VERSION=$(node -e "console.log(require('./libs/$lib/package.json').version || '0.0.0')")
-              echo "$lib=$VERSION" >> .github/codex/prompts/current-versions.txt
-            fi
-          done
+            # Find the last release tag for this package
+            LAST_TAG=$(git tag --list "${lib}@*" --sort=-version:refname | head -n1 || echo "")
 
-          # Generate unified diff for affected projects
-          # Filter to source files only to reduce token usage
-          git diff "$BASE_REF"...HEAD --unified=3 \
-            -- \
-            'libs/**/*.ts' \
-            'libs/**/package.json' \
-            ':!**/*.spec.ts' \
-            ':!**/*.test.ts' \
-            ':!**/__tests__/**' \
-            > .github/codex/prompts/diff.patch || true
+            if [ -n "$LAST_TAG" ]; then
+              BASE_REF="$LAST_TAG"
+            else
+              BASE_REF="$FIRST_COMMIT"
+            fi
+
+            echo "=== $lib (since $BASE_REF) ===" >> .github/codex/prompts/diff.patch
+
+            # Generate diff for this specific lib
+            git diff "$BASE_REF"...HEAD --unified=3 \
+              -- \
+              "libs/$lib/**/*.ts" \
+              "libs/$lib/package.json" \
+              ":!**/*.spec.ts" \
+              ":!**/*.test.ts" \
+              ":!**/__tests__/**" \
+              >> .github/codex/prompts/diff.patch 2>/dev/null || true
+
+            echo "" >> .github/codex/prompts/diff.patch
+
+            # Collect commits for this lib
+            echo "=== $lib commits (since $BASE_REF) ===" >> .github/codex/prompts/commits.txt
+            git log "$BASE_REF"...HEAD --pretty=format:'%H%x09%s' -n 20 -- "libs/$lib/" >> .github/codex/prompts/commits.txt 2>/dev/null || true
+            echo "" >> .github/codex/prompts/commits.txt
+          done
 
           DIFF_SIZE=$(wc -c < .github/codex/prompts/diff.patch || echo "0")
           echo "Diff size: $DIFF_SIZE bytes"
-
-          # Commit list for context
-          git log "$BASE_REF"...HEAD --pretty=format:'%H%x09%s' -n 50 > .github/codex/prompts/commits.txt || true
 
           # ISO date
           date -u +"%Y-%m-%d" > .github/codex/prompts/date.txt
@@ -398,5 +411,5 @@ jobs:
           echo "**Branch:** ${{ steps.branch.outputs.branch_name }}" >> $GITHUB_STEP_SUMMARY
           echo "**Max Version:** ${{ steps.versions.outputs.max_version }}" >> $GITHUB_STEP_SUMMARY
           echo "**Projects:** ${{ steps.versions.outputs.bumped_projects }}" >> $GITHUB_STEP_SUMMARY
-          echo "**First Release:** ${{ steps.last_release.outputs.is_first_release }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Last Released Versions:** ${{ steps.affected.outputs.project_versions }}" >> $GITHUB_STEP_SUMMARY
           echo "**Analysis:** Codex AI (gpt-5.1-codex)" >> $GITHUB_STEP_SUMMARY

@@ -16,7 +16,7 @@ Defaulted enclave-vm to the new double VM isolation layer and refreshed docs for
 
 | Package    | Version | Highlights                                                                                                               |
 | ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------ |
-| enclave-vm | 2.0.0   | Double VM wrapper is now the default execution path with configurable parent validation and suspicious-pattern blocking. |
+| enclave-vm | 2.1.0   | Double VM wrapper is now the default execution path with configurable parent validation and suspicious-pattern blocking. |
 
 ## 2026-01-04
 
