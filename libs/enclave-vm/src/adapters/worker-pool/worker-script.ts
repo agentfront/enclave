@@ -138,7 +138,13 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
     const context = vm.createContext(sandbox);
 
     // Wrap code in async IIFE to support top-level await
-    const wrappedCode = `(async () => { ${msg.code} })()`;
+    // Must call __ag_main() if defined, as the enclave transforms code to wrap in async function __ag_main()
+    const wrappedCode = `
+      (async () => {
+        ${msg.code}
+        return typeof __ag_main === 'function' ? await __ag_main() : undefined;
+      })();
+    `;
 
     // Compile and run with timeout
     const script = new vm.Script(wrappedCode, {
@@ -277,15 +283,19 @@ function createSandbox(requestId: string, config: SerializedConfig): Record<stri
   const sandbox: Record<string, unknown> = Object.create(null);
 
   // Inject safe runtime functions (use bracket notation for Record type)
+  // These match the names produced by the Enclave's AST transformer
   sandbox['__safe_callTool'] = createProxiedCallTool(requestId, config);
   sandbox['__safe_forOf'] = createSafeForOf();
   sandbox['__safe_for'] = createSafeFor();
   sandbox['__safe_while'] = createSafeWhile();
 
-  // Safe console
-  sandbox['console'] = createSafeConsole(requestId, config);
+  // Safe console - both prefixed and non-prefixed for compatibility
+  const safeConsole = createSafeConsole(requestId, config);
+  sandbox['__safe_console'] = safeConsole;
+  sandbox['console'] = safeConsole;
 
   // Safe globals (no timing APIs to prevent attacks)
+  // Provide both prefixed and non-prefixed for transformer compatibility
   sandbox['Math'] = Math;
   sandbox['JSON'] = JSON;
   sandbox['Object'] = Object;
@@ -298,6 +308,12 @@ function createSandbox(requestId: string, config: SerializedConfig): Record<stri
   sandbox['TypeError'] = TypeError;
   sandbox['RangeError'] = RangeError;
   sandbox['SyntaxError'] = SyntaxError;
+
+  // Also provide __safe_ prefixed versions for AST transformer compatibility
+  sandbox['__safe_Error'] = Error;
+  sandbox['__safe_TypeError'] = TypeError;
+  sandbox['__safe_RangeError'] = RangeError;
+  sandbox['__safe_SyntaxError'] = SyntaxError;
   sandbox['Promise'] = Promise;
   sandbox['Map'] = Map;
   sandbox['Set'] = Set;

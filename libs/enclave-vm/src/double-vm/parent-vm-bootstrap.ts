@@ -44,6 +44,12 @@ export interface ParentVmBootstrapOptions {
 
   /** Whether composite reference handles are allowed (for string concatenation) */
   allowComposites?: boolean;
+
+  /** Memory limit in bytes (0 = unlimited) */
+  memoryLimit?: number;
+
+  /** Whether to throw errors instead of returning undefined for blocked properties */
+  throwOnBlocked?: boolean;
 }
 
 /**
@@ -123,6 +129,8 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     suspiciousPatterns,
     blockedProperties,
     allowComposites = false,
+    memoryLimit = 0,
+    throwOnBlocked = true,
   } = options;
 
   const sanitizeContextCode = generateSanitizeContextCode(securityLevel);
@@ -186,8 +194,14 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   // Blocked properties for secure proxy (from security level)
   const blockedPropertiesSet = new Set(${JSON.stringify(blockedProperties)});
 
+  // Whether to throw errors instead of returning undefined for blocked properties
+  const throwOnBlocked = ${throwOnBlocked};
+
   // Whether composite reference handles are allowed (for string concatenation)
   const allowComposites = ${allowComposites};
+
+  // Memory limit in bytes (0 = unlimited)
+  const memoryLimit = ${memoryLimit};
 
   // Reference ID pattern for detecting sidecar references
   const refIdPattern = /^__REF_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}__$/i;
@@ -232,6 +246,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
           if (isNonConfigurable) {
             return Reflect.get(target, property, receiver);
           }
+          if (throwOnBlocked) {
+            throw new Error(
+              "Security violation: Access to '" + propName + "' is blocked. " +
+              "This property can be used for sandbox escape attacks."
+            );
+          }
           return undefined;
         }
 
@@ -255,13 +275,25 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       set: function(target, property, value, receiver) {
         var propName = String(property);
         if (blockedPropertiesSet.has(propName)) {
-          return false; // Silently fail
+          if (throwOnBlocked) {
+            throw new Error(
+              "Security violation: Setting '" + propName + "' is blocked. " +
+              "This property can be used for sandbox escape attacks."
+            );
+          }
+          return false;
         }
         return Reflect.set(target, property, value, receiver);
       },
       defineProperty: function(target, property, descriptor) {
         var propName = String(property);
         if (blockedPropertiesSet.has(propName)) {
+          if (throwOnBlocked) {
+            throw new Error(
+              "Security violation: Defining '" + propName + "' is blocked. " +
+              "This property can be used for sandbox escape attacks."
+            );
+          }
           return false;
         }
         return Reflect.defineProperty(target, property, descriptor);
@@ -277,6 +309,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
 
         // Block configurable dangerous properties
         if (blockedPropertiesSet.has(propName)) {
+          if (throwOnBlocked) {
+            throw new Error(
+              "Security violation: Access to property descriptor for '" + propName + "' is blocked. " +
+              "This property can be used for sandbox escape attacks."
+            );
+          }
           return undefined;
         }
         return descriptor;
@@ -494,37 +532,86 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   }
 
   /**
-   * Safe string concatenation for inner VM
-   * Detects reference IDs and handles them according to allowComposites config
+   * Safe addition/concatenation for inner VM
+   * Supports numeric addition, string concatenation, and reference ID handling.
+   * Also tracks memory allocation when memoryLimit is set.
    */
   function innerConcat(left, right) {
-    var leftStr = String(left);
-    var rightStr = String(right);
-
-    // Check for reference IDs
-    var leftIsRef = refIdPattern.test(leftStr);
-    var rightIsRef = refIdPattern.test(rightStr);
-
-    // If no references, just concatenate normally
-    if (!leftIsRef && !rightIsRef) {
-      return leftStr + rightStr;
+    // Fast path: both are numbers - do numeric addition (JavaScript + semantics)
+    if (typeof left === 'number' && typeof right === 'number') {
+      return left + right;
     }
 
-    // References detected - check if composites are allowed
-    if (!allowComposites) {
-      throw new Error(
-        'Cannot concatenate reference IDs. Pass references directly to callTool arguments. ' +
-        'Composite handles are disabled in the current security configuration.'
-      );
+    // Fast path: both are strings
+    if (typeof left === 'string' && typeof right === 'string') {
+      var leftLen = left.length;
+      var rightLen = right.length;
+
+      var leftIsRef = refIdPattern.test(left);
+      var rightIsRef = refIdPattern.test(right);
+
+      if (!leftIsRef && !rightIsRef) {
+        // Track memory if enabled
+        if (memoryLimit > 0) {
+          __host_memory_track__(rightLen * 2); // UTF-16 encoding
+        }
+        return left + right;
+      }
+
+      // References detected - check if composites are allowed
+      if (!allowComposites) {
+        throw new Error(
+          'Cannot concatenate reference IDs. Pass references directly to callTool arguments. ' +
+          'Composite handles are disabled in the current security configuration.'
+        );
+      }
+
+      return {
+        __type: 'composite',
+        __operation: 'concat',
+        __parts: [left, right],
+        __estimatedSize: 0
+      };
     }
 
-    // Create a composite handle for lazy resolution at callTool boundary
-    return {
-      __type: 'composite',
-      __operation: 'concat',
-      __parts: [leftStr, rightStr],
-      __estimatedSize: 0 // Size will be calculated by resolver in host
-    };
+    // For mixed types (one string, one non-string), check for references first
+    // then use native + for proper ToPrimitive handling
+    if (typeof left === 'string' || typeof right === 'string') {
+      // Check if the string operand(s) are references BEFORE coercion
+      var leftIsRef = typeof left === 'string' && refIdPattern.test(left);
+      var rightIsRef = typeof right === 'string' && refIdPattern.test(right);
+
+      if (leftIsRef || rightIsRef) {
+        // Reference detected - check if composites are allowed
+        if (!allowComposites) {
+          throw new Error(
+            'Cannot concatenate reference IDs. Pass references directly to callTool arguments. ' +
+            'Composite handles are disabled in the current security configuration.'
+          );
+        }
+
+        // Convert both to strings for composite
+        var leftStr = String(left);
+        var rightStr = String(right);
+        return {
+          __type: 'composite',
+          __operation: 'concat',
+          __parts: [leftStr, rightStr],
+          __estimatedSize: 0
+        };
+      }
+    }
+
+    // For all other cases (objects, booleans, null, undefined, or strings without refs),
+    // use JavaScript's default + behavior which correctly handles ToPrimitive
+    var result = left + right;
+
+    // Track if result is a string
+    if (typeof result === 'string' && memoryLimit > 0) {
+      __host_memory_track__(result.length * 2);
+    }
+
+    return result;
   }
 
   /**

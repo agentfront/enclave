@@ -9,7 +9,7 @@
 
 import crypto from 'crypto';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../../types';
-import type { WorkerPoolConfig, ResourceUsage, WorkerPoolMetrics } from './config';
+import type { WorkerPoolConfig, WorkerPoolMetrics } from './config';
 import { buildWorkerPoolConfig } from './config';
 import type {
   WorkerToMainMessage,
@@ -23,15 +23,8 @@ import { WorkerSlot } from './worker-slot';
 import { ExecutionQueue } from './execution-queue';
 import { MemoryMonitor } from './memory-monitor';
 import { RateLimiter, createRateLimiter } from './rate-limiter';
-import { safeDeserialize, sanitizeObject } from './safe-deserialize';
-import {
-  WorkerPoolDisposedError,
-  WorkerTimeoutError,
-  WorkerMemoryError,
-  MessageValidationError,
-  TooManyPendingCallsError,
-  QueueFullError,
-} from './errors';
+import { sanitizeObject } from './safe-deserialize';
+import { WorkerPoolDisposedError, WorkerTimeoutError, TooManyPendingCallsError, QueueFullError } from './errors';
 
 /**
  * Worker Pool Adapter
@@ -192,7 +185,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     });
 
     // Set up slot event handlers
-    slot.on('stateChange', (newState, oldState) => {
+    slot.on('stateChange', (newState) => {
       if (newState === 'recycling') {
         this.handleSlotRecycling(slot);
       }
@@ -247,7 +240,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
 
     // Check if slot needs recycling
     if (slot.executionCount >= this.config.maxExecutionsPerWorker) {
-      slot.markForRecycle('max-executions');
+      slot.markForRecycle();
       return;
     }
 
@@ -280,7 +273,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     }
   }
 
-  private handleMemoryExceeded(slotId: string, usage: ResourceUsage, limit: number): void {
+  private handleMemoryExceeded(slotId: string): void {
     const slot = this.slots.get(slotId);
     if (!slot) return;
 

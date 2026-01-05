@@ -24,9 +24,10 @@ describe('Enclave Constructor Attack Prevention', () => {
 
       const result = await enclave.run(code);
 
-      // The attack should fail - constructor access should return undefined
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      // The attack should fail - constructor access should throw an error
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });
@@ -42,8 +43,9 @@ describe('Enclave Constructor Attack Prevention', () => {
 
       const result = await enclave.run(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });
@@ -58,8 +60,9 @@ describe('Enclave Constructor Attack Prevention', () => {
 
       const result = await enclave.run(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });
@@ -74,8 +77,9 @@ describe('Enclave Constructor Attack Prevention', () => {
 
       const result = await enclave.run(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });
@@ -90,8 +94,9 @@ describe('Enclave Constructor Attack Prevention', () => {
 
       const result = await enclave.run(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });
@@ -106,8 +111,9 @@ describe('Enclave Constructor Attack Prevention', () => {
 
       const result = await enclave.run(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });
@@ -125,8 +131,9 @@ describe('Enclave Constructor Attack Prevention', () => {
 
       const result = await enclave.run(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('__proto__');
 
       enclave.dispose();
     });
@@ -172,8 +179,9 @@ describe('Enclave Constructor Attack Prevention', () => {
 
       const result = await enclave.run(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });
@@ -193,8 +201,9 @@ describe('Enclave Constructor Attack Prevention', () => {
 
       const result = await enclave.run(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });
@@ -218,8 +227,9 @@ describe('Enclave Constructor Attack Prevention', () => {
 
       const result = await enclave.run(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });

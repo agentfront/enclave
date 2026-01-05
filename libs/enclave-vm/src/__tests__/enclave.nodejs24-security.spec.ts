@@ -125,8 +125,8 @@ describe('Enclave Node.js 24 Security', () => {
       `;
 
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -138,8 +138,8 @@ describe('Enclave Node.js 24 Security', () => {
       `;
 
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -190,6 +190,7 @@ describe('Enclave Node.js 24 Security', () => {
     it('PERMISSIVE still blocks __proto__ by default', async () => {
       const enclave = new Enclave({ securityLevel: 'PERMISSIVE' });
 
+      // PERMISSIVE mode has throwOnBlocked: false, so it returns undefined instead of throwing
       const code = `
         const key = '__pro' + 'to__';
         return Array[key] ? 'accessible' : 'blocked';
@@ -297,8 +298,8 @@ describe('Enclave Node.js 24 Security', () => {
       `;
 
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -308,12 +309,11 @@ describe('Enclave Node.js 24 Security', () => {
       const code = `
         const protoKey = '__pro' + 'to__';
         const proto = Object[protoKey];
-        // If we got undefined, prototype access was blocked
-        return proto === undefined ? 'safe' : 'pollutable';
+        return proto;
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('safe');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
   });

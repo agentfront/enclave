@@ -7,7 +7,7 @@
  */
 
 import { EventEmitter } from 'events';
-import type { WorkerPoolConfig, ResourceUsage } from './config';
+import type { ResourceUsage } from './config';
 import type { WorkerSlot } from './worker-slot';
 
 /**
@@ -158,7 +158,7 @@ export class MemoryMonitor extends EventEmitter {
         this.emit('memoryExceeded', slotId, usage, this.config.memoryLimitPerWorker);
 
         // Mark slot for recycling
-        slot.markForRecycle('memory-exceeded');
+        slot.markForRecycle();
       }
     } catch (error) {
       this._checkFailureCount++;

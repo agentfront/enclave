@@ -11,6 +11,7 @@ import * as vm from 'vm';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { createSafeRuntime } from '../safe-runtime';
 import { createSafeReflect, createSecureProxy } from '../secure-proxy';
+import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 
 /**
  * Sensitive patterns to redact from stack traces
@@ -357,12 +358,28 @@ export class VmAdapter implements SandboxAdapter {
     const { stats, config } = executionContext;
     const startTime = Date.now();
 
+    // Create memory tracker if memory limit is configured
+    // This tracks string/array allocations and enforces the limit
+    const memoryTracker =
+      config.memoryLimit && config.memoryLimit > 0
+        ? new MemoryTracker({
+            memoryLimit: config.memoryLimit,
+            trackStrings: true,
+            trackArrays: true,
+            trackObjects: false, // Object tracking has higher overhead, skip for now
+          })
+        : undefined;
+
+    // Start tracking before execution
+    memoryTracker?.start();
+
     try {
       // Create safe runtime context with optional sidecar support and proxy config
       const safeRuntime = createSafeRuntime(executionContext, {
         sidecar: executionContext.sidecar,
         referenceConfig: executionContext.referenceConfig,
         secureProxyConfig: executionContext.secureProxyConfig,
+        memoryTracker, // Pass tracker for allocation monitoring
       });
 
       // Create sandbox context with safe globals only
@@ -455,6 +472,12 @@ export class VmAdapter implements SandboxAdapter {
       stats.duration = Date.now() - startTime;
       stats.endTime = Date.now();
 
+      // Capture memory usage if tracking was enabled
+      if (memoryTracker) {
+        const memSnapshot = memoryTracker.getSnapshot();
+        stats.memoryUsage = memSnapshot.peakTrackedBytes;
+      }
+
       return {
         success: true,
         value: value as T,
@@ -466,6 +489,29 @@ export class VmAdapter implements SandboxAdapter {
       // Update stats
       stats.duration = Date.now() - startTime;
       stats.endTime = Date.now();
+
+      // Capture memory usage even on error
+      if (memoryTracker) {
+        const memSnapshot = memoryTracker.getSnapshot();
+        stats.memoryUsage = memSnapshot.peakTrackedBytes;
+      }
+
+      // Handle memory limit errors specially
+      if (err instanceof MemoryLimitError) {
+        return {
+          success: false,
+          error: {
+            name: 'MemoryLimitError',
+            message: err.message,
+            code: 'MEMORY_LIMIT_EXCEEDED',
+            data: {
+              usedBytes: err.usedBytes,
+              limitBytes: err.limitBytes,
+            },
+          },
+          stats,
+        };
+      }
 
       // Determine whether to sanitize stack traces based on config
       // Default to true for backwards compatibility if not explicitly set

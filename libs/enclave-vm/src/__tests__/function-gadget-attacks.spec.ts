@@ -745,14 +745,14 @@ describe('Function Gadget Attacks', () => {
         const enclave = new Enclave();
         const code = `
           const ctorKey = 'const' + 'ructor';
-          // String is wrapped by SecureProxy
+          // String is wrapped by SecureProxy - accessing constructor throws
           const StrCtor = String[ctorKey];
           return StrCtor ? 'has-ctor' : 'no-ctor';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        // String is wrapped, constructor blocked
-        expect(result.value).toBe('no-ctor');
+        // String constructor access should throw an error
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
     });
@@ -1252,28 +1252,34 @@ describe('Function Gadget Attacks', () => {
     });
 
     describe('10.4 Wrapped Global vs Sandbox Object', () => {
-      it('should verify Object global blocks constructor but sandbox objects allow it', async () => {
+      it('should verify Object global blocks constructor with an error', async () => {
         const enclave = new Enclave();
         const code = `
           const ctorKey = 'const' + 'ructor';
-
-          // Object is wrapped - constructor blocked
+          // Object is wrapped - constructor access throws
           const ObjCtor = Object[ctorKey];
-          const wrappedBlocked = !ObjCtor;
-
-          // Sandbox-created object - constructor accessible
-          const obj = {};
-          const SandboxObjCtor = obj[ctorKey];
-          const sandboxAllowed = !!SandboxObjCtor;
-
-          return { wrappedBlocked, sandboxAllowed };
+          return ObjCtor;
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        // Object global is wrapped, blocks constructor
-        expect((result.value as any).wrappedBlocked).toBe(true);
+        // Object global is wrapped, constructor access throws
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
+        enclave.dispose();
+      });
+
+      it('should verify sandbox-created objects allow constructor access', async () => {
+        const enclave = new Enclave();
+        const code = `
+          const ctorKey = 'const' + 'ructor';
+          // Sandbox-created object - constructor accessible (leads to sandbox Function)
+          const obj = {};
+          const SandboxObjCtor = obj[ctorKey];
+          return !!SandboxObjCtor;
+        `;
+        const result = await enclave.run(code);
         // Sandbox-created object allows constructor (leads to sandbox Function)
-        expect((result.value as any).sandboxAllowed).toBe(true);
+        expect(result.success).toBe(true);
+        expect(result.value).toBe(true);
         enclave.dispose();
       });
     });

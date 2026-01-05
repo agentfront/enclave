@@ -50,13 +50,19 @@ describe('Safe Runtime Reference Integration', () => {
         expect(runtime.__safe_concat('', 'test')).toBe('test');
       });
 
-      it('should convert non-strings to strings', () => {
+      it('should follow JavaScript + operator semantics', () => {
         const context = createContext();
         const runtime = createSafeRuntime(context);
 
-        expect(runtime.__safe_concat(1, 2)).toBe('12');
-        expect(runtime.__safe_concat(true, false)).toBe('truefalse');
-        expect(runtime.__safe_concat(null, undefined)).toBe('nullundefined');
+        // Numbers are added numerically (matching JS: 1 + 2 = 3)
+        expect(runtime.__safe_concat(1, 2)).toBe(3);
+        // Non-strings are coerced and concatenated (matching JS: true + false = 1)
+        expect(runtime.__safe_concat(true, false)).toBe(1);
+        // null + undefined = NaN (matching JS behavior)
+        expect(runtime.__safe_concat(null, undefined)).toBe(NaN);
+        // String + number = string concatenation
+        expect(runtime.__safe_concat('value: ', 42)).toBe('value: 42');
+        expect(runtime.__safe_concat(42, ' items')).toBe('42 items');
       });
 
       it('should throw if reference ID detected without sidecar', () => {

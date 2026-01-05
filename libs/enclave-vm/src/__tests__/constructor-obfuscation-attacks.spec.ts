@@ -36,8 +36,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return Array[key] ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -50,8 +50,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return Object[key] ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -62,8 +62,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return Math[key] ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -75,8 +75,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return JSON[key] ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -87,8 +87,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return String[key] ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -107,8 +107,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return myGlobal[key] ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
   });
@@ -122,8 +122,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return Number[key] ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -135,8 +135,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return Date[key] ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
   });
@@ -174,8 +174,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return proto ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -191,8 +191,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return Ctor ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -244,8 +244,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return Ctor ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -278,8 +278,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return Math[key] ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -296,8 +296,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return JSON[key] ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -309,8 +309,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return String[key] ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -321,8 +321,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return Number[key] ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
   });
@@ -336,8 +336,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return Ctor ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -349,8 +349,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return Ctor ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
   });
@@ -383,8 +383,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return Ctor ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
   });
@@ -418,8 +418,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return promiseCtor ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 
@@ -436,8 +436,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
         return FunctionCtor ? 'escaped' : 'blocked';
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
       enclave.dispose();
     });
 

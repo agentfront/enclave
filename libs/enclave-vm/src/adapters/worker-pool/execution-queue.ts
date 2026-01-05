@@ -149,11 +149,10 @@ export class ExecutionQueue {
    * @returns true if a queued request was fulfilled, false if queue was empty
    */
   notifySlotAvailable(slotId: string): boolean {
-    if (this.queue.length === 0) {
+    const execution = this.queue.shift();
+    if (!execution) {
       return false;
     }
-
-    const execution = this.queue.shift()!;
 
     // Clean up timeout and abort listener
     if (execution.timeoutId) {

@@ -445,6 +445,7 @@ describe('buildBlockedPropertiesFromConfig', () => {
       blockPrototype: false,
       blockLegacyAccessors: false,
       proxyMaxDepth: 10,
+      throwOnBlocked: true,
     };
     const blocked = buildBlockedPropertiesFromConfig(config);
 
@@ -459,6 +460,7 @@ describe('buildBlockedPropertiesFromConfig', () => {
       blockPrototype: true,
       blockLegacyAccessors: false,
       proxyMaxDepth: 10,
+      throwOnBlocked: true,
     };
     const blocked = buildBlockedPropertiesFromConfig(config);
 
@@ -473,6 +475,7 @@ describe('buildBlockedPropertiesFromConfig', () => {
       blockPrototype: false,
       blockLegacyAccessors: true,
       proxyMaxDepth: 10,
+      throwOnBlocked: true,
     };
     const blocked = buildBlockedPropertiesFromConfig(config);
 
