@@ -449,7 +449,7 @@ The enclave-vm package provides **bank-grade security** for AgentScript executio
 - ✅ **I/O flood protection** (console rate limiting)
 - ✅ **AI Scoring Gate** (semantic attack pattern detection)
 - ✅ **Worker Pool Adapter** (optional OS-level memory isolation)
-- ✅ **100% test pass rate** (690/690 passing)
+- ✅ **100% test pass rate** (1184/1184 passing)
 
 All security mechanisms are functioning correctly with zero failures or skipped tests.
 
@@ -463,8 +463,8 @@ All security mechanisms are functioning correctly with zero failures or skipped 
 
 ### Overall Security Testing
 
-- **Total Security Tests:** 690
-- **Passing:** 690 (100%)
+- **Total Security Tests:** 1184
+- **Passing:** 1184 (100%)
 - **Failing:** 0
 - **Skipped:** 0
 - **Categories Tested:** 25
@@ -716,47 +716,47 @@ The critical finding is that **even when attackers access the Function construct
 
 | Category                               | Vectors                        | Security Level    | Result              |
 | -------------------------------------- | ------------------------------ | ----------------- | ------------------- |
-| **1. Primitive Constructor Chains**    |
+| **1. Primitive Constructor Chains**    |                                |                   |                     |
 | String constructor chain               | `"".constructor.constructor`   | VM Isolation      | ✅ Sandbox Function |
 | Number constructor chain               | `(0).constructor.constructor`  | VM Isolation      | ✅ Sandbox Function |
 | Boolean constructor chain              | `true.constructor.constructor` | VM Isolation      | ✅ Sandbox Function |
 | Array constructor chain                | `[].constructor.constructor`   | VM Isolation      | ✅ Sandbox Function |
 | Object constructor chain               | `{}.constructor.constructor`   | VM Isolation      | ✅ Sandbox Function |
 | RegExp constructor chain               | `/x/.constructor.constructor`  | VM Isolation      | ✅ Sandbox Function |
-| **2. Callback Injection Attacks**      |
+| **2. Callback Injection Attacks**      |                                |                   |                     |
 | Array.prototype.map                    | Callback `this.constructor`    | VM Isolation      | ✅ Sandbox Function |
 | Array.prototype.filter                 | `arguments.callee` access      | PERMISSIVE allows | ⚠️ Non-strict mode  |
 | Array.prototype.reduce                 | Accumulator constructor        | VM Isolation      | ✅ Sandbox context  |
 | Array.prototype.sort                   | Comparator globals             | VM Isolation      | ✅ Sandbox context  |
 | Array.prototype.forEach                | Prototype access               | VM Isolation      | ✅ Sandbox context  |
-| **3. Type Coercion Gadgets**           |
+| **3. Type Coercion Gadgets**           |                                |                   |                     |
 | `valueOf` exploitation                 | Coercion callback              | VM Isolation      | ✅ Sandbox Function |
 | `toString` exploitation                | Coercion callback              | VM Isolation      | ✅ Sandbox context  |
 | `toJSON` exploitation                  | Stringify callback             | VM Isolation      | ✅ Sandbox context  |
 | `Symbol.toPrimitive`                   | Custom coercion                | AST Blocked       | ✅ Symbol blocked   |
-| **4. Function.prototype Exploitation** |
+| **4. Function.prototype Exploitation** |                                |                   |                     |
 | `Function.prototype.call`              | Context injection              | VM Isolation      | ✅ Sandbox global   |
 | `Function.prototype.apply`             | Arguments injection            | VM Isolation      | ✅ Sandbox context  |
 | `Function.prototype.bind`              | Context binding                | VM Isolation      | ✅ Sandbox context  |
-| **5. Tagged Template Attacks**         |
+| **5. Tagged Template Attacks**         |                                |                   |                     |
 | `String.raw` exploitation              | Constructor access             | SecureProxy       | ✅ Blocked          |
 | Custom tag functions                   | `strings.raw.constructor`      | VM Isolation      | ✅ Sandbox Function |
-| **6. JSON Reviver/Replacer**           |
+| **6. JSON Reviver/Replacer**           |                                |                   |                     |
 | `JSON.parse` reviver                   | `this.constructor` access      | VM Isolation      | ✅ Sandbox Function |
 | `JSON.stringify` replacer              | Value transformation           | VM Isolation      | ✅ Sandbox context  |
-| **7. Implicit Coercion**               |
+| **7. Implicit Coercion**               |                                |                   |                     |
 | Addition operator                      | `+` triggers valueOf           | VM Isolation      | ✅ Sandbox context  |
 | Comparison operator                    | `==` triggers valueOf          | VM Isolation      | ✅ Sandbox context  |
 | Property key coercion                  | `obj[key]` triggers toString   | VM Isolation      | ✅ Sandbox context  |
-| **8. Getter/Setter Attacks**           |
+| **8. Getter/Setter Attacks**           |                                |                   |                     |
 | Getter exploitation                    | `get prop()` context           | PERMISSIVE        | ✅ Sandbox context  |
 | Setter exploitation                    | `set prop()` context           | PERMISSIVE        | ✅ Sandbox context  |
 | `Object.defineProperty`                | Dynamic getter/setter          | PERMISSIVE        | ✅ Sandbox context  |
-| **9. Prototype Pollution**             |
+| **9. Prototype Pollution**             |                                |                   |                     |
 | `Object.prototype` pollution           | Host isolation                 | VM Isolation      | ✅ Host protected   |
 | `Array.prototype` pollution            | Host isolation                 | VM Isolation      | ✅ Host protected   |
 | Constructor prototype pollution        | Host isolation                 | VM Isolation      | ✅ Host protected   |
-| **10. Chained/Combined Attacks**       |
+| **10. Chained/Combined Attacks**       |                                |                   |                     |
 | Coercion + Constructor chain           | Multi-step attack              | VM Isolation      | ✅ Sandbox Function |
 | Callback + Constructor chain           | Multi-step attack              | VM Isolation      | ✅ Sandbox Function |
 | JSON.parse + Constructor chain         | Multi-step attack              | VM Isolation      | ✅ Sandbox Function |

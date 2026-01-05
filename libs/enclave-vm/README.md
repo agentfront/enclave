@@ -121,6 +121,42 @@ const enclave = new Enclave({
 });
 ```
 
+### AST Presets
+
+The `preset` option controls **AST-level validation** - what JavaScript constructs are allowed before code transformation. This is separate from `securityLevel` which controls runtime security.
+
+| Preset        | Description                                   | Custom Globals   |
+| ------------- | --------------------------------------------- | ---------------- |
+| `agentscript` | Default. Safe subset for LLM-generated code   | ✅ Supported     |
+| `strict`      | Maximum restrictions, blocks most JS features | ❌ Not supported |
+| `secure`      | High security with essential features         | ❌ Not supported |
+| `standard`    | Balanced security for general use             | ❌ Not supported |
+| `permissive`  | Minimal AST restrictions                      | ❌ Not supported |
+
+```typescript
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({
+  preset: 'agentscript', // AST validation preset (default)
+  securityLevel: SecurityLevel.STRICT, // Runtime security level
+  toolHandler: async (name, args) => {
+    /* ... */
+  },
+});
+```
+
+**Key Differences:**
+
+| Aspect                   | `preset` (AST)               | `securityLevel` (Runtime)   |
+| ------------------------ | ---------------------------- | --------------------------- |
+| When applied             | Before execution             | During execution            |
+| What it controls         | JavaScript syntax/constructs | Resource limits, timeouts   |
+| Function expressions     | Blocked in `agentscript`     | N/A                         |
+| Getter/setter syntax     | Blocked in `agentscript`     | N/A                         |
+| Custom globals whitelist | Only `agentscript` preset    | Always available at runtime |
+
+**Note:** Only the `agentscript` preset supports the `allowedGlobals` option for whitelisting custom global identifiers in AST validation. Other presets use their own fixed rule sets.
+
 ## Worker Pool Adapter (Optional)
 
 For environments requiring **OS-level memory isolation**, enable the Worker Pool Adapter. This provides a dual-layer sandbox with hard halt capability:
