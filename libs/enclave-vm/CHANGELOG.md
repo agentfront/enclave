@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-01-05
+
+### Added
+
+- Default double VM layer with parent/inner VMs, operation validation, rate limiting, and suspicious-pattern detection (`libs/enclave-vm/src/double-vm/**/*`).
+- Configurable `doubleVm` options plus exported `DoubleVmConfig`/`ParentValidationConfig` so callers can tune the parent validation stage (`libs/enclave-vm/src/types.ts`, `libs/enclave-vm/src/enclave.ts`).
+- AST validation preset selection via the new `preset` option covering agentscript/strict/secure/standard/permissive modes (`libs/enclave-vm/src/enclave.ts`, `libs/enclave-vm/src/index.ts`).
+- Reference helpers such as `BlockedPropertyCategory` and `REF_ID_SUFFIX` are now exported for consumers that integrate with the reference sidecar (`libs/enclave-vm/src/types.ts`, `libs/enclave-vm/src/sidecar/reference-config.ts`).
+
+### Changed
+
+- **Breaking:** `Enclave` now routes execution through the double VM wrapper by default and only falls back to raw adapters when `doubleVm.enabled` is set to false (`libs/enclave-vm/src/enclave.ts`).
+- Custom globals injected into the VM are automatically wrapped in secure proxies to block prototype-chain attacks (`libs/enclave-vm/src/adapters/vm-adapter.ts`).
+- `clearProxyCache()` now throws to make it clear the API is unsupported and unnecessary (`libs/enclave-vm/src/secure-proxy.ts`).
+
+### Removed
+
+- Removed the unused `allowFunctionBinding` option from `SecureProxyOptions`; function binding is always handled by the proxy rules (`libs/enclave-vm/src/secure-proxy.ts`).
+
+### Fixed
+
+- Pattern serialization and suspicious-pattern plumbing now reject unsafe detector bodies, handle `JSON.stringify` failures, and preserve error causes when bubbling through the parent VM (`libs/enclave-vm/src/double-vm/suspicious-patterns.ts`, `libs/enclave-vm/src/double-vm/double-vm-wrapper.ts`).
+
+### Security
+
+- Parent VM suspicious-pattern detectors block data exfiltration, enumeration, credential leaks, and bulk operations before tool calls reach the host (`libs/enclave-vm/src/double-vm/suspicious-patterns.ts`, `libs/enclave-vm/src/double-vm/parent-vm-bootstrap.ts`).
+
 ## [2.0.0] - 2026-01-04
 
 ### Added

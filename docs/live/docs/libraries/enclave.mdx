@@ -110,6 +110,33 @@ const enclave = new Enclave({
 });
 ```
 
+## AST Validation Presets
+
+Choose the level of AST validation enforced before any script executes by passing the `preset` option when constructing an `Enclave`. The default `agentscript` preset mirrors the AgentScript runtime, while the other presets trade flexibility for additional hardening.
+
+| Preset | When to use it |
+| ------ | -------------- |
+| `agentscript` (default) | AI agent tool orchestration with AgentScript helpers |
+| `strict` | Maximum restrictions for highly regulated workloads |
+| `secure` | High security with enough ergonomics for most production agents |
+| `standard` | Balanced validation for mixed workloads |
+| `permissive` | Trusted internal scripts that only need sandboxing for isolation |
+
+```typescript
+const enclave = new Enclave({
+  preset: 'strict',
+  globals: {
+    mathTools: {
+      add(a: number, b: number) {
+        return a + b;
+      },
+    },
+  },
+});
+```
+
+All object-valued globals are automatically wrapped in secure proxies, so even permissive presets retain prototype-chain protections.
+
 ## API
 
 ### `execute(code, options)`
@@ -172,6 +199,8 @@ import {
 const allBlockedProps = BLOCKED_PROPERTY_CATEGORIES.CONSTRUCTOR;
 // Set { 'constructor' }
 ```
+
+> **Note:** `clearProxyCache()` is intentionally unsupported and now throws an error. The proxy cache relies on garbage collection; manual clearing is unnecessary and prevented to avoid weakening the isolation guarantees.
 
 ## Worker Pool Adapter
 
