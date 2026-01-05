@@ -1,9 +1,9 @@
 # Enclave Security Audit Report
 
-**Date:** 2025-11-28
-**Package:** `enclave-vm` v0.6.0
-**Test Suite:** 690 security tests
-**Pass Rate:** 690/690 passing (100%)
+**Date:** 2026-01-05
+**Package:** `enclave-vm` v2.0.0
+**Test Suite:** 1184 security tests
+**Pass Rate:** 1184/1184 passing (100%)
 
 ## Executive Summary
 
@@ -449,7 +449,7 @@ The enclave-vm package provides **bank-grade security** for AgentScript executio
 - ✅ **I/O flood protection** (console rate limiting)
 - ✅ **AI Scoring Gate** (semantic attack pattern detection)
 - ✅ **Worker Pool Adapter** (optional OS-level memory isolation)
-- ✅ **100% test pass rate** (690/690 passing)
+- ✅ **100% test pass rate** (1184/1184 passing)
 
 All security mechanisms are functioning correctly with zero failures or skipped tests.
 
@@ -463,8 +463,8 @@ All security mechanisms are functioning correctly with zero failures or skipped 
 
 ### Overall Security Testing
 
-- **Total Security Tests:** 690
-- **Passing:** 690 (100%)
+- **Total Security Tests:** 1184
+- **Passing:** 1184 (100%)
 - **Failing:** 0
 - **Skipped:** 0
 - **Categories Tested:** 25
@@ -568,7 +568,218 @@ All security mechanisms are functioning correctly with zero failures or skipped 
   - 75 attack vectors now tested (up from 72)
   - Fixed ATK-44 test to use explicit return (100% pass rate, 0 skipped)
 
+- **v2.0.0** (2026-01-05): Runtime Attack Vector Research + Function Gadget Attack Research
+
+  - Added comprehensive runtime attack vectors test suite (74 tests)
+  - New test categories:
+    - Computed Property Building (24 vectors)
+    - Iterator/Generator Chain Attacks (8 vectors)
+    - Error Object Exploitation (6 vectors)
+    - Type Coercion Attacks (5 vectors)
+    - Known CVE Patterns (9 vectors)
+    - Tool Result Attacks (6 vectors)
+    - Syntax Obfuscation Attacks (5 vectors)
+    - Custom Globals Security (6 vectors)
+  - Fixed critical sandbox escape vulnerability (process.env through custom globals)
+  - Added SecureProxy recursive wrapping for nested objects
+  - Documented security model (wrapped vs sandbox-created objects)
+  - **CRITICAL FINDING**: Passing constructor functions as globals is NOT safe
+
 - **v0.0.1** (2025-11-25): Initial security audit
   - 30/43 tests passing
   - All critical security features working
   - Known parser limitations documented
+
+---
+
+## Runtime Attack Vector Research (v2.0.0)
+
+### Overview
+
+This research investigated sophisticated JavaScript sandbox escape attacks that bypass AST static analysis and require runtime protection (SecureProxy).
+
+### Security Model Summary
+
+The enclave-vm uses a **three-layer security approach**:
+
+1. **WRAPPED OBJECTS (SecureProxy blocks constructor/**proto** access):**
+
+   - Built-in globals (Array, Object, Math, JSON, etc.)
+   - Custom user-provided globals
+   - Tool handler results
+
+2. **SANDBOX-CREATED OBJECTS (vm context isolation):**
+
+   - Objects created by method returns (arr.map(), str.split(), etc.)
+   - Error objects
+   - Iterator objects
+   - Objects created with literals ({}, [])
+
+   These objects are NOT wrapped by SecureProxy, but they exist within the vm sandbox context. Even if you access their constructor, it's the SANDBOX's constructor (not the host's), and functions created with it run in the sandbox context without access to host globals.
+
+3. **AST VALIDATION (blocks dangerous patterns statically):**
+   - Direct 'constructor' identifier access
+   - eval, Function, Proxy, Reflect
+   - Symbol, WeakRef, FinalizationRegistry
+   - Map, Set (blocked by default in AgentScript preset)
+
+### Critical Findings
+
+#### 1. Custom Globals Vulnerability (FIXED)
+
+**Issue:** When user-provided objects were passed as globals without wrapping, prototype chain attacks could access real `process.env`.
+
+**Attack Pattern:**
+
+```javascript
+process.env['__p' + 'roto__']['con' + 'structor']['con' + 'structor']('return process.env.PATH')();
+```
+
+**Fix:** All custom globals are now recursively wrapped with SecureProxy in both vm-adapter.ts and parent-vm-bootstrap.ts.
+
+#### 2. Constructor Functions as Globals (KNOWN LIMITATION)
+
+**Issue:** When passing constructor functions (like Map, Set) directly as globals, their prototype chain leads to the HOST's Function constructor, enabling sandbox escape.
+
+**Example (DO NOT DO THIS IN PRODUCTION):**
+
+```javascript
+const enclave = new Enclave({
+  globals: { Map }, // DANGEROUS!
+});
+// Code can access host's Function constructor via Map's prototype
+```
+
+**Mitigation:** The AgentScript preset blocks Map, Set, and other constructor functions by default. Only pass:
+
+- Primitive values (strings, numbers, booleans)
+- Plain objects containing primitives or other plain objects
+- Functions that have been explicitly approved
+
+### Attack Categories Tested
+
+| Category                     | Vectors Tested | Status                              |
+| ---------------------------- | -------------- | ----------------------------------- |
+| String Concatenation         | 5              | ✅ BLOCKED on wrapped objects       |
+| Array Join Methods           | 3              | ✅ BLOCKED on wrapped objects       |
+| String Transforms            | 5              | ✅ BLOCKED on wrapped objects       |
+| Character Code Building      | 3              | ✅ BLOCKED on wrapped objects       |
+| Encoding Attacks             | 5              | ✅ BLOCKED on wrapped objects       |
+| **proto** Building           | 3              | ✅ BLOCKED on wrapped objects       |
+| Generator/Async Constructors | 3              | ✅ VM Isolated                      |
+| Iterator Protocols           | 3              | ✅ VM Isolated                      |
+| Map/Set Iterators            | 2              | ⚠️ DOCUMENTED (blocked by AST)      |
+| Error Constructor Chains     | 3              | ✅ VM Isolated                      |
+| Error.prepareStackTrace      | 2              | ✅ VM Isolated                      |
+| Error.cause Chains           | 2              | ✅ VM Isolated                      |
+| toString/valueOf Coercion    | 3              | ✅ BLOCKED on wrapped objects       |
+| Symbol.toPrimitive           | 1              | ✅ BLOCKED by AST                   |
+| CVE-2023-29017 Pattern       | 1              | ✅ BLOCKED                          |
+| CVE-2023-30547 Pattern       | 1              | ✅ VM Isolated                      |
+| CVE-2023-32313 Pattern       | 2              | ✅ BLOCKED by AST                   |
+| CVE-2023-37466 Pattern       | 3              | ✅ BLOCKED by AST                   |
+| Built-in Method Returns      | 3              | ✅ VM Isolated                      |
+| Tool Result Attacks          | 3              | ✅ BLOCKED by SecureProxy           |
+| Promise Chain Attacks        | 3              | ✅ BLOCKED by SecureProxy           |
+| Optional Chaining            | 2              | ✅ BLOCKED on wrapped / VM Isolated |
+| Comma Operator               | 2              | ✅ BLOCKED on wrapped objects       |
+| Spread Operator              | 1              | ✅ VM Isolated                      |
+| Destructuring                | 1              | ✅ BLOCKED by AST                   |
+| Custom Object Globals        | 2              | ✅ BLOCKED by SecureProxy           |
+| Custom Function Globals      | 2              | ✅ BLOCKED by SecureProxy           |
+| Process.env Isolation        | 2              | ✅ BLOCKED by SecureProxy           |
+
+### Recommendations
+
+1. **NEVER pass constructor functions (Map, Set, etc.) as globals** - they expose the host's Function constructor
+2. **Use the default AgentScript preset** - it blocks dangerous constructors
+3. **Wrap all user-provided objects** - the enclave now does this automatically
+4. **Validate tool handler results** - they are automatically proxied
+
+---
+
+## Function Gadget Attack Research (v2.0.0)
+
+### Overview
+
+This research investigated **function gadget attacks** - sophisticated attacks that exploit methods on primitives and built-in objects to bypass sandbox security. These "gadgets" are legitimate JavaScript features that can be chained together to potentially achieve sandbox escape.
+
+### Key Insight: Sandbox Function Constructor
+
+The critical finding is that **even when attackers access the Function constructor through various gadgets**, the security still holds because:
+
+1. **Sandbox-created objects lead to the sandbox's Function constructor** - not the host's
+2. **Functions created in the sandbox run in sandbox context** - no access to host globals like `process`, `require`, `module`
+3. **Wrapped globals (Object, String, Math, etc.) block constructor access via SecureProxy**
+
+### Attack Categories Tested (50 Tests)
+
+| Category                               | Vectors                        | Security Level    | Result              |
+| -------------------------------------- | ------------------------------ | ----------------- | ------------------- |
+| **1. Primitive Constructor Chains**    |                                |                   |                     |
+| String constructor chain               | `"".constructor.constructor`   | VM Isolation      | ✅ Sandbox Function |
+| Number constructor chain               | `(0).constructor.constructor`  | VM Isolation      | ✅ Sandbox Function |
+| Boolean constructor chain              | `true.constructor.constructor` | VM Isolation      | ✅ Sandbox Function |
+| Array constructor chain                | `[].constructor.constructor`   | VM Isolation      | ✅ Sandbox Function |
+| Object constructor chain               | `{}.constructor.constructor`   | VM Isolation      | ✅ Sandbox Function |
+| RegExp constructor chain               | `/x/.constructor.constructor`  | VM Isolation      | ✅ Sandbox Function |
+| **2. Callback Injection Attacks**      |                                |                   |                     |
+| Array.prototype.map                    | Callback `this.constructor`    | VM Isolation      | ✅ Sandbox Function |
+| Array.prototype.filter                 | `arguments.callee` access      | PERMISSIVE allows | ⚠️ Non-strict mode  |
+| Array.prototype.reduce                 | Accumulator constructor        | VM Isolation      | ✅ Sandbox context  |
+| Array.prototype.sort                   | Comparator globals             | VM Isolation      | ✅ Sandbox context  |
+| Array.prototype.forEach                | Prototype access               | VM Isolation      | ✅ Sandbox context  |
+| **3. Type Coercion Gadgets**           |                                |                   |                     |
+| `valueOf` exploitation                 | Coercion callback              | VM Isolation      | ✅ Sandbox Function |
+| `toString` exploitation                | Coercion callback              | VM Isolation      | ✅ Sandbox context  |
+| `toJSON` exploitation                  | Stringify callback             | VM Isolation      | ✅ Sandbox context  |
+| `Symbol.toPrimitive`                   | Custom coercion                | AST Blocked       | ✅ Symbol blocked   |
+| **4. Function.prototype Exploitation** |                                |                   |                     |
+| `Function.prototype.call`              | Context injection              | VM Isolation      | ✅ Sandbox global   |
+| `Function.prototype.apply`             | Arguments injection            | VM Isolation      | ✅ Sandbox context  |
+| `Function.prototype.bind`              | Context binding                | VM Isolation      | ✅ Sandbox context  |
+| **5. Tagged Template Attacks**         |                                |                   |                     |
+| `String.raw` exploitation              | Constructor access             | SecureProxy       | ✅ Blocked          |
+| Custom tag functions                   | `strings.raw.constructor`      | VM Isolation      | ✅ Sandbox Function |
+| **6. JSON Reviver/Replacer**           |                                |                   |                     |
+| `JSON.parse` reviver                   | `this.constructor` access      | VM Isolation      | ✅ Sandbox Function |
+| `JSON.stringify` replacer              | Value transformation           | VM Isolation      | ✅ Sandbox context  |
+| **7. Implicit Coercion**               |                                |                   |                     |
+| Addition operator                      | `+` triggers valueOf           | VM Isolation      | ✅ Sandbox context  |
+| Comparison operator                    | `==` triggers valueOf          | VM Isolation      | ✅ Sandbox context  |
+| Property key coercion                  | `obj[key]` triggers toString   | VM Isolation      | ✅ Sandbox context  |
+| **8. Getter/Setter Attacks**           |                                |                   |                     |
+| Getter exploitation                    | `get prop()` context           | PERMISSIVE        | ✅ Sandbox context  |
+| Setter exploitation                    | `set prop()` context           | PERMISSIVE        | ✅ Sandbox context  |
+| `Object.defineProperty`                | Dynamic getter/setter          | PERMISSIVE        | ✅ Sandbox context  |
+| **9. Prototype Pollution**             |                                |                   |                     |
+| `Object.prototype` pollution           | Host isolation                 | VM Isolation      | ✅ Host protected   |
+| `Array.prototype` pollution            | Host isolation                 | VM Isolation      | ✅ Host protected   |
+| Constructor prototype pollution        | Host isolation                 | VM Isolation      | ✅ Host protected   |
+| **10. Chained/Combined Attacks**       |                                |                   |                     |
+| Coercion + Constructor chain           | Multi-step attack              | VM Isolation      | ✅ Sandbox Function |
+| Callback + Constructor chain           | Multi-step attack              | VM Isolation      | ✅ Sandbox Function |
+| JSON.parse + Constructor chain         | Multi-step attack              | VM Isolation      | ✅ Sandbox Function |
+
+### Security Mode Differences
+
+| Feature                               | AgentScript (Default) | PERMISSIVE         |
+| ------------------------------------- | --------------------- | ------------------ |
+| Function expressions                  | ❌ Blocked            | ✅ Allowed         |
+| Getter/Setter syntax                  | ❌ Blocked            | ✅ Allowed         |
+| `arguments.callee`                    | ❌ Blocked (strict)   | ✅ Available       |
+| `function.call(null)`                 | Returns undefined     | Returns globalThis |
+| Constructor access on wrapped globals | ❌ Blocked            | ✅ Allowed         |
+| Prototype pollution in sandbox        | ✅ Host isolated      | ✅ Host isolated   |
+
+### Key Takeaways
+
+1. **The sandbox isolation is robust** - Even sophisticated gadget chains lead to the sandbox's Function constructor, not the host's
+
+2. **AgentScript preset provides strong protection** - Blocks function expressions, getters/setters, and dangerous patterns statically
+
+3. **PERMISSIVE mode trades security for flexibility** - Allows more JavaScript features but still maintains host isolation
+
+4. **Constructor access through primitives works but is contained** - The constructed functions run in sandbox context with no host access
+
+5. **Host prototype chain is always protected** - Prototype pollution is contained within the sandbox

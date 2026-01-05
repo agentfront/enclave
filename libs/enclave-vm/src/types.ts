@@ -24,6 +24,23 @@
 export type SecurityLevel = 'STRICT' | 'SECURE' | 'STANDARD' | 'PERMISSIVE';
 
 /**
+ * AST validation preset for code validation
+ *
+ * Controls which validation rules are applied to code before execution.
+ * Each preset is designed for different security/functionality trade-offs.
+ *
+ * @example
+ * ```typescript
+ * // Use agentscript preset for AI-generated tool orchestration (default)
+ * const enclave = new Enclave({ preset: 'agentscript' });
+ *
+ * // Use strict preset for maximum security
+ * const enclave = new Enclave({ preset: 'strict' });
+ * ```
+ */
+export type AstPreset = 'agentscript' | 'strict' | 'secure' | 'standard' | 'permissive';
+
+/**
  * Secure proxy configuration per security level
  *
  * Controls which dangerous properties are blocked at runtime via JavaScript Proxies.
@@ -693,6 +710,32 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * ```
    */
   securityLevel?: SecurityLevel;
+
+  /**
+   * AST validation preset to use for code validation
+   *
+   * Controls which validation rules are applied to code before execution.
+   * All presets support custom globals via the `globals` option.
+   *
+   * Presets:
+   * - agentscript: Specialized for AI agent tool orchestration (DEFAULT)
+   * - strict: Bank-grade security, blocks almost everything
+   * - secure: High security with reasonable flexibility
+   * - standard: Balanced security for most use cases
+   * - permissive: Minimal restrictions for trusted code
+   *
+   * @default 'agentscript'
+   *
+   * @example
+   * ```typescript
+   * // Use agentscript preset (default)
+   * const enclave = new Enclave({ preset: 'agentscript' });
+   *
+   * // Use strict preset for maximum security
+   * const enclave = new Enclave({ preset: 'strict' });
+   * ```
+   */
+  preset?: AstPreset;
 
   /**
    * Whether to validate AgentScript code before execution

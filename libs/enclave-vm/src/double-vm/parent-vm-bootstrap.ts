@@ -237,11 +237,17 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
 
         var value = Reflect.get(target, property, receiver);
 
-        // For function calls, bind to target and proxy the result
+        // For function values, bind to target first (preserves internal slot access for Promises, etc.)
+        // Then recursively proxy the bound function to block constructor access
         if (typeof value === 'function') {
           var boundMethod = value.bind(target);
-          proxyCache.set(value, boundMethod);
-          return boundMethod;
+          return createSecureProxy(boundMethod, depth + 1);
+        }
+
+        // Recursively proxy nested objects to maintain security barrier
+        // This prevents attacks like: process.env.__proto__.constructor
+        if (value !== null && typeof value === 'object') {
+          return createSecureProxy(value, depth + 1);
         }
 
         return value;

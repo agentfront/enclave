@@ -11,7 +11,14 @@
  * @packageDocumentation
  */
 
-import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+import {
+  JSAstValidator,
+  createAgentScriptPreset,
+  createStrictPreset,
+  createSecurePreset,
+  createStandardPreset,
+  createPermissivePreset,
+} from 'ast-guard';
 import { transformAgentScript, isWrappedInMain } from 'ast-guard';
 import { extractLargeStrings, transformConcatenation, transformTemplateLiterals } from 'ast-guard';
 import * as acorn from 'acorn';
@@ -25,6 +32,7 @@ import type {
   SandboxAdapter,
   ToolHandler,
   SecurityLevel,
+  AstPreset,
   ReferenceSidecarOptions,
   SecureProxyLevelConfig,
   DoubleVmConfig,
@@ -213,36 +221,11 @@ export class Enclave {
     // 2. The transformed name (__safe_customValue)
     const customAllowedGlobals = customGlobalNames.flatMap((name) => [name, `__safe_${name}`]);
 
-    this.validator = new JSAstValidator(
-      createAgentScriptPreset({
-        allowedGlobals: [
-          'callTool',
-          'parallel',
-          'Math',
-          'JSON',
-          'Array',
-          'Object',
-          'String',
-          'Number',
-          'Date',
-          'console',
-          // Safe standard globals
-          'undefined',
-          'NaN',
-          'Infinity',
-          '__safe_callTool',
-          '__safe_forOf',
-          '__safe_for',
-          '__safe_while',
-          '__safe_doWhile',
-          '__safe_concat',
-          '__safe_template',
-          '__safe_parallel',
-          '__safe_console', // Transformed console with rate limiting
-          ...customAllowedGlobals,
-        ],
-      }),
-    );
+    // Select preset based on options (default: agentscript)
+    const presetName: AstPreset = options.preset ?? 'agentscript';
+
+    // Create validator based on selected preset
+    this.validator = this.createValidator(presetName, customAllowedGlobals);
 
     // Configuration flags
     this.validateCode = options.validate !== false; // Default: true
@@ -599,6 +582,73 @@ export class Enclave {
       maxSanitizeProperties: this.config.maxSanitizeProperties,
       memoryLimit: this.config.memoryLimit,
     };
+  }
+
+  /**
+   * Create a validator based on the selected preset
+   *
+   * @param presetName The preset to use
+   * @param customAllowedGlobals Custom globals to whitelist
+   * @returns A configured JSAstValidator
+   */
+  private createValidator(presetName: AstPreset, customAllowedGlobals: string[]): JSAstValidator {
+    // Base globals that are always available in the AgentScript runtime
+    const baseAgentScriptGlobals = [
+      'callTool',
+      'parallel',
+      'Math',
+      'JSON',
+      'Array',
+      'Object',
+      'String',
+      'Number',
+      'Date',
+      'console',
+      // Safe standard globals
+      'undefined',
+      'NaN',
+      'Infinity',
+      // Safe runtime wrappers
+      '__safe_callTool',
+      '__safe_forOf',
+      '__safe_for',
+      '__safe_while',
+      '__safe_doWhile',
+      '__safe_concat',
+      '__safe_template',
+      '__safe_parallel',
+      '__safe_console',
+    ];
+
+    switch (presetName) {
+      case 'agentscript':
+        // AgentScript preset has allowedGlobals option
+        return new JSAstValidator(
+          createAgentScriptPreset({
+            allowedGlobals: [...baseAgentScriptGlobals, ...customAllowedGlobals],
+          }),
+        );
+
+      case 'strict':
+        // Other presets don't have allowedGlobals option - they use their own rules
+        // Note: custom globals are still available at runtime, just not validated at AST level
+        return new JSAstValidator(createStrictPreset());
+
+      case 'secure':
+        return new JSAstValidator(createSecurePreset());
+
+      case 'standard':
+        return new JSAstValidator(createStandardPreset());
+
+      case 'permissive':
+        return new JSAstValidator(createPermissivePreset());
+
+      default: {
+        // TypeScript exhaustiveness check
+        const _exhaustiveCheck: never = presetName;
+        throw new Error(`Unknown preset: ${_exhaustiveCheck}`);
+      }
+    }
   }
 
   /**

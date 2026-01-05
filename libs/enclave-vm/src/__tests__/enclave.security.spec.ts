@@ -1300,4 +1300,128 @@ describe('Enclave Security Tests', () => {
       enclave2.dispose();
     });
   });
+
+  describe('Sandbox Escape Prevention (Custom Globals)', () => {
+    it('should block __proto__ access via string concatenation on custom globals with Double VM enabled', async () => {
+      const enclave = new Enclave({
+        securityLevel: 'STRICT',
+        globals: {
+          process: { env: { SECRET: 'fake-secret-123' } },
+        },
+      });
+
+      const result = await enclave.run(`
+        const proto = process.env['__p'+'roto__'];
+        return proto;
+      `);
+
+      // __proto__ should be blocked by secure proxy
+      expect(result.success).toBe(true);
+      expect(result.value).toBeUndefined();
+
+      enclave.dispose();
+    });
+
+    it('should block __proto__ access via string concatenation on custom globals with Double VM disabled', async () => {
+      const enclave = new Enclave({
+        securityLevel: 'STRICT',
+        doubleVm: { enabled: false },
+        globals: {
+          process: { env: { SECRET: 'fake-secret-123' } },
+        },
+      });
+
+      const result = await enclave.run(`
+        const proto = process.env['__p'+'roto__'];
+        return proto;
+      `);
+
+      // __proto__ should be blocked by secure proxy
+      expect(result.success).toBe(true);
+      expect(result.value).toBeUndefined();
+
+      enclave.dispose();
+    });
+
+    it('should prevent sandbox escape via prototype chain attack with Double VM disabled', async () => {
+      const enclave = new Enclave({
+        securityLevel: 'STRICT',
+        doubleVm: { enabled: false },
+        globals: {
+          myObj: { data: { value: 'test' } },
+        },
+      });
+
+      const result = await enclave.run(`
+        try {
+          const Func = myObj.data['__p'+'roto__']['con'+'structor']['con'+'structor'];
+          if (typeof Func === 'function') {
+            const fn = Func('return typeof process !== "undefined" ? "ESCAPED" : "SAFE"');
+            return fn();
+          }
+          return 'BLOCKED';
+        } catch (e) {
+          return 'ERROR';
+        }
+      `);
+
+      // Should NOT escape to real process - attack should be blocked
+      expect(result.success).toBe(true);
+      expect(result.value).not.toBe('ESCAPED');
+
+      enclave.dispose();
+    });
+
+    it('should prevent sandbox escape via prototype chain attack with Double VM enabled', async () => {
+      const enclave = new Enclave({
+        securityLevel: 'STRICT',
+        globals: {
+          myObj: { data: { value: 'test' } },
+        },
+      });
+
+      const result = await enclave.run(`
+        try {
+          const Func = myObj.data['__p'+'roto__']['con'+'structor']['con'+'structor'];
+          if (typeof Func === 'function') {
+            const fn = Func('return typeof process !== "undefined" ? "ESCAPED" : "SAFE"');
+            return fn();
+          }
+          return 'BLOCKED';
+        } catch (e) {
+          return 'ERROR';
+        }
+      `);
+
+      // Should NOT escape to real process - attack should be blocked
+      expect(result.success).toBe(true);
+      expect(result.value).not.toBe('ESCAPED');
+
+      enclave.dispose();
+    });
+
+    it('should block constructor access on nested custom globals', async () => {
+      const enclave = new Enclave({
+        securityLevel: 'STRICT',
+        globals: {
+          config: {
+            database: {
+              host: 'localhost',
+              port: 5432,
+            },
+          },
+        },
+      });
+
+      const result = await enclave.run(`
+        const Func = config.database['con'+'structor'];
+        return Func ? Func.name : 'blocked';
+      `);
+
+      expect(result.success).toBe(true);
+      expect(result.value).toBe('blocked');
+
+      enclave.dispose();
+    });
+  });
 });
