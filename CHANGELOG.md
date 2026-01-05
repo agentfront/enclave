@@ -16,7 +16,7 @@ enclave-vm now ships memory-aware execution limits and stricter secure proxy err
 
 | Package    | Version | Highlights                                                                                        |
 | ---------- | ------- | ------------------------------------------------------------------------------------------------- |
-| enclave-vm | 3.0.0   | Adds MemoryTracker-based limits and makes blocked-property access raise explicit security errors. |
+| enclave-vm | 2.2.0   | Adds MemoryTracker-based limits and makes blocked-property access raise explicit security errors. |
 | ast-guard  | 1.1.2   | Template literal transform no longer rewrites tagged templates.                                   |
 
 ## 2026-01-05
