@@ -56,3 +56,32 @@ jobs:
 
       - name: Test libraries
         run: npx nx affected -t test --passWithNoTests
+
+      - name: Run performance tests
+        id: perf-tests
+        run: |
+          echo "Running performance benchmarks..."
+          npx nx run enclave-vm:test-perf --passWithNoTests || true
+        continue-on-error: true
+
+      - name: Generate performance summary
+        if: always()
+        run: |
+          if [ -f "perf-results.json" ]; then
+            echo "## 📊 Performance Test Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            node scripts/format-perf-summary.mjs perf-results.json >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ⚠️ Performance Tests" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No performance results found. Tests may have been skipped or failed to run." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload performance results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results
+          path: perf-results.json
+          if-no-files-found: ignore
+          retention-days: 30
