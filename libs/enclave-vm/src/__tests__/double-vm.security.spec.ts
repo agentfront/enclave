@@ -532,12 +532,12 @@ describe('Double VM Security Layer', () => {
           },
         });
 
-        // Try to enumerate user IDs rapidly (>10 same operation in 5 seconds)
+        // Try to enumerate user IDs rapidly (>30 same operation in 5 seconds)
         const result = await enclave.run(`
           async function __ag_main() {
             const results = [];
-            // Try 15 rapid calls to same operation
-            for (let i = 0; i < 15; i++) {
+            // Try 35 rapid calls to same operation (threshold is >30)
+            for (let i = 0; i < 35; i++) {
               results.push(await callTool('user:exists', { id: i }));
             }
             return results.length;
@@ -546,8 +546,43 @@ describe('Double VM Security Layer', () => {
 
         expect(result.success).toBe(false);
         expect(result.error?.message).toMatch(/suspicious pattern.*enumeration/i);
-        // Some calls succeeded before pattern detected (threshold is >10)
-        expect(callCount).toBeLessThanOrEqual(12);
+        // Some calls succeeded before pattern detected (threshold is >30)
+        expect(callCount).toBeLessThanOrEqual(32);
+      });
+
+      it('should allow legitimate pagination (up to 30 calls)', async () => {
+        let callCount = 0;
+        const toolHandler: ToolHandler = async () => {
+          callCount++;
+          return { items: [], hasMore: callCount < 20 };
+        };
+
+        const enclave = new Enclave({
+          securityLevel: 'STANDARD',
+          maxToolCalls: 50,
+          toolHandler,
+          doubleVm: {
+            parentValidation: {
+              blockSuspiciousSequences: true,
+              maxOperationsPerSecond: 100,
+            },
+          },
+        });
+
+        // 20 paginated calls should succeed (under 30 threshold)
+        const result = await enclave.run(`
+          async function __ag_main() {
+            const allItems = [];
+            for (let page = 0; page < 20; page++) {
+              const data = await callTool('users:list', { page, limit: 100 });
+              allItems.push(...data.items);
+            }
+            return allItems.length;
+          }
+        `);
+
+        expect(result.success).toBe(true);
+        expect(callCount).toBe(20);
       });
 
       it('should allow varied operations without triggering enumeration detection', async () => {
@@ -581,6 +616,150 @@ describe('Double VM Security Layer', () => {
 
         expect(result.success).toBe(true);
         expect(calls.length).toBe(5);
+      });
+
+      it('should respect custom rapidEnumerationThreshold', async () => {
+        let callCount = 0;
+        const toolHandler: ToolHandler = async () => {
+          callCount++;
+          return { success: true };
+        };
+
+        // Set a low threshold of 5
+        const enclave = new Enclave({
+          securityLevel: 'STANDARD',
+          maxToolCalls: 100,
+          toolHandler,
+          doubleVm: {
+            parentValidation: {
+              blockSuspiciousSequences: true,
+              maxOperationsPerSecond: 100,
+              rapidEnumerationThreshold: 5, // Custom low threshold
+            },
+          },
+        });
+
+        // Try 10 calls - should fail since threshold is 5
+        const result = await enclave.run(`
+          async function __ag_main() {
+            for (let i = 0; i < 10; i++) {
+              await callTool('search', { query: i });
+            }
+            return 'done';
+          }
+        `);
+
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toMatch(/suspicious pattern.*enumeration/i);
+        expect(callCount).toBeLessThanOrEqual(7); // Threshold is >5, so at most 6 calls succeed
+      });
+
+      it('should allow more calls with higher rapidEnumerationThreshold', async () => {
+        let callCount = 0;
+        const toolHandler: ToolHandler = async () => {
+          callCount++;
+          return { success: true };
+        };
+
+        // Set a high threshold of 50
+        const enclave = new Enclave({
+          securityLevel: 'STANDARD',
+          maxToolCalls: 100,
+          toolHandler,
+          doubleVm: {
+            parentValidation: {
+              blockSuspiciousSequences: true,
+              maxOperationsPerSecond: 100,
+              rapidEnumerationThreshold: 50, // High threshold
+            },
+          },
+        });
+
+        // 40 calls should succeed with threshold of 50
+        const result = await enclave.run(`
+          async function __ag_main() {
+            for (let i = 0; i < 40; i++) {
+              await callTool('search', { query: i });
+            }
+            return 'done';
+          }
+        `);
+
+        expect(result.success).toBe(true);
+        expect(callCount).toBe(40);
+      });
+
+      it('should respect per-operation rapidEnumerationOverrides', async () => {
+        let searchCalls = 0;
+        let listCalls = 0;
+        const toolHandler: ToolHandler = async (name) => {
+          if (name === 'search') searchCalls++;
+          if (name === 'list') listCalls++;
+          return { success: true };
+        };
+
+        // Default threshold 5, but override 'search' to allow 50
+        const enclave = new Enclave({
+          securityLevel: 'STANDARD',
+          maxToolCalls: 100,
+          toolHandler,
+          doubleVm: {
+            parentValidation: {
+              blockSuspiciousSequences: true,
+              maxOperationsPerSecond: 100,
+              rapidEnumerationThreshold: 5, // Low default
+              rapidEnumerationOverrides: {
+                search: 50, // High override for 'search' operation
+              },
+            },
+          },
+        });
+
+        // 40 search calls should succeed (override is 50)
+        const result = await enclave.run(`
+          async function __ag_main() {
+            for (let i = 0; i < 40; i++) {
+              await callTool('search', { query: i });
+            }
+            return 'done';
+          }
+        `);
+
+        expect(result.success).toBe(true);
+        expect(searchCalls).toBe(40);
+
+        // But 'list' should fail at low threshold
+        searchCalls = 0;
+        listCalls = 0;
+
+        const enclave2 = new Enclave({
+          securityLevel: 'STANDARD',
+          maxToolCalls: 100,
+          toolHandler,
+          doubleVm: {
+            parentValidation: {
+              blockSuspiciousSequences: true,
+              maxOperationsPerSecond: 100,
+              rapidEnumerationThreshold: 5,
+              rapidEnumerationOverrides: {
+                search: 50, // Only 'search' has high limit
+              },
+            },
+          },
+        });
+
+        const result2 = await enclave2.run(`
+          async function __ag_main() {
+            for (let i = 0; i < 10; i++) {
+              await callTool('list', { page: i });
+            }
+            return 'done';
+          }
+        `);
+
+        expect(result2.success).toBe(false);
+        expect(result2.error?.message).toMatch(/suspicious pattern.*enumeration/i);
+        expect(listCalls).toBeLessThanOrEqual(7);
       });
     });
 
@@ -1262,8 +1441,8 @@ describe('Double VM Security Layer', () => {
         async function __ag_main() {
           const validUsers = [];
 
-          // Enumerate valid user IDs (>10 same operation triggers RAPID_ENUMERATION)
-          for (let id = 1; id <= 20; id++) {
+          // Enumerate valid user IDs (>30 same operation triggers RAPID_ENUMERATION)
+          for (let id = 1; id <= 35; id++) {
             const check = await callTool('user:check', { id });
             if (check.exists) validUsers.push(id);
           }
@@ -1275,9 +1454,9 @@ describe('Double VM Security Layer', () => {
       `);
 
       expect(result.success).toBe(false);
-      // Should be blocked by RAPID_ENUMERATION (>10 same operation in 5s)
+      // Should be blocked by RAPID_ENUMERATION (>30 same operation in 5s)
       expect(result.error?.message).toMatch(/suspicious pattern.*enumeration/i);
-      expect(enumCount).toBeLessThanOrEqual(12);
+      expect(enumCount).toBeLessThanOrEqual(32);
     });
   });
 });

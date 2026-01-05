@@ -308,6 +308,7 @@ describe('Multi-Tenant Security Tests', () => {
       const enclave = new Enclave({
         validate: false,
         timeout: 5000,
+        maxIterations: 150000, // Allow the 100k iteration loop
       });
 
       // Start a long-running operation
