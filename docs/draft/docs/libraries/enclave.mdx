@@ -84,10 +84,28 @@ const enclave = new Enclave({
 | Pattern | Description |
 |---------|-------------|
 | `EXFIL_LIST_SEND` | List/query followed by send/export |
-| `RAPID_ENUMERATION` | Same operation called >10 times in 5s |
+| `RAPID_ENUMERATION` | Same operation called >30 times in 5s (configurable) |
 | `CREDENTIAL_EXFIL` | Credential access + external operation |
 | `BULK_OPERATION` | Bulk/batch/mass operation names |
 | `DELETE_AFTER_ACCESS` | Delete operation after data access |
+
+### Configuring Rapid Enumeration
+
+The `RAPID_ENUMERATION` pattern threshold is configurable:
+
+```typescript
+const enclave = new Enclave({
+  doubleVm: {
+    parentValidation: {
+      rapidEnumerationThreshold: 50, // Default: 30
+      rapidEnumerationOverrides: {
+        'search': 100, // Allow 100 search calls
+        'users.list': 200, // Allow 200 list calls
+      },
+    },
+  },
+});
+```
 
 ### Custom Patterns
 
@@ -136,6 +154,47 @@ Clean up resources.
 ```typescript
 enclave.dispose();
 ```
+
+## Runtime Globals — `__maxIterations`
+
+Scripts executed by the enclave VM have access to a special runtime global `__maxIterations` that reflects the configured iteration limit. This global is exposed as a **non-writable, non-configurable** number for safety.
+
+### Reading `__maxIterations`
+
+```typescript
+const enclave = new Enclave({
+  maxIterations: 50000, // Configure iteration limit
+  toolHandler: async (name, args) => { /* ... */ },
+});
+
+const result = await enclave.run(`
+  // Access the configured iteration limit
+  const limit = __maxIterations;
+
+  // Use it for adaptive logic
+  const safeLimit = Math.min(limit / 2, 10000);
+
+  return { configuredLimit: limit, safeLimit };
+`);
+
+// result.value = { configuredLimit: 50000, safeLimit: 10000 }
+```
+
+### Use Cases
+
+- **Adaptive algorithms**: Adjust iteration bounds based on the configured limit
+- **Progress reporting**: Calculate percentage completion relative to the limit
+- **Self-throttling**: Implement custom iteration budgets within scripts
+
+### Security Notes
+
+- The global is **read-only** — attempts to modify it will fail silently or throw depending on strict mode
+- The value matches the `maxIterations` configuration passed to `Enclave`
+- Default value is `10000` if not explicitly configured
+
+### Cross-reference
+
+See the `maxIterations` option in [CreateEnclaveOptions](#createenclaveoptions) for configuration details.
 
 ## Reference Sidecar
 

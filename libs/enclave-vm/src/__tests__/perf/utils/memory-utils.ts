@@ -224,6 +224,8 @@ export async function measureObjectFootprint<T>(
   };
 
   const footprints: number[] = [];
+  // Retain objects to prevent GC during measurement
+  const retained: unknown[] = [];
 
   for (let i = 0; i < opts.iterations; i++) {
     if (opts.forceGC) {
@@ -234,12 +236,13 @@ export async function measureObjectFootprint<T>(
     const obj = await factory();
     const after = captureMemory();
 
-    // Keep reference to prevent GC
+    // Store reference to prevent GC until measurement is complete
+    retained.push(obj);
     footprints.push(after.heapUsed - before.heapUsed);
-
-    // Clear reference
-    void obj;
   }
+
+  // Clear retained references to allow GC
+  retained.length = 0;
 
   return {
     averageFootprint: footprints.reduce((a, b) => a + b, 0) / footprints.length,

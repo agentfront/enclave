@@ -98,6 +98,9 @@ interface CreateEnclaveOptions {
 
   // Sidecar (large data handling)
   sidecar?: ReferenceSidecarOptions;
+
+  // Double VM security layer
+  doubleVm?: PartialDoubleVmConfig; // See "Double VM Security Layer" section
 }
 ```
 
@@ -233,6 +236,114 @@ When using Worker Pool, code runs in a **dual-layer sandbox**:
 - **Dangerous global removal**: parentPort, workerData inaccessible in worker
 - **Rate limiting**: Message flood protection per worker
 - **Safe deserialize**: Prototype pollution prevention via JSON-only parsing
+
+## Double VM Security Layer
+
+The Double VM provides defense-in-depth by running user code in a nested VM structure. User code runs in an **Inner VM** which is isolated inside a **Parent VM**, providing enhanced protection against VM escape attacks.
+
+### Configuration
+
+```typescript
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    /* ... */
+  },
+  doubleVm: {
+    enabled: true, // Default: true
+    parentTimeoutBuffer: 1000, // Extra timeout buffer for parent VM (ms)
+    parentValidation: {
+      validateOperationNames: true, // Validate tool names against patterns
+      allowedOperationPattern: /^(db|api):[a-z]+$/i, // Whitelist pattern
+      blockedOperationPatterns: [/^shell:/i, /^system:/i], // Blacklist patterns
+      maxOperationsPerSecond: 100, // Rate limiting
+      blockSuspiciousSequences: true, // Enable suspicious pattern detection
+      rapidEnumerationThreshold: 30, // Max same-operation calls in 5s
+      rapidEnumerationOverrides: {
+        // Per-operation overrides for rapidEnumerationThreshold
+        search: 100, // Allow 100 search calls
+        'users.list': 50, // Allow 50 user list calls
+      },
+    },
+  },
+});
+```
+
+### Parent Validation Options
+
+| Option                      | Type                    | Default | Description                                  |
+| --------------------------- | ----------------------- | ------- | -------------------------------------------- |
+| `validateOperationNames`    | `boolean`               | `true`  | Enable operation name validation             |
+| `allowedOperationPattern`   | `RegExp`                | -       | Whitelist pattern for operation names        |
+| `blockedOperationPatterns`  | `RegExp[]`              | -       | Blacklist patterns for operation names       |
+| `maxOperationsPerSecond`    | `number`                | `100`   | Rate limit for operations per second         |
+| `blockSuspiciousSequences`  | `boolean`               | `true`  | Enable suspicious pattern detection          |
+| `rapidEnumerationThreshold` | `number`                | `30`    | Max same-operation calls in 5 seconds        |
+| `rapidEnumerationOverrides` | `Record<string,number>` | `{}`    | Per-operation thresholds (overrides default) |
+| `suspiciousPatterns`        | `SuspiciousPattern[]`   | `[]`    | Custom suspicious pattern detectors          |
+
+### Built-in Suspicious Pattern Detection
+
+When `blockSuspiciousSequences: true`, the following patterns are detected:
+
+| Pattern ID            | Description                                         |
+| --------------------- | --------------------------------------------------- |
+| `EXFIL_LIST_SEND`     | List/query followed by send/export (data exfil)     |
+| `RAPID_ENUMERATION`   | Same operation called too many times (configurable) |
+| `CREDENTIAL_EXFIL`    | Credential access followed by external operation    |
+| `BULK_OPERATION`      | Bulk/batch operations (mass data extraction)        |
+| `DELETE_AFTER_ACCESS` | Delete operation after data access (cover-up)       |
+
+### Configuring Rapid Enumeration Detection
+
+The `RAPID_ENUMERATION` pattern blocks excessive repeated calls to the same operation. Use `rapidEnumerationThreshold` and `rapidEnumerationOverrides` to tune this:
+
+```typescript
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    /* ... */
+  },
+  doubleVm: {
+    parentValidation: {
+      // Default: Block if same operation called >30 times in 5 seconds
+      rapidEnumerationThreshold: 30,
+
+      // Per-operation overrides
+      rapidEnumerationOverrides: {
+        search: 100, // Search can be called 100 times (pagination)
+        'db.query': 50, // Database queries up to 50 times
+        'users.filter': 200, // High-volume filtering allowed
+      },
+    },
+  },
+});
+```
+
+### Custom Suspicious Patterns
+
+You can add custom pattern detectors:
+
+```typescript
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    /* ... */
+  },
+  doubleVm: {
+    parentValidation: {
+      suspiciousPatterns: [
+        {
+          id: 'CUSTOM_PATTERN',
+          description: 'Detect sensitive + external call',
+          detect: (operationName, args, history) => {
+            const hasSensitiveAccess = history.some((h) => h.operationName.includes('sensitive'));
+            const isExternalCall = operationName.includes('external');
+            return hasSensitiveAccess && isExternalCall;
+          },
+        },
+      ],
+    },
+  },
+});
+```
 
 ## Reference Sidecar
 

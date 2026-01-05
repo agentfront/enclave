@@ -94,11 +94,10 @@ export class InfiniteLoopRule implements ValidationRule {
 
       case 'UnaryExpression':
         if (node.operator === '!') {
-          // !false -> true, !!true -> true
+          // !false -> true
+          // Note: !!x is parsed as two nested UnaryExpressions, each with '!'
+          // So !!true is handled by recursive calls: !(!true) -> !(false) -> true
           return this.isAlwaysFalsy(node.argument);
-        }
-        if (node.operator === '!!') {
-          return this.isAlwaysTruthy(node.argument);
         }
         return false;
 

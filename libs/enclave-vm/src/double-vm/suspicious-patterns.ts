@@ -65,24 +65,12 @@ const RAPID_ENUMERATION: SuspiciousPattern = {
     // We use a try-catch to safely access it since it doesn't exist at compile time
     let threshold = 30; // Default fallback
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const config =
-        (globalThis as any).validationConfig ||
-        (typeof (globalThis as any)['validationConfig'] !== 'undefined'
-          ? (globalThis as any)['validationConfig']
-          : null);
-      if (!config) {
-        // Try direct access (works in parent VM where validationConfig is a local variable)
-        // @ts-expect-error validationConfig exists in parent VM runtime scope
-        const localConfig = typeof validationConfig !== 'undefined' ? validationConfig : null;
-        if (localConfig) {
-          const defaultThreshold = localConfig.rapidEnumerationThreshold ?? 30;
-          const overrides = localConfig.rapidEnumerationOverrides ?? {};
-          threshold = overrides[operationName] ?? defaultThreshold;
-        }
-      } else {
-        const defaultThreshold = config.rapidEnumerationThreshold ?? 30;
-        const overrides = config.rapidEnumerationOverrides ?? {};
+      // Try direct access (works in parent VM where validationConfig is a local variable)
+      // @ts-expect-error validationConfig exists in parent VM runtime scope
+      const localConfig = typeof validationConfig !== 'undefined' ? validationConfig : null;
+      if (localConfig) {
+        const defaultThreshold = localConfig.rapidEnumerationThreshold ?? 30;
+        const overrides = localConfig.rapidEnumerationOverrides ?? {};
         threshold = overrides[operationName] ?? defaultThreshold;
       }
     } catch {
