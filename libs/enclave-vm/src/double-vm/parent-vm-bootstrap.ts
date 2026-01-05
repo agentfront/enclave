@@ -179,6 +179,8 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     validateOperationNames: validationConfig.validateOperationNames,
     maxOperationsPerSecond: validationConfig.maxOperationsPerSecond,
     blockSuspiciousSequences: validationConfig.blockSuspiciousSequences,
+    rapidEnumerationThreshold: validationConfig.rapidEnumerationThreshold,
+    rapidEnumerationOverrides: validationConfig.rapidEnumerationOverrides,
   })};
   ${patternReconstructCode}
 
@@ -728,7 +730,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     __safe_parallel: createSecureProxy(innerParallel),
     __safe_console: createSecureProxy(innerConsole),
     callTool: createSecureProxy(innerCallTool),
-    parallel: createSecureProxy(innerParallel)
+    parallel: createSecureProxy(innerParallel),
+    // Loop transformation runtime support
+    __maxIterations: ${maxIterations}
   };
 
   for (var key in safeRuntime) {

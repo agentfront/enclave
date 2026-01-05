@@ -35,18 +35,62 @@ const EXFIL_LIST_SEND: SuspiciousPattern = {
 /**
  * Detect rapid enumeration of resources
  *
- * This pattern detects when the same operation is called repeatedly
- * in quick succession, which could indicate enumeration attacks.
- * Uses a 5-second window to be resilient to varying execution speeds.
+ * This pattern detects when the same operation is called excessively
+ * in quick succession, which could indicate enumeration attacks or DoS.
+ *
+ * Legitimate use cases are allowed:
+ * - Pagination: Up to N calls to same operation (configurable via rapidEnumerationThreshold)
+ * - Iteration: Up to N calls with different arguments
+ *
+ * Suspicious patterns that trigger detection:
+ * - Same operation called more than threshold times in 5s
+ *
+ * @remarks
+ * The default threshold of 30 allows legitimate pagination and iteration scenarios
+ * while still protecting against excessive enumeration attacks.
+ * Configure via:
+ * - rapidEnumerationThreshold: Default threshold for all operations
+ * - rapidEnumerationOverrides: Per-operation thresholds (e.g., { 'search': 100 })
+ * For stricter control, use maxToolCalls config option.
  */
 const RAPID_ENUMERATION: SuspiciousPattern = {
   id: 'RAPID_ENUMERATION',
-  description: 'Rapid enumeration of resources (same operation called >10 times in 5s)',
+  description: 'Rapid enumeration of resources (same operation called too many times in 5s)',
   detect: (operationName: string, _args: unknown, history: OperationHistory[]): boolean => {
-    const recentSameOperation = history.filter(
-      (h) => h.operationName === operationName && Date.now() - h.timestamp < 5000,
-    );
-    return recentSameOperation.length > 10;
+    const now = Date.now();
+    const recentSameOperation = history.filter((h) => h.operationName === operationName && now - h.timestamp < 5000);
+
+    // Get the threshold - check for per-operation override first, then use default
+    // Note: validationConfig is available in the parent VM scope where this runs
+    // We use a try-catch to safely access it since it doesn't exist at compile time
+    let threshold = 30; // Default fallback
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const config =
+        (globalThis as any).validationConfig ||
+        (typeof (globalThis as any)['validationConfig'] !== 'undefined'
+          ? (globalThis as any)['validationConfig']
+          : null);
+      if (!config) {
+        // Try direct access (works in parent VM where validationConfig is a local variable)
+        // @ts-expect-error validationConfig exists in parent VM runtime scope
+        const localConfig = typeof validationConfig !== 'undefined' ? validationConfig : null;
+        if (localConfig) {
+          const defaultThreshold = localConfig.rapidEnumerationThreshold ?? 30;
+          const overrides = localConfig.rapidEnumerationOverrides ?? {};
+          threshold = overrides[operationName] ?? defaultThreshold;
+        }
+      } else {
+        const defaultThreshold = config.rapidEnumerationThreshold ?? 30;
+        const overrides = config.rapidEnumerationOverrides ?? {};
+        threshold = overrides[operationName] ?? defaultThreshold;
+      }
+    } catch {
+      // Fallback to default if config is not accessible
+      threshold = 30;
+    }
+
+    return recentSameOperation.length > threshold;
   },
 };
 

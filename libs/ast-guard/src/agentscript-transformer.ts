@@ -243,19 +243,145 @@ function wrapInMainFunction(ast: any): any {
  * Transform loops in the AST for runtime safety
  *
  * Transformations:
- * - `for (init; test; update) { body }` → `__safe_for(init, test, update, () => { body })`
+ * - `for (init; test; update) { body }` → inject iteration counter check at start of body
  * - `for (const x of iterable) { body }` → `for (const x of __safe_forOf(iterable)) { body }`
- * - `while (test) { body }` → `__safe_while(() => test, () => { body })`
- * - `do { body } while (test)` → `__safe_doWhile(() => { body }, () => test)`
+ * - `while (test) { body }` → inject iteration counter check at start of body
+ * - `do { body } while (test)` → inject iteration counter check at start of body
+ *
+ * For for/while/do-while, we inject a counter variable and check rather than using
+ * callbacks, to preserve break/continue semantics.
+ *
+ * Example transformation for `for`:
+ * ```javascript
+ * // Original:
+ * for (let i = 0; i < 10; i++) { doSomething(); }
+ *
+ * // Transformed:
+ * for (let i = 0; i < 10; i++) {
+ *   if (++__iter_0 > __maxIterations) throw new Error('Maximum iteration limit exceeded');
+ *   doSomething();
+ * }
+ * ```
  *
  * @param ast The AST to transform
  * @param prefix Prefix for safe functions (default: '__safe_')
  */
 function transformLoopsInAst(ast: any, prefix = '__safe_'): void {
+  let iterCounterIndex = 0;
+
+  /**
+   * Create the iteration check statement to inject at the start of loop body
+   * `if (++__iter_N > __maxIterations) throw new Error(...)`
+   */
+  function createIterationCheck(counterName: string): any {
+    return {
+      type: 'IfStatement',
+      test: {
+        type: 'BinaryExpression',
+        operator: '>',
+        left: {
+          type: 'UpdateExpression',
+          operator: '++',
+          prefix: true,
+          argument: {
+            type: 'Identifier',
+            name: counterName,
+          },
+        },
+        right: {
+          type: 'Identifier',
+          name: '__maxIterations',
+        },
+      },
+      consequent: {
+        type: 'ThrowStatement',
+        // Throw a string literal instead of Error object to avoid needing Error constructor access
+        // The enclave will catch this and wrap it in a proper error
+        argument: {
+          type: 'Literal',
+          value: 'Maximum iteration limit exceeded. This limit prevents infinite loops.',
+        },
+      },
+      alternate: null,
+    };
+  }
+
+  /**
+   * Create a counter variable declaration: `let __iter_N = 0;`
+   */
+  function createCounterDeclaration(counterName: string): any {
+    return {
+      type: 'VariableDeclaration',
+      kind: 'let',
+      declarations: [
+        {
+          type: 'VariableDeclarator',
+          id: {
+            type: 'Identifier',
+            name: counterName,
+          },
+          init: {
+            type: 'Literal',
+            value: 0,
+          },
+        },
+      ],
+    };
+  }
+
+  /**
+   * Inject iteration check at the start of a loop body
+   */
+  function injectIterationCheck(node: any, counterName: string): void {
+    const check = createIterationCheck(counterName);
+
+    if (node.body.type === 'BlockStatement') {
+      // Insert at start of block
+      node.body.body.unshift(check);
+    } else {
+      // Convert single statement to block
+      node.body = {
+        type: 'BlockStatement',
+        body: [check, node.body],
+      };
+    }
+  }
+
+  /**
+   * Find the parent statement list to insert counter declaration before the loop
+   */
+  function findParentBody(ancestors: any[]): any[] | null {
+    // Walk backwards through ancestors to find a body array
+    for (let i = ancestors.length - 1; i >= 0; i--) {
+      const ancestor = ancestors[i];
+      if (ancestor.body && Array.isArray(ancestor.body)) {
+        return ancestor.body;
+      }
+      if (ancestor.type === 'BlockStatement' && Array.isArray(ancestor.body)) {
+        return ancestor.body;
+      }
+      if (ancestor.type === 'Program' && Array.isArray(ancestor.body)) {
+        return ancestor.body;
+      }
+    }
+    return null;
+  }
+
+  // Collect loops to transform (can't modify while walking)
+  const loopsToTransform: Array<{ node: any; ancestors: any[]; type: string }> = [];
+
   walk.ancestor(ast, {
-    // ForStatement: Not transformed in v1 - blocked by validation layer
-    // WhileStatement: Not transformed in v1 - blocked by validation layer
-    // DoWhileStatement: Not transformed in v1 - blocked by validation layer
+    ForStatement: (node: any, _state: any, ancestors: any[]) => {
+      loopsToTransform.push({ node, ancestors: [...ancestors], type: 'for' });
+    },
+
+    WhileStatement: (node: any, _state: any, ancestors: any[]) => {
+      loopsToTransform.push({ node, ancestors: [...ancestors], type: 'while' });
+    },
+
+    DoWhileStatement: (node: any, _state: any, ancestors: any[]) => {
+      loopsToTransform.push({ node, ancestors: [...ancestors], type: 'do-while' });
+    },
 
     ForOfStatement: (node: any) => {
       // Transform: for (const x of iterable) { ... }
@@ -272,6 +398,24 @@ function transformLoopsInAst(ast: any, prefix = '__safe_'): void {
       }
     },
   });
+
+  // Transform collected loops (in reverse order to preserve indices when inserting)
+  for (let i = loopsToTransform.length - 1; i >= 0; i--) {
+    const { node, ancestors } = loopsToTransform[i];
+    const counterName = `__iter_${iterCounterIndex++}`;
+
+    // Inject iteration check at start of loop body
+    injectIterationCheck(node, counterName);
+
+    // Insert counter declaration before the loop
+    const parentBody = findParentBody(ancestors);
+    if (parentBody) {
+      const loopIndex = parentBody.indexOf(node);
+      if (loopIndex >= 0) {
+        parentBody.splice(loopIndex, 0, createCounterDeclaration(counterName));
+      }
+    }
+  }
 }
 
 /**

@@ -100,6 +100,20 @@ export interface ParentValidationConfig {
   blockSuspiciousSequences: boolean;
 
   /**
+   * Threshold for RAPID_ENUMERATION detection.
+   * Same operation called more than this many times in 5 seconds is suspicious.
+   * @default 30
+   */
+  rapidEnumerationThreshold: number;
+
+  /**
+   * Per-operation overrides for rapid enumeration threshold.
+   * Keys are operation names, values are the threshold for that operation.
+   * Example: { 'users.list': 50, 'search': 100 }
+   */
+  rapidEnumerationOverrides: Record<string, number>;
+
+  /**
    * Custom suspicious pattern detectors
    *
    * These are combined with DEFAULT_SUSPICIOUS_PATTERNS at runtime
@@ -119,6 +133,8 @@ export interface SerializableParentValidationConfig {
   blockedOperationPatternFlags?: string[];
   maxOperationsPerSecond: number;
   blockSuspiciousSequences: boolean;
+  rapidEnumerationThreshold: number;
+  rapidEnumerationOverrides: Record<string, number>;
   suspiciousPatterns: SerializableSuspiciousPattern[];
 }
 

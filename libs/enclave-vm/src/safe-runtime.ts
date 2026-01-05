@@ -569,6 +569,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
     __safe_template: safeTemplateProxy,
     __safe_parallel: safeParallelProxy,
 
+    // Iteration limit for loop transformation (used by injected counter checks)
+    __maxIterations: config.maxIterations,
+
     // Whitelisted safe globals (proxied to block constructor access)
     ...secureStdLib,
 

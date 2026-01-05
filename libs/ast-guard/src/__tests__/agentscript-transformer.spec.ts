@@ -237,6 +237,166 @@ describe('AgentScript Transformer', () => {
       expect(matches).toBeTruthy();
       expect(matches!.length).toBe(2);
     });
+
+    it('should inject iteration counter for basic for loop', () => {
+      const input = `
+        for (let i = 0; i < 10; i++) {
+          doSomething(i);
+        }
+      `;
+
+      const output = transformAgentScript(input, {
+        wrapInMain: false,
+        transformCallTool: false,
+        transformLoops: true,
+      });
+
+      // Should have counter declaration
+      expect(output).toMatch(/let __iter_\d+ = 0/);
+      // Should have iteration check
+      expect(output).toContain('__maxIterations');
+      // Original loop structure should be preserved
+      expect(output).toContain('for (let i = 0; i < 10; i++)');
+    });
+
+    it('should inject iteration counter for while loop', () => {
+      const input = `
+        while (x < 10) {
+          x++;
+        }
+      `;
+
+      const output = transformAgentScript(input, {
+        wrapInMain: false,
+        transformCallTool: false,
+        transformLoops: true,
+      });
+
+      // Should have counter declaration
+      expect(output).toMatch(/let __iter_\d+ = 0/);
+      // Should have iteration check
+      expect(output).toContain('__maxIterations');
+      // Original loop structure should be preserved
+      expect(output).toContain('while (x < 10)');
+    });
+
+    it('should inject iteration counter for do-while loop', () => {
+      const input = `
+        do {
+          x++;
+        } while (x < 10);
+      `;
+
+      const output = transformAgentScript(input, {
+        wrapInMain: false,
+        transformCallTool: false,
+        transformLoops: true,
+      });
+
+      // Should have counter declaration
+      expect(output).toMatch(/let __iter_\d+ = 0/);
+      // Should have iteration check
+      expect(output).toContain('__maxIterations');
+      // Original loop structure should be preserved
+      expect(output).toContain('do {');
+      expect(output).toContain('while (x < 10)');
+    });
+
+    it('should use unique counter names for nested loops', () => {
+      const input = `
+        for (let i = 0; i < 10; i++) {
+          for (let j = 0; j < 10; j++) {
+            sum += i * j;
+          }
+        }
+      `;
+
+      const output = transformAgentScript(input, {
+        wrapInMain: false,
+        transformCallTool: false,
+        transformLoops: true,
+      });
+
+      // Should have two different counter declarations
+      expect(output).toContain('let __iter_0 = 0');
+      expect(output).toContain('let __iter_1 = 0');
+    });
+
+    it('should handle for loop with empty body', () => {
+      const input = `for (let i = 0; i < 10; i++);`;
+
+      const output = transformAgentScript(input, {
+        wrapInMain: false,
+        transformCallTool: false,
+        transformLoops: true,
+      });
+
+      // Should still inject counter check
+      expect(output).toContain('__maxIterations');
+    });
+
+    it('should preserve break statement in for loop', () => {
+      const input = `
+        for (let i = 0; i < 100; i++) {
+          if (arr[i] === target) break;
+          sum += arr[i];
+        }
+      `;
+
+      const output = transformAgentScript(input, {
+        wrapInMain: false,
+        transformCallTool: false,
+        transformLoops: true,
+      });
+
+      // break should be preserved
+      expect(output).toContain('break');
+      // iteration check should be present
+      expect(output).toContain('__maxIterations');
+    });
+
+    it('should preserve continue statement in for loop', () => {
+      const input = `
+        for (let i = 0; i < 100; i++) {
+          if (arr[i] < 0) continue;
+          sum += arr[i];
+        }
+      `;
+
+      const output = transformAgentScript(input, {
+        wrapInMain: false,
+        transformCallTool: false,
+        transformLoops: true,
+      });
+
+      // continue should be preserved
+      expect(output).toContain('continue');
+      // iteration check should be present
+      expect(output).toContain('__maxIterations');
+    });
+
+    it('should handle mixed loop types', () => {
+      const input = `
+        for (let i = 0; i < n; i++) {
+          while (condition) {
+            do {
+              process();
+            } while (innerCondition);
+          }
+        }
+      `;
+
+      const output = transformAgentScript(input, {
+        wrapInMain: false,
+        transformCallTool: false,
+        transformLoops: true,
+      });
+
+      // Should have three different counter declarations
+      expect(output).toContain('__iter_0');
+      expect(output).toContain('__iter_1');
+      expect(output).toContain('__iter_2');
+    });
   });
 
   describe('Combined Transformations', () => {

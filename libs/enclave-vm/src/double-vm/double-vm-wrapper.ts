@@ -150,6 +150,19 @@ export class DoubleVmWrapper implements SandboxAdapter {
       // Determine whether to sanitize stack traces
       const shouldSanitize = config.sanitizeStackTraces ?? true;
 
+      // Handle thrown strings (e.g., iteration limit exceeded throws a string literal)
+      if (typeof err === 'string') {
+        return {
+          success: false,
+          error: {
+            name: 'DoubleVMExecutionError',
+            message: err,
+            code: 'DOUBLE_VM_EXECUTION_ERROR',
+          },
+          stats,
+        };
+      }
+
       return {
         success: false,
         error: {
@@ -408,6 +421,8 @@ export class DoubleVmWrapper implements SandboxAdapter {
       blockedOperationPatternFlags: pv.blockedOperationPatterns?.map((p) => p.flags),
       maxOperationsPerSecond: pv.maxOperationsPerSecond,
       blockSuspiciousSequences: pv.blockSuspiciousSequences,
+      rapidEnumerationThreshold: pv.rapidEnumerationThreshold,
+      rapidEnumerationOverrides: pv.rapidEnumerationOverrides,
       suspiciousPatterns: [], // Will be populated separately
     };
   }

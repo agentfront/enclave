@@ -650,6 +650,8 @@ export class Enclave {
       '__safe_template',
       '__safe_parallel',
       '__safe_console',
+      // Loop transformation runtime support
+      '__maxIterations', // Used by transformed loops for iteration limit
     ];
 
     switch (presetName) {

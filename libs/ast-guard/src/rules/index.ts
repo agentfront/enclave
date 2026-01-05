@@ -19,3 +19,4 @@ export * from './static-call-target.rule';
 export * from './no-regex-literal.rule';
 export * from './no-regex-methods.rule';
 export * from './no-computed-destructuring.rule';
+export * from './infinite-loop.rule';
