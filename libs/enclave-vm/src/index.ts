@@ -102,6 +102,17 @@ export {
   BlockedPropertyCategory,
 } from './secure-proxy';
 
+// Memory Tracking and Limit Enforcement
+export {
+  MemoryTracker,
+  MemoryLimitError,
+  MemoryTrackerConfig,
+  MemoryUsageSnapshot,
+  estimateStringSize,
+  estimateArraySize,
+  estimateObjectSize,
+} from './memory-tracker';
+
 // Reference Sidecar (pass-by-reference support)
 export {
   // Configuration

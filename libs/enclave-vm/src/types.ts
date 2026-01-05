@@ -388,7 +388,13 @@ export interface ExecutionStats {
   duration: number;
 
   /**
-   * Peak memory usage in bytes (if available)
+   * Peak tracked memory usage in bytes
+   *
+   * When `memoryLimit` is configured, this reports the peak memory usage
+   * tracked during execution. Tracking monitors String and Array allocations.
+   *
+   * Note: This is an estimate based on allocation tracking, not actual V8 heap usage.
+   * For precise memory isolation, use the worker_threads adapter with `--max-old-space-size`.
    */
   memoryUsage?: number;
 
@@ -425,6 +431,13 @@ export interface EnclaveConfig {
 
   /**
    * Maximum memory usage in bytes
+   *
+   * When set, the VM adapter tracks String and Array allocations and throws
+   * a MemoryLimitError if the limit is exceeded. Tracking adds ~5-10% overhead.
+   *
+   * Note: This is enforced via allocation tracking, not V8 heap limits.
+   * For precise memory isolation, use the worker_threads adapter.
+   *
    * Default: 128 * 1024 * 1024 (128MB)
    */
   memoryLimit?: number;

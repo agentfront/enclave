@@ -7,12 +7,14 @@
  * @packageDocumentation
  */
 
-import type { ExecutionContext, SecureProxyLevelConfig, ToolHandler } from './types';
+import type { ExecutionContext, SecureProxyLevelConfig } from './types';
 import { sanitizeValue } from './value-sanitizer';
 import { ReferenceSidecar } from './sidecar/reference-sidecar';
 import { ReferenceResolver, ResolutionLimitError } from './sidecar/reference-resolver';
 import { ReferenceConfig, isReferenceId } from './sidecar/reference-config';
 import { createSecureProxy, wrapGlobalsWithSecureProxy, SecureProxyOptions } from './secure-proxy';
+import { MemoryTracker } from './memory-tracker';
+import { createTrackedString, createTrackedArray } from './memory-proxy';
 
 /**
  * Options for safe runtime creation
@@ -35,6 +37,13 @@ export interface SafeRuntimeOptions {
    * Controls which properties are blocked by the proxy
    */
   secureProxyConfig?: SecureProxyLevelConfig;
+
+  /**
+   * Memory tracker for allocation monitoring
+   * If provided, String/Array constructors are wrapped to track allocations
+   * and enforce memory limits
+   */
+  memoryTracker?: MemoryTracker;
 }
 
 /**
@@ -49,6 +58,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
   const sidecar = options?.sidecar;
   const referenceConfig = options?.referenceConfig;
   const secureProxyConfig = options?.secureProxyConfig;
+  const memoryTracker = options?.memoryTracker;
   const resolver = sidecar && referenceConfig ? new ReferenceResolver(sidecar, referenceConfig) : undefined;
 
   // Build proxy options from config for consistent usage
@@ -249,37 +259,82 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
   }
 
   /**
-   * Safe string concatenation
+   * Safe addition/concatenation operator
    *
-   * Detects reference IDs in operands and handles them according to configuration:
-   * - If composites disabled: throws if either operand is a reference
-   * - If composites enabled: creates a composite handle for lazy resolution
-   * - If neither operand is a reference: performs normal concatenation
+   * Replaces the `+` operator to support:
+   * 1. Numeric addition when both operands are numbers
+   * 2. String concatenation with memory tracking
+   * 3. Reference ID handling for sidecar support
+   *
+   * Follows JavaScript's ToPrimitive algorithm for objects.
    */
   function __safe_concat(left: unknown, right: unknown): unknown {
-    // Convert to strings if needed (mimics + operator behavior)
-    const leftStr = String(left);
-    const rightStr = String(right);
-
-    // Check for reference IDs
-    const leftIsRef = isReferenceId(leftStr);
-    const rightIsRef = isReferenceId(rightStr);
-
-    // If no references, just concatenate normally
-    if (!leftIsRef && !rightIsRef) {
-      return leftStr + rightStr;
+    // Fast path: both are numbers - do numeric addition
+    if (typeof left === 'number' && typeof right === 'number') {
+      return left + right;
     }
 
-    // References detected - need resolver to handle
-    if (!resolver) {
-      throw new Error(
-        'Cannot concatenate reference IDs: reference system not configured. ' +
-          'Pass references directly to callTool arguments instead.',
-      );
+    // Fast path: both are strings - do string concatenation with memory tracking
+    if (typeof left === 'string' && typeof right === 'string') {
+      // Store length BEFORE isReferenceId calls (TypeScript type guard causes narrowing issues)
+      const rightLen = right.length;
+
+      const leftIsRef = isReferenceId(left);
+      const rightIsRef = isReferenceId(right);
+
+      if (!leftIsRef && !rightIsRef) {
+        // Both are regular strings - concatenate and track
+        if (memoryTracker) {
+          const growthBytes = rightLen * 2; // UTF-16
+          memoryTracker.track(growthBytes);
+        }
+        return left + right;
+      }
+
+      // References detected
+      if (!resolver) {
+        throw new Error(
+          'Cannot concatenate reference IDs: reference system not configured. ' +
+            'Pass references directly to callTool arguments instead.',
+        );
+      }
+      return resolver.createComposite([left, right]);
     }
 
-    // Use resolver to create composite (will throw if not allowed)
-    return resolver.createComposite([leftStr, rightStr]);
+    // For mixed types (one string, one non-string), use native + for ToPrimitive
+    // but check for references in string operands first
+    if (typeof left === 'string' || typeof right === 'string') {
+      // Check if the string operand(s) are references BEFORE coercion
+      const leftIsRef = typeof left === 'string' && isReferenceId(left);
+      const rightIsRef = typeof right === 'string' && isReferenceId(right);
+
+      if (leftIsRef || rightIsRef) {
+        // Reference detected - need special handling
+        if (!resolver) {
+          throw new Error(
+            'Cannot concatenate reference IDs: reference system not configured. ' +
+              'Pass references directly to callTool arguments instead.',
+          );
+        }
+        // Convert both to strings for composite
+        const leftStr = String(left);
+        const rightStr = String(right);
+        return resolver.createComposite([leftStr, rightStr]);
+      }
+    }
+
+    // For all other cases (objects, booleans, null, undefined, or strings without refs),
+    // use JavaScript's default + behavior which will call ToPrimitive correctly
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (left as any) + (right as any);
+
+    // Track if result is a string (string concatenation occurred)
+    if (typeof result === 'string' && memoryTracker) {
+      // Estimate the growth - we track the full result since we don't know original sizes
+      memoryTracker.track(result.length * 2); // UTF-16
+    }
+
+    return result;
   }
 
   /**
@@ -287,6 +342,8 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
    *
    * Handles template literals with expressions like `Hello ${name}!`
    * Detects reference IDs and creates composite handles when allowed.
+   *
+   * Also tracks memory allocation when memoryTracker is provided.
    *
    * @param quasis - The static string parts
    * @param values - The interpolated values
@@ -304,6 +361,13 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
       for (let i = 0; i < stringValues.length; i++) {
         result += stringValues[i] + quasis[i + 1];
       }
+
+      // Track memory allocation for the resulting string
+      if (memoryTracker) {
+        const resultBytes = result.length * 2; // UTF-16
+        memoryTracker.track(resultBytes);
+      }
+
       return result;
     }
 
@@ -463,13 +527,19 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
   // Create secure proxies for standard library objects
   // This blocks access to dangerous properties like 'constructor', '__proto__'
   // even when accessed via computed property names like obj['const'+'ructor']
+  //
+  // When memory tracking is enabled, use tracked versions of String/Array
+  // that monitor allocations and enforce memory limits
+  const StringConstructor = memoryTracker ? createTrackedString(memoryTracker) : String;
+  const ArrayConstructor = memoryTracker ? createTrackedArray(memoryTracker) : Array;
+
   const secureStdLib = wrapGlobalsWithSecureProxy(
     {
       Math,
       JSON,
-      Array,
+      Array: ArrayConstructor,
       Object,
-      String,
+      String: StringConstructor,
       Number,
       Date,
     },

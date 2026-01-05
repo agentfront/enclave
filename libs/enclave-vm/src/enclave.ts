@@ -95,7 +95,7 @@ function getConfigFromSecurityLevel(
  * Base configuration values (non-security-level dependent)
  */
 const BASE_CONFIG = {
-  memoryLimit: 128 * 1024 * 1024, // 128MB
+  memoryLimit: 1 * 1024 * 1024, // 1 MB - default memory limit for AgentScript execution
   adapter: 'vm' as const,
   allowBuiltins: false,
   globals: {},
@@ -320,6 +320,10 @@ export class Enclave {
       // These transforms extract large strings and convert concatenation to safe calls
       if (sidecar && this.referenceConfig) {
         transformedCode = this.applySidecarTransforms(transformedCode, sidecar);
+      } else if (this.config.memoryLimit && this.config.memoryLimit > 0) {
+        // Step 1.6: Apply memory tracking transforms when memoryLimit is set
+        // This transforms concatenation to use __safe_concat for memory tracking
+        transformedCode = this.applyMemoryTrackingTransforms(transformedCode);
       }
 
       // Step 2: Validate (if enabled) - validate TRANSFORMED code
@@ -451,6 +455,34 @@ export class Enclave {
         sidecar.dispose();
       }
     }
+  }
+
+  /**
+   * Apply memory tracking transforms to code
+   *
+   * Transforms concatenation operations to use __safe_concat for memory tracking.
+   * This is used when memoryLimit is set but no sidecar is configured.
+   *
+   * @param code The code to transform
+   * @returns The transformed code
+   */
+  private applyMemoryTrackingTransforms(code: string): string {
+    // Parse the code into an AST
+    const ast = acorn.parse(code, {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+    });
+
+    // Transform concatenation operations (a + b -> __safe_concat(a, b))
+    // This allows the runtime to track memory allocations for string concatenation
+    transformConcatenation(ast);
+
+    // Transform template literals (`Hello ${name}` -> __safe_template(['Hello ', ''], name))
+    // This also enables memory tracking for template string creation
+    transformTemplateLiterals(ast);
+
+    // Generate code from the transformed AST
+    return generate(ast);
   }
 
   /**

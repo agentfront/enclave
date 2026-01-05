@@ -10,8 +10,8 @@
 import { Worker } from 'worker_threads';
 import path from 'path';
 import { EventEmitter } from 'events';
-import type { WorkerSlotStatus, ResourceUsage, WorkerPoolConfig } from './config';
-import type { MainToWorkerMessage, WorkerToMainMessage, SerializedConfig, WorkerExecutionStats } from './protocol';
+import type { WorkerSlotStatus, ResourceUsage } from './config';
+import type { MainToWorkerMessage, WorkerToMainMessage } from './protocol';
 import { safeDeserialize, safeSerialize } from './safe-deserialize';
 import { WorkerStartupError, WorkerCrashedError } from './errors';
 
@@ -150,8 +150,12 @@ export class WorkerSlot extends EventEmitter {
 
     const workerScriptPath = this.getWorkerScriptPath();
 
+    // Only pass --max-old-space-size if memory limit is set (> 0)
+    // Node.js 24+ has stricter worker permissions that may block this flag
+    const execArgv = this.options.memoryLimitMB > 0 ? [`--max-old-space-size=${this.options.memoryLimitMB}`] : [];
+
     this._worker = new Worker(workerScriptPath, {
-      execArgv: [`--max-old-space-size=${this.options.memoryLimitMB}`],
+      execArgv,
     });
 
     // Set up event handlers
@@ -169,9 +173,21 @@ export class WorkerSlot extends EventEmitter {
    * Get the path to the worker script
    */
   private getWorkerScriptPath(): string {
-    // Use __dirname for CommonJS compatibility
-    // The worker-script.js will be in the same directory after compilation
-    return path.join(__dirname, 'worker-script.js');
+    // Worker threads require a JavaScript file, not TypeScript.
+    // When running compiled code from dist, __dirname points to the dist directory.
+    // When running tests with ts-jest, __dirname points to src directory.
+    // In that case, we need to find the compiled JS in the dist folder.
+
+    const jsPath = path.join(__dirname, 'worker-script.js');
+
+    // Check if we're running from src (ts-jest tests)
+    if (__dirname.includes('/src/')) {
+      // Replace /src/ with /dist/src/ to find compiled JS
+      const distPath = __dirname.replace('/src/', '/dist/src/');
+      return path.join(distPath, 'worker-script.js');
+    }
+
+    return jsPath;
   }
 
   /**
@@ -223,7 +239,7 @@ export class WorkerSlot extends EventEmitter {
   /**
    * Mark this slot for recycling
    */
-  markForRecycle(reason: string): void {
+  markForRecycle(): void {
     if (this._status === 'terminated' || this._status === 'terminating') {
       return;
     }
@@ -324,7 +340,7 @@ export class WorkerSlot extends EventEmitter {
       this.emit('message', msg);
     } catch (error) {
       console.error(`Worker ${this.id} message parse error:`, error);
-      this.markForRecycle('protocol-error'); // Recycle on protocol errors (defensive)
+      this.markForRecycle(); // Recycle on protocol errors (defensive)
     }
   }
 
@@ -334,7 +350,7 @@ export class WorkerSlot extends EventEmitter {
 
     // Mark for recycling on error
     if (this._status !== 'terminated' && this._status !== 'terminating') {
-      this.markForRecycle('error');
+      this.markForRecycle();
     }
   }
 

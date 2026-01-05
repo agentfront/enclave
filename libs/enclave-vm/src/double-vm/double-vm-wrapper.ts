@@ -13,6 +13,7 @@ import type { SandboxAdapter, ExecutionContext, ExecutionResult, ExecutionStats,
 import { sanitizeValue } from '../value-sanitizer';
 import { getBlockedPropertiesForLevel, buildBlockedPropertiesFromConfig } from '../secure-proxy';
 import { ReferenceResolver } from '../sidecar/reference-resolver';
+import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 import type { DoubleVmConfig, SerializableParentValidationConfig } from './types';
 import { generateParentVmBootstrap } from './parent-vm-bootstrap';
 import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-patterns';
@@ -66,9 +67,23 @@ export class DoubleVmWrapper implements SandboxAdapter {
     const { stats, config } = executionContext;
     const startTime = Date.now();
 
+    // Create memory tracker if memory limit is configured
+    const memoryTracker =
+      config.memoryLimit && config.memoryLimit > 0
+        ? new MemoryTracker({
+            memoryLimit: config.memoryLimit,
+            trackStrings: true,
+            trackArrays: true,
+            trackObjects: false,
+          })
+        : undefined;
+
+    // Start tracking before execution
+    memoryTracker?.start();
+
     try {
-      // Create parent VM context
-      const parentContext = this.createParentContext(executionContext);
+      // Create parent VM context with memory tracker
+      const parentContext = this.createParentContext(executionContext, memoryTracker);
       this.parentContext = parentContext;
 
       // Generate the parent VM bootstrap script
@@ -94,6 +109,12 @@ export class DoubleVmWrapper implements SandboxAdapter {
       stats.duration = Date.now() - startTime;
       stats.endTime = Date.now();
 
+      // Report memory usage if tracking was enabled
+      if (memoryTracker) {
+        const memSnapshot = memoryTracker.getSnapshot();
+        stats.memoryUsage = memSnapshot.peakTrackedBytes;
+      }
+
       return {
         success: true,
         value: value as T,
@@ -105,6 +126,26 @@ export class DoubleVmWrapper implements SandboxAdapter {
       // Update stats
       stats.duration = Date.now() - startTime;
       stats.endTime = Date.now();
+
+      // Report memory usage if tracking was enabled
+      if (memoryTracker) {
+        const memSnapshot = memoryTracker.getSnapshot();
+        stats.memoryUsage = memSnapshot.peakTrackedBytes;
+      }
+
+      // Handle MemoryLimitError specially
+      if (err instanceof MemoryLimitError) {
+        return {
+          success: false,
+          error: {
+            name: 'MemoryLimitError',
+            message: err.message,
+            code: 'MEMORY_LIMIT_EXCEEDED',
+            data: { usedBytes: err.usedBytes, limitBytes: err.limitBytes },
+          },
+          stats,
+        };
+      }
 
       // Determine whether to sanitize stack traces
       const shouldSanitize = config.sanitizeStackTraces ?? true;
@@ -129,8 +170,9 @@ export class DoubleVmWrapper implements SandboxAdapter {
    * - The vm module (to create inner VM)
    * - A tool call proxy to the host
    * - Stats and config references
+   * - Memory tracking callback (when memoryLimit is set)
    */
-  private createParentContext(executionContext: ExecutionContext): vm.Context {
+  private createParentContext(executionContext: ExecutionContext, memoryTracker?: MemoryTracker): vm.Context {
     const { stats, config, toolHandler } = executionContext;
 
     // Create isolated context for parent VM
@@ -181,6 +223,26 @@ export class DoubleVmWrapper implements SandboxAdapter {
       writable: false,
       configurable: false,
     });
+
+    // Inject memory tracking callback (when memoryLimit is set)
+    // This is called by innerConcat to track string allocation memory
+    if (memoryTracker) {
+      Object.defineProperty(parentContext, '__host_memory_track__', {
+        value: (bytes: number) => {
+          memoryTracker.track(bytes);
+        },
+        writable: false,
+        configurable: false,
+      });
+    } else {
+      // No-op when memory tracking is disabled
+      Object.defineProperty(parentContext, '__host_memory_track__', {
+        // eslint-disable-next-line @typescript-eslint/no-empty-function
+        value: () => {},
+        writable: false,
+        configurable: false,
+      });
+    }
 
     // Add console for parent VM (for debugging only, not a security risk since
     // user code runs in the inner VM, not the parent VM)
@@ -313,6 +375,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
       suspiciousPatterns: serializedPatterns,
       blockedProperties,
       allowComposites,
+      memoryLimit: config.memoryLimit,
     });
   }
 

@@ -134,8 +134,24 @@ export function transformTemplateLiterals(ast: acorn.Node, config: ConcatTransfo
 
   let transformedCount = 0;
 
+  // Track which TemplateLiteral nodes are part of TaggedTemplateExpressions
+  // We should NOT transform these as they need to pass the raw template to the tag function
+  const taggedTemplates = new Set<acorn.Node>();
+
+  // First pass: identify tagged template literals
+  walk.simple(ast as any, {
+    TaggedTemplateExpression: (node: any) => {
+      taggedTemplates.add(node.quasi);
+    },
+  });
+
   walk.simple(ast as any, {
     TemplateLiteral: (node: any) => {
+      // Skip tagged templates - they pass templates directly to the tag function
+      if (taggedTemplates.has(node)) {
+        return;
+      }
+
       // Only transform templates with expressions
       if (node.expressions.length === 0) {
         return;
