@@ -79,14 +79,18 @@ export interface SecureProxyLevelConfig {
   proxyMaxDepth: number;
 
   /**
-   * Whether to throw an error when blocked properties are accessed
-   * @default true (throws security violation error)
+   * Whether to throw an error when blocked properties are accessed.
+   *
+   * Security level defaults:
+   * - STRICT/SECURE/STANDARD: `true` (throws error)
+   * - PERMISSIVE: `false` (returns undefined)
    *
    * When true, accessing blocked properties like 'constructor', '__proto__',
    * 'prototype' will throw a SecurityError instead of returning undefined.
    * This makes security violations explicit and easier to detect.
    *
-   * Set to false for backward compatibility (returns undefined for blocked properties).
+   * **Breaking change note**: Prior versions returned undefined for all security levels.
+   * Set to `false` for backward compatibility (returns undefined for blocked properties).
    */
   throwOnBlocked: boolean;
 }

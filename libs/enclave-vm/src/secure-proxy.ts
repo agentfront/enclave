@@ -274,12 +274,21 @@ export interface SecureProxyOptions {
   onBlocked?: (target: unknown, property: string | symbol) => void;
 
   /**
-   * Whether to throw an error when blocked properties are accessed
-   * Default: false (returns undefined)
+   * Whether to throw an error when blocked properties are accessed.
+   *
+   * Default behavior:
+   * - When using `createSecureProxy()` directly without options: `false` (returns undefined)
+   * - When using security levels STRICT/SECURE/STANDARD: `true` (throws error)
+   * - When using security level PERMISSIVE: `false` (returns undefined)
    *
    * When true, accessing blocked properties like 'constructor', '__proto__',
    * 'prototype' will throw a SecurityError instead of returning undefined.
    * This makes security violations explicit and easier to detect.
+   *
+   * **Breaking change note**: Prior versions returned undefined for all security levels.
+   * Code that relied on silent undefined returns should either:
+   * - Use PERMISSIVE security level, or
+   * - Explicitly set `throwOnBlocked: false` in options
    */
   throwOnBlocked?: boolean;
 }
