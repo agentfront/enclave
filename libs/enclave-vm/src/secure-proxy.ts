@@ -167,6 +167,7 @@ export const DEFAULT_SECURE_PROXY_CONFIG: SecureProxyLevelConfig = {
   blockPrototype: true,
   blockLegacyAccessors: true,
   proxyMaxDepth: 10,
+  throwOnBlocked: true,
 };
 
 /**
@@ -268,9 +269,19 @@ export interface SecureProxyOptions {
 
   /**
    * Custom handler for blocked property access
-   * If not provided, returns undefined
+   * If not provided, returns undefined (or throws if throwOnBlocked is true)
    */
   onBlocked?: (target: unknown, property: string | symbol) => void;
+
+  /**
+   * Whether to throw an error when blocked properties are accessed
+   * Default: false (returns undefined)
+   *
+   * When true, accessing blocked properties like 'constructor', '__proto__',
+   * 'prototype' will throw a SecurityError instead of returning undefined.
+   * This makes security violations explicit and easier to detect.
+   */
+  throwOnBlocked?: boolean;
 }
 
 /**
@@ -320,6 +331,11 @@ function getFullCacheKey(options: SecureProxyOptions): string {
   const effectiveMaxDepth = options.maxDepth ?? options.levelConfig?.proxyMaxDepth ?? 10;
   if (effectiveMaxDepth !== 10) {
     parts.push(`D:${effectiveMaxDepth}`);
+  }
+
+  // Throw on blocked (only include if true)
+  if (options.throwOnBlocked) {
+    parts.push('T:1');
   }
 
   return parts.join('|') || 'default';
@@ -425,6 +441,9 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
   // Use maxDepth from levelConfig if provided, otherwise from options or default
   const maxDepth = options.maxDepth ?? options.levelConfig?.proxyMaxDepth ?? 10;
 
+  // Use throwOnBlocked from options or levelConfig (options takes precedence)
+  const throwOnBlocked = options.throwOnBlocked ?? options.levelConfig?.throwOnBlocked ?? false;
+
   // Create inner function for recursive proxying with depth tracking
   function proxyWithDepth<U extends object>(obj: U, depth: number): U {
     // Return primitives as-is
@@ -469,7 +488,13 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
             return Reflect.get(target, property, receiver);
           }
 
-          // For configurable properties, we can block them
+          // For configurable properties, throw or return undefined
+          if (throwOnBlocked) {
+            throw new Error(
+              `Security violation: Access to '${propName}' is blocked. ` +
+                `This property can be used for sandbox escape attacks.`,
+            );
+          }
           return undefined;
         }
 
@@ -484,6 +509,12 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
             return Reflect.get(target, property, receiver);
           }
 
+          if (throwOnBlocked) {
+            throw new Error(
+              `Security violation: Access to '${propName}' is blocked. ` +
+                `This property can be used for sandbox escape attacks.`,
+            );
+          }
           return undefined;
         }
 
@@ -521,6 +552,12 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
           if (options.onBlocked) {
             options.onBlocked(target, propName);
           }
+          if (throwOnBlocked) {
+            throw new Error(
+              `Security violation: Setting '${propName}' is blocked. ` +
+                `This property can be used for sandbox escape attacks.`,
+            );
+          }
           return false; // Silently fail
         }
 
@@ -534,6 +571,12 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         if (typeof propName === 'string' && blockedSet.has(propName)) {
           if (options.onBlocked) {
             options.onBlocked(target, propName);
+          }
+          if (throwOnBlocked) {
+            throw new Error(
+              `Security violation: Defining '${propName}' is blocked. ` +
+                `This property can be used for sandbox escape attacks.`,
+            );
           }
           return false;
         }
@@ -572,10 +615,16 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
           return descriptor;
         }
 
-        // Return undefined for blocked configurable properties
+        // Return undefined (or throw) for blocked configurable properties
         if (typeof propName === 'string' && blockedSet.has(propName)) {
           if (options.onBlocked) {
             options.onBlocked(target, propName);
+          }
+          if (throwOnBlocked) {
+            throw new Error(
+              `Security violation: Access to property descriptor for '${propName}' is blocked. ` +
+                `This property can be used for sandbox escape attacks.`,
+            );
           }
           return undefined;
         }

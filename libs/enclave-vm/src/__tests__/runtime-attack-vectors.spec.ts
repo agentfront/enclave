@@ -65,8 +65,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Array[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -77,8 +77,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Object[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -89,8 +89,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Array[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -103,8 +103,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Object[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -115,8 +115,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Math[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
     });
@@ -129,8 +129,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Array[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -141,8 +141,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Object[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -154,8 +154,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return String[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
     });
@@ -168,8 +168,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Array[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -180,8 +180,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Object[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -206,8 +206,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Number[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -218,8 +218,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Array[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
     });
@@ -233,8 +233,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Array[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -245,8 +245,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Object[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -258,8 +258,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Math[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
     });
@@ -279,8 +279,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return myGlobal[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -297,8 +297,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return JSON[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -310,8 +310,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Number[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -323,8 +323,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Date[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -336,8 +336,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Array[key] ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
     });
@@ -351,8 +351,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return proto ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -364,8 +364,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return proto ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -380,8 +380,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Ctor ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
     });
@@ -872,8 +872,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Ctor ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -885,8 +885,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return proto ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
     });
@@ -904,8 +904,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Ctor ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
     });
@@ -1179,8 +1179,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Ctor ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -1197,8 +1197,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return proto ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -1213,8 +1213,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Ctor ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
     });
@@ -1231,8 +1231,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return PromiseCtor ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -1281,8 +1281,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Ctor ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -1324,8 +1324,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Ctor ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -1337,8 +1337,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Ctor ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
     });
@@ -1411,8 +1411,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Ctor ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -1432,8 +1432,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return proto ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
     });
@@ -1452,8 +1452,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Ctor ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 
@@ -1499,8 +1499,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'blocked';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('blocked');
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toContain('Security violation');
         enclave.dispose();
       });
 

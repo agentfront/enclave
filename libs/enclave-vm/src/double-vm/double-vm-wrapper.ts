@@ -355,10 +355,21 @@ export class DoubleVmWrapper implements SandboxAdapter {
     // Get blocked properties for secure proxy
     // Use explicit secureProxyConfig override if available, otherwise use security level defaults
     let blockedPropertiesSet: Set<string>;
+    let throwOnBlocked: boolean;
     if (secureProxyConfig) {
       blockedPropertiesSet = buildBlockedPropertiesFromConfig(secureProxyConfig);
+      throwOnBlocked = secureProxyConfig.throwOnBlocked ?? true;
     } else {
       blockedPropertiesSet = getBlockedPropertiesForLevel(this.securityLevel);
+      // Get throwOnBlocked from security level config
+      // Import the security level configs to get the throwOnBlocked setting
+      const SECURITY_LEVEL_CONFIGS: Record<string, { throwOnBlocked: boolean }> = {
+        STRICT: { throwOnBlocked: true },
+        SECURE: { throwOnBlocked: true },
+        STANDARD: { throwOnBlocked: true },
+        PERMISSIVE: { throwOnBlocked: false },
+      };
+      throwOnBlocked = SECURITY_LEVEL_CONFIGS[this.securityLevel]?.throwOnBlocked ?? true;
     }
     const blockedProperties = Array.from(blockedPropertiesSet);
 
@@ -376,6 +387,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
       blockedProperties,
       allowComposites,
       memoryLimit: config.memoryLimit,
+      throwOnBlocked,
     });
   }
 

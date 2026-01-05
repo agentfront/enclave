@@ -1003,7 +1003,7 @@ describe('Double VM Security Layer', () => {
       });
 
       // Try to escape via computed property constructor access on tool result
-      // This bypasses AST validation but is caught by secure proxy
+      // This bypasses AST validation but is caught by secure proxy which throws an error
       const result = await enclave.run(`
         async function __ag_main() {
           const result = await callTool('data:get', {});
@@ -1014,8 +1014,8 @@ describe('Double VM Security Layer', () => {
         }
       `);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('undefined'); // Constructor blocked by secure proxy
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
     });
 
     it('should block prototype access on tool results via computed property', async () => {
@@ -1038,8 +1038,8 @@ describe('Double VM Security Layer', () => {
         }
       `);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
     });
 
     it('should block Promise constructor access via computed property', async () => {
@@ -1061,8 +1061,8 @@ describe('Double VM Security Layer', () => {
         }
       `);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('undefined');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
     });
 
     it('should block access to host Function via deeply computed property attacks', async () => {
@@ -1077,30 +1077,19 @@ describe('Double VM Security Layer', () => {
       });
 
       // Try deeply computed property attack on nested objects
+      // Now that blocked properties throw, accessing them will fail immediately
       const result = await enclave.run(`
         async function __ag_main() {
           const result = await callTool('data:get', {});
-          // Try multiple computed property variations
-          const props = ['const' + 'ructor', '__pro' + 'to__', 'proto' + 'type'];
-          const found = [];
-
-          for (const prop of props) {
-            // Check on result object
-            if (result[prop] !== undefined) {
-              found.push('result.' + prop);
-            }
-            // Check on nested object
-            if (result.nested && result.nested[prop] !== undefined) {
-              found.push('nested.' + prop);
-            }
-          }
-
-          return found.length === 0 ? 'all-blocked' : found.join(',');
+          // Try computed property variations - first one should throw
+          const prop = 'const' + 'ructor';
+          const ctor = result[prop];
+          return ctor;
         }
       `);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('all-blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
     });
 
     it('should prevent chained escapes through multiple tool calls', async () => {
@@ -1144,8 +1133,8 @@ describe('Double VM Security Layer', () => {
         }
       `);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
     });
   });
 

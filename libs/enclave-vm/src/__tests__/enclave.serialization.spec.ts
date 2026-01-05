@@ -28,17 +28,13 @@ describe('Serialization Security Tests', () => {
 
       const code = `
         const result = await callTool('test', {});
-        return result;
+        return result.data;
       `;
 
       const result = await enclave.run(code);
-      // The result should be sanitized
-      if (result.success) {
-        const value = result.value as Record<string, unknown>;
-        // __proto__ should be stripped
-        expect(value['__proto__']).toBeUndefined();
-        expect(value['data']).toBe('safe');
-      }
+      // The result should work with non-blocked properties
+      expect(result.success).toBe(true);
+      expect(result.value).toBe('safe');
 
       // Verify host environment is not polluted
       const testObj: Record<string, unknown> = {};
@@ -84,15 +80,13 @@ describe('Serialization Security Tests', () => {
 
       const code = `
         const result = await callTool('test', {});
-        return result.level1;
+        return result.level1.data;
       `;
 
       const result = await enclave.run(code);
-      if (result.success) {
-        const value = result.value as Record<string, unknown>;
-        expect(value['__proto__']).toBeUndefined();
-        expect(value['data']).toBe('nested-safe');
-      }
+      // Non-blocked properties should work
+      expect(result.success).toBe(true);
+      expect(result.value).toBe('nested-safe');
 
       enclave.dispose();
     });
@@ -131,21 +125,22 @@ describe('Serialization Security Tests', () => {
                 return process;
               },
             },
+            data: 'safe',
           },
         }),
       });
 
+      // Trying to access constructor should throw
       const code = `
         const result = await callTool('test', {});
-        return result.obj;
+        const c = result.obj['const' + 'ructor'];
+        return c;
       `;
 
       const result = await enclave.run(code);
-      // Nested constructor should be stripped
-      if (result.success) {
-        const value = result.value as Record<string, unknown>;
-        expect(value.constructor).toBeUndefined();
-      }
+      // Constructor access should be blocked with an error
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
 
       enclave.dispose();
     });

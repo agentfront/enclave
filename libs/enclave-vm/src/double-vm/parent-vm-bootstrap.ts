@@ -47,6 +47,9 @@ export interface ParentVmBootstrapOptions {
 
   /** Memory limit in bytes (0 = unlimited) */
   memoryLimit?: number;
+
+  /** Whether to throw errors instead of returning undefined for blocked properties */
+  throwOnBlocked?: boolean;
 }
 
 /**
@@ -127,6 +130,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     blockedProperties,
     allowComposites = false,
     memoryLimit = 0,
+    throwOnBlocked = true,
   } = options;
 
   const sanitizeContextCode = generateSanitizeContextCode(securityLevel);
@@ -190,6 +194,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   // Blocked properties for secure proxy (from security level)
   const blockedPropertiesSet = new Set(${JSON.stringify(blockedProperties)});
 
+  // Whether to throw errors instead of returning undefined for blocked properties
+  const throwOnBlocked = ${throwOnBlocked};
+
   // Whether composite reference handles are allowed (for string concatenation)
   const allowComposites = ${allowComposites};
 
@@ -239,6 +246,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
           if (isNonConfigurable) {
             return Reflect.get(target, property, receiver);
           }
+          if (throwOnBlocked) {
+            throw new Error(
+              "Security violation: Access to '" + propName + "' is blocked. " +
+              "This property can be used for sandbox escape attacks."
+            );
+          }
           return undefined;
         }
 
@@ -262,13 +275,25 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       set: function(target, property, value, receiver) {
         var propName = String(property);
         if (blockedPropertiesSet.has(propName)) {
-          return false; // Silently fail
+          if (throwOnBlocked) {
+            throw new Error(
+              "Security violation: Setting '" + propName + "' is blocked. " +
+              "This property can be used for sandbox escape attacks."
+            );
+          }
+          return false;
         }
         return Reflect.set(target, property, value, receiver);
       },
       defineProperty: function(target, property, descriptor) {
         var propName = String(property);
         if (blockedPropertiesSet.has(propName)) {
+          if (throwOnBlocked) {
+            throw new Error(
+              "Security violation: Defining '" + propName + "' is blocked. " +
+              "This property can be used for sandbox escape attacks."
+            );
+          }
           return false;
         }
         return Reflect.defineProperty(target, property, descriptor);
@@ -284,6 +309,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
 
         // Block configurable dangerous properties
         if (blockedPropertiesSet.has(propName)) {
+          if (throwOnBlocked) {
+            throw new Error(
+              "Security violation: Access to property descriptor for '" + propName + "' is blocked. " +
+              "This property can be used for sandbox escape attacks."
+            );
+          }
           return undefined;
         }
         return descriptor;

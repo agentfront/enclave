@@ -77,6 +77,18 @@ export interface SecureProxyLevelConfig {
    * @default 10
    */
   proxyMaxDepth: number;
+
+  /**
+   * Whether to throw an error when blocked properties are accessed
+   * @default true (throws security violation error)
+   *
+   * When true, accessing blocked properties like 'constructor', '__proto__',
+   * 'prototype' will throw a SecurityError instead of returning undefined.
+   * This makes security violations explicit and easier to detect.
+   *
+   * Set to false for backward compatibility (returns undefined for blocked properties).
+   */
+  throwOnBlocked: boolean;
 }
 
 /**
@@ -200,6 +212,7 @@ export const SECURITY_LEVEL_CONFIGS: Record<SecurityLevel, SecurityLevelConfig> 
       blockPrototype: true,
       blockLegacyAccessors: true,
       proxyMaxDepth: 5,
+      throwOnBlocked: true,
     },
   },
 
@@ -238,6 +251,7 @@ export const SECURITY_LEVEL_CONFIGS: Record<SecurityLevel, SecurityLevelConfig> 
       blockPrototype: true,
       blockLegacyAccessors: true,
       proxyMaxDepth: 10,
+      throwOnBlocked: true,
     },
   },
 
@@ -275,6 +289,7 @@ export const SECURITY_LEVEL_CONFIGS: Record<SecurityLevel, SecurityLevelConfig> 
       blockPrototype: true,
       blockLegacyAccessors: true,
       proxyMaxDepth: 15,
+      throwOnBlocked: true,
     },
   },
 
@@ -314,6 +329,7 @@ export const SECURITY_LEVEL_CONFIGS: Record<SecurityLevel, SecurityLevelConfig> 
       blockPrototype: true, // Still block prototype for safety
       blockLegacyAccessors: true,
       proxyMaxDepth: 20,
+      throwOnBlocked: false, // Return undefined instead of throwing for development
     },
   },
 };

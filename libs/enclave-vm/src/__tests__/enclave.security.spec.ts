@@ -882,15 +882,16 @@ describe('Enclave Security Tests', () => {
       const enclave = new Enclave();
       const code = `
         const k = Object.keys({ constructor: 1 })[0];
-        // SecureProxy blocks constructor access at runtime, returning undefined
-        return Array[k] === undefined ? 'blocked' : 'accessible';
+        // SecureProxy blocks constructor access at runtime, throwing an error
+        return Array[k];
       `;
 
       const result = await enclave.run(code);
 
-      // SecureProxy blocks constructor access at runtime
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      // SecureProxy blocks constructor access at runtime with an error
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });
@@ -900,14 +901,15 @@ describe('Enclave Security Tests', () => {
       const code = `
         const e = Object.entries({ constructor: 1 })[0];
         // SecureProxy blocks constructor access at runtime
-        return Array[e[0]] === undefined ? 'blocked' : 'accessible';
+        return Array[e[0]];
       `;
 
       const result = await enclave.run(code);
 
-      // SecureProxy blocks constructor access at runtime
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      // SecureProxy blocks constructor access at runtime with an error
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });
@@ -917,14 +919,15 @@ describe('Enclave Security Tests', () => {
       const code = `
         const n = Object.getOwnPropertyNames({ constructor: 1 })[0];
         // SecureProxy blocks constructor access at runtime
-        return Array[n] === undefined ? 'blocked' : 'accessible';
+        return Array[n];
       `;
 
       const result = await enclave.run(code);
 
-      // SecureProxy blocks constructor access at runtime
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      // SecureProxy blocks constructor access at runtime with an error
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });
@@ -1315,9 +1318,10 @@ describe('Enclave Security Tests', () => {
         return proto;
       `);
 
-      // __proto__ should be blocked by secure proxy
-      expect(result.success).toBe(true);
-      expect(result.value).toBeUndefined();
+      // __proto__ should be blocked by secure proxy with an error
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('__proto__');
 
       enclave.dispose();
     });
@@ -1336,9 +1340,10 @@ describe('Enclave Security Tests', () => {
         return proto;
       `);
 
-      // __proto__ should be blocked by secure proxy
-      expect(result.success).toBe(true);
-      expect(result.value).toBeUndefined();
+      // __proto__ should be blocked by secure proxy with an error
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('__proto__');
 
       enclave.dispose();
     });
@@ -1418,8 +1423,9 @@ describe('Enclave Security Tests', () => {
         return Func ? Func.name : 'blocked';
       `);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('blocked');
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
     });
