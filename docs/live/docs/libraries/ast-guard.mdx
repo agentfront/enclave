@@ -75,6 +75,9 @@ const transformed = transform(code, {
   maxIterations: 10000,
   maxDepth: 100
 });
+
+// Template literal transforms automatically leave tagged templates untouched
+// so tag functions continue receiving the original raw strings.
 ```
 
 ## Links

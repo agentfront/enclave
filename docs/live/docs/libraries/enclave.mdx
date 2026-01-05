@@ -34,6 +34,7 @@ console.log(result.value); // 3
 - **Defense-in-depth**: 6 security layers
 - **Worker Pool Adapter**: Isolated execution in separate processes
 - **Reference Sidecar**: Sandboxed environments for untrusted code
+- **Memory-aware Limits**: Allocation tracking with automatic `MemoryLimitError` handling
 
 ## Security Levels
 
@@ -146,7 +147,7 @@ Execute JavaScript code in a secure environment.
 ```typescript
 const result = await enclave.execute(code, {
   timeout: 5000,
-  maxMemory: 128 * 1024 * 1024
+  memoryLimit: 128 * 1024 * 1024
 });
 
 if (result.success) {
@@ -162,6 +163,38 @@ Clean up resources.
 
 ```typescript
 enclave.dispose();
+```
+
+## Memory Tracking & Limits
+
+Setting the `memoryLimit` option now instruments string and array allocations so you can surface peak usage and fail fast when untrusted code attempts to exhaust memory.
+
+- When a limit is configured, `result.stats.memoryUsage` reports the peak tracked bytes for each execution.
+- If the limit is exceeded the sandbox returns `success: false` with an error that includes the `MEMORY_LIMIT_EXCEEDED` code plus `{ usedBytes, limitBytes }` data.
+- `MemoryTracker` and `MemoryLimitError` are exported if you want to perform additional manual tracking (for example when writing a custom adapter).
+
+```typescript
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({ memoryLimit: 32 * 1024 * 1024 });
+const result = await enclave.execute(code);
+
+if (!result.success && result.error?.code === 'MEMORY_LIMIT_EXCEEDED') {
+  console.warn(
+    `Script used ${result.error.data.usedBytes} bytes (limit ${result.error.data.limitBytes})`,
+  );
+}
+
+console.log(`Peak tracked memory: ${result.stats.memoryUsage} bytes`);
+```
+
+For advanced scenarios you can instantiate the tracker directly:
+
+```typescript
+import { MemoryTracker } from 'enclave-vm';
+
+const tracker = new MemoryTracker({ memoryLimit: 10 * 1024 * 1024 });
+tracker.start();
 ```
 
 ## Reference Sidecar
@@ -198,6 +231,19 @@ import {
 // Available categories: CONSTRUCTOR, PROTOTYPE, LEGACY_ACCESSOR, DUNDER_PROTO, TIMING
 const allBlockedProps = BLOCKED_PROPERTY_CATEGORIES.CONSTRUCTOR;
 // Set { 'constructor' }
+
+### Throwing on Blocked Properties
+
+Security levels `STRICT`, `SECURE`, and `STANDARD` now throw a `SecurityError` whenever blocked properties such as `constructor`, `__proto__`, or `prototype` are touched. This makes sandbox escapes explicit instead of silently returning `undefined`. Set `throwOnBlocked: false` if you need the legacy behavior.
+
+```typescript
+const enclave = new Enclave({
+  securityLevel: 'SECURE',
+  secureProxyConfig: {
+    throwOnBlocked: false, // optional override
+  },
+});
+```
 ```
 
 > **Note:** `clearProxyCache()` is intentionally unsupported and now throws an error. The proxy cache relies on garbage collection; manual clearing is unnecessary and prevented to avoid weakening the isolation guarantees.

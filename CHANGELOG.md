@@ -12,6 +12,15 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## 2026-01-05
 
+enclave-vm now ships memory-aware execution limits and stricter secure proxy errors, while ast-guard fixes template literal handling.
+
+| Package    | Version | Highlights                                                                                        |
+| ---------- | ------- | ------------------------------------------------------------------------------------------------- |
+| enclave-vm | 2.2.0   | Adds MemoryTracker-based limits and makes blocked-property access raise explicit security errors. |
+| ast-guard  | 1.1.2   | Template literal transform no longer rewrites tagged templates.                                   |
+
+## 2026-01-05
+
 Defaulted enclave-vm to the new double VM isolation layer and refreshed docs for the surrounding APIs.
 
 | Package    | Version | Highlights                                                                                                               |
