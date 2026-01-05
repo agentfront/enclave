@@ -26,6 +26,7 @@ export type {
   ExecutionContext,
   SandboxAdapter,
   SecurityLevel,
+  AstPreset,
   SecurityLevelConfig,
   SecureProxyLevelConfig,
   ReferenceSidecarOptions,

@@ -10,7 +10,7 @@
 import * as vm from 'vm';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { createSafeRuntime } from '../safe-runtime';
-import { createSafeReflect } from '../secure-proxy';
+import { createSafeReflect, createSecureProxy } from '../secure-proxy';
 
 /**
  * Sensitive patterns to redact from stack traces
@@ -385,10 +385,18 @@ export class VmAdapter implements SandboxAdapter {
       }
 
       // Add user-provided globals (if any)
-      // These are NOT protected - users can modify their own globals
+      // Security: Wrap ALL custom globals with secure proxy to prevent prototype chain attacks
+      // This blocks access to __proto__, constructor, and other dangerous properties
       if (config.globals) {
         for (const [key, value] of Object.entries(config.globals)) {
-          (baseSandbox as any)[key] = value;
+          // Only proxy objects, primitives are safe as-is
+          if (value !== null && typeof value === 'object') {
+            (baseSandbox as any)[key] = createSecureProxy(value as object, {
+              levelConfig: executionContext.secureProxyConfig,
+            });
+          } else {
+            (baseSandbox as any)[key] = value;
+          }
         }
       }
 
