@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-01-05
+
+### Fixed
+
+- Template literal transforms now skip tagged template expressions so tag functions continue receiving the original raw template strings.
+
 ## [1.1.0] - 2025-12-11
 
 ### Added

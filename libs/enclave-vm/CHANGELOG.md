@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-01-05
+
+### Added
+
+- Integrated the new `MemoryTracker` across the VM and double-VM adapters so executions that opt into `memoryLimit` report `stats.memoryUsage` and raise `MemoryLimitError` responses with `MEMORY_LIMIT_EXCEEDED` metadata.
+- Re-exported `MemoryTracker`, `MemoryLimitError`, and estimation helpers for host code, and injected memory-aware String/Array proxies plus `__safe_*` console/Error globals into the sandbox for AST transformer compatibility.
+
+### Changed
+
+- STRICT/SECURE/STANDARD security levels now throw a `SecurityError` whenever blocked properties such as `constructor` or `__proto__` are accessed; override `secureProxyConfig.throwOnBlocked` to restore silent `undefined` returns.
+- Worker pool slots only set `--max-old-space-size` when a memory budget is configured and resolve the compiled worker script path when running from TS sources, keeping the adapter compatible with Node 24 and ts-jest.
+- Safe runtime concatenation and template literal helpers now distinguish numeric addition from string composites, track allocations, and route reference IDs through the resolver for accurate memory accounting.
+
+### Fixed
+
+- Worker scripts automatically invoke the transformed `__ag_main()` entrypoint and expose both `console` and `__safe_console`, ensuring AgentScript-transformed bundles run under the worker adapter.
+
 ## [2.1.0] - 2026-01-05
 
 ### Added
