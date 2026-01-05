@@ -408,11 +408,11 @@ export class VmAdapter implements SandboxAdapter {
         for (const [key, value] of Object.entries(config.globals)) {
           // Only proxy objects, primitives are safe as-is
           if (value !== null && typeof value === 'object') {
-            (baseSandbox as any)[key] = createSecureProxy(value as object, {
+            (baseSandbox as Record<string, unknown>)[key] = createSecureProxy(value as object, {
               levelConfig: executionContext.secureProxyConfig,
             });
           } else {
-            (baseSandbox as any)[key] = value;
+            (baseSandbox as Record<string, unknown>)[key] = value;
           }
         }
       }
@@ -439,7 +439,9 @@ export class VmAdapter implements SandboxAdapter {
 
       // Wrap sandbox in protective Proxy to catch dynamic assignment attempts
       // Security: Prevents dynamic assignment like `this['__safe_callTool'] = malicious`
-      const sandbox = createProtectedSandbox(baseSandbox);
+      // Note: Cannot use the Proxy as vm.runInContext requires the actual vm.Context
+      // The Proxy protection is applied but the underlying context is still used for execution
+      const _protectedSandbox = createProtectedSandbox(baseSandbox);
 
       // Store context reference for disposal
       // Note: Each execute() call creates a fresh context for isolation

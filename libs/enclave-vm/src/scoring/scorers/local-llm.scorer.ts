@@ -16,12 +16,6 @@ import type { ExtractedFeatures, ScoringResult, RiskSignal, LocalLlmConfig, Risk
 // Pipeline type from @huggingface/transformers
 type Pipeline = (input: string, options?: Record<string, unknown>) => Promise<{ data: number[] }>;
 
-// Classification output type
-interface ClassificationOutput {
-  label: string;
-  score: number;
-}
-
 /**
  * Default model cache directory
  */
@@ -181,11 +175,11 @@ export class LocalLlmScorer extends BaseScorer {
     // Convert features to text prompt
     const prompt = this.featuresToPrompt(features);
 
-    // Get embedding for the prompt
-    const embedding = await this.getEmbedding(prompt);
+    // Get embedding for the prompt (ensures pipeline is loaded)
+    // In production, this embedding would compare against known malicious pattern embeddings
+    await this.getEmbedding(prompt);
 
     // Score based on semantic content (using keyword heuristics for now)
-    // In production, this would compare against known malicious pattern embeddings
     const { score, signals } = this.analyzePrompt(prompt, features);
 
     return {
@@ -204,10 +198,10 @@ export class LocalLlmScorer extends BaseScorer {
     // Convert features to text prompt
     const prompt = this.featuresToPrompt(features);
 
-    // Get embedding
-    const embedding = await this.getEmbedding(prompt);
+    // Get embedding (ensures pipeline is loaded)
     // In production, this embedding would be compared against a VectoriaDB
     // of known malicious patterns to find similar ones.
+    await this.getEmbedding(prompt);
 
     // For this example, we use the same heuristic analysis as a placeholder
     const { score, signals } = this.analyzePrompt(prompt, features);

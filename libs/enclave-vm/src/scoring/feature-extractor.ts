@@ -271,7 +271,7 @@ export class FeatureExtractor {
     // Extract tool name
     const toolNameNode = toolNameArg as unknown as { type?: string; value?: string };
     const isStaticName = toolNameNode?.type === 'Literal' && typeof toolNameNode.value === 'string';
-    const toolName = isStaticName ? toolNameNode.value! : '<dynamic>';
+    const toolName = isStaticName ? (toolNameNode.value as string) : '<dynamic>';
 
     // Extract argument information
     const argumentKeys: string[] = [];

@@ -9,7 +9,7 @@
  */
 
 import * as vm from 'vm';
-import type { SandboxAdapter, ExecutionContext, ExecutionResult, ExecutionStats, SecurityLevel } from '../types';
+import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { sanitizeValue } from '../value-sanitizer';
 import { getBlockedPropertiesForLevel, buildBlockedPropertiesFromConfig } from '../secure-proxy';
 import { ReferenceResolver } from '../sidecar/reference-resolver';
@@ -186,7 +186,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
    * - Memory tracking callback (when memoryLimit is set)
    */
   private createParentContext(executionContext: ExecutionContext, memoryTracker?: MemoryTracker): vm.Context {
-    const { stats, config, toolHandler } = executionContext;
+    const { stats, config } = executionContext;
 
     // Create isolated context for parent VM
     const parentContext = vm.createContext({});
