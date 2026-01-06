@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-01-06
+
+### Security
+
+- Regex ReDoS checks now cap inspected pattern length and use safe matcher helpers to prevent the analyzer from being exploited.
+
 ## [2.1.0] - 2026-01-06
 
 ### Added

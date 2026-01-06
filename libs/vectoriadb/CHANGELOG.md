@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-01-06
+
+### Security
+
+- Bounded `isPotentiallyVulnerableRegex` analysis inputs and switched to precompiled detection patterns to avoid ReDoS in the analyzer itself.
+- Redis storage namespace sanitization now truncates input before regex processing and reuses shared safe patterns to eliminate regex-based attacks.
+
 ## [2.0.0] - 2025-12-12
 
 ### Added

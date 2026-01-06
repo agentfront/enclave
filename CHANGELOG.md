@@ -12,6 +12,15 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## 2026-01-06
 
+Security hardening for vectoriadb and ast-guard regex analyzers; enclave-vm unchanged.
+
+| Package    | Version | Highlights                                                                   |
+| ---------- | ------- | ---------------------------------------------------------------------------- |
+| vectoriadb | 2.0.2   | Strengthened regex utilities and Redis namespace sanitization against ReDoS. |
+| ast-guard  | 2.1.1   | ReDoS analyzer now uses bounded-safe pattern tests to avoid self-DoS.        |
+
+## 2026-01-06
+
 Sandbox security was hardened in enclave-vm and ast-guard now blocks resource-exhaustion patterns by default.
 
 | Package    | Version | Highlights                                                                                      |
