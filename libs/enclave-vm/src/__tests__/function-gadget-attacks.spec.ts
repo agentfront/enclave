@@ -793,10 +793,13 @@ describe('ATK-FGAD: Function Gadget Attack Vectors (CWE-94)', () => {
     describe('ATK-FGAD-31 to ATK-FGAD-32: String.raw Exploitation', () => {
       it('ATK-FGAD-31: should verify String.raw works in sandbox', async () => {
         const enclave = new Enclave();
-        const code = `
-          const result = String.raw\`test\\nvalue\`;
-          // String.raw preserves escape sequences
-          return result.includes('\\\\n') ? 'raw-works' : 'interpreted';
+        // Use String.raw for the outer template to preserve escape sequences
+        const code = String.raw`
+          const result = String.raw${'`'}test\nvalue${'`'};
+          // String.raw preserves escape sequences as literal backslash+n
+          // Check for literal backslash followed by n (not newline character)
+          // result should be "test\nvalue" (8 chars with literal backslash)
+          return result.length === 11 && result.indexOf('\\') === 4 ? 'raw-works' : 'interpreted';
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(true);

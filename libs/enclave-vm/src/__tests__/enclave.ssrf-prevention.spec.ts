@@ -83,11 +83,12 @@ function createSSRFProtectedToolHandler(): {
         try {
           const parsed = new URL(url);
           // Re-check hostname after parsing (handles encoding tricks)
+          // Note: URL.hostname returns '::1' without brackets for IPv6
           const hostname = parsed.hostname.toLowerCase();
           if (
             hostname === 'localhost' ||
             hostname === '127.0.0.1' ||
-            hostname === '[::1]' ||
+            hostname === '::1' ||
             hostname === '0.0.0.0' ||
             hostname.endsWith('.internal') ||
             hostname.endsWith('.local')

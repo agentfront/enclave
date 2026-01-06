@@ -371,9 +371,13 @@ describe('ATK-ASYNC: Async/Promise Bomb Attack Prevention', () => {
       `;
       const result = await enclave.run(code);
       // Generators may be allowed or blocked depending on security level
-      // If allowed, should complete normally within iteration limits
+      // Explicitly test both outcomes
       if (result.success) {
+        // If generators are allowed, verify correct execution
         expect(result.value).toBe(6);
+      } else {
+        // If generators are blocked, verify it fails with a validation error
+        expect(result.error?.message).toMatch(/validation|not.*allowed|blocked/i);
       }
       enclave.dispose();
     });

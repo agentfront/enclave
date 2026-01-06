@@ -14,9 +14,9 @@
  * Test Categories:
  * - ATK-IOFL-01 to ATK-IOFL-04: Console Output Size Limiting
  * - ATK-IOFL-05 to ATK-IOFL-07: Console Call Count Limiting
- * - ATK-IOFL-08 to ATK-IOFL-12: Security Level Presets
- * - ATK-IOFL-13 to ATK-IOFL-15: Object Serialization
- * - ATK-IOFL-16 to ATK-IOFL-18: Attack Scenarios
+ * - ATK-IOFL-08 to ATK-IOFL-11: Security Level Presets
+ * - ATK-IOFL-12 to ATK-IOFL-14: Object Serialization
+ * - ATK-IOFL-15 to ATK-IOFL-17: Attack Scenarios
  *
  * Related CWEs:
  * - CWE-779: Logging of Excessive Data
@@ -192,9 +192,9 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
   });
 
   // ============================================================================
-  // ATK-IOFL-08 to ATK-IOFL-12: Security Level Presets
+  // ATK-IOFL-08 to ATK-IOFL-11: Security Level Presets
   // ============================================================================
-  describe('ATK-IOFL-08 to ATK-IOFL-12: Security Level Presets', () => {
+  describe('ATK-IOFL-08 to ATK-IOFL-11: Security Level Presets', () => {
     it('ATK-IOFL-08: should use STRICT preset limits (64KB, 100 calls)', async () => {
       const enclave = new Enclave({ securityLevel: 'STRICT' });
       const config = enclave.getEffectiveConfig();

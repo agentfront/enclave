@@ -883,21 +883,21 @@ Async/Promise bomb attacks attempt to exhaust the event loop via promise floodin
 
 **File:** `enclave.ssrf-prevention.spec.ts`
 
-Server-Side Request Forgery (SSRF) attacks attempt to access internal resources through the enclave's tool calling mechanism. The enclave uses URL validation in tool handlers to prevent these attacks.
+Server-Side Request Forgery (SSRF) attacks attempt to access internal resources through the enclave's tool-calling mechanism. The enclave uses URL validation in tool handlers to prevent these attacks.
 
 | Test ID                                                           | Description                                          | Defense Layer       |
 | ----------------------------------------------------------------- | ---------------------------------------------------- | ------------------- |
 | **ATK-SSRF-01 to ATK-SSRF-05: Localhost/Loopback Blocking**       |                                                      |                     |
-| ATK-SSRF-01                                                       | Block http://localhost requests                      | URL Validation      |
-| ATK-SSRF-02                                                       | Block http://127.0.0.1 requests                      | URL Validation      |
-| ATK-SSRF-03                                                       | Block http://[::1] (IPv6 localhost)                  | URL Validation      |
+| ATK-SSRF-01                                                       | Block `http://localhost` requests                    | URL Validation      |
+| ATK-SSRF-02                                                       | Block `http://127.0.0.1` requests                    | URL Validation      |
+| ATK-SSRF-03                                                       | Block `http://[::1]` (IPv6 localhost)                | URL Validation      |
 | ATK-SSRF-04                                                       | Block localhost with port variations                 | URL Validation      |
-| ATK-SSRF-05                                                       | Block http://0.0.0.0 requests                        | URL Validation      |
+| ATK-SSRF-05                                                       | Block `http://0.0.0.0` requests                      | URL Validation      |
 | **ATK-SSRF-06 to ATK-SSRF-07: File Protocol Blocking**            |                                                      |                     |
-| ATK-SSRF-06                                                       | Block file:///etc/passwd                             | URL Validation      |
-| ATK-SSRF-07                                                       | Block various file:// paths                          | URL Validation      |
+| ATK-SSRF-06                                                       | Block `file:///etc/passwd`                           | URL Validation      |
+| ATK-SSRF-07                                                       | Block various `file://` paths                        | URL Validation      |
 | **ATK-SSRF-08 to ATK-SSRF-09: Dangerous Protocol Blocking**       |                                                      |                     |
-| ATK-SSRF-08                                                       | Block gopher:// protocol                             | URL Validation      |
+| ATK-SSRF-08                                                       | Block `gopher://` protocol                           | URL Validation      |
 | ATK-SSRF-09                                                       | Block various dangerous protocols (dict, ldap, tftp) | URL Validation      |
 | **ATK-SSRF-10 to ATK-SSRF-13: Private IP Range Blocking**         |                                                      |                     |
 | ATK-SSRF-10                                                       | Block private Class A (10.x.x.x) IPs                 | URL Validation      |

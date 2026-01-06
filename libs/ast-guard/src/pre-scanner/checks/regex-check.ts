@@ -398,6 +398,12 @@ function tryParseRegex(source: string, start: number): { pattern: string; flags:
 }
 
 /**
+ * Maximum safe pattern length for ReDoS detection.
+ * Limits input length to prevent ReDoS in the detection patterns themselves.
+ */
+const MAX_SAFE_PATTERN_LENGTH = 500;
+
+/**
  * Safely test a pattern against input with bounded backtracking.
  * Limits input length and uses linear-time character scanning when possible.
  *
@@ -406,8 +412,6 @@ function tryParseRegex(source: string, start: number): { pattern: string; flags:
  * @returns Whether the pattern matches
  */
 function safePatternTest(input: string, testPattern: RegExp): boolean {
-  // Limit input length to prevent ReDoS - regex patterns shouldn't be longer than this
-  const MAX_SAFE_PATTERN_LENGTH = 500;
   const safeInput = input.length > MAX_SAFE_PATTERN_LENGTH ? input.slice(0, MAX_SAFE_PATTERN_LENGTH) : input;
 
   try {
@@ -426,7 +430,6 @@ function safePatternTest(input: string, testPattern: RegExp): boolean {
  * @returns The match result or null
  */
 function safePatternMatch(input: string, matchPattern: RegExp): RegExpMatchArray | null {
-  const MAX_SAFE_PATTERN_LENGTH = 500;
   const safeInput = input.length > MAX_SAFE_PATTERN_LENGTH ? input.slice(0, MAX_SAFE_PATTERN_LENGTH) : input;
 
   try {

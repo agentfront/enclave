@@ -329,7 +329,7 @@ This document provides a comprehensive mapping of all security tests in the encl
 
 ### By CWE
 
-```
+```text
 CWE-94  (Code Injection)     → ATK-CINJ-*
 CWE-400 (Resource Exhaustion) → ATK-RSRC-*
 CWE-502 (Deserialization)     → ATK-SRLZ-*
@@ -346,7 +346,7 @@ CWE-1333 (ReDoS)              → ATK-REDOS-*
 
 ### By CVE
 
-```
+```text
 CVE-2023-29017 → ATK-CVE-2023-29017-* (vm2 exception handler)
 CVE-2023-30547 → ATK-CVE-2023-30547-* (vm2 AsyncFunction)
 CVE-2023-32313 → ATK-CVE-2023-32313-* (vm2 Proxy+Reflect)

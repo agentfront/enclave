@@ -114,8 +114,10 @@ if (Object.keys(metrics).length > 0) {
     // Note: Assumes all thresholds are upper bounds (value <= threshold)
     // For lower-bound thresholds (e.g., minimum throughput), set thresholdType = 'min' in the metric
     const thresholdOp = metric.thresholdType === 'min' ? '>=' : '<=';
-    const threshold = metric.threshold !== undefined ? `${thresholdOp} ${metric.threshold} ${escapeMarkdown(metric.unit || '')}` : '-';
-    const value = typeof metric.value === 'number' ? metric.value.toFixed(2) : escapeMarkdown(String(metric.value || 'N/A'));
+    const threshold =
+      metric.threshold !== undefined ? `${thresholdOp} ${metric.threshold} ${escapeMarkdown(metric.unit || '')}` : '-';
+    const value =
+      typeof metric.value === 'number' ? metric.value.toFixed(2) : escapeMarkdown(String(metric.value || 'N/A'));
     const unit = escapeMarkdown(metric.unit || '');
     const name = escapeMarkdown(metric.name || 'Unknown');
     console.log(`| ${name} | ${value} ${unit} | ${threshold} | ${status} |`);
