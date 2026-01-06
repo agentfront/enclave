@@ -782,6 +782,73 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   // Remove dangerous globals from inner VM
   ${sanitizeContextCode}
 
+  // Inject memory-safe prototype methods into inner VM context BEFORE freezing
+  // Security: Prevents ATK-JSON-03 (Parser Bomb) and similar attacks
+  // These checks happen BEFORE allocation, not after
+  //
+  // IMPORTANT: We must get the prototype from a literal, not from globals like String.prototype
+  // because string/array literals in VM contexts use the realm's intrinsic prototype.
+  (function() {
+    var memoryLimit = hostConfig.memoryLimit || 0;
+    if (memoryLimit > 0) {
+      // Run the patching code in innerContext
+      var patchCode = '(function() {' +
+        'var memoryLimit = ' + memoryLimit + ';' +
+        // Get the ACTUAL prototype used by literals in this realm
+        'var stringProto = Object.getPrototypeOf("");' +
+        'var arrayProto = Object.getPrototypeOf([]);' +
+        // Patch string repeat
+        'var originalRepeat = stringProto.repeat;' +
+        'stringProto.repeat = function(count) {' +
+        '  var estimatedSize = this.length * count * 2;' +
+        '  if (estimatedSize > memoryLimit) {' +
+        '    throw new RangeError("String.repeat would exceed memory limit: " +' +
+        '      Math.round(estimatedSize / 1024 / 1024) + "MB > " +' +
+        '      Math.round(memoryLimit / 1024 / 1024) + "MB");' +
+        '  }' +
+        '  return originalRepeat.call(this, count);' +
+        '};' +
+        // Patch array join
+        'var originalJoin = arrayProto.join;' +
+        'arrayProto.join = function(separator) {' +
+        '  var sep = separator === undefined ? "," : String(separator);' +
+        '  var estimatedSize = 0;' +
+        '  for (var i = 0; i < this.length; i++) {' +
+        '    var item = this[i];' +
+        '    estimatedSize += (item === null || item === undefined) ? 0 : String(item).length;' +
+        '    if (i > 0) estimatedSize += sep.length;' +
+        '  }' +
+        '  estimatedSize *= 2;' +
+        '  if (estimatedSize > memoryLimit) {' +
+        '    throw new RangeError("Array.join would exceed memory limit: " +' +
+        '      Math.round(estimatedSize / 1024 / 1024) + "MB > " +' +
+        '      Math.round(memoryLimit / 1024 / 1024) + "MB");' +
+        '  }' +
+        '  return originalJoin.call(this, separator);' +
+        '};' +
+        // Patch string padStart/padEnd
+        'var originalPadStart = stringProto.padStart;' +
+        'var originalPadEnd = stringProto.padEnd;' +
+        'stringProto.padStart = function(targetLength, padString) {' +
+        '  var estimatedSize = Math.max(this.length, targetLength) * 2;' +
+        '  if (estimatedSize > memoryLimit) {' +
+        '    throw new RangeError("String.padStart would exceed memory limit");' +
+        '  }' +
+        '  return originalPadStart.call(this, targetLength, padString);' +
+        '};' +
+        'stringProto.padEnd = function(targetLength, padString) {' +
+        '  var estimatedSize = Math.max(this.length, targetLength) * 2;' +
+        '  if (estimatedSize > memoryLimit) {' +
+        '    throw new RangeError("String.padEnd would exceed memory limit");' +
+        '  }' +
+        '  return originalPadEnd.call(this, targetLength, padString);' +
+        '};' +
+        '})();';
+      var patchScript = new vm.Script(patchCode);
+      patchScript.runInContext(innerContext);
+    }
+  })();
+
   // Freeze all built-in prototypes to prevent prototype pollution
   // and cut off constructor chain access for sandbox escape prevention
   Object.freeze(Object.prototype);

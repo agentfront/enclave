@@ -233,12 +233,13 @@ export class DoubleVmWrapper implements SandboxAdapter {
       configurable: false,
     });
 
-    // Inject config (for globals and console limits)
+    // Inject config (for globals, console limits, and memory limit)
     Object.defineProperty(parentContext, '__host_config__', {
       value: {
         globals: config.globals,
         maxConsoleOutputBytes: config.maxConsoleOutputBytes,
         maxConsoleCalls: config.maxConsoleCalls,
+        memoryLimit: config.memoryLimit, // Required for pre-allocation checks in inner VM
       },
       writable: false,
       configurable: false,

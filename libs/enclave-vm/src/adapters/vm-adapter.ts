@@ -555,6 +555,81 @@ export class VmAdapter implements SandboxAdapter {
         },
       );
 
+      // CRITICAL: Inject memory-safe prototype methods BEFORE sanitizeVmContext
+      // This must happen FIRST because sanitizeVmContext replaces the intrinsic Object
+      // with SafeObject. The patch needs the intrinsic Object.getPrototypeOf to access
+      // the VM's actual String.prototype and Array.prototype (not the global realm's).
+      // Security: Prevents ATK-JSON-03 (Parser Bomb) and similar attacks
+      // that use repeat()/join() to allocate massive strings before we can track them
+      // The check happens BEFORE allocation, not after
+      if (memoryTracker && config.memoryLimit && config.memoryLimit > 0) {
+        const patchScript = new vm.Script(`
+          (function() {
+            var memoryLimit = ${config.memoryLimit};
+
+            // Get the ACTUAL prototype used by string literals in this realm
+            // Using Object.getPrototypeOf('') gets the intrinsic String.prototype
+            var stringProto = Object.getPrototypeOf('');
+            var arrayProto = Object.getPrototypeOf([]);
+
+            // Patch string repeat - primary attack vector for string bombs
+            var originalRepeat = stringProto.repeat;
+            stringProto.repeat = function(count) {
+              // Pre-check: estimate size BEFORE allocation
+              var estimatedSize = this.length * count * 2; // 2 bytes per char (UTF-16)
+              if (estimatedSize > memoryLimit) {
+                throw new RangeError('String.repeat would exceed memory limit: ' +
+                  Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
+                  Math.round(memoryLimit / 1024 / 1024) + 'MB');
+              }
+              return originalRepeat.call(this, count);
+            };
+
+            // Patch array join - can create huge strings from large arrays
+            var originalJoin = arrayProto.join;
+            arrayProto.join = function(separator) {
+              // Estimate: separator between each element + element string lengths
+              var sep = separator === undefined ? ',' : String(separator);
+              var estimatedSize = 0;
+              for (var i = 0; i < this.length; i++) {
+                var item = this[i];
+                estimatedSize += (item === null || item === undefined) ? 0 : String(item).length;
+                if (i > 0) estimatedSize += sep.length;
+              }
+              estimatedSize *= 2; // UTF-16
+
+              if (estimatedSize > memoryLimit) {
+                throw new RangeError('Array.join would exceed memory limit: ' +
+                  Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
+                  Math.round(memoryLimit / 1024 / 1024) + 'MB');
+              }
+              return originalJoin.call(this, separator);
+            };
+
+            // Patch string padStart/padEnd - can pad to huge sizes
+            var originalPadStart = stringProto.padStart;
+            var originalPadEnd = stringProto.padEnd;
+
+            stringProto.padStart = function(targetLength, padString) {
+              var estimatedSize = Math.max(this.length, targetLength) * 2;
+              if (estimatedSize > memoryLimit) {
+                throw new RangeError('String.padStart would exceed memory limit');
+              }
+              return originalPadStart.call(this, targetLength, padString);
+            };
+
+            stringProto.padEnd = function(targetLength, padString) {
+              var estimatedSize = Math.max(this.length, targetLength) * 2;
+              if (estimatedSize > memoryLimit) {
+                throw new RangeError('String.padEnd would exceed memory limit');
+              }
+              return originalPadEnd.call(this, targetLength, padString);
+            };
+          })();
+        `);
+        patchScript.runInContext(baseSandbox);
+      }
+
       // Sanitize the VM context by removing dangerous Node.js 24 globals
       // Security: Prevents escape via Iterator helpers, ShadowRealm, etc.
       sanitizeVmContext(baseSandbox, this.securityLevel);

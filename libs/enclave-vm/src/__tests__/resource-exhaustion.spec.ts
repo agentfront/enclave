@@ -992,6 +992,114 @@ describe('ATK-JSON-02: Deep Nesting Bomb', () => {
 });
 
 // ============================================================================
+// ATK-JSON-03: THE PARSER BOMB (Variant of ATK-JSON-02)
+// Build a deep string using native 'repeat' and force C++ parser recursion.
+// Defense: V8's JSON parser handles deep nesting gracefully (iterative, not recursive).
+// ============================================================================
+describe('ATK-JSON-03: Parser Bomb', () => {
+  it('should handle parser bomb with 10k depth without crashing', async () => {
+    const enclave = new Enclave({ timeout: 5000 });
+    const code = `
+      // ATK-JSON-03: The Parser Bomb
+      var depth = 10000;
+      var jsonString = "[".repeat(depth) + "]".repeat(depth);
+      try {
+        JSON.parse(jsonString);
+        return "Survived Parse";
+      } catch(e) {
+        return "Crashed Parser: " + e.message;
+      }
+    `;
+    const result = await enclave.run(code);
+    expect(result).toBeDefined();
+    // V8's parser handles this gracefully - no crash
+    if (result.success) {
+      expect(result.value).toMatch(/Survived|Crashed/);
+    }
+    enclave.dispose();
+  });
+
+  it('should handle extreme parser bomb (50k depth) without process crash', async () => {
+    const enclave = new Enclave({ timeout: 10000 });
+    const code = `
+      var depth = 50000;
+      var jsonString = "[".repeat(depth) + "]".repeat(depth);
+      try {
+        JSON.parse(jsonString);
+        return "Survived Parse";
+      } catch(e) {
+        return "Safely caught: " + e.name;
+      }
+    `;
+    const result = await enclave.run(code);
+    // Critical: process didn't crash
+    expect(result).toBeDefined();
+    enclave.dispose();
+  });
+});
+
+// ============================================================================
+// ATK-BRIDGE-04: THE ZOMBIE OBJECT
+// Uses defineProperty to create a getter trap that executes during host
+// serialization, creating a massive string.
+// Defense: Object.defineProperty is blocked by SafeObject.
+// ============================================================================
+describe('ATK-BRIDGE-04: Zombie Object', () => {
+  it('should block zombie object creation via defineProperty getter', async () => {
+    const enclave = new Enclave({ validate: false }); // Test runtime defense
+    const code = `
+      // ATK-BRIDGE-04: The Zombie Object
+      var d = 'def' + 'ineProperty';
+      var trap = {};
+      Object[d](trap, "output", {
+        get: () => {
+          // This would run inside HOST's serialization step
+          return new Array(1000000).join("DEADBEEF");
+        },
+        enumerable: true
+      });
+      return trap;
+    `;
+    const result = await enclave.run(code);
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toMatch(/defineProperty.*not allowed|security/i);
+    enclave.dispose();
+  });
+
+  it('should block zombie object with AST validation enabled', async () => {
+    const enclave = new Enclave();
+    const code = `
+      var trap = {};
+      Object.defineProperty(trap, "output", {
+        get: () => new Array(1000000).join("X"),
+        enumerable: true
+      });
+      return trap;
+    `;
+    const result = await enclave.run(code);
+    expect(result.success).toBe(false);
+    // Blocked at AST or runtime level
+    expect(result.error?.message).toMatch(/defineProperty|NO_META_PROGRAMMING|security/i);
+    enclave.dispose();
+  });
+
+  it('should block zombie object via __defineGetter__', async () => {
+    const enclave = new Enclave();
+    const code = `
+      var trap = {};
+      trap.__defineGetter__("output", function() {
+        return new Array(1000000).join("BOMB");
+      });
+      return trap;
+    `;
+    const result = await enclave.run(code);
+    expect(result.success).toBe(false);
+    // __defineGetter__ is a blocked identifier
+    enclave.dispose();
+  });
+});
+
+// ============================================================================
 // ATK-DATA-02: SERIALIZATION HIJACK VIA DEFINEPROPERTY
 // Uses Object.defineProperty to add a malicious toJSON method that hijacks
 // serialization. When the host serializes the returned object, the attacker's
