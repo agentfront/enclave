@@ -849,8 +849,17 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     }
   })();
 
-  // Freeze all built-in prototypes to prevent prototype pollution
+  // Freeze built-in prototypes to prevent prototype pollution
   // and cut off constructor chain access for sandbox escape prevention
+  //
+  // We freeze prototypes in TWO places:
+  // 1. PARENT VM prototypes - because SafeObject.prototype = Object.prototype uses parent's prototype
+  //    and user code accessing Object.prototype gets SafeObject.prototype
+  // 2. INNER VM prototypes - for string/array literals which use intrinsic prototypes
+  //
+  // This provides defense-in-depth against prototype pollution attacks.
+
+  // Freeze PARENT VM prototypes (used by SafeObject and other safe globals)
   Object.freeze(Object.prototype);
   Object.freeze(Array.prototype);
   Object.freeze(Function.prototype);
@@ -864,6 +873,26 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   Object.freeze(SyntaxError.prototype);
   Object.freeze(ReferenceError.prototype);
   Object.freeze(Promise.prototype);
+
+  // Freeze INNER VM prototypes (used by literals like '', [], etc.)
+  (function() {
+    var freezeCode =
+      'Object.freeze(Object.prototype);' +
+      'Object.freeze(Array.prototype);' +
+      'Object.freeze(Function.prototype);' +
+      'Object.freeze(String.prototype);' +
+      'Object.freeze(Number.prototype);' +
+      'Object.freeze(Boolean.prototype);' +
+      'Object.freeze(Date.prototype);' +
+      'Object.freeze(Error.prototype);' +
+      'Object.freeze(TypeError.prototype);' +
+      'Object.freeze(RangeError.prototype);' +
+      'Object.freeze(SyntaxError.prototype);' +
+      'Object.freeze(ReferenceError.prototype);' +
+      'Object.freeze(Promise.prototype);';
+    var freezeScript = new vm.Script(freezeCode);
+    freezeScript.runInContext(innerContext);
+  })();
 
   // Inject safe runtime functions (non-writable, non-configurable)
   // Wrap with secure proxy to block dangerous property access
