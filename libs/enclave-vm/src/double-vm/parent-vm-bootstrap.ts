@@ -55,22 +55,83 @@ export interface ParentVmBootstrapOptions {
 /**
  * Node.js 24 dangerous globals that should be removed per security level
  * (Same as in vm-adapter.ts)
+ *
+ * Defense-in-depth: Even though codeGeneration.strings=false blocks
+ * new Function() from strings, removing Function entirely eliminates
+ * any potential bypass vectors discovered in the future.
+ *
+ * ATK-RECON-01 identified these accessible globals as attack surface:
+ * Function, eval, Proxy, Reflect, WeakRef, FinalizationRegistry,
+ * SharedArrayBuffer, Atomics, gc, WebAssembly, globalThis
  */
 const NODEJS_24_DANGEROUS_GLOBALS: Record<SecurityLevel, string[]> = {
   STRICT: [
+    // Code execution - CRITICAL
+    'Function', // Constructor for functions - primary escape vector
+    'eval', // Direct code execution
+    'globalThis', // Indirect access to all globals
+
+    // Metaprogramming - sandbox escape vectors
+    'Proxy', // Can intercept all operations
+    'Reflect', // Metaprogramming primitive
+
+    // Memory/timing attacks
+    'SharedArrayBuffer', // Spectre/timing attacks
+    'Atomics', // Shared memory operations
+    'gc', // Force garbage collection (shouldn't be exposed)
+
+    // Future/experimental APIs
+    'Iterator', // Iterator helpers
+    'AsyncIterator', // Async iterator helpers
+    'ShadowRealm', // New realm creation (major escape risk)
+    'WeakRef', // Can observe GC behavior
+    'FinalizationRegistry', // Can observe GC behavior
+    'performance', // Timing information
+    'Temporal', // New date/time API
+  ],
+  SECURE: [
+    // Code execution - CRITICAL
+    'Function',
+    'eval',
+    'globalThis',
+
+    // Most dangerous metaprogramming
+    'Proxy',
+
+    // Memory/timing attacks
+    'SharedArrayBuffer',
+    'Atomics',
+    'gc',
+
+    // Future APIs
     'Iterator',
     'AsyncIterator',
     'ShadowRealm',
     'WeakRef',
     'FinalizationRegistry',
-    'Reflect',
-    'Proxy',
-    'performance',
-    'Temporal',
   ],
-  SECURE: ['Iterator', 'AsyncIterator', 'ShadowRealm', 'WeakRef', 'FinalizationRegistry', 'Proxy'],
-  STANDARD: ['ShadowRealm', 'WeakRef', 'FinalizationRegistry'],
-  PERMISSIVE: ['ShadowRealm'],
+  STANDARD: [
+    // Code execution - always block these
+    'Function',
+    'eval',
+
+    // Memory/timing attacks
+    'SharedArrayBuffer',
+    'Atomics',
+    'gc',
+
+    // Definitely dangerous
+    'ShadowRealm',
+    'WeakRef',
+    'FinalizationRegistry',
+  ],
+  PERMISSIVE: [
+    // Even PERMISSIVE should block the most dangerous
+    'ShadowRealm', // Too dangerous to allow
+    'gc', // Shouldn't be exposed at all
+    'SharedArrayBuffer', // Spectre risk
+    'Atomics', // Goes with SharedArrayBuffer
+  ],
 };
 
 /**
@@ -712,10 +773,126 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   // ============================================================
 
   // Create completely isolated context
-  var innerContext = vm.createContext({});
+  // codeGeneration.strings=false disables new Function() and eval() from strings
+  // This prevents sandbox escape via constructor chain: [][c][c]('malicious code')
+  var innerContext = vm.createContext({}, {
+    codeGeneration: { strings: false, wasm: false }
+  });
 
-  // Remove dangerous globals from inner VM
+  // CRITICAL: Inject memory-safe prototype methods BEFORE sanitization
+  // This must happen FIRST because sanitization may remove globals needed for patching.
+  // The patch needs the intrinsic Object.getPrototypeOf to access the VM's actual
+  // String.prototype and Array.prototype (not the global realm's).
+  // Security: Prevents ATK-JSON-03 (Parser Bomb) and similar attacks
+  // These checks happen BEFORE allocation, not after
+  (function() {
+    var memoryLimit = hostConfig.memoryLimit || 0;
+    if (memoryLimit > 0) {
+      // Run the patching code in innerContext
+      var patchCode = '(function() {' +
+        'var memoryLimit = ' + memoryLimit + ';' +
+        // Get the ACTUAL prototype used by literals in this realm
+        'var stringProto = Object.getPrototypeOf("");' +
+        'var arrayProto = Object.getPrototypeOf([]);' +
+        // Patch string repeat
+        'var originalRepeat = stringProto.repeat;' +
+        'stringProto.repeat = function(count) {' +
+        '  var estimatedSize = this.length * count * 2;' +
+        '  if (estimatedSize > memoryLimit) {' +
+        '    throw new RangeError("String.repeat would exceed memory limit: " +' +
+        '      Math.round(estimatedSize / 1024 / 1024) + "MB > " +' +
+        '      Math.round(memoryLimit / 1024 / 1024) + "MB");' +
+        '  }' +
+        '  return originalRepeat.call(this, count);' +
+        '};' +
+        // Patch array join
+        'var originalJoin = arrayProto.join;' +
+        'arrayProto.join = function(separator) {' +
+        '  var sep = separator === undefined ? "," : String(separator);' +
+        '  var estimatedSize = 0;' +
+        '  for (var i = 0; i < this.length; i++) {' +
+        '    var item = this[i];' +
+        '    estimatedSize += (item === null || item === undefined) ? 0 : String(item).length;' +
+        '    if (i > 0) estimatedSize += sep.length;' +
+        '  }' +
+        '  estimatedSize *= 2;' +
+        '  if (estimatedSize > memoryLimit) {' +
+        '    throw new RangeError("Array.join would exceed memory limit: " +' +
+        '      Math.round(estimatedSize / 1024 / 1024) + "MB > " +' +
+        '      Math.round(memoryLimit / 1024 / 1024) + "MB");' +
+        '  }' +
+        '  return originalJoin.call(this, separator);' +
+        '};' +
+        // Patch string padStart/padEnd
+        'var originalPadStart = stringProto.padStart;' +
+        'var originalPadEnd = stringProto.padEnd;' +
+        'stringProto.padStart = function(targetLength, padString) {' +
+        '  var estimatedSize = Math.max(this.length, targetLength) * 2;' +
+        '  if (estimatedSize > memoryLimit) {' +
+        '    throw new RangeError("String.padStart would exceed memory limit");' +
+        '  }' +
+        '  return originalPadStart.call(this, targetLength, padString);' +
+        '};' +
+        'stringProto.padEnd = function(targetLength, padString) {' +
+        '  var estimatedSize = Math.max(this.length, targetLength) * 2;' +
+        '  if (estimatedSize > memoryLimit) {' +
+        '    throw new RangeError("String.padEnd would exceed memory limit");' +
+        '  }' +
+        '  return originalPadEnd.call(this, targetLength, padString);' +
+        '};' +
+        '})();';
+      var patchScript = new vm.Script(patchCode);
+      patchScript.runInContext(innerContext);
+    }
+  })();
+
+  // Remove dangerous globals from inner VM (AFTER memory patching)
   ${sanitizeContextCode}
+
+  // Freeze built-in prototypes to prevent prototype pollution
+  // and cut off constructor chain access for sandbox escape prevention
+  //
+  // We freeze prototypes in TWO places:
+  // 1. PARENT VM prototypes - because SafeObject.prototype = Object.prototype uses parent's prototype
+  //    and user code accessing Object.prototype gets SafeObject.prototype
+  // 2. INNER VM prototypes - for string/array literals which use intrinsic prototypes
+  //
+  // This provides defense-in-depth against prototype pollution attacks.
+
+  // Freeze PARENT VM prototypes (used by SafeObject and other safe globals)
+  Object.freeze(Object.prototype);
+  Object.freeze(Array.prototype);
+  Object.freeze(Function.prototype);
+  Object.freeze(String.prototype);
+  Object.freeze(Number.prototype);
+  Object.freeze(Boolean.prototype);
+  Object.freeze(Date.prototype);
+  Object.freeze(Error.prototype);
+  Object.freeze(TypeError.prototype);
+  Object.freeze(RangeError.prototype);
+  Object.freeze(SyntaxError.prototype);
+  Object.freeze(ReferenceError.prototype);
+  Object.freeze(Promise.prototype);
+
+  // Freeze INNER VM prototypes (used by literals like '', [], etc.)
+  (function() {
+    var freezeCode =
+      'Object.freeze(Object.prototype);' +
+      'Object.freeze(Array.prototype);' +
+      'Object.freeze(Function.prototype);' +
+      'Object.freeze(String.prototype);' +
+      'Object.freeze(Number.prototype);' +
+      'Object.freeze(Boolean.prototype);' +
+      'Object.freeze(Date.prototype);' +
+      'Object.freeze(Error.prototype);' +
+      'Object.freeze(TypeError.prototype);' +
+      'Object.freeze(RangeError.prototype);' +
+      'Object.freeze(SyntaxError.prototype);' +
+      'Object.freeze(ReferenceError.prototype);' +
+      'Object.freeze(Promise.prototype);';
+    var freezeScript = new vm.Script(freezeCode);
+    freezeScript.runInContext(innerContext);
+  })();
 
   // Inject safe runtime functions (non-writable, non-configurable)
   // Wrap with secure proxy to block dangerous property access
@@ -746,12 +923,58 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     }
   }
 
+  // Create a safe Object that blocks dangerous STATIC methods
+  // Prevents ATK-DATA-02 (Serialization Hijack via defineProperty)
+  // Note: __defineGetter__ etc. are on Object.prototype (instance methods), not static
+  var DANGEROUS_OBJECT_STATIC_METHODS = [
+    'defineProperty',
+    'defineProperties',
+    'setPrototypeOf',
+    'getOwnPropertyDescriptor',
+    'getOwnPropertyDescriptors'
+  ];
+
+  var SafeObject = function(value) {
+    if (value === null || value === undefined) return {};
+    return Object(value);
+  };
+
+  // Copy safe static methods
+  var safeObjectMethods = [
+    'keys', 'values', 'entries', 'fromEntries', 'assign', 'is', 'hasOwn',
+    'freeze', 'isFrozen', 'seal', 'isSealed', 'preventExtensions', 'isExtensible',
+    'getOwnPropertyNames', 'getOwnPropertySymbols', 'getPrototypeOf'
+  ];
+  for (var i = 0; i < safeObjectMethods.length; i++) {
+    var m = safeObjectMethods[i];
+    if (m in Object) SafeObject[m] = Object[m];
+  }
+
+  // Safe Object.create without property descriptors
+  SafeObject.create = function(proto, props) {
+    if (props !== undefined) {
+      throw new Error('Object.create with property descriptors is not allowed (security restriction)');
+    }
+    return Object.create(proto);
+  };
+
+  SafeObject.prototype = Object.prototype;
+
+  // Block dangerous methods with helpful errors
+  for (var i = 0; i < DANGEROUS_OBJECT_STATIC_METHODS.length; i++) {
+    (function(method) {
+      SafeObject[method] = function() {
+        throw new Error('Object.' + method + ' is not allowed (security restriction: prevents property manipulation attacks)');
+      };
+    })(DANGEROUS_OBJECT_STATIC_METHODS[i]);
+  }
+
   // Add safe standard globals wrapped with secure proxy
   var safeGlobals = {
     Math: createSecureProxy(Math),
     JSON: createSecureProxy(JSON),
     Array: createSecureProxy(Array),
-    Object: createSecureProxy(Object),
+    Object: createSecureProxy(SafeObject),
     String: createSecureProxy(String),
     Number: createSecureProxy(Number),
     Date: createSecureProxy(Date),
@@ -821,6 +1044,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   var wrappedCode = '(async function() { ' + userCode + ' return typeof __ag_main === "function" ? await __ag_main() : undefined; })()';
 
   var script = new vm.Script(wrappedCode, { filename: 'inner-agentscript.js' });
+  // Note: codeGeneration is set in createContext(), not runInContext()
   var result = await script.runInContext(innerContext, {
     timeout: ${innerTimeout},
     breakOnSigint: true

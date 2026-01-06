@@ -126,7 +126,7 @@ describe('Enclave Node.js 24 Security', () => {
 
       const result = await enclave.run(code);
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       enclave.dispose();
     });
 
@@ -139,7 +139,7 @@ describe('Enclave Node.js 24 Security', () => {
 
       const result = await enclave.run(code);
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       enclave.dispose();
     });
 
@@ -148,6 +148,7 @@ describe('Enclave Node.js 24 Security', () => {
       // non-configurable, non-writable properties (like Array.prototype).
       // This test verifies we can access Array.prototype via computed property
       // without breaking the proxy invariant contract.
+      // NOTE: 'proto' + 'type' string concatenation may now be caught by AST validation
       const enclave = new Enclave({ securityLevel: 'STANDARD' });
       const code = `
         const key = 'proto' + 'type';
@@ -158,16 +159,25 @@ describe('Enclave Node.js 24 Security', () => {
       `;
 
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('invariant-respected');
+      // May be blocked by AST validation (prototype string building) or succeed with proxy invariant respected
+      if (result.success) {
+        expect(result.value).toBe('invariant-respected');
+      } else {
+        // AST validation caught the 'proto' + 'type' pattern - also valid
+        expect(result.error?.message).toMatch(/AgentScript validation failed/);
+      }
       enclave.dispose();
     });
   });
 
   describe('Security Level Configuration', () => {
-    it('PERMISSIVE allows constructor via computed property when configured', async () => {
+    it('PERMISSIVE allows constructor with validation disabled', async () => {
+      // NOTE: With AST validation enabled, string concatenation attacks like 'const' + 'ructor'
+      // are blocked at parse time, regardless of security level. This is correct behavior.
+      // To test PERMISSIVE proxy behavior specifically, disable AST validation.
       const enclave = new Enclave({
         securityLevel: 'PERMISSIVE',
+        validate: false, // Disable AST validation to test proxy config directly
         secureProxyConfig: {
           blockConstructor: false,
           blockPrototype: true,
@@ -176,7 +186,7 @@ describe('Enclave Node.js 24 Security', () => {
         },
       });
 
-      // Use dynamic string building to bypass AST validation
+      // With validation disabled, string building works
       const code = `
         const key = 'const' + 'ructor';
         return Array[key] ? 'accessible' : 'blocked';
@@ -201,10 +211,12 @@ describe('Enclave Node.js 24 Security', () => {
       enclave.dispose();
     });
 
-    it('explicit secureProxyConfig overrides security level defaults', async () => {
-      // Even in STRICT mode, explicit config should override
+    it('explicit secureProxyConfig with validation disabled overrides security level defaults', async () => {
+      // NOTE: With AST validation enabled, string concatenation attacks are blocked at parse time.
+      // To test explicit secureProxyConfig, disable AST validation.
       const enclave = new Enclave({
         securityLevel: 'STRICT',
+        validate: false, // Disable AST validation to test proxy config directly
         secureProxyConfig: {
           blockConstructor: false,
           blockPrototype: true,
@@ -299,7 +311,7 @@ describe('Enclave Node.js 24 Security', () => {
 
       const result = await enclave.run(code);
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       enclave.dispose();
     });
 
@@ -313,7 +325,7 @@ describe('Enclave Node.js 24 Security', () => {
       `;
       const result = await enclave.run(code);
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       enclave.dispose();
     });
   });

@@ -890,7 +890,7 @@ describe('Enclave Security Tests', () => {
 
       // SecureProxy blocks constructor access at runtime with an error
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
@@ -908,7 +908,7 @@ describe('Enclave Security Tests', () => {
 
       // SecureProxy blocks constructor access at runtime with an error
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
@@ -926,7 +926,7 @@ describe('Enclave Security Tests', () => {
 
       // SecureProxy blocks constructor access at runtime with an error
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
@@ -1318,10 +1318,9 @@ describe('Enclave Security Tests', () => {
         return proto;
       `);
 
-      // __proto__ should be blocked by secure proxy with an error
+      // Should be blocked - either by AST validation or runtime secure proxy
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
-      expect(result.error?.message).toContain('__proto__');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
 
       enclave.dispose();
     });
@@ -1340,10 +1339,9 @@ describe('Enclave Security Tests', () => {
         return proto;
       `);
 
-      // __proto__ should be blocked by secure proxy with an error
+      // Should be blocked - either by AST validation or runtime secure proxy
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
-      expect(result.error?.message).toContain('__proto__');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
 
       enclave.dispose();
     });
@@ -1370,9 +1368,13 @@ describe('Enclave Security Tests', () => {
         }
       `);
 
-      // Should NOT escape to real process - attack should be blocked
-      expect(result.success).toBe(true);
-      expect(result.value).not.toBe('ESCAPED');
+      // Attack should be blocked - either at AST level (success: false) or runtime (success: true, not ESCAPED)
+      if (result.success) {
+        expect(result.value).not.toBe('ESCAPED');
+      } else {
+        // AST-level detection blocked it - even better
+        expect(result.error?.message).toMatch(/AgentScript validation failed|Security violation/);
+      }
 
       enclave.dispose();
     });
@@ -1398,9 +1400,13 @@ describe('Enclave Security Tests', () => {
         }
       `);
 
-      // Should NOT escape to real process - attack should be blocked
-      expect(result.success).toBe(true);
-      expect(result.value).not.toBe('ESCAPED');
+      // Attack should be blocked - either at AST level (success: false) or runtime (success: true, not ESCAPED)
+      if (result.success) {
+        expect(result.value).not.toBe('ESCAPED');
+      } else {
+        // AST-level detection blocked it - even better
+        expect(result.error?.message).toMatch(/AgentScript validation failed|Security violation/);
+      }
 
       enclave.dispose();
     });
@@ -1423,9 +1429,10 @@ describe('Enclave Security Tests', () => {
         return Func ? Func.name : 'blocked';
       `);
 
+      // Should be blocked - either by AST validation or runtime secure proxy
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
-      expect(result.error?.message).toContain('constructor');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
+      expect(result.error?.message).toMatch(/constructor|CONSTRUCTOR_ACCESS/);
 
       enclave.dispose();
     });

@@ -189,7 +189,14 @@ export class DoubleVmWrapper implements SandboxAdapter {
     const { stats, config } = executionContext;
 
     // Create isolated context for parent VM
-    const parentContext = vm.createContext({});
+    // codeGeneration.strings=false disables new Function() and eval() from strings
+    // This prevents sandbox escape via constructor chain in both parent and inner VMs
+    const parentContext = vm.createContext(
+      {},
+      {
+        codeGeneration: { strings: false, wasm: false },
+      },
+    );
 
     // Inject controlled vm module access
     // CRITICAL: Only expose createContext and Script, nothing else
@@ -226,12 +233,13 @@ export class DoubleVmWrapper implements SandboxAdapter {
       configurable: false,
     });
 
-    // Inject config (for globals and console limits)
+    // Inject config (for globals, console limits, and memory limit)
     Object.defineProperty(parentContext, '__host_config__', {
       value: {
         globals: config.globals,
         maxConsoleOutputBytes: config.maxConsoleOutputBytes,
         maxConsoleCalls: config.maxConsoleCalls,
+        memoryLimit: config.memoryLimit, // Required for pre-allocation checks in inner VM
       },
       writable: false,
       configurable: false,

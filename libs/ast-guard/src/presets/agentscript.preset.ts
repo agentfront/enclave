@@ -15,6 +15,7 @@ import {
   NoRegexMethodsRule,
   NoComputedDestructuringRule,
   InfiniteLoopRule,
+  ResourceExhaustionRule,
 } from '../rules';
 
 /**
@@ -429,6 +430,20 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   // This prevents runtime property name construction attacks like:
   //   const {['const'+'ructor']:Func} = callTool;  // Bypasses static analysis!
   rules.push(new NoComputedDestructuringRule());
+
+  // 15. Detect resource exhaustion patterns (CPU/memory DoS)
+  // - Large BigInt exponentiation (bypasses VM timeout)
+  // - Large array allocations
+  // - Constructor obfuscation via string concatenation
+  rules.push(
+    new ResourceExhaustionRule({
+      maxBigIntExponent: 10000, // Block 2n ** 10001n and larger
+      maxArraySize: 1000000, // Block new Array(1000001) and larger
+      maxStringRepeat: 100000, // Block 'x'.repeat(100001) and larger
+      blockConstructorAccess: true, // Block obj.constructor and obj['constructor']
+      blockBigIntExponentiation: false, // Only block large exponents, not all
+    }),
+  );
 
   return rules;
 }

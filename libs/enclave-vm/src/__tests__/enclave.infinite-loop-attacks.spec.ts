@@ -496,8 +496,11 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
 
       const result = await enclave.run(code);
 
-      // Should fail with stack overflow
-      expect(result.success).toBe(false);
+      // With frozen prototypes, V8 uses the default Object.prototype.toString
+      // instead of the custom method, preventing the infinite recursion attack.
+      // This is a security benefit - the attack vector is neutralized.
+      expect(result.success).toBe(true);
+      expect(result.value).toBe('[object Object]');
 
       enclave.dispose();
     });
@@ -516,7 +519,12 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
 
       const result = await enclave.run(code);
 
-      expect(result.success).toBe(false);
+      // With frozen prototypes, V8 uses the default Object.prototype.valueOf
+      // instead of the custom method, preventing the infinite recursion attack.
+      // This is a security benefit - the attack vector is neutralized.
+      expect(result.success).toBe(true);
+      // Default valueOf returns NaN when coerced to number
+      expect(result.value).toBeNaN();
 
       enclave.dispose();
     });

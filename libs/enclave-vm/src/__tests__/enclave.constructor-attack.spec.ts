@@ -26,7 +26,7 @@ describe('Enclave Constructor Attack Prevention', () => {
 
       // The attack should fail - constructor access should throw an error
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
@@ -44,7 +44,7 @@ describe('Enclave Constructor Attack Prevention', () => {
       const result = await enclave.run(code);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
@@ -61,7 +61,7 @@ describe('Enclave Constructor Attack Prevention', () => {
       const result = await enclave.run(code);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
@@ -78,7 +78,7 @@ describe('Enclave Constructor Attack Prevention', () => {
       const result = await enclave.run(code);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
@@ -95,7 +95,7 @@ describe('Enclave Constructor Attack Prevention', () => {
       const result = await enclave.run(code);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
@@ -112,7 +112,7 @@ describe('Enclave Constructor Attack Prevention', () => {
       const result = await enclave.run(code);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
@@ -132,7 +132,7 @@ describe('Enclave Constructor Attack Prevention', () => {
       const result = await enclave.run(code);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('__proto__');
 
       enclave.dispose();
@@ -155,9 +155,15 @@ describe('Enclave Constructor Attack Prevention', () => {
 
       const result = await enclave.run(code);
 
-      expect(result.success).toBe(true);
-      // This is expected due to JS proxy invariants - documented limitation
-      expect(result.value).toBe('js-invariant-allows-this');
+      // NOTE: The 'proto' + 'type' pattern may now be caught by AST validation
+      // This is correct behavior - the AST catches suspicious string building patterns
+      if (result.success) {
+        // This is expected due to JS proxy invariants - documented limitation
+        expect(result.value).toBe('js-invariant-allows-this');
+      } else {
+        // AST validation caught the string concatenation - also valid
+        expect(result.error?.message).toMatch(/AgentScript validation failed/);
+      }
 
       enclave.dispose();
     });
@@ -180,7 +186,7 @@ describe('Enclave Constructor Attack Prevention', () => {
       const result = await enclave.run(code);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
@@ -202,7 +208,7 @@ describe('Enclave Constructor Attack Prevention', () => {
       const result = await enclave.run(code);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();
@@ -228,7 +234,7 @@ describe('Enclave Constructor Attack Prevention', () => {
       const result = await enclave.run(code);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
       expect(result.error?.message).toContain('constructor');
 
       enclave.dispose();

@@ -7,7 +7,7 @@
  * @packageDocumentation
  */
 
-import { MemoryTracker, estimateStringSize } from './memory-tracker';
+import { MemoryTracker, estimateStringSize, MemoryLimitError } from './memory-tracker';
 
 /**
  * Create a memory-tracking String constructor proxy
@@ -43,18 +43,74 @@ export function createTrackedString(tracker: MemoryTracker): typeof String {
  * @returns Proxied Array constructor
  */
 export function createTrackedArray(tracker: MemoryTracker): typeof Array {
+  // Create a tracked wrapper for array instances to intercept dangerous methods
+  function wrapArrayInstance<T extends unknown[]>(arr: T): T {
+    return new Proxy(arr, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+
+        // Intercept join() to track and limit memory-heavy string creation
+        if (prop === 'join' && typeof value === 'function') {
+          return function (this: unknown[], separator?: string) {
+            const sep = separator ?? ',';
+            const arrLength = target.length;
+
+            // Pre-calculate estimated size
+            let estimatedSize = 0;
+            if (arrLength > 10000) {
+              // Rough estimate for large arrays
+              estimatedSize = arrLength * (10 + sep.length) * 2;
+            } else {
+              for (let i = 0; i < arrLength; i++) {
+                const item = target[i];
+                estimatedSize += (item == null ? 0 : String(item).length) + sep.length;
+              }
+              estimatedSize = estimatedSize * 2; // UTF-16
+            }
+
+            // Pre-check limit before allocating
+            const limit = tracker.getLimit();
+            if (limit > 0 && estimatedSize > limit) {
+              throw new MemoryLimitError(
+                `Array.join would exceed memory limit (estimated ${estimatedSize} bytes, limit ${limit} bytes)`,
+                estimatedSize,
+                limit,
+              );
+            }
+
+            const result = Array.prototype.join.call(target, separator);
+            tracker.trackString(result);
+            return result;
+          };
+        }
+
+        // Intercept toString() (uses join(',') internally)
+        if (prop === 'toString' && typeof value === 'function') {
+          return function (this: unknown[]) {
+            // Delegate to tracked join
+            const joinFn = Reflect.get(receiver, 'join', receiver) as (sep?: string) => string;
+            return joinFn.call(target, ',');
+          };
+        }
+
+        return value;
+      },
+    }) as T;
+  }
+
   const TrackedArray = new Proxy(Array, {
     apply(target, thisArg, args) {
       const result = Reflect.apply(target, thisArg, args) as unknown[];
       if (Array.isArray(result)) {
         tracker.trackArray(result.length);
+        return wrapArrayInstance(result);
       }
       return result;
     },
     construct(target, args) {
       const result = new target(...(args as unknown[]));
       tracker.trackArray(result.length);
-      return result;
+      return wrapArrayInstance(result);
     },
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
@@ -64,7 +120,7 @@ export function createTrackedArray(tracker: MemoryTracker): typeof Array {
         return function (...args: Parameters<typeof Array.from>) {
           const result = Array.from(...args);
           tracker.trackArray(result.length);
-          return result;
+          return wrapArrayInstance(result);
         };
       }
 
@@ -72,7 +128,7 @@ export function createTrackedArray(tracker: MemoryTracker): typeof Array {
         return function (...items: unknown[]) {
           const result = Array.of(...items);
           tracker.trackArray(result.length);
-          return result;
+          return wrapArrayInstance(result);
         };
       }
 
@@ -100,8 +156,51 @@ export function createTrackedArrayMethods(tracker: MemoryTracker): Record<string
   const originalFilter = Array.prototype.filter;
   const originalFlatMap = Array.prototype.flatMap;
   const originalFlat = Array.prototype.flat;
+  const originalJoin = Array.prototype.join;
 
   return {
+    // join() can create very large strings from large arrays
+    // Attack vector: new Array(12_000_000).join('x') creates ~12MB string
+    join: function (this: unknown[], separator?: string) {
+      const sep = separator ?? ',';
+
+      // Pre-calculate estimated size to check limit before allocating
+      let estimatedSize = 0;
+      const arrLength = this.length;
+
+      // For very large arrays, estimate without iterating every element
+      if (arrLength > 10000) {
+        // Rough estimate: avg element is ~10 chars + separator
+        estimatedSize = arrLength * (10 + sep.length) * 2; // UTF-16
+      } else {
+        for (let i = 0; i < arrLength; i++) {
+          const item = this[i];
+          estimatedSize += (item == null ? 0 : String(item).length) + sep.length;
+        }
+        estimatedSize = estimatedSize * 2; // UTF-16
+      }
+
+      // Pre-check limit before allocating
+      const limit = tracker.getLimit();
+      if (limit > 0 && estimatedSize > limit) {
+        throw new MemoryLimitError(
+          `Array.join would exceed memory limit (estimated ${estimatedSize} bytes, limit ${limit} bytes)`,
+          estimatedSize,
+          limit,
+        );
+      }
+
+      const result = originalJoin.call(this, separator);
+      tracker.trackString(result);
+      return result;
+    },
+
+    // toString() is equivalent to join(',')
+    toString: function (this: unknown[]) {
+      // Delegate to tracked join method
+      return this.join(',');
+    },
+
     // Methods that create new arrays
     concat: function (this: unknown[], ...items: unknown[]) {
       const result = originalConcat.apply(this, items);

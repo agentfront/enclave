@@ -134,8 +134,12 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
 
   try {
     // Create VM context with safe runtime
+    // codeGeneration.strings=false disables new Function() and eval() from strings
+    // This prevents sandbox escape via constructor chain: [][c][c]('malicious code')
     const sandbox = createSandbox(msg.requestId, msg.config);
-    const context = vm.createContext(sandbox);
+    const context = vm.createContext(sandbox, {
+      codeGeneration: { strings: false, wasm: false },
+    });
 
     // Wrap code in async IIFE to support top-level await
     // Must call __ag_main() if defined, as the enclave transforms code to wrap in async function __ag_main()

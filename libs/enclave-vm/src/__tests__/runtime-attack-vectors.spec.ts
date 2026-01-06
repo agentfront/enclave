@@ -49,6 +49,23 @@
 
 import { Enclave } from '../enclave';
 
+/**
+ * Helper for tests that may be blocked at AST level (success: false) or runtime level.
+ * Both are valid security outcomes - AST blocking is actually stronger.
+ */
+function expectSecureResult(
+  result: { success: boolean; value?: unknown; error?: { message?: string } },
+  expectedValues: unknown[],
+): void {
+  if (!result.success) {
+    // AST-level validation blocked the attack - this is valid and stronger security
+    expect(result.error?.message).toMatch(/AgentScript validation failed|code generation from strings/i);
+    return;
+  }
+  // Runtime blocking or sandbox execution
+  expect(expectedValues).toContain(result.value);
+}
+
 describe('Runtime Attack Vectors (AST-Bypass)', () => {
   // ============================================================================
   // CATEGORY 1: COMPUTED PROPERTY BUILDING ATTACKS
@@ -66,7 +83,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -78,7 +95,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -90,7 +107,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -104,7 +121,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -116,7 +133,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
     });
@@ -130,7 +147,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -142,7 +159,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -155,7 +172,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
     });
@@ -169,7 +186,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -181,7 +198,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -207,7 +224,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -219,7 +236,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
     });
@@ -234,7 +251,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -246,7 +263,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -259,7 +276,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
     });
@@ -280,7 +297,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -298,7 +315,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -311,7 +328,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -324,7 +341,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -337,7 +354,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
     });
@@ -352,7 +369,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -365,7 +382,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -381,7 +398,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
     });
@@ -432,9 +449,14 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'no-ctor';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        // Sandbox isolation should prevent host access
-        expect(result.value).not.toMatch(/^host-access:\/[a-zA-Z]/);
+        // Either AST blocks it (success: false) or sandbox isolation works (success: true, no host access)
+        if (result.success) {
+          // Sandbox isolation should prevent host access
+          expect(result.value).not.toMatch(/^host-access:\/[a-zA-Z]/);
+        } else {
+          // AST blocked the constructor obfuscation - also valid security outcome
+          expect(result.error?.message).toMatch(/AgentScript validation failed/);
+        }
         enclave.dispose();
       });
 
@@ -480,9 +502,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'no-ctor';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        // Should NOT have host access
-        expect(result.value).not.toBe('host-access');
+        // Either AST blocks it (success: false) or sandbox isolation works
+        expectSecureResult(result, ['sandbox-isolated', 'blocked-exec', 'no-ctor']);
         enclave.dispose();
       });
 
@@ -506,8 +527,11 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'no-ctor';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('no-global-process');
+        // All outcomes are valid security measures:
+        // - AST validation blocks (success: false)
+        // - 'blocked': codeGeneration.strings=false blocks Function creation
+        // - 'no-global-process': Function executed but sandbox isolated from host globals
+        expectSecureResult(result, ['blocked', 'no-global-process', 'no-ctor']);
         enclave.dispose();
       });
 
@@ -531,8 +555,12 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'no-ctor';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('no-module');
+        // All outcomes are valid security measures:
+        // - AST validation blocks (success: false)
+        // - 'blocked': codeGeneration.strings=false blocks Function creation (caught)
+        // - 'blocked-exec': Same as above but different catch label
+        // - 'no-module': Function executed but sandbox isolated from host globals
+        expectSecureResult(result, ['blocked', 'blocked-exec', 'no-module', 'no-ctor']);
         enclave.dispose();
       });
     });
@@ -679,10 +707,15 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'no-error';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        // Should NOT return a real home path
-        expect(result.value).not.toMatch(/^\/Users\//);
-        expect(result.value).not.toMatch(/^\/home\//);
+        // Either AST blocks it (success: false) or sandbox isolation works
+        if (result.success) {
+          // Should NOT return a real home path
+          expect(result.value).not.toMatch(/^\/Users\//);
+          expect(result.value).not.toMatch(/^\/home\//);
+        } else {
+          // AST blocked the constructor obfuscation - also valid security outcome
+          expect(result.error?.message).toMatch(/AgentScript validation failed/);
+        }
         enclave.dispose();
       });
 
@@ -710,8 +743,11 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'no-error';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('no-require');
+        // All outcomes are valid security measures:
+        // - AST validation blocks (success: false)
+        // - 'blocked-exec': codeGeneration.strings=false blocks Function creation
+        // - 'no-require': Function executed but sandbox isolated from host globals
+        expectSecureResult(result, ['blocked-exec', 'no-require', 'no-fn-ctor', 'no-error']);
         enclave.dispose();
       });
 
@@ -742,8 +778,11 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'no-error';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('no-module');
+        // All outcomes are valid security measures:
+        // - AST validation blocks (success: false)
+        // - 'blocked-exec': codeGeneration.strings=false blocks Function creation
+        // - 'no-module': Function executed but sandbox isolated from host globals
+        expectSecureResult(result, ['blocked-exec', 'no-module', 'no-fn-ctor', 'no-error']);
         enclave.dispose();
       });
     });
@@ -873,7 +912,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -886,7 +925,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
     });
@@ -905,7 +944,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
     });
@@ -1001,9 +1040,14 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           }
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        // Should NOT have host access
-        expect(result.value).not.toBe('host-access');
+        // Either AST blocks it (success: false) or sandbox isolation works
+        if (result.success) {
+          // Should NOT have host access
+          expect(result.value).not.toBe('host-access');
+        } else {
+          // AST blocked the constructor obfuscation - also valid security outcome
+          expect(result.error?.message).toMatch(/AgentScript validation failed/);
+        }
         enclave.dispose();
       });
     });
@@ -1103,9 +1147,14 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'no-ctor';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        // Should NOT have host access
-        expect(result.value).not.toBe('host-access');
+        // Either AST blocks it (success: false) or sandbox isolation works
+        if (result.success) {
+          // Should NOT have host access
+          expect(result.value).not.toBe('host-access');
+        } else {
+          // AST blocked the constructor obfuscation - also valid security outcome
+          expect(result.error?.message).toMatch(/AgentScript validation failed/);
+        }
         enclave.dispose();
       });
 
@@ -1129,8 +1178,11 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'no-ctor';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('no-require');
+        // All outcomes are valid security measures:
+        // - AST validation blocks (success: false)
+        // - 'blocked-exec': codeGeneration.strings=false blocks Function creation
+        // - 'no-require': Function executed but sandbox isolated from host globals
+        expectSecureResult(result, ['blocked-exec', 'no-require', 'no-ctor']);
         enclave.dispose();
       });
 
@@ -1154,8 +1206,11 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'no-ctor';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        expect(result.value).toBe('no-module');
+        // All outcomes are valid security measures:
+        // - AST validation blocks (success: false)
+        // - 'blocked-exec': codeGeneration.strings=false blocks Function creation
+        // - 'no-module': Function executed but sandbox isolated from host globals
+        expectSecureResult(result, ['blocked-exec', 'no-module', 'no-ctor']);
         enclave.dispose();
       });
     });
@@ -1180,7 +1235,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -1198,7 +1253,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -1214,7 +1269,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
     });
@@ -1232,7 +1287,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -1282,7 +1337,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -1308,9 +1363,14 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'no-ctor';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        // Should NOT return Node.js version
-        expect(result.value).not.toMatch(/^v\d+\.\d+\.\d+$/);
+        // Either AST blocks it (success: false) or sandbox isolation works
+        if (result.success) {
+          // Should NOT return Node.js version
+          expect(result.value).not.toMatch(/^v\d+\.\d+\.\d+$/);
+        } else {
+          // AST blocked the constructor obfuscation - also valid security outcome
+          expect(result.error?.message).toMatch(/AgentScript validation failed/);
+        }
         enclave.dispose();
       });
     });
@@ -1325,7 +1385,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -1338,7 +1398,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
     });
@@ -1366,10 +1426,15 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'no-ctor';
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        // Should NOT return a real file path
-        expect(result.value).not.toMatch(/\.js$/);
-        expect(result.value).not.toMatch(/\.ts$/);
+        // Either AST blocks it (success: false) or sandbox isolation works
+        if (result.success) {
+          // Should NOT return a real file path
+          expect(result.value).not.toMatch(/\.js$/);
+          expect(result.value).not.toMatch(/\.ts$/);
+        } else {
+          // AST blocked the constructor obfuscation - also valid security outcome
+          expect(result.error?.message).toMatch(/AgentScript validation failed/);
+        }
         enclave.dispose();
       });
     });
@@ -1412,7 +1477,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -1433,7 +1498,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         `;
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
     });
@@ -1452,8 +1517,9 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return Ctor ? 'escaped' : 'blocked';
         `;
         const result = await enclave.run(code);
+        // Should be blocked - either by AST validation or runtime secure proxy
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
@@ -1499,8 +1565,9 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
           return 'blocked';
         `;
         const result = await enclave.run(code);
+        // Should be blocked - either by AST validation or runtime secure proxy
         expect(result.success).toBe(false);
-        expect(result.error?.message).toContain('Security violation');
+        expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
         enclave.dispose();
       });
 
