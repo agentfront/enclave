@@ -11,6 +11,16 @@
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 
+/**
+ * Escape markdown special characters for table cells
+ * @param {string} text
+ * @returns {string}
+ */
+function escapeMarkdown(text) {
+  if (typeof text !== 'string') return String(text ?? '');
+  return text.replace(/\|/g, '\\|').replace(/`/g, '\\`');
+}
+
 const resultsFile = process.argv[2] || 'perf-results.json';
 const resultsPath = resolve(process.cwd(), resultsFile);
 
@@ -95,10 +105,10 @@ if (Object.keys(metrics).length > 0) {
     // Note: Assumes all thresholds are upper bounds (value <= threshold)
     // For lower-bound thresholds (e.g., minimum throughput), set thresholdType = 'min' in the metric
     const thresholdOp = metric.thresholdType === 'min' ? '>=' : '<=';
-    const threshold = metric.threshold !== undefined ? `${thresholdOp} ${metric.threshold} ${metric.unit || ''}` : '-';
-    const value = typeof metric.value === 'number' ? metric.value.toFixed(2) : String(metric.value || 'N/A');
-    const unit = metric.unit || '';
-    const name = metric.name || 'Unknown';
+    const threshold = metric.threshold !== undefined ? `${thresholdOp} ${metric.threshold} ${escapeMarkdown(metric.unit || '')}` : '-';
+    const value = typeof metric.value === 'number' ? metric.value.toFixed(2) : escapeMarkdown(String(metric.value || 'N/A'));
+    const unit = escapeMarkdown(metric.unit || '');
+    const name = escapeMarkdown(metric.name || 'Unknown');
     console.log(`| ${name} | ${value} ${unit} | ${threshold} | ${status} |`);
   }
 
@@ -120,10 +130,10 @@ if (results.length > 0) {
     if (!result || typeof result !== 'object') {
       continue;
     }
-    const statusText = result.status || 'unknown';
+    const statusText = escapeMarkdown(result.status || 'unknown');
     const duration = result.duration ? `${result.duration}ms` : '-';
-    const testName = result.testName || 'Unknown';
-    const suite = result.suite || 'Unknown';
+    const testName = escapeMarkdown(result.testName || 'Unknown');
+    const suite = escapeMarkdown(result.suite || 'Unknown');
     console.log(`| ${testName} | ${suite} | ${statusText} | ${duration} |`);
   }
 

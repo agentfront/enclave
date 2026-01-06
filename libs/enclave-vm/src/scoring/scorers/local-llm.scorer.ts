@@ -339,36 +339,48 @@ export class LocalLlmScorer extends BaseScorer {
     let totalScore = 0;
     const promptLower = prompt.toLowerCase();
 
-    // Check for critical keywords
+    // Check for critical keywords (report all matches, cap total contribution)
+    const criticalMatches: string[] = [];
     for (const keyword of RISK_KEYWORDS.critical) {
       if (promptLower.includes(keyword)) {
-        const score = 25;
-        totalScore += score;
-        signals.push({
-          id: 'ML_CRITICAL_KEYWORD',
-          score,
-          description: `Critical security keyword detected: ${keyword}`,
-          level: 'critical',
-          context: { keyword },
-        });
-        break; // Only add once
+        criticalMatches.push(keyword);
       }
     }
+    if (criticalMatches.length > 0) {
+      // Score: 25 for first match + 5 for each additional (capped at 40 total)
+      const score = Math.min(40, 25 + (criticalMatches.length - 1) * 5);
+      totalScore += score;
+      signals.push({
+        id: 'ML_CRITICAL_KEYWORD',
+        score,
+        description: `Critical security keyword${
+          criticalMatches.length > 1 ? 's' : ''
+        } detected: ${criticalMatches.join(', ')}`,
+        level: 'critical',
+        context: { keywords: criticalMatches },
+      });
+    }
 
-    // Check for high risk keywords
+    // Check for high risk keywords (report all matches, cap total contribution)
+    const highRiskMatches: string[] = [];
     for (const keyword of RISK_KEYWORDS.high) {
       if (promptLower.includes(keyword)) {
-        const score = 15;
-        totalScore += score;
-        signals.push({
-          id: 'ML_HIGH_RISK_KEYWORD',
-          score,
-          description: `High risk keyword detected: ${keyword}`,
-          level: 'high',
-          context: { keyword },
-        });
-        break;
+        highRiskMatches.push(keyword);
       }
+    }
+    if (highRiskMatches.length > 0) {
+      // Score: 15 for first match + 5 for each additional (capped at 30 total)
+      const score = Math.min(30, 15 + (highRiskMatches.length - 1) * 5);
+      totalScore += score;
+      signals.push({
+        id: 'ML_HIGH_RISK_KEYWORD',
+        score,
+        description: `High risk keyword${highRiskMatches.length > 1 ? 's' : ''} detected: ${highRiskMatches.join(
+          ', ',
+        )}`,
+        level: 'high',
+        context: { keywords: highRiskMatches },
+      });
     }
 
     // Exfiltration pattern detection (enhanced)

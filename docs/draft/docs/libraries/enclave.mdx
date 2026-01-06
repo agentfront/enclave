@@ -128,6 +128,65 @@ const enclave = new Enclave({
 });
 ```
 
+### `PartialDoubleVmConfig`
+
+The `PartialDoubleVmConfig` type is the public API for configuring the Double VM layer. All properties are optional, with sensible defaults applied automatically.
+
+**Import:**
+
+```typescript
+import type { PartialDoubleVmConfig } from 'enclave-vm';
+```
+
+**Properties:**
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `enabled` | `boolean` | `true` | Enable/disable the Double VM layer |
+| `parentTimeoutBuffer` | `number` | `1000` | Extra timeout (ms) for parent VM operations |
+| `parentValidation` | `object` | See below | Validation settings for the parent VM |
+
+**`parentValidation` options:**
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `validateOperationNames` | `boolean` | `true` | Validate operation names against patterns |
+| `allowedOperationPattern` | `RegExp` | — | Whitelist pattern (only matching ops allowed) |
+| `blockedOperationPatterns` | `RegExp[]` | — | Blacklist patterns (matching ops blocked) |
+| `maxOperationsPerSecond` | `number` | `100` | Rate limit for operations |
+| `blockSuspiciousSequences` | `boolean` | `true` | Detect suspicious operation sequences |
+| `rapidEnumerationThreshold` | `number` | `30` | Threshold for rapid enumeration detection |
+| `rapidEnumerationOverrides` | `Record<string, number>` | `{}` | Per-operation threshold overrides |
+| `suspiciousPatterns` | `SuspiciousPattern[]` | — | Custom pattern detectors |
+
+**Usage Examples:**
+
+```typescript
+// Minimal: just enable/disable
+const config: PartialDoubleVmConfig = {
+  enabled: true,
+};
+
+// With validation customization
+const config: PartialDoubleVmConfig = {
+  parentTimeoutBuffer: 2000,
+  parentValidation: {
+    maxOperationsPerSecond: 50,
+    blockedOperationPatterns: [/^admin:/i, /^internal\./],
+  },
+};
+
+// Disable Double VM (not recommended for production)
+const config: PartialDoubleVmConfig = {
+  enabled: false,
+};
+```
+
+**When to use `PartialDoubleVmConfig` vs full config:**
+
+- Use `PartialDoubleVmConfig` (the exported type) when configuring `Enclave` — it accepts partial options with defaults
+- The full `DoubleVmConfig` is used internally and requires all properties to be set
+
 ## API
 
 ### `execute(code, options)`
