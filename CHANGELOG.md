@@ -10,6 +10,15 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## [Unreleased]
 
+## 2026-01-06
+
+Enhanced enclave-vm loop safety and scoring extensibility while ast-guard introduces guarded loop support requiring the new \_\_maxIterations runtime hook.
+
+| Package    | Version | Highlights                                                                                                                                             |
+| ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| enclave-vm | 2.3.0   | Adds configurable rapid-enumeration thresholds, exposes the loop-iteration runtime hook, and allows custom analyzers in the local LLM scorer.          |
+| ast-guard  | 2.0.0   | Transforms loops with iteration counters, requires runtimes to provide `__maxIterations`, and adds an InfiniteLoopRule for obvious endless constructs. |
+
 ## 2026-01-05
 
 enclave-vm now ships memory-aware execution limits and stricter secure proxy errors, while ast-guard fixes template literal handling.

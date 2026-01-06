@@ -59,12 +59,16 @@ async function main() {
 
   console.log(`\nProjects to bump: ${projectsToBump.map((p) => p.name).join(', ')}`);
 
-  // Process each project that needs a version bump
+  // ============================================================
+  // PHASE 1: Bump all versions first (allows Nx to sync dependencies)
+  // ============================================================
+  console.log('\n' + '='.repeat(60));
+  console.log('PHASE 1: Version bumping');
+  console.log('='.repeat(60));
+
   for (const project of projectsToBump) {
-    console.log(`\n${'='.repeat(60)}`);
-    console.log(`Versioning ${project.name} to ${project.newVersion} (${project.bump})`);
+    console.log(`\nVersioning ${project.name} to ${project.newVersion} (${project.bump})`);
     console.log(`Reason: ${project.reason || 'N/A'}`);
-    console.log('='.repeat(60));
 
     try {
       // Use Nx Release to bump version and sync dependencies
@@ -78,15 +82,53 @@ async function main() {
         gitTag: false,
       });
 
-      versionResults[project.name] = project.newVersion;
       console.log(`✓ Version updated for ${project.name}`);
+    } catch (error) {
+      console.error(`✗ Failed to version ${project.name}:`, error.message);
+      process.exit(1);
+    }
+  }
 
-      // Apply Codex-generated changelog (Nx doesn't handle this)
-      if (project.changelog && !dryRun) {
+  // ============================================================
+  // PHASE 2: Read final versions from package.json files
+  // (Nx may have bumped versions due to dependency sync)
+  // ============================================================
+  console.log('\n' + '='.repeat(60));
+  console.log('PHASE 2: Reading final versions from package.json');
+  console.log('='.repeat(60));
+
+  for (const project of projectsToBump) {
+    const pkgPath = path.join('libs', project.name, 'package.json');
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      versionResults[project.name] = pkg.version;
+
+      if (pkg.version !== project.newVersion) {
+        console.log(`⚠ ${project.name}: Codex specified ${project.newVersion}, but final version is ${pkg.version} (dependency sync)`);
+      } else {
+        console.log(`✓ ${project.name}: ${pkg.version}`);
+      }
+    } catch (err) {
+      console.error(`⚠ Failed to read package.json for ${project.name}: ${err.message}`);
+      versionResults[project.name] = project.newVersion;
+    }
+  }
+
+  // ============================================================
+  // PHASE 3: Write changelogs using FINAL versions
+  // ============================================================
+  console.log('\n' + '='.repeat(60));
+  console.log('PHASE 3: Writing changelogs with final versions');
+  console.log('='.repeat(60));
+
+  if (!dryRun) {
+    for (const project of projectsToBump) {
+      if (project.changelog) {
+        const finalVersion = versionResults[project.name];
         try {
           const changelogPath = path.join('libs', project.name, 'CHANGELOG.md');
           if (fs.existsSync(changelogPath)) {
-            const entry = formatChangelogEntry(project.newVersion, project.changelog, today);
+            const entry = formatChangelogEntry(finalVersion, project.changelog, today);
             if (entry) {
               let content = fs.readFileSync(changelogPath, 'utf8');
               const unreleasedIdx = content.indexOf('## [Unreleased]');
@@ -94,7 +136,7 @@ async function main() {
                 const afterUnreleased = content.indexOf('\n', unreleasedIdx) + 1;
                 content = content.slice(0, afterUnreleased) + '\n' + entry + '\n' + content.slice(afterUnreleased);
                 fs.writeFileSync(changelogPath, content);
-                console.log(`✓ Updated changelog: ${changelogPath}`);
+                console.log(`✓ Updated changelog: ${changelogPath} (version ${finalVersion})`);
               } else {
                 console.log(`⚠ Skipped changelog update for ${project.name}: missing "## [Unreleased]" section`);
               }
@@ -104,15 +146,12 @@ async function main() {
           console.error(`⚠ Failed to update changelog for ${project.name}: ${err.message}`);
         }
       }
-    } catch (error) {
-      console.error(`✗ Failed to version ${project.name}:`, error.message);
-      process.exit(1);
     }
-  }
 
-  // Update global changelog if provided
-  if (codexOutput.globalChangelog && !dryRun) {
-    updateGlobalChangelog(codexOutput.globalChangelog, versionResults, today);
+    // Update global changelog if provided
+    if (codexOutput.globalChangelog) {
+      updateGlobalChangelog(codexOutput.globalChangelog, versionResults, today);
+    }
   }
 
   console.log('\n' + '='.repeat(60));
