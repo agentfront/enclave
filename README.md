@@ -90,10 +90,11 @@ console.log(result.value); // 3
 
 **Features:**
 
-- Bank-grade security: 516+ security tests, 81+ blocked attack vectors
+- Bank-grade security: 1184+ security tests, 150+ blocked attack vectors
 - Defense-in-depth: 6 security layers
-- Worker Pool Adapter for isolated execution
-- Reference Sidecar for sandboxed environments
+- Worker Pool Adapter for OS-level isolation
+- AI Scoring Gate with extensible custom analyzers
+- Reference Sidecar for large data handling
 
 [Read more →](libs/enclave-vm)
 

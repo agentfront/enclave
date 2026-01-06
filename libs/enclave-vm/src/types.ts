@@ -989,6 +989,8 @@ export const DEFAULT_DOUBLE_VM_CONFIG: DoubleVmConfig = {
     validateOperationNames: true,
     maxOperationsPerSecond: 100,
     blockSuspiciousSequences: true,
+    rapidEnumerationThreshold: 30,
+    rapidEnumerationOverrides: {},
     suspiciousPatterns: [], // Default patterns added at runtime
   },
 };

@@ -98,6 +98,9 @@ interface CreateEnclaveOptions {
 
   // Sidecar (large data handling)
   sidecar?: ReferenceSidecarOptions;
+
+  // Double VM security layer
+  doubleVm?: PartialDoubleVmConfig; // See "Double VM Security Layer" section
 }
 ```
 
@@ -233,6 +236,200 @@ When using Worker Pool, code runs in a **dual-layer sandbox**:
 - **Dangerous global removal**: parentPort, workerData inaccessible in worker
 - **Rate limiting**: Message flood protection per worker
 - **Safe deserialize**: Prototype pollution prevention via JSON-only parsing
+
+## Double VM Security Layer
+
+The Double VM provides defense-in-depth by running user code in a nested VM structure. User code runs in an **Inner VM** which is isolated inside a **Parent VM**, providing enhanced protection against VM escape attacks.
+
+### Configuration
+
+```typescript
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    /* ... */
+  },
+  doubleVm: {
+    enabled: true, // Default: true
+    parentTimeoutBuffer: 1000, // Extra timeout buffer for parent VM (ms)
+    parentValidation: {
+      validateOperationNames: true, // Validate tool names against patterns
+      allowedOperationPattern: /^(db|api):[a-z]+$/i, // Whitelist pattern
+      blockedOperationPatterns: [/^shell:/i, /^system:/i], // Blacklist patterns
+      maxOperationsPerSecond: 100, // Rate limiting
+      blockSuspiciousSequences: true, // Enable suspicious pattern detection
+      rapidEnumerationThreshold: 30, // Max same-operation calls in 5s
+      rapidEnumerationOverrides: {
+        // Per-operation overrides for rapidEnumerationThreshold
+        search: 100, // Allow 100 search calls
+        'users.list': 50, // Allow 50 user list calls
+      },
+    },
+  },
+});
+```
+
+### Parent Validation Options
+
+| Option                      | Type                    | Default | Description                                  |
+| --------------------------- | ----------------------- | ------- | -------------------------------------------- |
+| `validateOperationNames`    | `boolean`               | `true`  | Enable operation name validation             |
+| `allowedOperationPattern`   | `RegExp`                | -       | Whitelist pattern for operation names        |
+| `blockedOperationPatterns`  | `RegExp[]`              | -       | Blacklist patterns for operation names       |
+| `maxOperationsPerSecond`    | `number`                | `100`   | Rate limit for operations per second         |
+| `blockSuspiciousSequences`  | `boolean`               | `true`  | Enable suspicious pattern detection          |
+| `rapidEnumerationThreshold` | `number`                | `30`    | Max same-operation calls in 5 seconds        |
+| `rapidEnumerationOverrides` | `Record<string,number>` | `{}`    | Per-operation thresholds (overrides default) |
+| `suspiciousPatterns`        | `SuspiciousPattern[]`   | `[]`    | Custom suspicious pattern detectors          |
+
+### Built-in Suspicious Pattern Detection
+
+When `blockSuspiciousSequences: true`, the following patterns are detected:
+
+| Pattern ID            | Description                                         |
+| --------------------- | --------------------------------------------------- |
+| `EXFIL_LIST_SEND`     | List/query followed by send/export (data exfil)     |
+| `RAPID_ENUMERATION`   | Same operation called too many times (configurable) |
+| `CREDENTIAL_EXFIL`    | Credential access followed by external operation    |
+| `BULK_OPERATION`      | Bulk/batch operations (mass data extraction)        |
+| `DELETE_AFTER_ACCESS` | Delete operation after data access (cover-up)       |
+
+### Configuring Rapid Enumeration Detection
+
+The `RAPID_ENUMERATION` pattern blocks excessive repeated calls to the same operation. Use `rapidEnumerationThreshold` and `rapidEnumerationOverrides` to tune this:
+
+```typescript
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    /* ... */
+  },
+  doubleVm: {
+    parentValidation: {
+      // Default: Block if same operation called >30 times in 5 seconds
+      rapidEnumerationThreshold: 30,
+
+      // Per-operation overrides
+      rapidEnumerationOverrides: {
+        search: 100, // Search can be called 100 times (pagination)
+        'db.query': 50, // Database queries up to 50 times
+        'users.filter': 200, // High-volume filtering allowed
+      },
+    },
+  },
+});
+```
+
+### Custom Suspicious Patterns
+
+You can add custom pattern detectors:
+
+```typescript
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    /* ... */
+  },
+  doubleVm: {
+    parentValidation: {
+      suspiciousPatterns: [
+        {
+          id: 'CUSTOM_PATTERN',
+          description: 'Detect sensitive + external call',
+          detect: (operationName, args, history) => {
+            const hasSensitiveAccess = history.some((h) => h.operationName.includes('sensitive'));
+            const isExternalCall = operationName.includes('external');
+            return hasSensitiveAccess && isExternalCall;
+          },
+        },
+      ],
+    },
+  },
+});
+```
+
+## AI Scoring Gate
+
+The AI Scoring Gate provides semantic security analysis to detect attack patterns beyond what static AST validation can catch. It analyzes tool call patterns, sensitive data access, and exfiltration attempts.
+
+### Configuration
+
+```typescript
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    /* ... */
+  },
+  scoring: {
+    scorer: 'rule-based', // 'disabled' | 'rule-based' | 'local-llm' | 'external-api'
+    blockThreshold: 70, // Block if score >= 70
+    warnThreshold: 40, // Warn if score >= 40
+  },
+});
+```
+
+### Scorer Types
+
+| Type           | Description                                | Latency |
+| -------------- | ------------------------------------------ | ------- |
+| `disabled`     | No scoring (pass-through)                  | 0ms     |
+| `rule-based`   | Pure TypeScript rules, zero dependencies   | ~1ms    |
+| `local-llm`    | On-device ML with HuggingFace transformers | ~5-10ms |
+| `external-api` | External API-based scoring                 | ~100ms  |
+
+### Custom Analyzer (Extensibility)
+
+For advanced use cases, you can provide a custom analyzer to integrate external LLMs or static code analyzers:
+
+```typescript
+import { Enclave, CustomAnalyzer } from 'enclave-vm';
+
+const myAnalyzer: CustomAnalyzer = {
+  async analyze(prompt, features) {
+    // Call your external LLM or static analyzer
+    const response = await fetch('https://my-analyzer-api.com/score', {
+      method: 'POST',
+      body: JSON.stringify({ prompt, features }),
+    });
+    const result = await response.json();
+    return {
+      score: result.riskScore,
+      signals: result.signals,
+    };
+  },
+  // Optional lifecycle methods
+  async initialize() {
+    /* connect to service */
+  },
+  dispose() {
+    /* cleanup */
+  },
+};
+
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    /* ... */
+  },
+  scoringGate: {
+    scorer: 'local-llm',
+    localLlm: {
+      modelId: 'Xenova/all-MiniLM-L6-v2',
+      customAnalyzer: myAnalyzer,
+    },
+  },
+});
+```
+
+### CustomAnalyzer Interface
+
+```typescript
+interface CustomAnalyzer {
+  // Analyze prompt and features, return risk score and signals
+  analyze(prompt: string, features: ExtractedFeatures): Promise<{ score: number; signals: RiskSignal[] }>;
+
+  // Optional: Initialize resources (e.g., connect to external service)
+  initialize?(): Promise<void>;
+
+  // Optional: Cleanup resources
+  dispose?(): void;
+}
+```
 
 ## Reference Sidecar
 

@@ -12,9 +12,7 @@ lib
 .tmp
 .next
 out
+.cache
 
-
-# Mintlify navigation files only (preserve exact structure)
-docs/live/docs.json
-docs/docs.draft.json
-docs/docs.backup.json
+# Documentation (managed by Mintlify)
+docs/

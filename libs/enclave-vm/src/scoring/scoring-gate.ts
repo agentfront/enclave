@@ -14,14 +14,8 @@ import type { Scorer } from './scorer.interface';
 import { FeatureExtractor } from './feature-extractor';
 import { ScoringCache } from './cache';
 import { DisabledScorer, RuleBasedScorer, ExternalApiScorer, ProgressiveScorer, LocalLlmScorer } from './scorers';
-import type {
-  ScoringGateConfig,
-  ScoringGateResult,
-  ScorerType,
-  ExtractedFeatures,
-  NormalizedScoringConfig,
-} from './types';
-import { DEFAULT_SCORING_CONFIG, normalizeScoringConfig } from './types';
+import type { ScoringGateConfig, ScoringGateResult, ScorerType, NormalizedScoringConfig } from './types';
+import { normalizeScoringConfig } from './types';
 
 /**
  * Scoring Gate - orchestrates the AI scoring system

@@ -357,6 +357,53 @@ export interface VectoriaConfigForScoring {
 }
 
 /**
+ * Custom analyzer interface for extending LocalLlmScorer
+ *
+ * Developers can implement this interface to provide custom scoring logic
+ * using external LLMs, static analyzers, or other tools.
+ *
+ * @example
+ * ```typescript
+ * const myAnalyzer: CustomAnalyzer = {
+ *   async analyze(prompt, features) {
+ *     const response = await fetch('https://my-llm-api.com/analyze', {
+ *       method: 'POST',
+ *       body: JSON.stringify({ prompt, features }),
+ *     });
+ *     const result = await response.json();
+ *     return { score: result.riskScore, signals: result.signals };
+ *   }
+ * };
+ * ```
+ */
+export interface CustomAnalyzer {
+  /**
+   * Analyze the prompt and features to produce risk signals
+   *
+   * @param prompt - Text representation of the code features
+   * @param features - Extracted features from the code
+   * @returns Score (0-100) and risk signals
+   */
+  analyze(
+    prompt: string,
+    features: ExtractedFeatures,
+  ): Promise<{
+    score: number;
+    signals: RiskSignal[];
+  }>;
+
+  /**
+   * Optional initialization (e.g., connect to external service)
+   */
+  initialize?(): Promise<void>;
+
+  /**
+   * Optional cleanup
+   */
+  dispose?(): void;
+}
+
+/**
  * Configuration for local LLM scorer
  */
 export interface LocalLlmConfig {
@@ -406,6 +453,28 @@ export interface LocalLlmConfig {
    * @deprecated Not used in new implementation
    */
   maxTokens?: number;
+
+  /**
+   * Custom analyzer for external LLM or static code analysis
+   *
+   * If provided, this analyzer will be used instead of the built-in
+   * heuristic-based analysis. The HuggingFace pipeline will still be
+   * loaded for potential embedding support.
+   *
+   * @example
+   * ```typescript
+   * const scorer = new LocalLlmScorer({
+   *   modelId: 'Xenova/all-MiniLM-L6-v2',
+   *   customAnalyzer: {
+   *     async analyze(prompt, features) {
+   *       const response = await myExternalLLM.score(prompt);
+   *       return { score: response.score, signals: response.signals };
+   *     }
+   *   }
+   * });
+   * ```
+   */
+  customAnalyzer?: CustomAnalyzer;
 }
 
 /**

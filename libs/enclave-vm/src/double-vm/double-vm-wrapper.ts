@@ -9,7 +9,7 @@
  */
 
 import * as vm from 'vm';
-import type { SandboxAdapter, ExecutionContext, ExecutionResult, ExecutionStats, SecurityLevel } from '../types';
+import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { sanitizeValue } from '../value-sanitizer';
 import { getBlockedPropertiesForLevel, buildBlockedPropertiesFromConfig } from '../secure-proxy';
 import { ReferenceResolver } from '../sidecar/reference-resolver';
@@ -150,6 +150,19 @@ export class DoubleVmWrapper implements SandboxAdapter {
       // Determine whether to sanitize stack traces
       const shouldSanitize = config.sanitizeStackTraces ?? true;
 
+      // Handle thrown strings (e.g., iteration limit exceeded throws a string literal)
+      if (typeof err === 'string') {
+        return {
+          success: false,
+          error: {
+            name: 'DoubleVMExecutionError',
+            message: err,
+            code: 'DOUBLE_VM_EXECUTION_ERROR',
+          },
+          stats,
+        };
+      }
+
       return {
         success: false,
         error: {
@@ -173,7 +186,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
    * - Memory tracking callback (when memoryLimit is set)
    */
   private createParentContext(executionContext: ExecutionContext, memoryTracker?: MemoryTracker): vm.Context {
-    const { stats, config, toolHandler } = executionContext;
+    const { stats, config } = executionContext;
 
     // Create isolated context for parent VM
     const parentContext = vm.createContext({});
@@ -408,6 +421,8 @@ export class DoubleVmWrapper implements SandboxAdapter {
       blockedOperationPatternFlags: pv.blockedOperationPatterns?.map((p) => p.flags),
       maxOperationsPerSecond: pv.maxOperationsPerSecond,
       blockSuspiciousSequences: pv.blockSuspiciousSequences,
+      rapidEnumerationThreshold: pv.rapidEnumerationThreshold,
+      rapidEnumerationOverrides: pv.rapidEnumerationOverrides,
       suspiciousPatterns: [], // Will be populated separately
     };
   }

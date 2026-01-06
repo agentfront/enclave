@@ -18,6 +18,7 @@ import {
   createSecurePreset,
   createStandardPreset,
   createPermissivePreset,
+  type ValidationIssue,
 } from 'ast-guard';
 import { transformAgentScript, isWrappedInMain } from 'ast-guard';
 import { extractLargeStrings, transformConcatenation, transformTemplateLiterals } from 'ast-guard';
@@ -330,7 +331,8 @@ export class Enclave {
       if (this.validateCode) {
         const validationResult = await this.validator.validate(transformedCode);
         if (!validationResult.valid) {
-          const errorMessages = validationResult.issues.map((issue) => `${issue.code}: ${issue.message}`).join('\n');
+          // Format errors with location info and deduplicate
+          const errorMessages = this.formatValidationErrors(validationResult.issues);
 
           return {
             success: false,
@@ -650,6 +652,8 @@ export class Enclave {
       '__safe_template',
       '__safe_parallel',
       '__safe_console',
+      // Loop transformation runtime support
+      '__maxIterations', // Used by transformed loops for iteration limit
     ];
 
     switch (presetName) {
@@ -699,6 +703,36 @@ export class Enclave {
    */
   getScoringStats(): ReturnType<ScoringGate['getCacheStats']> | null {
     return this.scoringGate?.getCacheStats() ?? null;
+  }
+
+  /**
+   * Format validation errors with line numbers and deduplication
+   *
+   * @param issues Array of validation issues
+   * @returns Formatted error message string
+   */
+  private formatValidationErrors(issues: ValidationIssue[]): string {
+    // Create unique key for each error to deduplicate
+    const seen = new Set<string>();
+    const uniqueErrors: string[] = [];
+
+    for (const issue of issues) {
+      // Build location string if available
+      const locationStr = issue.location ? `:${issue.location.line}:${issue.location.column}` : '';
+
+      // Create unique key for deduplication (code + message + location)
+      const key = `${issue.code}|${issue.message}|${locationStr}`;
+
+      if (!seen.has(key)) {
+        seen.add(key);
+
+        // Format: "CODE (line:col): message" or "CODE: message" if no location
+        const formattedLocation = issue.location ? ` (line ${issue.location.line})` : '';
+        uniqueErrors.push(`${issue.code}${formattedLocation}: ${issue.message}`);
+      }
+    }
+
+    return uniqueErrors.join('\n');
   }
 }
 

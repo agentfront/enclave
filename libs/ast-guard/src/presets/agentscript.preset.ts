@@ -14,6 +14,7 @@ import {
   NoRegexLiteralRule,
   NoRegexMethodsRule,
   NoComputedDestructuringRule,
+  InfiniteLoopRule,
 } from '../rules';
 
 /**
@@ -200,6 +201,9 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
     '__safe_for', // Transformed for with iteration tracking
     '__safe_while', // Transformed while with iteration tracking
     '__safe_doWhile', // Transformed do-while with iteration tracking
+
+    // Runtime-injected iteration limit (used by loop transformation)
+    '__maxIterations', // Maximum iterations per loop
   ];
 
   // 1. Block all eval-like constructs
@@ -359,6 +363,12 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
       allowForOf: options.allowedLoops?.allowForOf ?? true, // default true (safe iteration)
     }),
   );
+
+  // 7b. Detect obvious infinite loop patterns (defense-in-depth)
+  // This catches patterns like for(;;), while(true), etc.
+  // Runtime protection (iteration limits) is still in place, but this provides
+  // better error messages and faster failure for obvious infinite loops.
+  rules.push(new InfiniteLoopRule());
 
   // 8. Validate callTool arguments (if configured)
   if (options.callToolValidation) {

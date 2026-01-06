@@ -1,10 +1,11 @@
 /**
  * Local LLM Scorer
  *
- * Uses Hugging Face transformers.js for on-device ML-based security scoring.
- * Supports two modes:
- * - classification: Direct text classification for security risk
- * - similarity: Embedding comparison with known malicious patterns
+ * Provides ML-based security scoring with multiple options:
+ * - Built-in heuristics: Keyword-based risk detection (default)
+ * - Custom analyzer: Plug in external LLM or static code analyzer
+ *
+ * Optionally loads Hugging Face transformers.js for on-device ML support.
  *
  * @packageDocumentation
  */
@@ -15,12 +16,6 @@ import type { ExtractedFeatures, ScoringResult, RiskSignal, LocalLlmConfig, Risk
 
 // Pipeline type from @huggingface/transformers
 type Pipeline = (input: string, options?: Record<string, unknown>) => Promise<{ data: number[] }>;
-
-// Classification output type
-interface ClassificationOutput {
-  label: string;
-  score: number;
-}
 
 /**
  * Default model cache directory
@@ -43,18 +38,28 @@ const RISK_KEYWORDS = {
 };
 
 /**
- * Local LLM Scorer - on-device ML-based security scoring
+ * Local LLM Scorer - ML-based security scoring
  *
- * @example
+ * @example Basic usage with built-in heuristics
  * ```typescript
  * const scorer = new LocalLlmScorer({
  *   modelId: 'Xenova/all-MiniLM-L6-v2',
- *   mode: 'classification',
- *   cacheDir: './.cache/models'
  * });
- *
  * await scorer.initialize();
  * const result = await scorer.score(features);
+ * ```
+ *
+ * @example With custom analyzer (external LLM)
+ * ```typescript
+ * const scorer = new LocalLlmScorer({
+ *   modelId: 'Xenova/all-MiniLM-L6-v2',
+ *   customAnalyzer: {
+ *     async analyze(prompt, features) {
+ *       const response = await myLLM.score(prompt);
+ *       return { score: response.risk, signals: response.signals };
+ *     }
+ *   }
+ * });
  * ```
  */
 export class LocalLlmScorer extends BaseScorer {
@@ -63,7 +68,7 @@ export class LocalLlmScorer extends BaseScorer {
 
   private pipeline: Pipeline | null = null;
   private initPromise: Promise<void> | null = null;
-  private fallbackScorer: RuleBasedScorer | null = null;
+  private readonly fallbackScorer: RuleBasedScorer | null;
   private readonly config: LocalLlmConfig;
 
   constructor(config: LocalLlmConfig) {
@@ -77,9 +82,7 @@ export class LocalLlmScorer extends BaseScorer {
     };
 
     // Create fallback scorer if enabled
-    if (this.config.fallbackToRules !== false) {
-      this.fallbackScorer = new RuleBasedScorer();
-    }
+    this.fallbackScorer = this.config.fallbackToRules !== false ? new RuleBasedScorer() : null;
   }
 
   /**
@@ -116,6 +119,11 @@ export class LocalLlmScorer extends BaseScorer {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Pipeline type is complex
       this.pipeline = pipelineFn as any as Pipeline;
 
+      // Initialize custom analyzer if provided
+      if (this.config.customAnalyzer?.initialize) {
+        await this.config.customAnalyzer.initialize();
+      }
+
       this.ready = true;
     } catch (error) {
       this.initPromise = null;
@@ -126,6 +134,12 @@ export class LocalLlmScorer extends BaseScorer {
             error instanceof Error ? error.message : String(error)
           }`,
         );
+
+        // Initialize custom analyzer even when model fails (it may not need the model)
+        if (this.config.customAnalyzer?.initialize) {
+          await this.config.customAnalyzer.initialize();
+        }
+
         this.ready = true; // Ready with fallback
       } else {
         throw new LocalLlmScorerError(
@@ -141,7 +155,32 @@ export class LocalLlmScorer extends BaseScorer {
   async score(features: ExtractedFeatures): Promise<ScoringResult> {
     const startTime = performance.now();
 
-    // If model failed to load and we have fallback
+    // If custom analyzer is provided, use it even if model failed to load
+    if (this.config.customAnalyzer) {
+      try {
+        if (this.config.mode === 'similarity') {
+          return await this.scoreWithSimilarity(features, startTime);
+        }
+        return await this.scoreWithClassification(features, startTime);
+      } catch (error) {
+        // On error, try fallback
+        if (this.fallbackScorer) {
+          console.warn(
+            `[LocalLlmScorer] Custom analyzer failed, using fallback: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          const result = await this.fallbackScorer.score(features);
+          return {
+            ...result,
+            scorerType: 'local-llm',
+          };
+        }
+        throw error;
+      }
+    }
+
+    // If model failed to load and we have fallback (no custom analyzer)
     if (!this.pipeline && this.fallbackScorer) {
       const result = await this.fallbackScorer.score(features);
       return {
@@ -174,19 +213,14 @@ export class LocalLlmScorer extends BaseScorer {
   /**
    * Score using text classification approach
    *
-   * Since we don't have a fine-tuned security classifier,
-   * we use embeddings + keyword analysis as a proxy.
+   * Uses custom analyzer if configured, otherwise falls back to heuristic analysis.
    */
   private async scoreWithClassification(features: ExtractedFeatures, startTime: number): Promise<ScoringResult> {
     // Convert features to text prompt
     const prompt = this.featuresToPrompt(features);
 
-    // Get embedding for the prompt
-    const embedding = await this.getEmbedding(prompt);
-
-    // Score based on semantic content (using keyword heuristics for now)
-    // In production, this would compare against known malicious pattern embeddings
-    const { score, signals } = this.analyzePrompt(prompt, features);
+    // Score using custom analyzer or built-in heuristics
+    const { score, signals } = await this.analyzePrompt(prompt, features);
 
     return {
       totalScore: this.clampScore(score),
@@ -204,13 +238,8 @@ export class LocalLlmScorer extends BaseScorer {
     // Convert features to text prompt
     const prompt = this.featuresToPrompt(features);
 
-    // Get embedding
-    const embedding = await this.getEmbedding(prompt);
-    // In production, this embedding would be compared against a VectoriaDB
-    // of known malicious patterns to find similar ones.
-
-    // For this example, we use the same heuristic analysis as a placeholder
-    const { score, signals } = this.analyzePrompt(prompt, features);
+    // Score using custom analyzer or built-in heuristics
+    const { score, signals } = await this.analyzePrompt(prompt, features);
 
     // Add similarity mode signal
     signals.push({
@@ -227,22 +256,6 @@ export class LocalLlmScorer extends BaseScorer {
       scoringTimeMs: performance.now() - startTime,
       scorerType: 'local-llm',
     };
-  }
-
-  /**
-   * Get embedding for text
-   */
-  private async getEmbedding(text: string): Promise<Float32Array> {
-    if (!this.pipeline) {
-      throw new LocalLlmScorerError('Pipeline not initialized');
-    }
-
-    const output = await this.pipeline(text, {
-      pooling: 'mean',
-      normalize: true,
-    });
-
-    return new Float32Array(output.data);
   }
 
   /**
@@ -301,44 +314,73 @@ export class LocalLlmScorer extends BaseScorer {
   /**
    * Analyze prompt for risk signals
    *
-   * This is a heuristic approach. In production, this would be replaced
-   * with actual model inference or VectoriaDB similarity search.
+   * Uses custom analyzer if provided, otherwise falls back to built-in heuristics.
    */
-  private analyzePrompt(prompt: string, features: ExtractedFeatures): { score: number; signals: RiskSignal[] } {
+  private async analyzePrompt(
+    prompt: string,
+    features: ExtractedFeatures,
+  ): Promise<{ score: number; signals: RiskSignal[] }> {
+    // Use custom analyzer if provided
+    if (this.config.customAnalyzer) {
+      return this.config.customAnalyzer.analyze(prompt, features);
+    }
+
+    // Fall back to built-in heuristic analysis
+    return this.analyzeWithHeuristics(prompt, features);
+  }
+
+  /**
+   * Built-in heuristic analysis for risk signals
+   *
+   * This is a keyword-based approach used when no custom analyzer is provided.
+   */
+  private analyzeWithHeuristics(prompt: string, features: ExtractedFeatures): { score: number; signals: RiskSignal[] } {
     const signals: RiskSignal[] = [];
     let totalScore = 0;
     const promptLower = prompt.toLowerCase();
 
-    // Check for critical keywords
+    // Check for critical keywords (report all matches, cap total contribution)
+    const criticalMatches: string[] = [];
     for (const keyword of RISK_KEYWORDS.critical) {
       if (promptLower.includes(keyword)) {
-        const score = 25;
-        totalScore += score;
-        signals.push({
-          id: 'ML_CRITICAL_KEYWORD',
-          score,
-          description: `Critical security keyword detected: ${keyword}`,
-          level: 'critical',
-          context: { keyword },
-        });
-        break; // Only add once
+        criticalMatches.push(keyword);
       }
     }
+    if (criticalMatches.length > 0) {
+      // Score: 25 for first match + 5 for each additional (capped at 40 total)
+      const score = Math.min(40, 25 + (criticalMatches.length - 1) * 5);
+      totalScore += score;
+      signals.push({
+        id: 'ML_CRITICAL_KEYWORD',
+        score,
+        description: `Critical security keyword${
+          criticalMatches.length > 1 ? 's' : ''
+        } detected: ${criticalMatches.join(', ')}`,
+        level: 'critical',
+        context: { keywords: criticalMatches },
+      });
+    }
 
-    // Check for high risk keywords
+    // Check for high risk keywords (report all matches, cap total contribution)
+    const highRiskMatches: string[] = [];
     for (const keyword of RISK_KEYWORDS.high) {
       if (promptLower.includes(keyword)) {
-        const score = 15;
-        totalScore += score;
-        signals.push({
-          id: 'ML_HIGH_RISK_KEYWORD',
-          score,
-          description: `High risk keyword detected: ${keyword}`,
-          level: 'high',
-          context: { keyword },
-        });
-        break;
+        highRiskMatches.push(keyword);
       }
+    }
+    if (highRiskMatches.length > 0) {
+      // Score: 15 for first match + 5 for each additional (capped at 30 total)
+      const score = Math.min(30, 15 + (highRiskMatches.length - 1) * 5);
+      totalScore += score;
+      signals.push({
+        id: 'ML_HIGH_RISK_KEYWORD',
+        score,
+        description: `High risk keyword${highRiskMatches.length > 1 ? 's' : ''} detected: ${highRiskMatches.join(
+          ', ',
+        )}`,
+        level: 'high',
+        context: { keywords: highRiskMatches },
+      });
     }
 
     // Exfiltration pattern detection (enhanced)
@@ -409,6 +451,7 @@ export class LocalLlmScorer extends BaseScorer {
     this.pipeline = null;
     this.initPromise = null;
     this.fallbackScorer?.dispose?.();
+    this.config.customAnalyzer?.dispose?.();
     super.dispose();
   }
 }

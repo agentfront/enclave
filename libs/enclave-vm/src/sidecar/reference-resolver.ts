@@ -44,12 +44,8 @@ export interface CompositeHandle {
  * Check if a value is a composite handle
  */
 export function isCompositeHandle(value: unknown): value is CompositeHandle {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    (value as any).__type === 'composite' &&
-    Array.isArray((value as any).__parts)
-  );
+  const obj = value as Record<string, unknown>;
+  return typeof value === 'object' && value !== null && obj['__type'] === 'composite' && Array.isArray(obj['__parts']);
 }
 
 /**

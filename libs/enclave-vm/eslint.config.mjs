@@ -9,7 +9,10 @@ export default [
         'error',
         {
           ignoredFiles: ['{projectRoot}/eslint.config.{js,cjs,mjs,ts,cts,mts}'],
-          ignoredDependencies: ['@huggingface/transformers'], // Optional peer dependency loaded dynamically
+          ignoredDependencies: [
+            '@huggingface/transformers', // Optional peer dependency loaded dynamically
+            '@jest/reporters', // Test-only dependency used by benchmark reporter
+          ],
         },
       ],
     },

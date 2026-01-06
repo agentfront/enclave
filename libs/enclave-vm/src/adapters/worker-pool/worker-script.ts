@@ -332,6 +332,9 @@ function createSandbox(requestId: string, config: SerializedConfig): Record<stri
   sandbox['NaN'] = NaN;
   sandbox['Infinity'] = Infinity;
 
+  // Iteration limit for transformed loops
+  sandbox['__maxIterations'] = config.maxIterations ?? 10000;
+
   // Add custom globals if provided
   if (config.globals) {
     for (const [key, value] of Object.entries(config.globals)) {

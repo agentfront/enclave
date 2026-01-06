@@ -84,10 +84,28 @@ const enclave = new Enclave({
 | Pattern | Description |
 |---------|-------------|
 | `EXFIL_LIST_SEND` | List/query followed by send/export |
-| `RAPID_ENUMERATION` | Same operation called >10 times in 5s |
+| `RAPID_ENUMERATION` | Same operation called >30 times in 5s (configurable) |
 | `CREDENTIAL_EXFIL` | Credential access + external operation |
 | `BULK_OPERATION` | Bulk/batch/mass operation names |
 | `DELETE_AFTER_ACCESS` | Delete operation after data access |
+
+### Configuring Rapid Enumeration
+
+The `RAPID_ENUMERATION` pattern threshold is configurable:
+
+```typescript
+const enclave = new Enclave({
+  doubleVm: {
+    parentValidation: {
+      rapidEnumerationThreshold: 50, // Default: 30
+      rapidEnumerationOverrides: {
+        'search': 100, // Allow 100 search calls
+        'users.list': 200, // Allow 200 list calls
+      },
+    },
+  },
+});
+```
 
 ### Custom Patterns
 
@@ -109,6 +127,65 @@ const enclave = new Enclave({
   },
 });
 ```
+
+### `PartialDoubleVmConfig`
+
+The `PartialDoubleVmConfig` type is the public API for configuring the Double VM layer. All properties are optional, with sensible defaults applied automatically.
+
+**Import:**
+
+```typescript
+import type { PartialDoubleVmConfig } from 'enclave-vm';
+```
+
+**Properties:**
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `enabled` | `boolean` | `true` | Enable/disable the Double VM layer |
+| `parentTimeoutBuffer` | `number` | `1000` | Extra timeout (ms) for parent VM operations |
+| `parentValidation` | `object` | See below | Validation settings for the parent VM |
+
+**`parentValidation` options:**
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `validateOperationNames` | `boolean` | `true` | Validate operation names against patterns |
+| `allowedOperationPattern` | `RegExp` | — | Whitelist pattern (only matching ops allowed) |
+| `blockedOperationPatterns` | `RegExp[]` | — | Blacklist patterns (matching ops blocked) |
+| `maxOperationsPerSecond` | `number` | `100` | Rate limit for operations |
+| `blockSuspiciousSequences` | `boolean` | `true` | Detect suspicious operation sequences |
+| `rapidEnumerationThreshold` | `number` | `30` | Threshold for rapid enumeration detection |
+| `rapidEnumerationOverrides` | `Record<string, number>` | `{}` | Per-operation threshold overrides |
+| `suspiciousPatterns` | `SuspiciousPattern[]` | — | Custom pattern detectors |
+
+**Usage Examples:**
+
+```typescript
+// Minimal: just enable/disable
+const config: PartialDoubleVmConfig = {
+  enabled: true,
+};
+
+// With validation customization
+const config: PartialDoubleVmConfig = {
+  parentTimeoutBuffer: 2000,
+  parentValidation: {
+    maxOperationsPerSecond: 50,
+    blockedOperationPatterns: [/^admin:/i, /^internal\./],
+  },
+};
+
+// Disable Double VM (not recommended for production)
+const config: PartialDoubleVmConfig = {
+  enabled: false,
+};
+```
+
+**When to use `PartialDoubleVmConfig` vs full config:**
+
+- Use `PartialDoubleVmConfig` (the exported type) when configuring `Enclave` — it accepts partial options with defaults
+- The full `DoubleVmConfig` is used internally and requires all properties to be set
 
 ## API
 
@@ -136,6 +213,47 @@ Clean up resources.
 ```typescript
 enclave.dispose();
 ```
+
+## Runtime Globals — `__maxIterations`
+
+Scripts executed by the enclave VM have access to a special runtime global `__maxIterations` that reflects the configured iteration limit. This global is exposed as a **non-writable, non-configurable** number for safety.
+
+### Reading `__maxIterations`
+
+```typescript
+const enclave = new Enclave({
+  maxIterations: 50000, // Configure iteration limit
+  toolHandler: async (name, args) => { /* ... */ },
+});
+
+const result = await enclave.run(`
+  // Access the configured iteration limit
+  const limit = __maxIterations;
+
+  // Use it for adaptive logic
+  const safeLimit = Math.min(limit / 2, 10000);
+
+  return { configuredLimit: limit, safeLimit };
+`);
+
+// result.value = { configuredLimit: 50000, safeLimit: 10000 }
+```
+
+### Use Cases
+
+- **Adaptive algorithms**: Adjust iteration bounds based on the configured limit
+- **Progress reporting**: Calculate percentage completion relative to the limit
+- **Self-throttling**: Implement custom iteration budgets within scripts
+
+### Security Notes
+
+- The global is **read-only** — attempts to modify it will fail silently or throw depending on strict mode
+- The value matches the `maxIterations` configuration passed to `Enclave`
+- Default value is `10000` if not explicitly configured
+
+### Cross-reference
+
+See the `maxIterations` option in [CreateEnclaveOptions](#createenclaveoptions) for configuration details.
 
 ## Reference Sidecar
 

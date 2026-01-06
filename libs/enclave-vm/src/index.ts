@@ -31,6 +31,7 @@ export type {
   SecureProxyLevelConfig,
   ReferenceSidecarOptions,
   WorkerPoolConfig,
+  PartialDoubleVmConfig,
 } from './types';
 
 // Security level configurations

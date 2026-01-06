@@ -21,6 +21,142 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     maxToolCalls: 10,
   };
 
+  describe('Obvious Infinite Loop Detection (AST Level)', () => {
+    it('should block for(;;) at AST validation', async () => {
+      const enclave = new Enclave(STRICT_LIMITS);
+
+      const code = `
+        for(;;) {
+          // This should never run - blocked at AST level
+        }
+        return 'escaped!';
+      `;
+
+      const result = await enclave.run(code);
+
+      // Should fail at AST validation with INFINITE_LOOP error
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Infinite loop');
+
+      enclave.dispose();
+    });
+
+    it('should block for(;true;) at AST validation', async () => {
+      const enclave = new Enclave(STRICT_LIMITS);
+
+      const code = `
+        for(;true;) {
+          // This should never run
+        }
+        return 'escaped!';
+      `;
+
+      const result = await enclave.run(code);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Infinite loop');
+
+      enclave.dispose();
+    });
+
+    it('should block for(;1;) at AST validation', async () => {
+      const enclave = new Enclave(STRICT_LIMITS);
+
+      const code = `
+        for(;1;) {
+          // This should never run
+        }
+        return 'escaped!';
+      `;
+
+      const result = await enclave.run(code);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain('Infinite loop');
+
+      enclave.dispose();
+    });
+
+    it('should block while(true) by ForbiddenLoopRule (while blocked by default)', async () => {
+      const enclave = new Enclave(STRICT_LIMITS);
+
+      const code = `
+        while(true) {
+          // This should never run
+        }
+        return 'escaped!';
+      `;
+
+      const result = await enclave.run(code);
+
+      // While loops are blocked by default in AgentScript preset
+      expect(result.success).toBe(false);
+      // Should be blocked by ForbiddenLoopRule (while loop not allowed)
+      expect(result.error?.message).toMatch(/loop|not allowed/i);
+
+      enclave.dispose();
+    });
+
+    it('should block do{}while(true) by ForbiddenLoopRule (do-while blocked by default)', async () => {
+      const enclave = new Enclave(STRICT_LIMITS);
+
+      const code = `
+        do {
+          // This should never run (after first iteration)
+        } while(true);
+        return 'escaped!';
+      `;
+
+      const result = await enclave.run(code);
+
+      // Do-while loops are blocked by default in AgentScript preset
+      expect(result.success).toBe(false);
+      // Should be blocked by ForbiddenLoopRule (do-while loop not allowed)
+      expect(result.error?.message).toMatch(/loop|not allowed/i);
+
+      enclave.dispose();
+    });
+
+    it('should allow bounded for loops', async () => {
+      const enclave = new Enclave(STRICT_LIMITS);
+
+      const code = `
+        let sum = 0;
+        for (let i = 0; i < 10; i++) {
+          sum += i;
+        }
+        return sum;
+      `;
+
+      const result = await enclave.run(code);
+
+      expect(result.success).toBe(true);
+      expect(result.value).toBe(45);
+
+      enclave.dispose();
+    });
+
+    it('should hit runtime iteration limit for large bounded loops', async () => {
+      const enclave = new Enclave(STRICT_LIMITS);
+
+      const code = `
+        let sum = 0;
+        for (let i = 0; i < 1000; i++) {
+          sum += i;
+        }
+        return sum;
+      `;
+
+      const result = await enclave.run(code);
+
+      // Should be stopped by runtime iteration limit (100)
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/iteration|limit/i);
+
+      enclave.dispose();
+    });
+  });
+
   describe('Recursion Depth Limit Tests', () => {
     it('should block or limit self-referencing arrow function recursion', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
