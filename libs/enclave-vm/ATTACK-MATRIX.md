@@ -229,41 +229,76 @@ This document provides a comprehensive mapping of all security tests in the encl
 #### ATK-COBS: Constructor Obfuscation (CWE-693)
 
 **File:** `constructor-obfuscation-attacks.spec.ts`
-**Tests:** ~40
+**Tests:** 33
 **Status:** 🔄 Pending Reorganization
 
-| Test ID     | Description                          | Defense Layer  |
-| ----------- | ------------------------------------ | -------------- |
-| ATK-COBS-01 | Block string concat "con"+"structor" | SecureProxy    |
-| ATK-COBS-02 | Block template literal building      | SecureProxy    |
-| ATK-COBS-03 | Block Array.join building            | SecureProxy    |
-| ATK-COBS-04 | Block String.fromCharCode            | SecureProxy    |
-| ATK-COBS-05 | Block reverse string                 | SecureProxy    |
-| ATK-COBS-06 | Block Base64 decode                  | SecureProxy    |
-| ATK-COBS-07 | Block hex escape sequences           | SecureProxy    |
-| ATK-COBS-08 | Block unicode escapes                | SecureProxy    |
-| ATK-COBS-09 | Block computed property access       | AST Validation |
+| Test ID     | Description                           | Defense Layer   |
+| ----------- | ------------------------------------- | --------------- |
+| ATK-COBS-01 | Block string concat "con"+"structor"  | SecureProxy     |
+| ATK-COBS-02 | Block template literal building       | SecureProxy     |
+| ATK-COBS-03 | Block Array.join building             | SecureProxy     |
+| ATK-COBS-04 | Block String.fromCharCode             | SecureProxy     |
+| ATK-COBS-05 | Block reverse string                  | SecureProxy     |
+| ATK-COBS-06 | Block Base64 decode                   | SecureProxy     |
+| ATK-COBS-07 | Block hex escape sequences            | SecureProxy     |
+| ATK-COBS-08 | Block unicode escapes                 | SecureProxy     |
+| ATK-COBS-09 | Block computed property destructuring | AST Validation  |
+| ATK-COBS-10 | Block **proto** via string building   | SecureProxy     |
+| ATK-COBS-11 | Block **proto** + concat constructor  | SecureProxy     |
+| ATK-COBS-12 | Block Object.getPrototypeOf           | AST Validation  |
+| ATK-COBS-13 | Block Reflect.get                     | AST Validation  |
+| ATK-COBS-14 | Block Reflect.getPrototypeOf          | AST Validation  |
+| ATK-COBS-15 | Block toString coercion attack        | SecureProxy     |
+| ATK-COBS-16 | Block Symbol.toPrimitive coercion     | SecureProxy     |
+| ATK-COBS-17 | Block String.replace attack           | SecureProxy     |
+| ATK-COBS-18 | Block decodeURIComponent attack       | SecureProxy     |
+| ATK-COBS-19 | Block nested template literal         | SecureProxy     |
+| ATK-COBS-20 | Block slice extraction attack         | SecureProxy     |
+| ATK-COBS-21 | Block optional chaining attack        | SecureProxy     |
+| ATK-COBS-22 | Block comma operator attack           | SecureProxy     |
+| ATK-COBS-23 | Block RegExp literals                 | AST Validation  |
+| ATK-COBS-24 | Block constructor on tool results     | SecureProxy     |
+| ATK-COBS-25 | Block user-defined function decl      | AST Validation  |
+| ATK-COBS-26 | Block Promise.constructor access      | SecureProxy     |
+| ATK-COBS-27 | Block chained Promise constructor     | SecureProxy     |
+| ATK-COBS-28 | Allow await callTool after proxy fix  | ✅ Safe Pattern |
+| ATK-COBS-29 | Allow Promise.then after proxy fix    | ✅ Safe Pattern |
+| ATK-COBS-30 | Verify all attack vectors documented  | ✅ Coverage     |
+| ATK-COBS-31 | PERMISSIVE mode computed property     | Config Test     |
+| ATK-COBS-32 | Block **proto** in PERMISSIVE mode    | SecureProxy     |
+| ATK-COBS-33 | Explicit secureProxyConfig override   | Config Test     |
 
 #### ATK-FGAD: Function Gadget Attacks (CWE-693)
 
 **File:** `function-gadget-attacks.spec.ts`
-**Tests:** ~50
+**Tests:** 60
 **Status:** 🔄 Pending Reorganization
 
-| Test ID     | Description                     | Defense Layer |
-| ----------- | ------------------------------- | ------------- |
-| ATK-FGAD-01 | String.constructor.constructor  | VM Isolation  |
-| ATK-FGAD-02 | Number.constructor.constructor  | VM Isolation  |
-| ATK-FGAD-03 | Array.constructor.constructor   | VM Isolation  |
-| ATK-FGAD-04 | Array.map callback injection    | VM Isolation  |
-| ATK-FGAD-05 | Array.filter callback injection | VM Isolation  |
-| ATK-FGAD-06 | valueOf coercion exploitation   | VM Isolation  |
-| ATK-FGAD-07 | toString coercion exploitation  | VM Isolation  |
-| ATK-FGAD-08 | Function.prototype.call         | VM Isolation  |
-| ATK-FGAD-09 | Function.prototype.apply        | VM Isolation  |
-| ATK-FGAD-10 | Tagged template attacks         | SecureProxy   |
-| ATK-FGAD-11 | JSON.parse reviver attack       | VM Isolation  |
-| ATK-FGAD-12 | Getter/setter attacks           | VM Isolation  |
+> **Note:** Only representative tests shown. See `function-gadget-attacks.spec.ts` for full ATK-FGAD-01 through ATK-FGAD-60.
+
+| Test ID     | Description                        | Defense Layer |
+| ----------- | ---------------------------------- | ------------- |
+| ATK-FGAD-01 | String.constructor.constructor     | VM Isolation  |
+| ATK-FGAD-04 | Number.constructor.constructor     | VM Isolation  |
+| ATK-FGAD-06 | Boolean.constructor.constructor    | VM Isolation  |
+| ATK-FGAD-07 | Array.constructor.constructor      | VM Isolation  |
+| ATK-FGAD-08 | Object.constructor.constructor     | VM Isolation  |
+| ATK-FGAD-11 | Array.map callback injection       | VM Isolation  |
+| ATK-FGAD-13 | Array.filter callback injection    | VM Isolation  |
+| ATK-FGAD-14 | Array.reduce callback injection    | VM Isolation  |
+| ATK-FGAD-19 | valueOf coercion exploitation      | VM Isolation  |
+| ATK-FGAD-21 | toString coercion exploitation     | VM Isolation  |
+| ATK-FGAD-25 | Function.prototype.call            | VM Isolation  |
+| ATK-FGAD-27 | Function.prototype.apply           | VM Isolation  |
+| ATK-FGAD-28 | Function.prototype.bind            | VM Isolation  |
+| ATK-FGAD-31 | String.raw tagged template         | VM Isolation  |
+| ATK-FGAD-35 | JSON.parse reviver attack          | VM Isolation  |
+| ATK-FGAD-37 | JSON.stringify replacer attack     | VM Isolation  |
+| ATK-FGAD-43 | Getter exploitation                | VM Isolation  |
+| ATK-FGAD-45 | Setter exploitation                | VM Isolation  |
+| ATK-FGAD-49 | Object.prototype pollution         | VM Isolation  |
+| ATK-FGAD-55 | Coercion + Constructor chain       | VM Isolation  |
+| ATK-FGAD-60 | All vectors documentation coverage | ✅ Coverage   |
 
 #### ATK-CVE: Known CVE Exploits
 
