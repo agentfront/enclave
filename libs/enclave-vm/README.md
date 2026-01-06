@@ -406,7 +406,7 @@ const enclave = new Enclave({
   toolHandler: async (name, args) => {
     /* ... */
   },
-  scoring: {
+  scoringGate: {
     scorer: 'local-llm',
     localLlm: {
       modelId: 'Xenova/all-MiniLM-L6-v2',

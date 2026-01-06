@@ -93,7 +93,7 @@ if (Object.keys(metrics).length > 0) {
   for (const metric of allMetrics.slice(0, 30)) {
     const status = metric.passed === false ? 'Failed' : metric.passed === true ? 'Passed' : 'No threshold';
     // Note: Assumes all thresholds are upper bounds (value <= threshold)
-    // For lower-bound thresholds (e.g., minimum throughput), set threshold.type = 'min' in the metric
+    // For lower-bound thresholds (e.g., minimum throughput), set thresholdType = 'min' in the metric
     const thresholdOp = metric.thresholdType === 'min' ? '>=' : '<=';
     const threshold = metric.threshold !== undefined ? `${thresholdOp} ${metric.threshold} ${metric.unit || ''}` : '-';
     const value = typeof metric.value === 'number' ? metric.value.toFixed(2) : String(metric.value || 'N/A');

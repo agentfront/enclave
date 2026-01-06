@@ -598,7 +598,7 @@ describe('LocalLlmScorer', () => {
       scorer.dispose();
     });
 
-    it('should initialize custom analyzer', async () => {
+    it('should initialize custom analyzer even when model fails to load', async () => {
       const initializeFn = jest.fn().mockResolvedValue(undefined);
       const customAnalyzer: CustomAnalyzer = {
         analyze: jest.fn().mockResolvedValue({ score: 0, signals: [] }),
@@ -614,9 +614,9 @@ describe('LocalLlmScorer', () => {
       const scorer = new LocalLlmScorer(config);
       await scorer.initialize();
 
-      // Initialize may or may not be called depending on model load
-      // since we use fallback, the model may fail and custom init may not run
-      // But if model loads (or uses fallback), we should still function
+      // Custom analyzer should be initialized regardless of model load success
+      // (model fails since @huggingface/transformers is not installed in tests)
+      expect(initializeFn).toHaveBeenCalledTimes(1);
       expect(scorer.isReady()).toBe(true);
 
       scorer.dispose();

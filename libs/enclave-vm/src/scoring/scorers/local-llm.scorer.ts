@@ -134,6 +134,12 @@ export class LocalLlmScorer extends BaseScorer {
             error instanceof Error ? error.message : String(error)
           }`,
         );
+
+        // Initialize custom analyzer even when model fails (it may not need the model)
+        if (this.config.customAnalyzer?.initialize) {
+          await this.config.customAnalyzer.initialize();
+        }
+
         this.ready = true; // Ready with fallback
       } else {
         throw new LocalLlmScorerError(
