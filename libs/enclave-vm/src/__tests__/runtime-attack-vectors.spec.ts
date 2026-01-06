@@ -1,5 +1,7 @@
 /**
- * Runtime Attack Vectors Test Suite
+ * ATK-RTME: Runtime Attack Vectors Test Suite
+ *
+ * Category: ATK-RTME (CWE-94: Improper Control of Code Generation)
  *
  * This file tests sophisticated JavaScript sandbox escape attacks that
  * bypass AST static analysis and require runtime protection (SecureProxy).
@@ -8,12 +10,22 @@
  * dangerous patterns - they are constructed at runtime through string
  * manipulation, type coercion, or other dynamic techniques.
  *
- * Attack Categories:
- * 1. Computed Property Building (string manipulation to build "constructor")
- * 2. Iterator/Generator Chain Attacks (prototype chain walks)
- * 3. Error Object Exploitation (stack trace manipulation)
- * 4. Type Coercion Attacks (Symbol.toPrimitive, valueOf, toString)
- * 5. Known CVE Patterns (historical sandbox escape vulnerabilities)
+ * Test Categories:
+ * - ATK-RTME-01 to ATK-RTME-20: Computed Property Building Attacks
+ * - ATK-RTME-21 to ATK-RTME-30: Iterator/Generator Chain Attacks
+ * - ATK-RTME-31 to ATK-RTME-40: Error Object Exploitation
+ * - ATK-RTME-41 to ATK-RTME-46: Type Coercion Attacks
+ * - ATK-RTME-47 to ATK-RTME-58: Known CVE Patterns
+ * - ATK-RTME-59 to ATK-RTME-65: Tool Result Attacks
+ * - ATK-RTME-66 to ATK-RTME-72: Syntax Obfuscation Attacks
+ * - ATK-RTME-73 to ATK-RTME-80: Custom Globals Security
+ *
+ * Related CWEs:
+ * - CWE-94: Improper Control of Generation of Code ('Code Injection')
+ * - CWE-693: Protection Mechanism Failure
+ * - CWE-200: Exposure of Sensitive Information
+ *
+ * @packageDocumentation
  *
  * SECURITY MODEL NOTES:
  * ====================
@@ -66,16 +78,16 @@ function expectSecureResult(
   expect(expectedValues).toContain(result.value);
 }
 
-describe('Runtime Attack Vectors (AST-Bypass)', () => {
+describe('ATK-RTME: Runtime Attack Vectors (CWE-94)', () => {
   // ============================================================================
-  // CATEGORY 1: COMPUTED PROPERTY BUILDING ATTACKS
+  // ATK-RTME-01 to ATK-RTME-20: COMPUTED PROPERTY BUILDING ATTACKS
   // These attacks build the string "constructor" or "__proto__" at runtime
   // using various string manipulation techniques that AST cannot detect.
   // ============================================================================
 
-  describe('1. Computed Property Building Attacks', () => {
-    describe('1.1 String Concatenation Variations', () => {
-      it('should block basic string concatenation: "con" + "structor"', async () => {
+  describe('ATK-RTME-01 to ATK-RTME-20: Computed Property Building Attacks', () => {
+    describe('ATK-RTME-01 to ATK-RTME-05: String Concatenation Variations', () => {
+      it('ATK-RTME-01: should block basic string concatenation: "con" + "structor"', async () => {
         const enclave = new Enclave();
         const code = `
           const key = 'con' + 'structor';
@@ -87,7 +99,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         enclave.dispose();
       });
 
-      it('should block multi-part concatenation: "c" + "o" + "n" + ...', async () => {
+      it('ATK-RTME-02: should block multi-part concatenation: "c" + "o" + "n" + ...', async () => {
         const enclave = new Enclave();
         const code = `
           const key = 'c' + 'o' + 'n' + 's' + 't' + 'r' + 'u' + 'c' + 't' + 'o' + 'r';
@@ -99,7 +111,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         enclave.dispose();
       });
 
-      it('should block String.concat method', async () => {
+      it('ATK-RTME-03: should block String.concat method', async () => {
         const enclave = new Enclave();
         const code = `
           const key = 'con'.concat('stru', 'ctor');
@@ -111,7 +123,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         enclave.dispose();
       });
 
-      it('should block template literal interpolation', async () => {
+      it('ATK-RTME-04: should block template literal interpolation', async () => {
         const enclave = new Enclave();
         const code = `
           const c = 'con';
@@ -125,7 +137,7 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
         enclave.dispose();
       });
 
-      it('should block nested template literal expressions', async () => {
+      it('ATK-RTME-05: should block nested template literal expressions', async () => {
         const enclave = new Enclave();
         const code = `
           const key = \`\${'con'}\${'str' + 'uctor'}\`;
@@ -138,8 +150,8 @@ describe('Runtime Attack Vectors (AST-Bypass)', () => {
       });
     });
 
-    describe('1.2 Array Join Methods', () => {
-      it('should block Array.join() attack', async () => {
+    describe('ATK-RTME-06 to ATK-RTME-08: Array Join Methods', () => {
+      it('ATK-RTME-06: should block Array.join() attack', async () => {
         const enclave = new Enclave();
         const code = `
           const key = ['con', 'struct', 'or'].join('');

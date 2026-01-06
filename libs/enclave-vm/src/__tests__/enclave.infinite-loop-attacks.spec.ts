@@ -1,5 +1,7 @@
 /**
- * Enclave Infinite Loop Attack Tests
+ * ATK-LOOP: Infinite Loop Attack Prevention Tests
+ *
+ * Category: ATK-LOOP (CWE-835: Loop with Unreachable Exit Condition)
  *
  * Tests various techniques to bypass AgentScript loop restrictions
  * and create infinite or resource-exhausting loops.
@@ -8,12 +10,35 @@
  * 1. Be blocked by AST validation (VALIDATION_ERROR)
  * 2. Be stopped by runtime limits (iteration/timeout)
  * 3. Complete safely without infinite loop
+ *
+ * Test Categories:
+ * - ATK-LOOP-01 to ATK-LOOP-07: Obvious Infinite Loop Detection (AST Level)
+ * - ATK-LOOP-08 to ATK-LOOP-10: Recursion Depth Limit
+ * - ATK-LOOP-11 to ATK-LOOP-13: Array Modification During Iteration
+ * - ATK-LOOP-14 to ATK-LOOP-16: Map/Filter/Reduce Attacks
+ * - ATK-LOOP-17 to ATK-LOOP-19: For Loop Counter Manipulation
+ * - ATK-LOOP-20 to ATK-LOOP-22: Object Property Access Attacks
+ * - ATK-LOOP-23 to ATK-LOOP-25: JSON Parsing Attacks
+ * - ATK-LOOP-26 to ATK-LOOP-27: Array.from Attacks
+ * - ATK-LOOP-28 to ATK-LOOP-29: Tool Call Loop Attacks
+ * - ATK-LOOP-30 to ATK-LOOP-31: String Operation Attacks
+ * - ATK-LOOP-32 to ATK-LOOP-33: Combined Attack Vectors
+ * - ATK-LOOP-34 to ATK-LOOP-38: ReDoS Attack Patterns
+ * - ATK-LOOP-39 to ATK-LOOP-42: Generator/Iterator DoS Attacks
+ * - ATK-LOOP-43+: Deep Recursion Attacks
+ *
+ * Related CWEs:
+ * - CWE-835: Loop with Unreachable Exit Condition
+ * - CWE-400: Uncontrolled Resource Consumption
+ * - CWE-674: Uncontrolled Recursion
+ *
+ * @packageDocumentation
  */
 
 import { Enclave } from '../enclave';
 import type { ToolHandler } from '../types';
 
-describe('Enclave - Infinite Loop Attack Vectors', () => {
+describe('ATK-LOOP: Infinite Loop Attack Prevention (CWE-835)', () => {
   // Strict limits for testing
   const STRICT_LIMITS = {
     maxIterations: 100,
@@ -21,8 +46,11 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     maxToolCalls: 10,
   };
 
-  describe('Obvious Infinite Loop Detection (AST Level)', () => {
-    it('should block for(;;) at AST validation', async () => {
+  // ============================================================================
+  // ATK-LOOP-01 to ATK-LOOP-07: Obvious Infinite Loop Detection (AST Level)
+  // ============================================================================
+  describe('ATK-LOOP-01 to ATK-LOOP-07: Obvious Infinite Loop Detection (AST Level)', () => {
+    it('ATK-LOOP-01: should block for(;;) at AST validation', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -41,7 +69,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block for(;true;) at AST validation', async () => {
+    it('ATK-LOOP-02: should block for(;true;) at AST validation', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -59,7 +87,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block for(;1;) at AST validation', async () => {
+    it('ATK-LOOP-03: should block for(;1;) at AST validation', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -77,7 +105,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block while(true) by ForbiddenLoopRule (while blocked by default)', async () => {
+    it('ATK-LOOP-04: should block while(true) by ForbiddenLoopRule (while blocked by default)', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -97,7 +125,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block do{}while(true) by ForbiddenLoopRule (do-while blocked by default)', async () => {
+    it('ATK-LOOP-05: should block do{}while(true) by ForbiddenLoopRule (do-while blocked by default)', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -117,7 +145,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should allow bounded for loops', async () => {
+    it('ATK-LOOP-06: should allow bounded for loops', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -136,7 +164,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should hit runtime iteration limit for large bounded loops', async () => {
+    it('ATK-LOOP-07: should hit runtime iteration limit for large bounded loops', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -157,8 +185,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('Recursion Depth Limit Tests', () => {
-    it('should block or limit self-referencing arrow function recursion', async () => {
+  describe('ATK-LOOP-08 to ATK-LOOP-10: Recursion Depth Limit', () => {
+    it('ATK-LOOP-08: should block or limit self-referencing arrow function recursion', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -180,7 +208,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block or limit mutual recursion via arrow functions', async () => {
+    it('ATK-LOOP-09: should block or limit mutual recursion via arrow functions', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -200,7 +228,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block or limit nested arrow function recursion', async () => {
+    it('ATK-LOOP-10: should block or limit nested arrow function recursion', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -223,8 +251,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('Array Modification During Iteration Attacks', () => {
-    it('should handle for-of with array.push during iteration', async () => {
+  describe('ATK-LOOP-11 to ATK-LOOP-13: Array Modification During Iteration', () => {
+    it('ATK-LOOP-11: should handle for-of with array.push during iteration', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       // This is the key attack: push to array during for-of iteration
@@ -249,7 +277,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle callTool result modification during iteration', async () => {
+    it('ATK-LOOP-12: should handle callTool result modification during iteration', async () => {
       const toolHandler: ToolHandler = async () => {
         return { items: [{ id: 1 }, { id: 2 }, { id: 3 }] };
       };
@@ -279,7 +307,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle nested for-of with mutual array modification', async () => {
+    it('ATK-LOOP-13: should handle nested for-of with mutual array modification', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -306,8 +334,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('Map/Filter/Reduce Attacks', () => {
-    it('should handle map callback that modifies source array', async () => {
+  describe('ATK-LOOP-14 to ATK-LOOP-16: Map/Filter/Reduce Attacks', () => {
+    it('ATK-LOOP-14: should handle map callback that modifies source array', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -336,7 +364,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle reduce with accumulator that causes iteration', async () => {
+    it('ATK-LOOP-15: should handle reduce with accumulator that causes iteration', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -364,7 +392,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle filter with side effect trying to extend array', async () => {
+    it('ATK-LOOP-16: should handle filter with side effect trying to extend array', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -391,8 +419,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('For Loop Counter Manipulation Attacks', () => {
-    it('should handle decrementing loop counter (i--)', async () => {
+  describe('ATK-LOOP-17 to ATK-LOOP-19: For Loop Counter Manipulation', () => {
+    it('ATK-LOOP-17: should handle decrementing loop counter (i--)', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -414,7 +442,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle loop counter reset inside body', async () => {
+    it('ATK-LOOP-18: should handle loop counter reset inside body', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -435,7 +463,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle condition that never becomes false', async () => {
+    it('ATK-LOOP-19: should handle condition that never becomes false', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -457,8 +485,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('Object Property Access Attacks', () => {
-    it('should handle getter that references itself', async () => {
+  describe('ATK-LOOP-20 to ATK-LOOP-22: Object Property Access Attacks', () => {
+    it('ATK-LOOP-20: should handle getter that references itself', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500, // Shorter timeout for stack overflow
@@ -482,7 +510,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle circular toString reference', async () => {
+    it('ATK-LOOP-21: should handle circular toString reference', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500,
@@ -505,7 +533,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle circular valueOf reference', async () => {
+    it('ATK-LOOP-22: should handle circular valueOf reference', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500,
@@ -530,8 +558,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('JSON Parsing Attacks', () => {
-    it('should handle deeply nested JSON', async () => {
+  describe('ATK-LOOP-23 to ATK-LOOP-25: JSON Parsing Attacks', () => {
+    it('ATK-LOOP-23: should handle deeply nested JSON', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       // Create deeply nested JSON string
@@ -555,7 +583,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle JSON.parse reviver that modifies during parsing', async () => {
+    it('ATK-LOOP-24: should handle JSON.parse reviver that modifies during parsing', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -581,7 +609,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle large array in JSON', async () => {
+    it('ATK-LOOP-25: should handle large array in JSON', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -606,8 +634,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('Array.from Attacks', () => {
-    it('should handle Array.from with large length', async () => {
+  describe('ATK-LOOP-26 to ATK-LOOP-27: Array.from Attacks', () => {
+    it('ATK-LOOP-26: should handle Array.from with large length', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -628,7 +656,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     }, 10000);
 
-    it('should handle Array.from with generator-like callback', async () => {
+    it('ATK-LOOP-27: should handle Array.from with generator-like callback', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -652,8 +680,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('Tool Call Loop Attacks', () => {
-    it('should handle tool returning growing array', async () => {
+  describe('ATK-LOOP-28 to ATK-LOOP-29: Tool Call Loop Attacks', () => {
+    it('ATK-LOOP-28: should handle tool returning growing array', async () => {
       let callCount = 0;
       const toolHandler: ToolHandler = async () => {
         callCount++;
@@ -688,7 +716,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle tool that returns self-referential structure', async () => {
+    it('ATK-LOOP-29: should handle tool that returns self-referential structure', async () => {
       const toolHandler: ToolHandler = async () => {
         const obj: Record<string, unknown> = { id: 1, name: 'test' };
         // Note: We can't actually create circular refs in JSON
@@ -718,8 +746,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('String Operation Attacks', () => {
-    it('should handle exponential string growth via repeat', async () => {
+  describe('ATK-LOOP-30 to ATK-LOOP-31: String Operation Attacks', () => {
+    it('ATK-LOOP-30: should handle exponential string growth via repeat', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500,
@@ -741,7 +769,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle regex catastrophic backtracking (ReDoS)', async () => {
+    it('ATK-LOOP-31: should handle regex catastrophic backtracking (ReDoS)', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500,
@@ -766,8 +794,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('Combined Attack Vectors', () => {
-    it('should handle map + recursion + array modification', async () => {
+  describe('ATK-LOOP-32 to ATK-LOOP-33: Combined Attack Vectors', () => {
+    it('ATK-LOOP-32: should handle map + recursion + array modification', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -791,7 +819,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle for-of + tool call + array growth', async () => {
+    it('ATK-LOOP-33: should handle for-of + tool call + array growth', async () => {
       let toolCallCount = 0;
       const toolHandler: ToolHandler = async () => {
         toolCallCount++;
@@ -825,8 +853,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('ReDoS Attack Patterns', () => {
-    it('should block or timeout alternation-based backtracking /^(a|a)*$/', async () => {
+  describe('ATK-LOOP-34 to ATK-LOOP-38: ReDoS Attack Patterns', () => {
+    it('ATK-LOOP-34: should block or timeout alternation-based backtracking /^(a|a)*$/', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500,
@@ -848,7 +876,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block or timeout nested star quantifiers /^(a*)*$/', async () => {
+    it('ATK-LOOP-35: should block or timeout nested star quantifiers /^(a*)*$/', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500,
@@ -868,7 +896,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block or timeout character class quantifiers /^([0-9]+)+$/', async () => {
+    it('ATK-LOOP-36: should block or timeout character class quantifiers /^([0-9]+)+$/', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500,
@@ -888,7 +916,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block or timeout polynomial backtracking /^(.*a){25}$/', async () => {
+    it('ATK-LOOP-37: should block or timeout polynomial backtracking /^(.*a){25}$/', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500,
@@ -908,7 +936,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block or timeout overlapping alternation /^(a|ab)*$/', async () => {
+    it('ATK-LOOP-38: should block or timeout overlapping alternation /^(a|ab)*$/', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500,
@@ -929,8 +957,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('Generator/Iterator DoS Attacks', () => {
-    it('should block infinite generator consumption via function declaration', async () => {
+  describe('ATK-LOOP-39 to ATK-LOOP-42: Generator/Iterator DoS Attacks', () => {
+    it('ATK-LOOP-39: should block infinite generator consumption via function declaration', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       // Generator functions require function* syntax which should be blocked
@@ -950,7 +978,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block circular generator delegation', async () => {
+    it('ATK-LOOP-40: should block circular generator delegation', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -966,7 +994,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block custom infinite iterator via Symbol.iterator', async () => {
+    it('ATK-LOOP-41: should block custom infinite iterator via Symbol.iterator', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -991,7 +1019,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block async generator infinite loop', async () => {
+    it('ATK-LOOP-42: should block async generator infinite loop', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -1013,8 +1041,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('Deep Recursion Attacks', () => {
-    it('should block 3-function mutual recursion chain', async () => {
+  describe('ATK-LOOP-43 to ATK-LOOP-46: Deep Recursion Attacks', () => {
+    it('ATK-LOOP-43: should block 3-function mutual recursion chain', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -1031,7 +1059,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block 10-function recursion chain', async () => {
+    it('ATK-LOOP-44: should block 10-function recursion chain', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -1055,7 +1083,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block Y-combinator recursion', async () => {
+    it('ATK-LOOP-45: should block Y-combinator recursion', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -1071,7 +1099,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block trampoline-style recursion', async () => {
+    it('ATK-LOOP-46: should block trampoline-style recursion', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -1092,8 +1120,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('Microtask Queue Flooding Attacks', () => {
-    it('should block recursive queueMicrotask flooding', async () => {
+  describe('ATK-LOOP-47 to ATK-LOOP-49: Microtask Queue Flooding Attacks', () => {
+    it('ATK-LOOP-47: should block recursive queueMicrotask flooding', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500,
@@ -1116,7 +1144,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block Promise.resolve microtask flooding', async () => {
+    it('ATK-LOOP-48: should block Promise.resolve microtask flooding', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500,
@@ -1139,7 +1167,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should block mutual microtask recursion', async () => {
+    it('ATK-LOOP-49: should block mutual microtask recursion', async () => {
       const enclave = new Enclave({
         ...STRICT_LIMITS,
         timeout: 500,
@@ -1167,8 +1195,8 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
     });
   });
 
-  describe('Edge Cases', () => {
-    it('should handle empty for-of loop', async () => {
+  describe('ATK-LOOP-50 to ATK-LOOP-53: Edge Cases', () => {
+    it('ATK-LOOP-50: should handle empty for-of loop', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -1190,7 +1218,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle loop with break statement', async () => {
+    it('ATK-LOOP-51: should handle loop with break statement', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `
@@ -1214,7 +1242,7 @@ describe('Enclave - Infinite Loop Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should handle single iteration with large side effect', async () => {
+    it('ATK-LOOP-52: should handle single iteration with large side effect', async () => {
       const enclave = new Enclave(STRICT_LIMITS);
 
       const code = `

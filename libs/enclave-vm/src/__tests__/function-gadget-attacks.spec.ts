@@ -1,5 +1,7 @@
 /**
- * Function Gadget Attack Vectors Test Suite
+ * ATK-FGAD: Function Gadget Attack Vectors Test Suite
+ *
+ * Category: ATK-FGAD (CWE-94: Improper Control of Generation of Code)
  *
  * This file tests attacks that exploit methods on primitives and built-in objects
  * to bypass sandbox security. These "gadgets" are legitimate JavaScript features
@@ -17,19 +19,28 @@
  * - Original expected value: sandbox isolation worked
  * - 'blocked'/'blocked-exec': Function creation from strings was blocked
  *
- * Attack Categories:
- * 1. Primitive Constructor Chains (string/number/array → Function)
- * 2. Callback Injection Attacks (map, filter, reduce, sort)
- * 3. Type Coercion Gadgets (valueOf, toString, toJSON)
- * 4. Function.prototype Exploitation (call, apply, bind)
- * 5. Tagged Template Literal Attacks
- * 6. JSON Reviver/Replacer Attacks
- * 7. Implicit Coercion in Operations
- * 8. Getter/Setter Property Attacks
+ * Test Categories:
+ * - ATK-FGAD-01 to ATK-FGAD-10: Primitive Constructor Chains
+ * - ATK-FGAD-11 to ATK-FGAD-18: Callback Injection Attacks
+ * - ATK-FGAD-19 to ATK-FGAD-24: Type Coercion Gadgets
+ * - ATK-FGAD-25 to ATK-FGAD-30: Function.prototype Exploitation
+ * - ATK-FGAD-31 to ATK-FGAD-34: Tagged Template Literal Attacks
+ * - ATK-FGAD-35 to ATK-FGAD-38: JSON Reviver/Replacer Attacks
+ * - ATK-FGAD-39 to ATK-FGAD-42: Implicit Coercion in Operations
+ * - ATK-FGAD-43 to ATK-FGAD-48: Getter/Setter Property Attacks
+ * - ATK-FGAD-49 to ATK-FGAD-54: Prototype Pollution Gadgets
+ * - ATK-FGAD-55 to ATK-FGAD-60: Combined/Chained Gadget Attacks
+ *
+ * Related CWEs:
+ * - CWE-94: Improper Control of Generation of Code ('Code Injection')
+ * - CWE-693: Protection Mechanism Failure
+ * - CWE-1321: Improperly Controlled Modification of Object Prototype Attributes
  *
  * NOTE: Tests use `typeof process` which gets transformed to `typeof __safe_process`
  * and blocked at AST level. This is intended behavior - the enclave blocks even
  * type checks on dangerous globals.
+ *
+ * @packageDocumentation
  */
 
 import { Enclave } from '../enclave';
@@ -65,13 +76,13 @@ function expectSecureResult(
   expectSecureOutcome(result.value, expectedValue);
 }
 
-describe('Function Gadget Attacks', () => {
+describe('ATK-FGAD: Function Gadget Attack Vectors (CWE-94)', () => {
   // ============================================================================
-  // CATEGORY 1: PRIMITIVE CONSTRUCTOR CHAINS
+  // ATK-FGAD-01 to ATK-FGAD-10: PRIMITIVE CONSTRUCTOR CHAINS
   // Access Function constructor through primitive.constructor.constructor
   // ============================================================================
 
-  describe('1. Primitive Constructor Chains', () => {
+  describe('ATK-FGAD-01 to ATK-FGAD-10: Primitive Constructor Chains', () => {
     /**
      * These tests verify that even when accessing the Function constructor through
      * primitive prototype chains, the constructed functions run in sandbox context
@@ -82,8 +93,8 @@ describe('Function Gadget Attacks', () => {
      * - Sandbox's Function creates functions that run in sandbox context
      * - No access to host's process, require, module, __dirname, etc.
      */
-    describe('1.1 String Constructor Chain', () => {
-      it('should ensure "".constructor.constructor returns sandbox Function', async () => {
+    describe('ATK-FGAD-01 to ATK-FGAD-03: String Constructor Chain', () => {
+      it('ATK-FGAD-01: should ensure "".constructor.constructor returns sandbox Function', async () => {
         const enclave = new Enclave();
         const code = `
           const str = '';
@@ -108,7 +119,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should ensure constructed function cannot return host objects', async () => {
+      it('ATK-FGAD-02: should ensure constructed function cannot return host objects', async () => {
         const enclave = new Enclave();
         const code = `
           const str = 'test';
@@ -137,7 +148,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should block code using dangerous globals even via Function constructor', async () => {
+      it('ATK-FGAD-03: should block code using dangerous globals even via Function constructor', async () => {
         const enclave = new Enclave();
         // This code tries to use process.pid via Function constructor
         // The constructed function's code contains 'process' which will be blocked
@@ -164,8 +175,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('1.2 Number Constructor Chain', () => {
-      it('should verify (0).constructor.constructor runs in sandbox', async () => {
+    describe('ATK-FGAD-04 to ATK-FGAD-05: Number Constructor Chain', () => {
+      it('ATK-FGAD-04: should verify (0).constructor.constructor runs in sandbox', async () => {
         const enclave = new Enclave();
         const code = `
           const num = 0;
@@ -189,7 +200,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should verify Number.prototype chain is in sandbox context', async () => {
+      it('ATK-FGAD-05: should verify Number.prototype chain is in sandbox context', async () => {
         const enclave = new Enclave();
         const code = `
           const ctorKey = 'const' + 'ructor';
@@ -216,8 +227,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('1.3 Boolean Constructor Chain', () => {
-      it('should verify true.constructor.constructor is sandbox Function', async () => {
+    describe('ATK-FGAD-06: Boolean Constructor Chain', () => {
+      it('ATK-FGAD-06: should verify true.constructor.constructor is sandbox Function', async () => {
         const enclave = new Enclave();
         const code = `
           const bool = true;
@@ -243,8 +254,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('1.4 Array Constructor Chain', () => {
-      it('should verify [].constructor.constructor is sandbox Function', async () => {
+    describe('ATK-FGAD-07: Array Constructor Chain', () => {
+      it('ATK-FGAD-07: should verify [].constructor.constructor is sandbox Function', async () => {
         const enclave = new Enclave();
         const code = `
           const arr = [];
@@ -268,8 +279,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('1.5 Object Constructor Chain', () => {
-      it('should verify {}.constructor.constructor is sandbox Function', async () => {
+    describe('ATK-FGAD-08: Object Constructor Chain', () => {
+      it('ATK-FGAD-08: should verify {}.constructor.constructor is sandbox Function', async () => {
         const enclave = new Enclave();
         const code = `
           const obj = {};
@@ -293,8 +304,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('1.6 RegExp Constructor Chain (if allowed)', () => {
-      it('should verify RegExp constructor chain in permissive mode', async () => {
+    describe('ATK-FGAD-09: RegExp Constructor Chain (if allowed)', () => {
+      it('ATK-FGAD-09: should verify RegExp constructor chain in permissive mode', async () => {
         // RegExp is blocked by AST in AgentScript, but test in permissive
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -324,11 +335,11 @@ describe('Function Gadget Attacks', () => {
   });
 
   // ============================================================================
-  // CATEGORY 2: CALLBACK INJECTION ATTACKS
+  // ATK-FGAD-11 to ATK-FGAD-18: CALLBACK INJECTION ATTACKS
   // Using array methods with callbacks that might have dangerous access
   // ============================================================================
 
-  describe('2. Callback Injection Attacks', () => {
+  describe('ATK-FGAD-11 to ATK-FGAD-18: Callback Injection Attacks', () => {
     /**
      * These tests verify that callbacks passed to array methods run in sandbox
      * context and cannot access Node.js globals or escape the sandbox.
@@ -336,8 +347,8 @@ describe('Function Gadget Attacks', () => {
      * Note: Tests that use `typeof process/require` are blocked at AST level
      * (transformed to __safe_* which fails validation). This IS correct security.
      */
-    describe('2.1 Array.prototype.map Attacks', () => {
-      it('should verify map callback runs and can access sandbox globals', async () => {
+    describe('ATK-FGAD-11 to ATK-FGAD-12: Array.prototype.map Attacks', () => {
+      it('ATK-FGAD-11: should verify map callback runs and can access sandbox globals', async () => {
         const enclave = new Enclave();
         const code = `
           const results = [1, 2, 3].map((x) => {
@@ -352,7 +363,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should verify map callback this.constructor leads to sandbox Function', async () => {
+      it('ATK-FGAD-12: should verify map callback this.constructor leads to sandbox Function', async () => {
         // PERMISSIVE mode required: uses function expression for this binding
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -388,8 +399,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('2.2 Array.prototype.filter Attacks', () => {
-      it('should verify filter callback behavior with arguments.callee in permissive mode', async () => {
+    describe('ATK-FGAD-13: Array.prototype.filter Attacks', () => {
+      it('ATK-FGAD-13: should verify filter callback behavior with arguments.callee in permissive mode', async () => {
         // PERMISSIVE mode: code runs in non-strict mode, arguments.callee IS available
         // This documents the expected behavior - not a security vulnerability
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
@@ -415,8 +426,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('2.3 Array.prototype.reduce Attacks', () => {
-      it('should verify reduce works normally in sandbox', async () => {
+    describe('ATK-FGAD-14 to ATK-FGAD-15: Array.prototype.reduce Attacks', () => {
+      it('ATK-FGAD-14: should verify reduce works normally in sandbox', async () => {
         const enclave = new Enclave();
         const code = `
           // Simple reduce - should work fine in sandbox
@@ -429,7 +440,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should verify reduce with object accumulator stays in sandbox', async () => {
+      it('ATK-FGAD-15: should verify reduce with object accumulator stays in sandbox', async () => {
         const enclave = new Enclave();
         const code = `
           const ctorKey = 'const' + 'ructor';
@@ -453,8 +464,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('2.4 Array.prototype.sort Attacks', () => {
-      it('should verify sort comparator works in sandbox', async () => {
+    describe('ATK-FGAD-16: Array.prototype.sort Attacks', () => {
+      it('ATK-FGAD-16: should verify sort comparator works in sandbox', async () => {
         const enclave = new Enclave();
         const code = `
           const arr = [3, 1, 4, 1, 5, 9, 2, 6];
@@ -468,8 +479,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('2.5 Array.prototype.find/findIndex Attacks', () => {
-      it('should verify find callback works in sandbox', async () => {
+    describe('ATK-FGAD-17: Array.prototype.find/findIndex Attacks', () => {
+      it('ATK-FGAD-17: should verify find callback works in sandbox', async () => {
         const enclave = new Enclave();
         const code = `
           const found = [1, 2, 3, 4, 5].find((x) => {
@@ -484,8 +495,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('2.6 Array.prototype.forEach Attacks', () => {
-      it('should verify forEach callback cannot access host prototypes', async () => {
+    describe('ATK-FGAD-18: Array.prototype.forEach Attacks', () => {
+      it('ATK-FGAD-18: should verify forEach callback cannot access host prototypes', async () => {
         const enclave = new Enclave();
         const code = `
           let protoAccess = 'none';
@@ -508,11 +519,11 @@ describe('Function Gadget Attacks', () => {
   });
 
   // ============================================================================
-  // CATEGORY 3: TYPE COERCION GADGETS
+  // ATK-FGAD-19 to ATK-FGAD-24: TYPE COERCION GADGETS
   // Exploiting valueOf, toString, toJSON for code execution
   // ============================================================================
 
-  describe('3. Type Coercion Gadgets', () => {
+  describe('ATK-FGAD-19 to ATK-FGAD-24: Type Coercion Gadgets', () => {
     /**
      * Type coercion methods (valueOf, toString, toJSON) are called automatically
      * during operations. These tests verify they run in sandbox context.
@@ -520,8 +531,8 @@ describe('Function Gadget Attacks', () => {
      * Note: These tests require PERMISSIVE mode because they use object methods
      * defined with function expressions (valueOf: function() {}).
      */
-    describe('3.1 valueOf Exploitation', () => {
-      it('should verify valueOf runs in sandbox and returns expected values', async () => {
+    describe('ATK-FGAD-19 to ATK-FGAD-20: valueOf Exploitation', () => {
+      it('ATK-FGAD-19: should verify valueOf runs in sandbox and returns expected values', async () => {
         // PERMISSIVE mode: object method with function expression
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -540,7 +551,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should verify valueOf constructor chain leads to sandbox Function', async () => {
+      it('ATK-FGAD-20: should verify valueOf constructor chain leads to sandbox Function', async () => {
         // PERMISSIVE mode: object method with function expression
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -572,8 +583,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('3.2 toString Exploitation', () => {
-      it('should verify toString runs in sandbox and returns string', async () => {
+    describe('ATK-FGAD-21 to ATK-FGAD-22: toString Exploitation', () => {
+      it('ATK-FGAD-21: should verify toString runs in sandbox and returns string', async () => {
         // PERMISSIVE mode: object method with function expression
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -590,7 +601,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should verify toString can return any string in PERMISSIVE mode', async () => {
+      it('ATK-FGAD-22: should verify toString can return any string in PERMISSIVE mode', async () => {
         // PERMISSIVE mode: Object.constructor access is allowed
         // This is expected behavior - PERMISSIVE mode has minimal restrictions
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
@@ -614,8 +625,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('3.3 toJSON Exploitation', () => {
-      it('should verify toJSON runs in sandbox during stringify', async () => {
+    describe('ATK-FGAD-23: toJSON Exploitation', () => {
+      it('ATK-FGAD-23: should verify toJSON runs in sandbox during stringify', async () => {
         // PERMISSIVE mode: object method with function expression
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -637,8 +648,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('3.4 Symbol.toPrimitive Exploitation', () => {
-      it('should block Symbol.toPrimitive (AST blocks Symbol)', async () => {
+    describe('ATK-FGAD-24: Symbol.toPrimitive Exploitation', () => {
+      it('ATK-FGAD-24: should block Symbol.toPrimitive (AST blocks Symbol)', async () => {
         const enclave = new Enclave();
         const code = `
           const obj = {
@@ -657,19 +668,19 @@ describe('Function Gadget Attacks', () => {
   });
 
   // ============================================================================
-  // CATEGORY 4: FUNCTION.PROTOTYPE EXPLOITATION
+  // ATK-FGAD-25 to ATK-FGAD-30: FUNCTION.PROTOTYPE EXPLOITATION
   // Using call, apply, bind to change context or access globals
   // ============================================================================
 
-  describe('4. Function.prototype Exploitation', () => {
+  describe('ATK-FGAD-25 to ATK-FGAD-30: Function.prototype Exploitation', () => {
     /**
      * Function.prototype methods (call, apply, bind) allow changing execution
      * context. These tests verify they work correctly within sandbox isolation.
      *
      * Note: These tests require PERMISSIVE mode because they use function expressions.
      */
-    describe('4.1 Function.prototype.call Attacks', () => {
-      it('should verify call with null returns global in non-strict PERMISSIVE mode', async () => {
+    describe('ATK-FGAD-25 to ATK-FGAD-26: Function.prototype.call Attacks', () => {
+      it('ATK-FGAD-25: should verify call with null returns global in non-strict PERMISSIVE mode', async () => {
         // PERMISSIVE mode runs in non-strict mode, so call(null) returns globalThis
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -686,7 +697,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should verify borrowed Array.prototype.map works in sandbox', async () => {
+      it('ATK-FGAD-26: should verify borrowed Array.prototype.map works in sandbox', async () => {
         // PERMISSIVE mode: accesses Array.prototype
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -702,8 +713,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('4.2 Function.prototype.apply Attacks', () => {
-      it('should verify apply works normally in sandbox', async () => {
+    describe('ATK-FGAD-27: Function.prototype.apply Attacks', () => {
+      it('ATK-FGAD-27: should verify apply works normally in sandbox', async () => {
         // PERMISSIVE mode: uses function expression
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -720,8 +731,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('4.3 Function.prototype.bind Attacks', () => {
-      it('should verify bind creates function with custom context in sandbox', async () => {
+    describe('ATK-FGAD-28 to ATK-FGAD-29: Function.prototype.bind Attacks', () => {
+      it('ATK-FGAD-28: should verify bind creates function with custom context in sandbox', async () => {
         // PERMISSIVE mode: uses function expression
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -738,7 +749,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should verify function.constructor.constructor is sandbox Function', async () => {
+      it('ATK-FGAD-29: should verify function.constructor.constructor is sandbox Function', async () => {
         // PERMISSIVE mode: uses function expression
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -770,17 +781,17 @@ describe('Function Gadget Attacks', () => {
   });
 
   // ============================================================================
-  // CATEGORY 5: TAGGED TEMPLATE LITERAL ATTACKS
+  // ATK-FGAD-31 to ATK-FGAD-34: TAGGED TEMPLATE LITERAL ATTACKS
   // Using template literals with tag functions for code execution
   // ============================================================================
 
-  describe('5. Tagged Template Literal Attacks', () => {
+  describe('ATK-FGAD-31 to ATK-FGAD-34: Tagged Template Literal Attacks', () => {
     /**
      * Tagged template literals allow custom processing of template strings.
      * These tests verify tag functions run in sandbox context.
      */
-    describe('5.1 String.raw Exploitation', () => {
-      it('should verify String.raw works in sandbox', async () => {
+    describe('ATK-FGAD-31 to ATK-FGAD-32: String.raw Exploitation', () => {
+      it('ATK-FGAD-31: should verify String.raw works in sandbox', async () => {
         const enclave = new Enclave();
         const code = `
           const result = String.raw\`test\\nvalue\`;
@@ -793,7 +804,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should verify String constructor is blocked by SecureProxy', async () => {
+      it('ATK-FGAD-32: should verify String constructor is blocked by SecureProxy', async () => {
         const enclave = new Enclave();
         const code = `
           const ctorKey = 'const' + 'ructor';
@@ -809,8 +820,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('5.2 Custom Tag Function Attacks', () => {
-      it('should verify custom tag functions process templates correctly', async () => {
+    describe('ATK-FGAD-33 to ATK-FGAD-34: Custom Tag Function Attacks', () => {
+      it('ATK-FGAD-33: should verify custom tag functions process templates correctly', async () => {
         const enclave = new Enclave();
         const code = `
           const tag = (strings, ...values) => {
@@ -826,7 +837,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should verify tag function strings.raw leads to sandbox Array', async () => {
+      it('ATK-FGAD-34: should verify tag function strings.raw leads to sandbox Array', async () => {
         const enclave = new Enclave();
         const code = `
           const tag = (strings) => {
@@ -859,17 +870,17 @@ describe('Function Gadget Attacks', () => {
   });
 
   // ============================================================================
-  // CATEGORY 6: JSON REVIVER/REPLACER ATTACKS
+  // ATK-FGAD-35 to ATK-FGAD-38: JSON REVIVER/REPLACER ATTACKS
   // Exploiting JSON.parse reviver and JSON.stringify replacer
   // ============================================================================
 
-  describe('6. JSON Reviver/Replacer Attacks', () => {
+  describe('ATK-FGAD-35 to ATK-FGAD-38: JSON Reviver/Replacer Attacks', () => {
     /**
      * JSON.parse revivers and JSON.stringify replacers allow custom processing.
      * These tests verify they run in sandbox context.
      */
-    describe('6.1 JSON.parse Reviver Attacks', () => {
-      it('should verify reviver processes values correctly in sandbox', async () => {
+    describe('ATK-FGAD-35 to ATK-FGAD-36: JSON.parse Reviver Attacks', () => {
+      it('ATK-FGAD-35: should verify reviver processes values correctly in sandbox', async () => {
         const enclave = new Enclave();
         const code = `
           let callCount = 0;
@@ -890,7 +901,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should verify reviver this.constructor leads to sandbox Function', async () => {
+      it('ATK-FGAD-36: should verify reviver this.constructor leads to sandbox Function', async () => {
         // PERMISSIVE mode: uses function expression for reviver
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -923,8 +934,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('6.2 JSON.stringify Replacer Attacks', () => {
-      it('should verify replacer processes values correctly in sandbox', async () => {
+    describe('ATK-FGAD-37: JSON.stringify Replacer Attacks', () => {
+      it('ATK-FGAD-37: should verify replacer processes values correctly in sandbox', async () => {
         const enclave = new Enclave();
         const code = `
           const result = JSON.stringify({ a: 1, b: 'test', c: [1, 2] }, (key, value) => {
@@ -944,17 +955,17 @@ describe('Function Gadget Attacks', () => {
   });
 
   // ============================================================================
-  // CATEGORY 7: IMPLICIT COERCION IN OPERATIONS
+  // ATK-FGAD-39 to ATK-FGAD-42: IMPLICIT COERCION IN OPERATIONS
   // Exploiting operator overloading through coercion
   // ============================================================================
 
-  describe('7. Implicit Coercion in Operations', () => {
+  describe('ATK-FGAD-39 to ATK-FGAD-42: Implicit Coercion in Operations', () => {
     /**
      * JavaScript operators trigger implicit type coercion. These tests verify
      * coercion methods (valueOf, toString) work correctly in sandbox.
      */
-    describe('7.1 Addition Coercion', () => {
-      it('should verify + operator uses valueOf/toString correctly', async () => {
+    describe('ATK-FGAD-39: Addition Coercion', () => {
+      it('ATK-FGAD-39: should verify + operator uses valueOf/toString correctly', async () => {
         const enclave = new Enclave();
         const code = `
           const obj = {
@@ -974,8 +985,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('7.2 Comparison Coercion', () => {
-      it('should verify == operator coercion works in sandbox', async () => {
+    describe('ATK-FGAD-40: Comparison Coercion', () => {
+      it('ATK-FGAD-40: should verify == operator coercion works in sandbox', async () => {
         const enclave = new Enclave();
         const code = `
           let valueOfCalled = false;
@@ -996,8 +1007,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('7.3 Property Key Coercion', () => {
-      it('should verify property key toString coercion works', async () => {
+    describe('ATK-FGAD-41: Property Key Coercion', () => {
+      it('ATK-FGAD-41: should verify property key toString coercion works', async () => {
         const enclave = new Enclave();
         const code = `
           let toStringCalled = false;
@@ -1021,11 +1032,11 @@ describe('Function Gadget Attacks', () => {
   });
 
   // ============================================================================
-  // CATEGORY 8: GETTER/SETTER PROPERTY ATTACKS
+  // ATK-FGAD-43 to ATK-FGAD-48: GETTER/SETTER PROPERTY ATTACKS
   // Exploiting getters and setters for code execution
   // ============================================================================
 
-  describe('8. Getter/Setter Property Attacks', () => {
+  describe('ATK-FGAD-43 to ATK-FGAD-48: Getter/Setter Property Attacks', () => {
     /**
      * Getters and setters are computed properties that run code on access.
      * These tests verify they work correctly in sandbox context.
@@ -1033,8 +1044,8 @@ describe('Function Gadget Attacks', () => {
      * Note: These tests require PERMISSIVE mode because getters/setters use
      * function expressions under the hood.
      */
-    describe('8.1 Getter Exploitation', () => {
-      it('should verify getters run and return values in sandbox', async () => {
+    describe('ATK-FGAD-43 to ATK-FGAD-44: Getter Exploitation', () => {
+      it('ATK-FGAD-43: should verify getters run and return values in sandbox', async () => {
         // PERMISSIVE mode: getter is a function expression
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -1055,7 +1066,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should verify getter this.constructor leads to sandbox Function', async () => {
+      it('ATK-FGAD-44: should verify getter this.constructor leads to sandbox Function', async () => {
         // PERMISSIVE mode: getter is a function expression
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -1086,8 +1097,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('8.2 Setter Exploitation', () => {
-      it('should verify setters run and can modify state in sandbox', async () => {
+    describe('ATK-FGAD-45: Setter Exploitation', () => {
+      it('ATK-FGAD-45: should verify setters run and can modify state in sandbox', async () => {
         // PERMISSIVE mode: setter is a function expression
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -1110,8 +1121,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('8.3 Object.defineProperty Attacks', () => {
-      it('should verify defineProperty getters work in permissive mode', async () => {
+    describe('ATK-FGAD-46: Object.defineProperty Attacks', () => {
+      it('ATK-FGAD-46: should verify defineProperty getters work in permissive mode', async () => {
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
           const obj = {};
@@ -1136,13 +1147,13 @@ describe('Function Gadget Attacks', () => {
   });
 
   // ============================================================================
-  // CATEGORY 9: PROTOTYPE POLLUTION GADGETS
+  // ATK-FGAD-49 to ATK-FGAD-54: PROTOTYPE POLLUTION GADGETS
   // Using prototype pollution to inject code execution paths
   // ============================================================================
 
-  describe('9. Prototype Pollution Gadgets', () => {
-    describe('9.1 Object.prototype Pollution', () => {
-      it('should isolate Object.prototype pollution from host', async () => {
+  describe('ATK-FGAD-49 to ATK-FGAD-54: Prototype Pollution Gadgets', () => {
+    describe('ATK-FGAD-49 to ATK-FGAD-50: Object.prototype Pollution', () => {
+      it('ATK-FGAD-49: should isolate Object.prototype pollution from host', async () => {
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
           // Try to pollute Object.prototype (may or may not work depending on VM isolation)
@@ -1164,7 +1175,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should isolate Array.prototype pollution from host', async () => {
+      it('ATK-FGAD-50: should isolate Array.prototype pollution from host', async () => {
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
           Array.prototype.polluted = 'sandbox-array';
@@ -1179,8 +1190,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('9.2 Constructor.prototype Pollution', () => {
-      it('should isolate String.prototype pollution from host', async () => {
+    describe('ATK-FGAD-51: Constructor.prototype Pollution', () => {
+      it('ATK-FGAD-51: should isolate String.prototype pollution from host', async () => {
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
           String.prototype.polluted = function() { return 'sandbox-string'; };
@@ -1197,11 +1208,11 @@ describe('Function Gadget Attacks', () => {
   });
 
   // ============================================================================
-  // CATEGORY 10: COMBINED/CHAINED GADGET ATTACKS
+  // ATK-FGAD-55 to ATK-FGAD-60: COMBINED/CHAINED GADGET ATTACKS
   // Multiple gadgets chained together for more sophisticated attacks
   // ============================================================================
 
-  describe('10. Combined/Chained Gadget Attacks', () => {
+  describe('ATK-FGAD-55 to ATK-FGAD-60: Combined/Chained Gadget Attacks', () => {
     /**
      * These tests combine multiple gadgets to test sophisticated attack chains.
      * The key insight: sandbox-created objects lead to sandbox's Function,
@@ -1210,8 +1221,8 @@ describe('Function Gadget Attacks', () => {
      * Note: These tests require PERMISSIVE mode because they use object methods
      * and function expressions.
      */
-    describe('10.1 Coercion + Constructor Chain', () => {
-      it('should verify toString can access sandbox Function through constructor chain', async () => {
+    describe('ATK-FGAD-55: Coercion + Constructor Chain', () => {
+      it('ATK-FGAD-55: should verify toString can access sandbox Function through constructor chain', async () => {
         // PERMISSIVE mode: uses object method
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -1242,8 +1253,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('10.2 Callback + Constructor Chain', () => {
-      it('should verify map callback can access sandbox Function', async () => {
+    describe('ATK-FGAD-56: Callback + Constructor Chain', () => {
+      it('ATK-FGAD-56: should verify map callback can access sandbox Function', async () => {
         // PERMISSIVE mode: uses function expression
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -1274,8 +1285,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('10.3 JSON.parse + Constructor Chain', () => {
-      it('should verify reviver can access sandbox Function through number constructor', async () => {
+    describe('ATK-FGAD-57: JSON.parse + Constructor Chain', () => {
+      it('ATK-FGAD-57: should verify reviver can access sandbox Function through number constructor', async () => {
         // PERMISSIVE mode: uses function expression in reviver
         const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
@@ -1308,8 +1319,8 @@ describe('Function Gadget Attacks', () => {
       });
     });
 
-    describe('10.4 Wrapped Global vs Sandbox Object', () => {
-      it('should verify Object global blocks constructor with an error', async () => {
+    describe('ATK-FGAD-58 to ATK-FGAD-59: Wrapped Global vs Sandbox Object', () => {
+      it('ATK-FGAD-58: should verify Object global blocks constructor with an error', async () => {
         const enclave = new Enclave();
         const code = `
           const ctorKey = 'const' + 'ructor';
@@ -1324,7 +1335,7 @@ describe('Function Gadget Attacks', () => {
         enclave.dispose();
       });
 
-      it('should verify sandbox-created objects allow constructor access', async () => {
+      it('ATK-FGAD-59: should verify sandbox-created objects allow constructor access', async () => {
         const enclave = new Enclave();
         const code = `
           const ctorKey = 'const' + 'ructor';
@@ -1348,11 +1359,11 @@ describe('Function Gadget Attacks', () => {
   });
 
   // ============================================================================
-  // COVERAGE SUMMARY
+  // ATK-FGAD: COVERAGE SUMMARY
   // ============================================================================
 
-  describe('Coverage Summary', () => {
-    it('should document all function gadget attack vectors', () => {
+  describe('ATK-FGAD: Coverage Summary', () => {
+    it('ATK-FGAD-60: should document all function gadget attack vectors', () => {
       const attackCategories = {
         'Primitive Constructor Chains': [
           'String constructor chain',

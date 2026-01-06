@@ -1,5 +1,7 @@
 /**
- * Resource Exhaustion Prevention Tests
+ * ATK-RSRC: Resource Exhaustion Prevention Tests
+ *
+ * Category: ATK-RSRC (CWE-400: Uncontrolled Resource Consumption)
  *
  * These tests verify protection against DoS attacks that can exhaust:
  * - CPU: Heavy computations that bypass VM timeout
@@ -11,18 +13,38 @@
  * 3. VM timeout - interrupts at bytecode checkpoints
  * 4. Worker pool watchdog - hard kill for unresponsive execution
  *
+ * Test Categories:
+ * - ATK-RSRC-01 to ATK-RSRC-10: CPU Exhaustion (BigInt, Loops)
+ * - ATK-RSRC-11 to ATK-RSRC-20: Memory Exhaustion (Arrays, Strings)
+ * - ATK-RSRC-21 to ATK-RSRC-30: Constructor Obfuscation
+ * - ATK-RSRC-31 to ATK-RSRC-40: Code Generation Blocking
+ * - ATK-MEM-01: Billion Laughs Memory Bomb
+ * - ATK-SORT-01: Sort Attack CPU Exhaustion
+ * - ATK-ESC-01: Constructor Leak via Arrow Function
+ * - ATK-TPL-01: Template Literal Logic Injection
+ * - ATK-JSON-02/03: JSON Parser Bombs
+ * - ATK-BRIDGE-04: Zombie Object
+ * - ATK-DATA-02: Serialization Hijack
+ * - ATK-RECON-01: Global Reconnaissance
+ *
+ * Related CWEs:
+ * - CWE-400: Uncontrolled Resource Consumption
+ * - CWE-770: Allocation of Resources Without Limits
+ * - CWE-835: Loop with Unreachable Exit Condition
+ * - CWE-693: Protection Mechanism Failure
+ *
  * @packageDocumentation
  */
 
 import { Enclave } from '../enclave';
 
-describe('Resource Exhaustion Prevention', () => {
+describe('ATK-RSRC: Resource Exhaustion Prevention (CWE-400)', () => {
   // ============================================================================
-  // CPU EXHAUSTION - AST LEVEL BLOCKING
+  // ATK-RSRC-01 to ATK-RSRC-10: CPU EXHAUSTION - AST LEVEL BLOCKING
   // ============================================================================
-  describe('CPU Exhaustion - AST Level', () => {
+  describe('ATK-RSRC-01 to ATK-RSRC-10: CPU Exhaustion - AST Level', () => {
     describe('BigInt Exponentiation', () => {
-      it('should block large BigInt exponent literals', async () => {
+      it('ATK-RSRC-01: should block large BigInt exponent literals', async () => {
         const enclave = new Enclave();
         const code = `return 2n ** 100000n;`;
         const result = await enclave.run(code);
@@ -31,7 +53,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should block very large BigInt exponents', async () => {
+      it('ATK-RSRC-02: should block very large BigInt exponents', async () => {
         const enclave = new Enclave();
         const code = `return 10n ** 10000000n;`;
         const result = await enclave.run(code);
@@ -39,7 +61,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should allow small BigInt exponents', async () => {
+      it('ATK-RSRC-03: should allow small BigInt exponents', async () => {
         const enclave = new Enclave();
         const code = `return 2n ** 10n;`;
         const result = await enclave.run(code);
@@ -48,7 +70,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should allow BigInt exponents up to limit', async () => {
+      it('ATK-RSRC-04: should allow BigInt exponents up to limit', async () => {
         const enclave = new Enclave();
         const code = `return 2n ** 100n;`;
         const result = await enclave.run(code);
@@ -58,7 +80,7 @@ describe('Resource Exhaustion Prevention', () => {
     });
 
     describe('Infinite Loop Detection', () => {
-      it('should block while(true) at AST level', async () => {
+      it('ATK-RSRC-05: should block while(true) at AST level', async () => {
         const enclave = new Enclave();
         const code = `while(true) { }`;
         const result = await enclave.run(code);
@@ -67,7 +89,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should block for(;;) at AST level', async () => {
+      it('ATK-RSRC-06: should block for(;;) at AST level', async () => {
         const enclave = new Enclave();
         const code = `for(;;) { }`;
         const result = await enclave.run(code);
@@ -76,7 +98,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should block while(1) at AST level', async () => {
+      it('ATK-RSRC-07: should block while(1) at AST level', async () => {
         const enclave = new Enclave();
         const code = `while(1) { }`;
         const result = await enclave.run(code);
@@ -87,11 +109,11 @@ describe('Resource Exhaustion Prevention', () => {
   });
 
   // ============================================================================
-  // CPU EXHAUSTION - RUNTIME LEVEL
+  // ATK-RSRC-08 to ATK-RSRC-10: CPU EXHAUSTION - RUNTIME LEVEL
   // ============================================================================
-  describe('CPU Exhaustion - Runtime Level', () => {
+  describe('ATK-RSRC-08 to ATK-RSRC-10: CPU Exhaustion - Runtime Level', () => {
     describe('Iteration Limits', () => {
-      it('should enforce iteration limit on for loops', async () => {
+      it('ATK-RSRC-08: should enforce iteration limit on for loops', async () => {
         const enclave = new Enclave({ maxIterations: 100 });
         const code = `
           let count = 0;
@@ -107,7 +129,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should enforce iteration limit on for-of loops', async () => {
+      it('ATK-RSRC-09: should enforce iteration limit on for-of loops', async () => {
         const enclave = new Enclave({ maxIterations: 50 });
         const code = `
           const arr = Array.from({ length: 100 }, (_, i) => i);
@@ -123,7 +145,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should allow loops within iteration limit', async () => {
+      it('ATK-RSRC-10: should allow loops within iteration limit', async () => {
         const enclave = new Enclave({ maxIterations: 1000 });
         const code = `
           let count = 0;
@@ -161,11 +183,11 @@ describe('Resource Exhaustion Prevention', () => {
   });
 
   // ============================================================================
-  // MEMORY EXHAUSTION - AST LEVEL BLOCKING
+  // ATK-RSRC-11 to ATK-RSRC-16: MEMORY EXHAUSTION - AST LEVEL BLOCKING
   // ============================================================================
-  describe('Memory Exhaustion - AST Level', () => {
+  describe('ATK-RSRC-11 to ATK-RSRC-16: Memory Exhaustion - AST Level', () => {
     describe('Large Array Allocation', () => {
-      it('should block very large array allocation literals', async () => {
+      it('ATK-RSRC-11: should block very large array allocation literals', async () => {
         const enclave = new Enclave();
         const code = `return new Array(100000000);`;
         const result = await enclave.run(code);
@@ -174,7 +196,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should allow reasonable array allocations', async () => {
+      it('ATK-RSRC-12: should allow reasonable array allocations', async () => {
         const enclave = new Enclave();
         const code = `return new Array(100).fill(0).length;`;
         const result = await enclave.run(code);
@@ -185,7 +207,7 @@ describe('Resource Exhaustion Prevention', () => {
     });
 
     describe('String Repeat', () => {
-      it('should block very large string repeat counts', async () => {
+      it('ATK-RSRC-13: should block very large string repeat counts', async () => {
         const enclave = new Enclave();
         const code = `return 'x'.repeat(100000001);`;
         const result = await enclave.run(code);
@@ -194,7 +216,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should allow reasonable string repeat counts', async () => {
+      it('ATK-RSRC-14: should allow reasonable string repeat counts', async () => {
         const enclave = new Enclave();
         const code = `return 'x'.repeat(100).length;`;
         const result = await enclave.run(code);
@@ -205,7 +227,7 @@ describe('Resource Exhaustion Prevention', () => {
     });
 
     describe('Array.join Memory Attack', () => {
-      it('should block large Array.join at AST level', async () => {
+      it('ATK-RSRC-15: should block large Array.join at AST level', async () => {
         const enclave = new Enclave();
         const code = `return new Array(100000001).join('x');`;
         const result = await enclave.run(code);
@@ -216,11 +238,11 @@ describe('Resource Exhaustion Prevention', () => {
   });
 
   // ============================================================================
-  // MEMORY EXHAUSTION - RUNTIME LEVEL
+  // ATK-RSRC-16 to ATK-RSRC-17: MEMORY EXHAUSTION - RUNTIME LEVEL
   // ============================================================================
-  describe('Memory Exhaustion - Runtime Level', () => {
+  describe('ATK-RSRC-16 to ATK-RSRC-17: Memory Exhaustion - Runtime Level', () => {
     describe('Memory Limit Enforcement', () => {
-      it('should enforce memory limit on string concatenation', async () => {
+      it('ATK-RSRC-16: should enforce memory limit on string concatenation', async () => {
         const enclave = new Enclave({ memoryLimit: 1024 * 1024 }); // 1MB
         const code = `
           let str = 'x';
@@ -235,7 +257,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should allow operations within memory limit', async () => {
+      it('ATK-RSRC-17: should allow operations within memory limit', async () => {
         const enclave = new Enclave({ memoryLimit: 1024 * 1024 }); // 1MB
         const code = `
           const arr = [1, 2, 3, 4, 5];
@@ -250,11 +272,11 @@ describe('Resource Exhaustion Prevention', () => {
   });
 
   // ============================================================================
-  // CONSTRUCTOR OBFUSCATION - AST LEVEL BLOCKING
+  // ATK-RSRC-18 to ATK-RSRC-25: CONSTRUCTOR OBFUSCATION - AST LEVEL BLOCKING
   // ============================================================================
-  describe('Constructor Obfuscation Prevention', () => {
+  describe('ATK-RSRC-18 to ATK-RSRC-25: Constructor Obfuscation Prevention', () => {
     describe('Direct Constructor Access', () => {
-      it('should block direct .constructor access', async () => {
+      it('ATK-RSRC-18: should block direct .constructor access', async () => {
         const enclave = new Enclave();
         const code = `
           const arr = [];
@@ -266,7 +288,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should block computed ["constructor"] access', async () => {
+      it('ATK-RSRC-19: should block computed ["constructor"] access', async () => {
         const enclave = new Enclave();
         const code = `
           const arr = [];
@@ -283,7 +305,7 @@ describe('Resource Exhaustion Prevention', () => {
       // which is complex. The runtime protection (codeGeneration.strings=false)
       // already blocks Function constructor attacks at runtime level.
 
-      it('should block inline constructor string concatenation', async () => {
+      it('ATK-RSRC-20: should block inline constructor string concatenation', async () => {
         const enclave = new Enclave();
         // Inline string concat in computed property IS detected
         const code = `
@@ -296,7 +318,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should detect constructor variable assignment', async () => {
+      it('ATK-RSRC-21: should detect constructor variable assignment', async () => {
         const enclave = new Enclave();
         // Variable assignment to 'constructor' IS detected at AST level
         const code = `
@@ -309,7 +331,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should block prototype identifier', async () => {
+      it('ATK-RSRC-22: should block prototype identifier', async () => {
         const enclave = new Enclave();
         // 'prototype' is in the disallowed identifiers list
         const code = `
@@ -321,7 +343,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should block __proto__ identifier', async () => {
+      it('ATK-RSRC-23: should block __proto__ identifier', async () => {
         const enclave = new Enclave();
         // '__proto__' access pattern
         const code = `
@@ -335,7 +357,7 @@ describe('Resource Exhaustion Prevention', () => {
     });
 
     describe('Function Constructor Chain', () => {
-      it('should block Function constructor chain attack', async () => {
+      it('ATK-RSRC-24: should block Function constructor chain attack', async () => {
         const enclave = new Enclave();
         const code = `
           const c = 'con' + 'struc' + 'tor';
@@ -347,7 +369,7 @@ describe('Resource Exhaustion Prevention', () => {
         enclave.dispose();
       });
 
-      it('should block process.env access via constructor chain', async () => {
+      it('ATK-RSRC-25: should block process.env access via constructor chain', async () => {
         const enclave = new Enclave();
         const code = `
           const c = 'con' + 'struc' + 'tor';
@@ -362,10 +384,10 @@ describe('Resource Exhaustion Prevention', () => {
   });
 
   // ============================================================================
-  // CODE GENERATION BLOCKING
+  // ATK-RSRC-26 to ATK-RSRC-27: CODE GENERATION BLOCKING
   // ============================================================================
-  describe('Code Generation Blocking', () => {
-    it('should block new Function() from strings', async () => {
+  describe('ATK-RSRC-26 to ATK-RSRC-27: Code Generation Blocking', () => {
+    it('ATK-RSRC-26: should block new Function() from strings', async () => {
       const enclave = new Enclave();
       const code = `
         try {
@@ -385,7 +407,7 @@ describe('Resource Exhaustion Prevention', () => {
       enclave.dispose();
     });
 
-    it('should block eval()', async () => {
+    it('ATK-RSRC-27: should block eval()', async () => {
       const enclave = new Enclave();
       const code = `return eval('1 + 1');`;
       const result = await enclave.run(code);
@@ -396,10 +418,10 @@ describe('Resource Exhaustion Prevention', () => {
   });
 
   // ============================================================================
-  // LEGITIMATE CODE STILL WORKS
+  // ATK-RSRC-28 to ATK-RSRC-32: LEGITIMATE CODE STILL WORKS (Safe Patterns)
   // ============================================================================
-  describe('Legitimate Code Functionality', () => {
-    it('should allow normal array operations', async () => {
+  describe('ATK-RSRC-28 to ATK-RSRC-32: Legitimate Code Functionality', () => {
+    it('ATK-RSRC-28: should allow normal array operations', async () => {
       const enclave = new Enclave();
       const code = `
         const arr = [1, 2, 3, 4, 5];
@@ -411,7 +433,7 @@ describe('Resource Exhaustion Prevention', () => {
       enclave.dispose();
     });
 
-    it('should allow object operations', async () => {
+    it('ATK-RSRC-29: should allow object operations', async () => {
       const enclave = new Enclave();
       const code = `
         const obj = { a: 1, b: 2, c: 3 };
@@ -424,7 +446,7 @@ describe('Resource Exhaustion Prevention', () => {
       enclave.dispose();
     });
 
-    it('should allow small BigInt operations', async () => {
+    it('ATK-RSRC-30: should allow small BigInt operations', async () => {
       const enclave = new Enclave();
       const code = `
         const a = 123456789n;
@@ -436,7 +458,7 @@ describe('Resource Exhaustion Prevention', () => {
       enclave.dispose();
     });
 
-    it('should allow string operations', async () => {
+    it('ATK-RSRC-31: should allow string operations', async () => {
       const enclave = new Enclave();
       const code = `
         const str = 'hello world';
@@ -448,7 +470,7 @@ describe('Resource Exhaustion Prevention', () => {
       enclave.dispose();
     });
 
-    it('should allow for-of iteration within limits', async () => {
+    it('ATK-RSRC-32: should allow for-of iteration within limits', async () => {
       const enclave = new Enclave({ maxIterations: 1000 });
       const code = `
         const items = [1, 2, 3, 4, 5];
@@ -466,10 +488,10 @@ describe('Resource Exhaustion Prevention', () => {
   });
 
   // ============================================================================
-  // WORKER POOL TERMINATION (Integration)
+  // ATK-RSRC-33: WORKER POOL TERMINATION (Integration)
   // ============================================================================
-  describe('Worker Pool Hard Termination', () => {
-    it('should terminate worker on watchdog timeout', async () => {
+  describe('ATK-RSRC-33: Worker Pool Hard Termination', () => {
+    it('ATK-RSRC-33: should terminate worker on watchdog timeout', async () => {
       // Use worker_threads adapter with short timeout
       const enclave = new Enclave({
         timeout: 500,
@@ -597,8 +619,8 @@ describe('ATK-MEM-01: Billion Laughs Memory Bomb', () => {
 // Exploits Array.prototype.sort() running in native C++ with randomized
 // comparator to maximize comparison count (N * log(N) comparisons)
 // ============================================================================
-describe('Sort Attack: CPU Exhaustion via Native Sort', () => {
-  it('should block heavy sort attack via timeout', async () => {
+describe('ATK-SORT-01: Sort Attack - CPU Exhaustion via Native Sort (CWE-400)', () => {
+  it('ATK-SORT-01: should block heavy sort attack via timeout', async () => {
     // This attack creates a large array and runs sort with random comparisons
     // The sort runs in native code which can bypass iteration counters
     const enclave = new Enclave({
@@ -637,7 +659,7 @@ describe('Sort Attack: CPU Exhaustion via Native Sort', () => {
     enclave.dispose();
   }, 15000);
 
-  it('should handle sort with callback iteration counting', async () => {
+  it('ATK-SORT-02: should handle sort with callback iteration counting', async () => {
     // Test that iteration counter is injected into sort callbacks
     const enclave = new Enclave({ maxIterations: 100 });
 
@@ -657,7 +679,7 @@ describe('Sort Attack: CPU Exhaustion via Native Sort', () => {
     enclave.dispose();
   });
 
-  it('should block extremely large sort attempts at AST level', async () => {
+  it('ATK-SORT-03: should block extremely large sort attempts at AST level', async () => {
     const enclave = new Enclave();
     // Creating a very large array at AST level
     const code = `new Array(100000001).sort(() => Math.random() - 0.5);`;
