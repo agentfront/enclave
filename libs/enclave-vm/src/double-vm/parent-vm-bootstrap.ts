@@ -779,15 +779,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     codeGeneration: { strings: false, wasm: false }
   });
 
-  // Remove dangerous globals from inner VM
-  ${sanitizeContextCode}
-
-  // Inject memory-safe prototype methods into inner VM context BEFORE freezing
+  // CRITICAL: Inject memory-safe prototype methods BEFORE sanitization
+  // This must happen FIRST because sanitization may remove globals needed for patching.
+  // The patch needs the intrinsic Object.getPrototypeOf to access the VM's actual
+  // String.prototype and Array.prototype (not the global realm's).
   // Security: Prevents ATK-JSON-03 (Parser Bomb) and similar attacks
   // These checks happen BEFORE allocation, not after
-  //
-  // IMPORTANT: We must get the prototype from a literal, not from globals like String.prototype
-  // because string/array literals in VM contexts use the realm's intrinsic prototype.
   (function() {
     var memoryLimit = hostConfig.memoryLimit || 0;
     if (memoryLimit > 0) {
@@ -848,6 +845,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       patchScript.runInContext(innerContext);
     }
   })();
+
+  // Remove dangerous globals from inner VM (AFTER memory patching)
+  ${sanitizeContextCode}
 
   // Freeze built-in prototypes to prevent prototype pollution
   // and cut off constructor chain access for sandbox escape prevention
