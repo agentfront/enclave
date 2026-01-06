@@ -398,8 +398,71 @@ function tryParseRegex(source: string, start: number): { pattern: string; flags:
 }
 
 /**
+ * Safely test a pattern against input with bounded backtracking.
+ * Limits input length and uses linear-time character scanning when possible.
+ *
+ * @param input - The input string to test (will be truncated to MAX_SAFE_PATTERN_LENGTH)
+ * @param testPattern - The regex pattern to use for testing
+ * @returns Whether the pattern matches
+ */
+function safePatternTest(input: string, testPattern: RegExp): boolean {
+  // Limit input length to prevent ReDoS - regex patterns shouldn't be longer than this
+  const MAX_SAFE_PATTERN_LENGTH = 500;
+  const safeInput = input.length > MAX_SAFE_PATTERN_LENGTH ? input.slice(0, MAX_SAFE_PATTERN_LENGTH) : input;
+
+  try {
+    return testPattern.test(safeInput);
+  } catch {
+    // If regex execution fails, treat as no match
+    return false;
+  }
+}
+
+/**
+ * Safely match a pattern against input with bounded backtracking.
+ *
+ * @param input - The input string to match (will be truncated)
+ * @param matchPattern - The regex pattern to use for matching
+ * @returns The match result or null
+ */
+function safePatternMatch(input: string, matchPattern: RegExp): RegExpMatchArray | null {
+  const MAX_SAFE_PATTERN_LENGTH = 500;
+  const safeInput = input.length > MAX_SAFE_PATTERN_LENGTH ? input.slice(0, MAX_SAFE_PATTERN_LENGTH) : input;
+
+  try {
+    return safeInput.match(matchPattern);
+  } catch {
+    return null;
+  }
+}
+
+// Pre-compiled safe patterns with bounded quantifiers to prevent ReDoS
+// Using {0,100} instead of * to limit backtracking
+const REDOS_DETECTION_PATTERNS = {
+  // Nested quantifiers: (a+)+, (a*)+, (a+)*, etc. - bounded to prevent backtracking
+  nestedQuantifier1: /\([^)]{0,100}[+*][^)]{0,100}\)[+*]/,
+  nestedQuantifier2: /\([^)]{0,100}[+*]\)[+*]/,
+  // (.+)+ or (.*)+
+  wildcardNested: /\(\.\*\)[+*]|\(\.\+\)[+*]/,
+  // Repetition inside star: (a{2,})+
+  repetitionInStar: /\([^)]{0,100}\{\d+,\}[^)]{0,100}\)[+*]/,
+  // Star inside repetition: (a+){2,}
+  starInRepetition: /\([^)]{0,100}[+*][^)]{0,100}\)\{\d+,\}/,
+  // Overlapping alternation - bounded
+  alternationWithQuantifier: /\(([^|)]{0,50})\|([^)]{0,50})\)[+*]/,
+  // Multiple greedy quantifiers
+  multipleGreedy1: /\.\*[^.]{0,50}\.\*/,
+  multipleGreedy2: /\.\+[^.]{0,50}\.\+/,
+  // Greedy backtracking: (.*a)+
+  greedyBacktracking: /\(\.\*[^)]{1,50}\)[+*]|\(\.\+[^)]{1,50}\)[+*]/,
+  // Overlapping character classes
+  overlappingClasses: /\[[^\]]{1,50}\][+*]\[[^\]]{1,50}\][+*]/,
+} as const;
+
+/**
  * Analyze a regex pattern for ReDoS vulnerabilities.
  * Uses static analysis to detect dangerous patterns.
+ * Input is safely bounded to prevent the analyzer itself from being vulnerable.
  */
 export function analyzeForReDoS(pattern: string, level: 'catastrophic' | 'polynomial'): ReDoSAnalysisResult {
   let maxScore = 0;
@@ -408,7 +471,10 @@ export function analyzeForReDoS(pattern: string, level: 'catastrophic' | 'polyno
 
   // Check for nested quantifiers: (a+)+, (a*)+, (a+)*, etc.
   // This is the most common ReDoS pattern
-  if (/\([^)]*[+*][^)]*\)[+*]/.test(pattern) || /\([^)]*[+*]\)[+*]/.test(pattern)) {
+  if (
+    safePatternTest(pattern, REDOS_DETECTION_PATTERNS.nestedQuantifier1) ||
+    safePatternTest(pattern, REDOS_DETECTION_PATTERNS.nestedQuantifier2)
+  ) {
     const score = REDOS_PATTERNS.NESTED_QUANTIFIER.baseScore;
     if (score > maxScore) {
       maxScore = score;
@@ -418,7 +484,7 @@ export function analyzeForReDoS(pattern: string, level: 'catastrophic' | 'polyno
   }
 
   // Check for (.+)+ or (.*)+
-  if (/\(\.\*\)[+*]|\(\.\+\)[+*]/.test(pattern)) {
+  if (safePatternTest(pattern, REDOS_DETECTION_PATTERNS.wildcardNested)) {
     const score = REDOS_PATTERNS.NESTED_QUANTIFIER.baseScore + 5;
     if (score > maxScore) {
       maxScore = score;
@@ -428,7 +494,7 @@ export function analyzeForReDoS(pattern: string, level: 'catastrophic' | 'polyno
   }
 
   // Check for repetition inside star: (a{2,})+
-  if (/\([^)]*\{\d+,\}[^)]*\)[+*]/.test(pattern)) {
+  if (safePatternTest(pattern, REDOS_DETECTION_PATTERNS.repetitionInStar)) {
     const score = REDOS_PATTERNS.REPETITION_IN_STAR.baseScore;
     if (score > maxScore) {
       maxScore = score;
@@ -438,7 +504,7 @@ export function analyzeForReDoS(pattern: string, level: 'catastrophic' | 'polyno
   }
 
   // Check for star inside repetition: (a+){2,}
-  if (/\([^)]*[+*][^)]*\)\{\d+,\}/.test(pattern)) {
+  if (safePatternTest(pattern, REDOS_DETECTION_PATTERNS.starInRepetition)) {
     const score = REDOS_PATTERNS.STAR_IN_REPETITION.baseScore;
     if (score > maxScore) {
       maxScore = score;
@@ -449,7 +515,7 @@ export function analyzeForReDoS(pattern: string, level: 'catastrophic' | 'polyno
 
   // Check for overlapping alternation: (a|a)+, (a|ab)+
   // Simplified check - looks for repeated patterns in alternation
-  const altMatch = pattern.match(/\(([^|)]+)\|([^)]+)\)[+*]/);
+  const altMatch = safePatternMatch(pattern, REDOS_DETECTION_PATTERNS.alternationWithQuantifier);
   if (altMatch) {
     const [, left, right] = altMatch;
     if (left === right || left.startsWith(right) || right.startsWith(left)) {
@@ -465,7 +531,10 @@ export function analyzeForReDoS(pattern: string, level: 'catastrophic' | 'polyno
   // Polynomial-level checks (less severe but still problematic)
   if (level === 'polynomial') {
     // Multiple greedy quantifiers: .*foo.*bar
-    if (/\.\*.*\.\*/.test(pattern) || /\.\+.*\.\+/.test(pattern)) {
+    if (
+      safePatternTest(pattern, REDOS_DETECTION_PATTERNS.multipleGreedy1) ||
+      safePatternTest(pattern, REDOS_DETECTION_PATTERNS.multipleGreedy2)
+    ) {
       const score = REDOS_PATTERNS.MULTIPLE_GREEDY.baseScore;
       if (score > maxScore) {
         maxScore = score;
@@ -475,7 +544,7 @@ export function analyzeForReDoS(pattern: string, level: 'catastrophic' | 'polyno
     }
 
     // Greedy backtracking: (.*a)+
-    if (/\(\.\*[^)]+\)[+*]|\(\.\+[^)]+\)[+*]/.test(pattern)) {
+    if (safePatternTest(pattern, REDOS_DETECTION_PATTERNS.greedyBacktracking)) {
       const score = REDOS_PATTERNS.GREEDY_BACKTRACKING.baseScore;
       if (score > maxScore) {
         maxScore = score;
@@ -485,7 +554,7 @@ export function analyzeForReDoS(pattern: string, level: 'catastrophic' | 'polyno
     }
 
     // Overlapping character classes: [a-z]+[a-z]+
-    if (/\[[^\]]+\][+*]\[[^\]]+\][+*]/.test(pattern)) {
+    if (safePatternTest(pattern, REDOS_DETECTION_PATTERNS.overlappingClasses)) {
       // Check if classes overlap (simplified)
       const score = REDOS_PATTERNS.OVERLAPPING_CLASSES.baseScore;
       if (score > maxScore) {

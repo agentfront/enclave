@@ -14,6 +14,40 @@
  */
 
 /**
+ * Maximum pattern length to analyze for ReDoS detection.
+ * Limiting input length prevents the detection patterns themselves from being exploited.
+ */
+const MAX_PATTERN_LENGTH_FOR_REDOS_CHECK = 500;
+
+/**
+ * Pre-compiled patterns for ReDoS detection.
+ * Uses bounded quantifiers {0,100} instead of unbounded * to prevent
+ * catastrophic backtracking in the detection patterns themselves.
+ */
+const REDOS_DETECTION_PATTERNS = {
+  // Check for nested quantifiers: (a+)+ or (a*)*
+  nestedQuantifiers: /\([^)]{0,100}[*+{][^)]{0,100}\)[*+{]/,
+  // Check for alternation with overlapping patterns: (a|ab)*
+  alternationOverlap: /\([^|]{0,100}\|[^)]{0,100}\)[*+{]/,
+  // Check for repeated groups with quantifiers: (a+)+
+  repeatedGroups: /\([^)]{0,100}[*+][^)]{0,100}\)[*+]/,
+} as const;
+
+/**
+ * Safely test a pattern against input with length limiting.
+ * Prevents ReDoS in the detection patterns themselves.
+ */
+function safePatternTest(input: string, testPattern: RegExp): boolean {
+  const safeInput =
+    input.length > MAX_PATTERN_LENGTH_FOR_REDOS_CHECK ? input.slice(0, MAX_PATTERN_LENGTH_FOR_REDOS_CHECK) : input;
+  try {
+    return testPattern.test(safeInput);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Detects potentially vulnerable regex patterns
  * Checks for common ReDoS patterns like nested quantifiers
  *
@@ -22,20 +56,17 @@
  */
 export function isPotentiallyVulnerableRegex(pattern: string): boolean {
   // Check for nested quantifiers: (a+)+ or (a*)*
-  const nestedQuantifiers = /\([^)]*[*+{][^)]*\)[*+{]/;
-  if (nestedQuantifiers.test(pattern)) {
+  if (safePatternTest(pattern, REDOS_DETECTION_PATTERNS.nestedQuantifiers)) {
     return true;
   }
 
   // Check for alternation with overlapping patterns: (a|ab)*
-  const alternationOverlap = /\([^|]*\|[^)]*\)[*+{]/;
-  if (alternationOverlap.test(pattern)) {
+  if (safePatternTest(pattern, REDOS_DETECTION_PATTERNS.alternationOverlap)) {
     return true;
   }
 
   // Check for repeated groups with quantifiers: (a+)+
-  const repeatedGroups = /\([^)]*[*+][^)]*\)[*+]/;
-  if (repeatedGroups.test(pattern)) {
+  if (safePatternTest(pattern, REDOS_DETECTION_PATTERNS.repeatedGroups)) {
     return true;
   }
 

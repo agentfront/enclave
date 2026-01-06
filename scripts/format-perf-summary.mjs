@@ -18,7 +18,16 @@ import { resolve } from 'path';
  */
 function escapeMarkdown(text) {
   if (typeof text !== 'string') return String(text ?? '');
-  return text.replace(/\|/g, '\\|').replace(/`/g, '\\`');
+  // Escape backslash FIRST (before other escapes that introduce backslashes)
+  // Then escape other markdown special characters for safe table rendering
+  return text
+    .replace(/\\/g, '\\\\') // Backslash must be escaped first
+    .replace(/\|/g, '\\|') // Table cell separator
+    .replace(/`/g, '\\`') // Code spans
+    .replace(/</g, '&lt;') // HTML tags (use entity to prevent injection)
+    .replace(/>/g, '&gt;') // HTML tags
+    .replace(/\n/g, ' ') // Newlines break table rows
+    .replace(/\r/g, ''); // Carriage returns
 }
 
 const resultsFile = process.argv[2] || 'perf-results.json';

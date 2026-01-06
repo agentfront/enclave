@@ -2,6 +2,7 @@ import type { DocumentMetadata } from '../interfaces';
 import type { StorageAdapterConfig, StoredData } from './adapter.interface';
 import { BaseStorageAdapter } from './base.adapter';
 import { ConfigurationError, StorageError } from '../errors';
+import { SAFE_PATTERNS } from '../regex.utils';
 
 /**
  * Redis client interface (compatible with ioredis, redis, etc.)
@@ -72,15 +73,18 @@ export class RedisStorageAdapter<T extends DocumentMetadata = DocumentMetadata> 
       throw new ConfigurationError('Namespace must be a non-empty string');
     }
 
+    // Limit length FIRST to prevent ReDoS on uncontrolled input
+    const maxLength = 200;
+    const boundedNamespace = namespace.length > maxLength ? namespace.slice(0, maxLength) : namespace;
+
     // Remove newlines, carriage returns, and other control characters
     // These could be used for command injection in Redis
-    const sanitized = namespace
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\r\n\t\0\u000B\u000C]/g, '') // Remove control characters
-      .replace(/[^\w:.-]/g, '-') // Replace unsafe chars with dash (allow word chars, colon, dot, dash)
-      .replace(/^[.-]+/, '') // Remove leading dots and dashes
-      .replace(/[.-]+$/, '') // Remove trailing dots and dashes
-      .substring(0, 200); // Limit length
+    // Uses pre-compiled safe patterns from regex.utils to prevent ReDoS
+    const sanitized = boundedNamespace
+      .replace(SAFE_PATTERNS.CONTROL_CHARS, '') // Remove control characters
+      .replace(SAFE_PATTERNS.REDIS_KEY_SAFE, '-') // Replace unsafe chars with dash
+      .replace(SAFE_PATTERNS.LEADING_DOTS_DASHES, '') // Remove leading dots and dashes
+      .replace(SAFE_PATTERNS.TRAILING_DOTS_DASHES, ''); // Remove trailing dots and dashes
 
     if (!sanitized) {
       throw new ConfigurationError('Namespace becomes empty after sanitization');
