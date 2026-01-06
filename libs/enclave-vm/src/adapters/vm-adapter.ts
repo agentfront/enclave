@@ -273,24 +273,174 @@ function createProtectedSandbox(sandbox: vm.Context): vm.Context {
 }
 
 /**
+ * Dangerous Object STATIC methods that allow property manipulation attacks
+ * These methods can be used for:
+ * - Serialization hijacking (defineProperty with toJSON)
+ * - Prototype pollution (setPrototypeOf)
+ * - Getter/setter injection (defineProperty, defineProperties)
+ *
+ * Note: __defineGetter__ etc. are on Object.prototype (instance methods),
+ * not static methods on Object constructor. Those are blocked separately
+ * on Object.prototype if needed.
+ */
+const DANGEROUS_OBJECT_STATIC_METHODS = [
+  'defineProperty',
+  'defineProperties',
+  'setPrototypeOf',
+  'getOwnPropertyDescriptor', // Can retrieve defineProperty reference
+  'getOwnPropertyDescriptors', // Same
+] as const;
+
+/**
+ * Create a safe Object global that removes dangerous methods
+ * Prevents attacks like:
+ * - ATK-DATA-02: Serialization Hijack via defineProperty('toJSON')
+ * - Prototype pollution via setPrototypeOf
+ * - Getter/setter injection
+ *
+ * @param originalObject The original Object constructor from VM context
+ * @returns Safe Object with dangerous methods removed
+ */
+function createSafeObject(originalObject: ObjectConstructor): ObjectConstructor {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const SafeObject: any = function (this: unknown, value?: unknown) {
+    // Support both Object() and new Object() calls
+    if (value === null || value === undefined) {
+      return {};
+    }
+    return Object(value);
+  };
+
+  // Copy all safe static methods from original Object
+  const safeStaticMethods = [
+    'keys',
+    'values',
+    'entries',
+    'fromEntries',
+    'assign',
+    'is',
+    'hasOwn',
+    'freeze',
+    'isFrozen',
+    'seal',
+    'isSealed',
+    'preventExtensions',
+    'isExtensible',
+    'getOwnPropertyNames',
+    'getOwnPropertySymbols',
+    'getPrototypeOf', // Read-only, safe
+  ];
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const origObj = originalObject as any;
+  for (const method of safeStaticMethods) {
+    if (method in origObj) {
+      SafeObject[method] = origObj[method];
+    }
+  }
+
+  // Provide a safe Object.create that only allows null or object as prototype
+  // and does NOT allow property descriptors (second argument)
+  SafeObject.create = function (proto: object | null, propertiesObject?: PropertyDescriptorMap) {
+    if (propertiesObject !== undefined) {
+      throw new Error('Object.create with property descriptors is not allowed (security restriction)');
+    }
+    return Object.create(proto);
+  };
+
+  // Copy prototype reference
+  SafeObject.prototype = origObj.prototype;
+
+  // Add blocked methods that throw helpful errors
+  for (const method of DANGEROUS_OBJECT_STATIC_METHODS) {
+    SafeObject[method] = function () {
+      throw new Error(`Object.${method} is not allowed (security restriction: prevents property manipulation attacks)`);
+    };
+  }
+
+  return SafeObject as ObjectConstructor;
+}
+
+/**
  * Node.js 24 dangerous globals that should be removed per security level
  * These globals can be used for various escape/attack vectors
+ *
+ * Defense-in-depth: Even though codeGeneration.strings=false blocks
+ * new Function() from strings, removing Function entirely eliminates
+ * any potential bypass vectors discovered in the future.
+ *
+ * ATK-RECON-01 identified these accessible globals as attack surface:
+ * Function, eval, Proxy, Reflect, WeakRef, FinalizationRegistry,
+ * SharedArrayBuffer, Atomics, gc, WebAssembly, globalThis
  */
 const NODEJS_24_DANGEROUS_GLOBALS: Record<SecurityLevel, string[]> = {
   STRICT: [
+    // Code execution - CRITICAL
+    'Function', // Constructor for functions - primary escape vector
+    'eval', // Direct code execution
+    'globalThis', // Indirect access to all globals
+
+    // Metaprogramming - sandbox escape vectors
+    'Proxy', // Can intercept all operations
+    'Reflect', // Metaprogramming primitive
+
+    // Memory/timing attacks
+    'SharedArrayBuffer', // Spectre/timing attacks
+    'Atomics', // Shared memory operations
+    'gc', // Force garbage collection (shouldn't be exposed)
+
+    // Future/experimental APIs
+    'Iterator', // Iterator helpers
+    'AsyncIterator', // Async iterator helpers
+    'ShadowRealm', // New realm creation (major escape risk)
+    'WeakRef', // Can observe GC behavior
+    'FinalizationRegistry', // Can observe GC behavior
+    'performance', // Timing information
+    'Temporal', // New date/time API
+  ],
+  SECURE: [
+    // Code execution - CRITICAL
+    'Function',
+    'eval',
+    'globalThis',
+
+    // Most dangerous metaprogramming
+    'Proxy',
+
+    // Memory/timing attacks
+    'SharedArrayBuffer',
+    'Atomics',
+    'gc',
+
+    // Future APIs
     'Iterator',
     'AsyncIterator',
     'ShadowRealm',
     'WeakRef',
     'FinalizationRegistry',
-    'Reflect',
-    'Proxy',
-    'performance',
-    'Temporal',
   ],
-  SECURE: ['Iterator', 'AsyncIterator', 'ShadowRealm', 'WeakRef', 'FinalizationRegistry', 'Proxy'],
-  STANDARD: ['ShadowRealm', 'WeakRef', 'FinalizationRegistry'],
-  PERMISSIVE: ['ShadowRealm'],
+  STANDARD: [
+    // Code execution - always block these
+    'Function',
+    'eval',
+
+    // Memory/timing attacks
+    'SharedArrayBuffer',
+    'Atomics',
+    'gc',
+
+    // Definitely dangerous
+    'ShadowRealm',
+    'WeakRef',
+    'FinalizationRegistry',
+  ],
+  PERMISSIVE: [
+    // Even PERMISSIVE should block the most dangerous
+    'ShadowRealm', // Too dangerous to allow
+    'gc', // Shouldn't be exposed at all
+    'SharedArrayBuffer', // Spectre risk
+    'Atomics', // Goes with SharedArrayBuffer
+  ],
 };
 
 /**
@@ -331,6 +481,18 @@ function sanitizeVmContext(context: vm.Context, securityLevel: SecurityLevel): v
       });
     }
   }
+
+  // Add safe Object to the context that blocks dangerous methods
+  // Security: Prevents ATK-DATA-02 (Serialization Hijack via defineProperty)
+  // Note: We use the global Object to create SafeObject, then add it to context
+  // This shadows the internal V8 Object global with our safe version
+  const safeObject = createSafeObject(Object);
+  Object.defineProperty(context, 'Object', {
+    value: safeObject,
+    writable: false,
+    configurable: false,
+    enumerable: true,
+  });
 }
 
 /**
@@ -399,7 +561,10 @@ export class VmAdapter implements SandboxAdapter {
 
       // Add safe runtime functions to the isolated context as non-writable, non-configurable
       // Security: Prevents runtime override attacks on __safe_* functions
+      // Note: Skip 'Object' if already added by sanitizeVmContext (with SafeObject)
       for (const [key, value] of Object.entries(safeRuntime)) {
+        // Skip if property is already defined (e.g., Object was added by sanitizeVmContext)
+        if (key in baseSandbox) continue;
         Object.defineProperty(baseSandbox, key, {
           value: value,
           writable: false,

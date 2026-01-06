@@ -55,22 +55,83 @@ export interface ParentVmBootstrapOptions {
 /**
  * Node.js 24 dangerous globals that should be removed per security level
  * (Same as in vm-adapter.ts)
+ *
+ * Defense-in-depth: Even though codeGeneration.strings=false blocks
+ * new Function() from strings, removing Function entirely eliminates
+ * any potential bypass vectors discovered in the future.
+ *
+ * ATK-RECON-01 identified these accessible globals as attack surface:
+ * Function, eval, Proxy, Reflect, WeakRef, FinalizationRegistry,
+ * SharedArrayBuffer, Atomics, gc, WebAssembly, globalThis
  */
 const NODEJS_24_DANGEROUS_GLOBALS: Record<SecurityLevel, string[]> = {
   STRICT: [
+    // Code execution - CRITICAL
+    'Function', // Constructor for functions - primary escape vector
+    'eval', // Direct code execution
+    'globalThis', // Indirect access to all globals
+
+    // Metaprogramming - sandbox escape vectors
+    'Proxy', // Can intercept all operations
+    'Reflect', // Metaprogramming primitive
+
+    // Memory/timing attacks
+    'SharedArrayBuffer', // Spectre/timing attacks
+    'Atomics', // Shared memory operations
+    'gc', // Force garbage collection (shouldn't be exposed)
+
+    // Future/experimental APIs
+    'Iterator', // Iterator helpers
+    'AsyncIterator', // Async iterator helpers
+    'ShadowRealm', // New realm creation (major escape risk)
+    'WeakRef', // Can observe GC behavior
+    'FinalizationRegistry', // Can observe GC behavior
+    'performance', // Timing information
+    'Temporal', // New date/time API
+  ],
+  SECURE: [
+    // Code execution - CRITICAL
+    'Function',
+    'eval',
+    'globalThis',
+
+    // Most dangerous metaprogramming
+    'Proxy',
+
+    // Memory/timing attacks
+    'SharedArrayBuffer',
+    'Atomics',
+    'gc',
+
+    // Future APIs
     'Iterator',
     'AsyncIterator',
     'ShadowRealm',
     'WeakRef',
     'FinalizationRegistry',
-    'Reflect',
-    'Proxy',
-    'performance',
-    'Temporal',
   ],
-  SECURE: ['Iterator', 'AsyncIterator', 'ShadowRealm', 'WeakRef', 'FinalizationRegistry', 'Proxy'],
-  STANDARD: ['ShadowRealm', 'WeakRef', 'FinalizationRegistry'],
-  PERMISSIVE: ['ShadowRealm'],
+  STANDARD: [
+    // Code execution - always block these
+    'Function',
+    'eval',
+
+    // Memory/timing attacks
+    'SharedArrayBuffer',
+    'Atomics',
+    'gc',
+
+    // Definitely dangerous
+    'ShadowRealm',
+    'WeakRef',
+    'FinalizationRegistry',
+  ],
+  PERMISSIVE: [
+    // Even PERMISSIVE should block the most dangerous
+    'ShadowRealm', // Too dangerous to allow
+    'gc', // Shouldn't be exposed at all
+    'SharedArrayBuffer', // Spectre risk
+    'Atomics', // Goes with SharedArrayBuffer
+  ],
 };
 
 /**
@@ -766,12 +827,58 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     }
   }
 
+  // Create a safe Object that blocks dangerous STATIC methods
+  // Prevents ATK-DATA-02 (Serialization Hijack via defineProperty)
+  // Note: __defineGetter__ etc. are on Object.prototype (instance methods), not static
+  var DANGEROUS_OBJECT_STATIC_METHODS = [
+    'defineProperty',
+    'defineProperties',
+    'setPrototypeOf',
+    'getOwnPropertyDescriptor',
+    'getOwnPropertyDescriptors'
+  ];
+
+  var SafeObject = function(value) {
+    if (value === null || value === undefined) return {};
+    return Object(value);
+  };
+
+  // Copy safe static methods
+  var safeObjectMethods = [
+    'keys', 'values', 'entries', 'fromEntries', 'assign', 'is', 'hasOwn',
+    'freeze', 'isFrozen', 'seal', 'isSealed', 'preventExtensions', 'isExtensible',
+    'getOwnPropertyNames', 'getOwnPropertySymbols', 'getPrototypeOf'
+  ];
+  for (var i = 0; i < safeObjectMethods.length; i++) {
+    var m = safeObjectMethods[i];
+    if (m in Object) SafeObject[m] = Object[m];
+  }
+
+  // Safe Object.create without property descriptors
+  SafeObject.create = function(proto, props) {
+    if (props !== undefined) {
+      throw new Error('Object.create with property descriptors is not allowed (security restriction)');
+    }
+    return Object.create(proto);
+  };
+
+  SafeObject.prototype = Object.prototype;
+
+  // Block dangerous methods with helpful errors
+  for (var i = 0; i < DANGEROUS_OBJECT_STATIC_METHODS.length; i++) {
+    (function(method) {
+      SafeObject[method] = function() {
+        throw new Error('Object.' + method + ' is not allowed (security restriction: prevents property manipulation attacks)');
+      };
+    })(DANGEROUS_OBJECT_STATIC_METHODS[i]);
+  }
+
   // Add safe standard globals wrapped with secure proxy
   var safeGlobals = {
     Math: createSecureProxy(Math),
     JSON: createSecureProxy(JSON),
     Array: createSecureProxy(Array),
-    Object: createSecureProxy(Object),
+    Object: createSecureProxy(SafeObject),
     String: createSecureProxy(String),
     Number: createSecureProxy(Number),
     Date: createSecureProxy(Date),

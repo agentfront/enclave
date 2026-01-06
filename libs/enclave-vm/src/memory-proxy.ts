@@ -157,7 +157,6 @@ export function createTrackedArrayMethods(tracker: MemoryTracker): Record<string
   const originalFlatMap = Array.prototype.flatMap;
   const originalFlat = Array.prototype.flat;
   const originalJoin = Array.prototype.join;
-  const originalToString = Array.prototype.toString;
 
   return {
     // join() can create very large strings from large arrays
