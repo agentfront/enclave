@@ -1,5 +1,7 @@
 /**
- * Constructor Obfuscation Attack Vectors Test Suite
+ * ATK-COBS: Constructor Obfuscation Attack Vectors Test Suite
+ *
+ * Category: ATK-COBS (CWE-693: Protection Mechanism Failure)
  *
  * This file tests known constructor obfuscation attack vectors
  * to verify that the SecureProxy blocks them at runtime.
@@ -13,23 +15,32 @@
  * 2. SecureProxy wraps globals to block runtime property access attacks
  * 3. Tool results are wrapped to prevent attacks via returned data
  *
- * Attack vectors are organized by category:
- * - Category A: String Building Attacks (on wrapped globals)
- * - Category B: Escape Sequence Attacks (on wrapped globals)
- * - Category C: Destructuring Attacks (blocked by AST)
- * - Category D: Prototype Chain Attacks (on wrapped globals)
- * - Category E: Type Coercion Attacks
- * - Category F: String Manipulation Attacks (on wrapped globals)
- * - Category G: Syntax Obfuscation Attacks (on wrapped globals)
- * - Category H: Reflection Attacks
- * - Category I: Function Prototype Attacks
+ * Test Categories:
+ * - ATK-COBS-01 to ATK-COBS-06: String Building Attacks (on wrapped globals)
+ * - ATK-COBS-07 to ATK-COBS-08: Escape Sequence Attacks (on wrapped globals)
+ * - ATK-COBS-09: Destructuring Attacks (blocked by AST)
+ * - ATK-COBS-10 to ATK-COBS-14: Prototype Chain Attacks (on wrapped globals)
+ * - ATK-COBS-15 to ATK-COBS-16: Type Coercion Attacks
+ * - ATK-COBS-17 to ATK-COBS-22: String Manipulation Attacks (on wrapped globals)
+ * - ATK-COBS-23 to ATK-COBS-24: Syntax Obfuscation Attacks (on wrapped globals)
+ * - ATK-COBS-25 to ATK-COBS-26: Reflection Attacks
+ * - ATK-COBS-27: Function Prototype Attacks
+ * - ATK-COBS-28 to ATK-COBS-31: Promise-based Constructor Attacks
+ * - ATK-COBS-32 to ATK-COBS-34: PERMISSIVE Mode Proxy Configuration
+ *
+ * Related CWEs:
+ * - CWE-693: Protection Mechanism Failure
+ * - CWE-94: Improper Control of Generation of Code
+ * - CWE-1321: Improperly Controlled Modification of Object Prototype Attributes
+ *
+ * @packageDocumentation
  */
 
 import { Enclave } from '../enclave';
 
-describe('Constructor Obfuscation Attack Vectors', () => {
-  describe('Category A: String Building Attacks on Wrapped Globals', () => {
-    it('Vector 1: should block string concatenation attack on Array', async () => {
+describe('ATK-COBS: Constructor Obfuscation Attack Vectors (CWE-693)', () => {
+  describe('ATK-COBS-01 to ATK-COBS-06: String Building Attacks on Wrapped Globals', () => {
+    it('ATK-COBS-01: should block string concatenation attack on Array', async () => {
       const enclave = new Enclave();
       const code = `
         const key = 'con' + 'structor';
@@ -41,7 +52,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 2: should block template literal building attack on Object', async () => {
+    it('ATK-COBS-02: should block template literal building attack on Object', async () => {
       const enclave = new Enclave();
       const code = `
         const c = 'con';
@@ -55,7 +66,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 3: should block Array.join attack on Math', async () => {
+    it('ATK-COBS-03: should block Array.join attack on Math', async () => {
       const enclave = new Enclave();
       const code = `
         const key = ['con', 'structor'].join('');
@@ -67,7 +78,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 4: should block String.fromCharCode attack on JSON', async () => {
+    it('ATK-COBS-04: should block String.fromCharCode attack on JSON', async () => {
       const enclave = new Enclave();
       // 'constructor' = 99,111,110,115,116,114,117,99,116,111,114
       const code = `
@@ -80,7 +91,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 5: should block reverse string attack on String', async () => {
+    it('ATK-COBS-05: should block reverse string attack on String', async () => {
       const enclave = new Enclave();
       const code = `
         const key = 'rotcurtsnoc'.split('').reverse().join('');
@@ -92,7 +103,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 6: should block Base64 decode attack on wrapped custom global', async () => {
+    it('ATK-COBS-06: should block Base64 decode attack on wrapped custom global', async () => {
       const enclave = new Enclave({
         globals: {
           // Simulate atob being available
@@ -113,8 +124,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
     });
   });
 
-  describe('Category B: Escape Sequence Attacks on Wrapped Globals', () => {
-    it('Vector 7: should block hex escape attack on Number', async () => {
+  describe('ATK-COBS-07 to ATK-COBS-08: Escape Sequence Attacks on Wrapped Globals', () => {
+    it('ATK-COBS-07: should block hex escape attack on Number', async () => {
       const enclave = new Enclave();
       // '\x63' = 'c', so '\x63onstructor' = 'constructor'
       const code = `
@@ -127,7 +138,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 8: should block unicode escape attack on Date', async () => {
+    it('ATK-COBS-08: should block unicode escape attack on Date', async () => {
       const enclave = new Enclave();
       // '\u0063' = 'c', so '\u0063onstructor' = 'constructor'
       const code = `
@@ -141,8 +152,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
     });
   });
 
-  describe('Category C: Destructuring Attacks', () => {
-    it('Vector 9: should block computed property destructuring at AST level', async () => {
+  describe('ATK-COBS-09: Destructuring Attacks', () => {
+    it('ATK-COBS-09: should block computed property destructuring at AST level', async () => {
       const enclave = new Enclave();
       // This should be blocked by NoComputedDestructuringRule at AST validation
       const code = `
@@ -163,8 +174,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
     });
   });
 
-  describe('Category D: Prototype Chain Attacks on Wrapped Globals', () => {
-    it('Vector 10: should block __proto__ access via string building on Array', async () => {
+  describe('ATK-COBS-10 to ATK-COBS-14: Prototype Chain Attacks on Wrapped Globals', () => {
+    it('ATK-COBS-10: should block __proto__ access via string building on Array', async () => {
       const enclave = new Enclave();
       // Use dynamic string building to bypass AST validation
       // The runtime SecureProxy should block this
@@ -179,7 +190,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 11: should block __proto__ via string building + concat constructor on Object', async () => {
+    it('ATK-COBS-11: should block __proto__ via string building + concat constructor on Object', async () => {
       const enclave = new Enclave();
       // Use dynamic string building to bypass AST validation
       const code = `
@@ -196,7 +207,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 12: Object.getPrototypeOf blocked by AST validation', async () => {
+    it('ATK-COBS-12: Object.getPrototypeOf blocked by AST validation', async () => {
       const enclave = new Enclave();
       // Object.getPrototypeOf is blocked by NO_META_PROGRAMMING rule at AST level
       const code = `
@@ -209,7 +220,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 13: Reflect.get blocked by AST validation', async () => {
+    it('ATK-COBS-13: Reflect.get blocked by AST validation', async () => {
       // The AgentScript preset blocks 'Reflect' at AST validation level
       const enclave = new Enclave({ securityLevel: 'SECURE' });
       const code = `
@@ -221,7 +232,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 14: Reflect.getPrototypeOf blocked by AST validation', async () => {
+    it('ATK-COBS-14: Reflect.getPrototypeOf blocked by AST validation', async () => {
       // All security levels use the AgentScript preset which blocks Reflect
       const enclave = new Enclave({ securityLevel: 'STRICT' });
       const code = `
@@ -234,8 +245,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
     });
   });
 
-  describe('Category E: Type Coercion Attacks on Wrapped Globals', () => {
-    it('Vector 15: should block toString coercion attack on Array', async () => {
+  describe('ATK-COBS-15 to ATK-COBS-16: Type Coercion Attacks on Wrapped Globals', () => {
+    it('ATK-COBS-15: should block toString coercion attack on Array', async () => {
       const enclave = new Enclave();
       const code = `
         const key = { toString: () => 'constructor' };
@@ -249,7 +260,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 16: should block Symbol.toPrimitive coercion attack', async () => {
+    it('ATK-COBS-16: should block Symbol.toPrimitive coercion attack', async () => {
       const enclave = new Enclave();
       // Symbol is blocked in most presets, so this should fail validation or be blocked
       const code = `
@@ -270,8 +281,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
     });
   });
 
-  describe('Category F: String Manipulation Attacks on Wrapped Globals', () => {
-    it('Vector 17: should block String.replace attack on Math', async () => {
+  describe('ATK-COBS-17 to ATK-COBS-22: String Manipulation Attacks on Wrapped Globals', () => {
+    it('ATK-COBS-17: should block String.replace attack on Math', async () => {
       const enclave = new Enclave();
       const code = `
         const key = 'cxnstructxr'.split('x').join('o');
@@ -283,7 +294,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 18: should block decodeURIComponent attack (if available)', async () => {
+    it('ATK-COBS-18: should block decodeURIComponent attack (if available)', async () => {
       const enclave = new Enclave({
         globals: {
           decodeURIComponent: decodeURIComponent,
@@ -301,7 +312,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 21: should block nested template literal attack on String', async () => {
+    it('ATK-COBS-19: should block nested template literal attack on String', async () => {
       const enclave = new Enclave();
       const code = `
         const inner = 'structor';
@@ -314,7 +325,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 22: should block slice extraction attack on Number', async () => {
+    it('ATK-COBS-20: should block slice extraction attack on Number', async () => {
       const enclave = new Enclave();
       const code = `
         const key = 'XXconstructorXX'.slice(2, -2);
@@ -327,8 +338,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
     });
   });
 
-  describe('Category G: Syntax Obfuscation Attacks on Wrapped Globals', () => {
-    it('Vector 19: should block optional chaining attack on Array', async () => {
+  describe('ATK-COBS-21 to ATK-COBS-22: Syntax Obfuscation Attacks on Wrapped Globals', () => {
+    it('ATK-COBS-21: should block optional chaining attack on Array', async () => {
       const enclave = new Enclave();
       const code = `
         const key = 'const' + 'ructor';
@@ -341,7 +352,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 20: should block comma operator attack on Object', async () => {
+    it('ATK-COBS-22: should block comma operator attack on Object', async () => {
       const enclave = new Enclave();
       const code = `
         const key = 'const' + 'ructor';
@@ -355,8 +366,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
     });
   });
 
-  describe('Category H: Reflection Attacks', () => {
-    it('Vector 23: RegExp literals blocked by AST validation', async () => {
+  describe('ATK-COBS-23 to ATK-COBS-24: Reflection Attacks', () => {
+    it('ATK-COBS-23: RegExp literals blocked by AST validation', async () => {
       // RegExp literals are blocked by NoRegexLiteralRule in AgentScript preset
       const enclave = new Enclave();
       const code = `
@@ -369,7 +380,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 24: should block constructor access on tool results', async () => {
+    it('ATK-COBS-24: should block constructor access on tool results', async () => {
       const enclave = new Enclave({
         toolHandler: async () => ({
           data: { value: 42 },
@@ -389,8 +400,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
     });
   });
 
-  describe('Category I: Function Prototype Attacks', () => {
-    it('Vector 25: user-defined function declarations blocked by AST', async () => {
+  describe('ATK-COBS-25: Function Prototype Attacks', () => {
+    it('ATK-COBS-25: user-defined function declarations blocked by AST', async () => {
       const enclave = new Enclave();
       // User-defined function declarations are blocked to prevent prototype manipulation
       // Arrow functions are allowed for callbacks, but named function declarations are not
@@ -405,8 +416,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
     });
   });
 
-  describe('Category J: Promise-based Constructor Attacks', () => {
-    it('Vector 26: should block Promise.constructor access via callTool', async () => {
+  describe('ATK-COBS-26 to ATK-COBS-29: Promise-based Constructor Attacks', () => {
+    it('ATK-COBS-26: should block Promise.constructor access via callTool', async () => {
       // This tests the critical attack vector where an attacker uses the Promise
       // returned by callTool to reach the Function constructor
       const enclave = new Enclave({
@@ -423,7 +434,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 27: should block chained Promise constructor access', async () => {
+    it('ATK-COBS-27: should block chained Promise constructor access', async () => {
       const enclave = new Enclave({
         toolHandler: async () => ({ items: [] }),
       });
@@ -441,7 +452,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 28: await callTool still works after Promise proxy fix', async () => {
+    it('ATK-COBS-28: await callTool still works after Promise proxy fix', async () => {
       const enclave = new Enclave({
         toolHandler: async () => ({ count: 42 }),
       });
@@ -455,7 +466,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('Vector 29: Promise.then still works after proxy fix', async () => {
+    it('ATK-COBS-29: Promise.then still works after proxy fix', async () => {
       const enclave = new Enclave({
         toolHandler: async () => [1, 2, 3],
       });
@@ -470,8 +481,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
     });
   });
 
-  describe('Coverage Verification', () => {
-    it('should have tested all 29 documented attack vectors', () => {
+  describe('ATK-COBS: Coverage Verification', () => {
+    it('ATK-COBS-30: should have tested all 29 documented attack vectors', () => {
       // This test documents all attack vectors for coverage tracking
       const attackVectors = [
         'Vector 1: String concatenation on Array',
@@ -509,8 +520,8 @@ describe('Constructor Obfuscation Attack Vectors', () => {
     });
   });
 
-  describe('PERMISSIVE Mode Proxy Configuration', () => {
-    it('PERMISSIVE mode allows constructor via direct computed property access', async () => {
+  describe('ATK-COBS-31 to ATK-COBS-33: PERMISSIVE Mode Proxy Configuration', () => {
+    it('ATK-COBS-31: PERMISSIVE mode allows constructor via direct computed property access', async () => {
       // PERMISSIVE has blockConstructor: false by default in the security level config
       // NOTE: String concatenation attacks like 'const' + 'ructor' are blocked at AST level
       // even in PERMISSIVE mode (this is correct - string obfuscation is always suspicious)
@@ -536,7 +547,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('should still block __proto__ in PERMISSIVE mode', async () => {
+    it('ATK-COBS-32: should still block __proto__ in PERMISSIVE mode', async () => {
       const enclave = new Enclave({ securityLevel: 'PERMISSIVE' });
 
       const code = `
@@ -556,7 +567,7 @@ describe('Constructor Obfuscation Attack Vectors', () => {
       enclave.dispose();
     });
 
-    it('explicit secureProxyConfig with validation disabled allows constructor access', async () => {
+    it('ATK-COBS-33: explicit secureProxyConfig with validation disabled allows constructor access', async () => {
       // With validation disabled, explicit config overrides security level
       const enclave = new Enclave({
         securityLevel: 'STRICT',

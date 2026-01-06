@@ -1,9 +1,9 @@
 # Enclave Security Audit Report
 
-**Date:** 2026-01-05
-**Package:** `enclave-vm` v2.0.0
-**Test Suite:** 1184 security tests
-**Pass Rate:** 1184/1184 passing (100%)
+**Date:** 2026-01-06
+**Package:** `enclave-vm` v2.4.0
+**Test Suite:** 1255 security tests
+**Pass Rate:** 1255/1255 passing (100%)
 
 ## Executive Summary
 
@@ -449,7 +449,7 @@ The enclave-vm package provides **bank-grade security** for AgentScript executio
 - ✅ **I/O flood protection** (console rate limiting)
 - ✅ **AI Scoring Gate** (semantic attack pattern detection)
 - ✅ **Worker Pool Adapter** (optional OS-level memory isolation)
-- ✅ **100% test pass rate** (1184/1184 passing)
+- ✅ **100% test pass rate** (1255/1255 passing)
 
 All security mechanisms are functioning correctly with zero failures or skipped tests.
 
@@ -463,11 +463,11 @@ All security mechanisms are functioning correctly with zero failures or skipped 
 
 ### Overall Security Testing
 
-- **Total Security Tests:** 1184
-- **Passing:** 1184 (100%)
+- **Total Security Tests:** 1255
+- **Passing:** 1255 (100%)
 - **Failing:** 0
 - **Skipped:** 0
-- **Categories Tested:** 25
+- **Categories Tested:** 28
 - **Critical Vulnerabilities Found:** 0
 - **Medium Issues Found:** 2
 - **Low Issues Found:** 2
@@ -519,6 +519,17 @@ All security mechanisms are functioning correctly with zero failures or skipped 
   - Threshold configuration
 
 ## Version History
+
+- **v2.4.0** (2026-01-06): Attack Prevention Test Suite
+
+  - Added comprehensive attack prevention tests (71 new tests)
+  - New test categories with consistent ATK-XXX naming scheme:
+    - ATK-REDOS: ReDoS Attack Prevention (23 tests)
+    - ATK-ASYNC: Async/Promise Bomb Attack Prevention (24 tests)
+    - ATK-SSRF: SSRF Attack Prevention (24 tests)
+  - Documented blanket blocking approach for regex and async primitives
+  - Added safe alternatives documentation (String methods for pattern matching)
+  - Total tests increased from 1184 to 1255
 
 - **v0.6.0** (2025-11-28): Comprehensive Security Test Expansion
 
@@ -783,3 +794,139 @@ The critical finding is that **even when attackers access the Function construct
 4. **Constructor access through primitives works but is contained** - The constructed functions run in sandbox context with no host access
 
 5. **Host prototype chain is always protected** - Prototype pollution is contained within the sandbox
+
+---
+
+## Attack Prevention Test Categories (v2.4.0)
+
+### Overview
+
+This section documents the comprehensive attack prevention tests added in v2.4.0 covering three major attack vectors: ReDoS, Async/Promise bombs, and SSRF attacks. Each category uses a consistent naming scheme for easy auditing.
+
+### ATK-REDOS: ReDoS Attack Prevention (23 tests)
+
+**File:** `enclave.redos-attacks.spec.ts`
+
+Regular Expression Denial of Service (ReDoS) attacks exploit catastrophic backtracking in regex patterns. The enclave implements **blanket blocking** of all regex as defense-in-depth.
+
+| Test ID                                                                   | Description                                    | Defense Layer           |
+| ------------------------------------------------------------------------- | ---------------------------------------------- | ----------------------- |
+| **ATK-REDOS-01 to ATK-REDOS-05: AST-Level Blocking (Nested Quantifiers)** |                                                |                         |
+| ATK-REDOS-01                                                              | Block classic (x+x+)+y pattern                 | PRESCANNER_REDOS        |
+| ATK-REDOS-02                                                              | Block nested quantifier (a+)+ pattern          | PRESCANNER_REDOS        |
+| ATK-REDOS-03                                                              | Block alternation with overlap (a\|a)+         | PRESCANNER_REDOS        |
+| ATK-REDOS-04                                                              | Block polynomial ReDoS ([a-z]+)\*$             | PRESCANNER_REDOS        |
+| ATK-REDOS-05                                                              | Block email-style ReDoS pattern                | PRESCANNER_REDOS        |
+| **ATK-REDOS-06 to ATK-REDOS-10: Large Input Processing**                  |                                                |                         |
+| ATK-REDOS-06                                                              | Block regex on very large strings              | NO_REGEX_LITERAL        |
+| ATK-REDOS-07                                                              | Block regex with many groups                   | UNKNOWN_GLOBAL (RegExp) |
+| ATK-REDOS-08                                                              | Block String.match() with regex                | PRESCANNER_REDOS        |
+| ATK-REDOS-09                                                              | Block String.replace() with regex              | PRESCANNER_REDOS        |
+| ATK-REDOS-10                                                              | Block String.split() with regex                | PRESCANNER_REDOS        |
+| **ATK-REDOS-11 to ATK-REDOS-15: Real-World Vulnerable Patterns**          |                                                |                         |
+| ATK-REDOS-11                                                              | Block URL validation ReDoS pattern             | NO_REGEX_LITERAL        |
+| ATK-REDOS-12                                                              | Block HTML tag ReDoS pattern                   | NO_REGEX_LITERAL        |
+| ATK-REDOS-13                                                              | Block IPv4 validation ReDoS pattern            | NO_REGEX_LITERAL        |
+| ATK-REDOS-14                                                              | Block dynamically constructed evil regex       | UNKNOWN_GLOBAL (RegExp) |
+| ATK-REDOS-15                                                              | Block regex with user-controlled pattern       | UNKNOWN_GLOBAL (RegExp) |
+| **ATK-REDOS-16 to ATK-REDOS-18: Blanket Regex Blocking**                  |                                                |                         |
+| ATK-REDOS-16                                                              | Block ALL regex literals                       | NO_REGEX_LITERAL        |
+| ATK-REDOS-17                                                              | Block regex .test() method calls               | NO_REGEX_LITERAL        |
+| ATK-REDOS-18                                                              | Block RegExp constructor access                | UNKNOWN_GLOBAL          |
+| **ATK-REDOS-19 to ATK-REDOS-23: Safe String Alternatives**                |                                                |                         |
+| ATK-REDOS-19                                                              | Allow String.includes() for pattern matching   | ✅ ALLOWED              |
+| ATK-REDOS-20                                                              | Allow String.startsWith() for URL validation   | ✅ ALLOWED              |
+| ATK-REDOS-21                                                              | Allow String.endsWith() for extension checking | ✅ ALLOWED              |
+| ATK-REDOS-22                                                              | Allow String.indexOf() for pattern location    | ✅ ALLOWED              |
+| ATK-REDOS-23                                                              | Allow character code validation for digits     | ✅ ALLOWED              |
+
+### ATK-ASYNC: Async/Promise Bomb Attack Prevention (24 tests)
+
+**File:** `enclave.async-bomb-attacks.spec.ts`
+
+Async/Promise bomb attacks attempt to exhaust the event loop via promise flooding and microtask queue saturation. The enclave implements **blanket blocking** of Promise, setTimeout, and other async primitives.
+
+| Test ID                                                         | Description                                            | Defense Layer   |
+| --------------------------------------------------------------- | ------------------------------------------------------ | --------------- |
+| **ATK-ASYNC-01 to ATK-ASYNC-08: Blanket Async Blocking**        |                                                        |                 |
+| ATK-ASYNC-01                                                    | Block Promise constructor access                       | UNKNOWN_GLOBAL  |
+| ATK-ASYNC-02                                                    | Block Promise.resolve() usage                          | UNKNOWN_GLOBAL  |
+| ATK-ASYNC-03                                                    | Block new Promise() construction                       | UNKNOWN_GLOBAL  |
+| ATK-ASYNC-04                                                    | Block setTimeout access                                | UNKNOWN_GLOBAL  |
+| ATK-ASYNC-05                                                    | Block setInterval access                               | UNKNOWN_GLOBAL  |
+| ATK-ASYNC-06                                                    | Block queueMicrotask access                            | UNKNOWN_GLOBAL  |
+| ATK-ASYNC-07                                                    | Block setImmediate access                              | UNKNOWN_GLOBAL  |
+| ATK-ASYNC-08                                                    | Block process.nextTick access                          | UNKNOWN_GLOBAL  |
+| **ATK-ASYNC-09 to ATK-ASYNC-12: Promise Flood Prevention**      |                                                        |                 |
+| ATK-ASYNC-09                                                    | Block Promise.all() flood attempt                      | UNKNOWN_GLOBAL  |
+| ATK-ASYNC-10                                                    | Block Promise.race() flood attempt                     | UNKNOWN_GLOBAL  |
+| ATK-ASYNC-11                                                    | Block recursive promise chain attack                   | UNKNOWN_GLOBAL  |
+| ATK-ASYNC-12                                                    | Block unresolved promise accumulation                  | UNKNOWN_GLOBAL  |
+| **ATK-ASYNC-13 to ATK-ASYNC-15: Microtask Flooding Prevention** |                                                        |                 |
+| ATK-ASYNC-13                                                    | Block queueMicrotask flooding                          | UNKNOWN_GLOBAL  |
+| ATK-ASYNC-14                                                    | Block Promise.resolve().then() flooding                | UNKNOWN_GLOBAL  |
+| ATK-ASYNC-15                                                    | Block self-replicating microtasks                      | UNKNOWN_GLOBAL  |
+| **ATK-ASYNC-16 to ATK-ASYNC-19: Safe Async Patterns**           |                                                        |                 |
+| ATK-ASYNC-16                                                    | Allow async function declaration                       | ✅ ALLOWED      |
+| ATK-ASYNC-17                                                    | Allow async function with synchronous operations       | ✅ ALLOWED      |
+| ATK-ASYNC-18                                                    | Allow async function with callTool (internal promises) | ✅ ALLOWED      |
+| ATK-ASYNC-19                                                    | Allow multiple await callTool operations               | ✅ ALLOWED      |
+| **ATK-ASYNC-20 to ATK-ASYNC-21: Generator Attack Prevention**   |                                                        |                 |
+| ATK-ASYNC-20                                                    | Handle generator functions (if allowed)                | ✅ VM Isolated  |
+| ATK-ASYNC-21                                                    | Protect against infinite generator                     | Iteration Limit |
+| **ATK-ASYNC-22 to ATK-ASYNC-24: CPU Exhaustion Protection**     |                                                        |                 |
+| ATK-ASYNC-22                                                    | Protect against tight synchronous loops                | Iteration Limit |
+| ATK-ASYNC-23                                                    | Protect against nested synchronous loops               | Iteration Limit |
+| ATK-ASYNC-24                                                    | Allow loops within iteration limits                    | ✅ ALLOWED      |
+
+### ATK-SSRF: SSRF Attack Prevention (24 tests)
+
+**File:** `enclave.ssrf-prevention.spec.ts`
+
+Server-Side Request Forgery (SSRF) attacks attempt to access internal resources through the enclave's tool-calling mechanism. The enclave uses URL validation in tool handlers to prevent these attacks.
+
+| Test ID                                                           | Description                                          | Defense Layer       |
+| ----------------------------------------------------------------- | ---------------------------------------------------- | ------------------- |
+| **ATK-SSRF-01 to ATK-SSRF-05: Localhost/Loopback Blocking**       |                                                      |                     |
+| ATK-SSRF-01                                                       | Block `http://localhost` requests                    | URL Validation      |
+| ATK-SSRF-02                                                       | Block `http://127.0.0.1` requests                    | URL Validation      |
+| ATK-SSRF-03                                                       | Block `http://[::1]` (IPv6 localhost)                | URL Validation      |
+| ATK-SSRF-04                                                       | Block localhost with port variations                 | URL Validation      |
+| ATK-SSRF-05                                                       | Block `http://0.0.0.0` requests                      | URL Validation      |
+| **ATK-SSRF-06 to ATK-SSRF-07: File Protocol Blocking**            |                                                      |                     |
+| ATK-SSRF-06                                                       | Block `file:///etc/passwd`                           | URL Validation      |
+| ATK-SSRF-07                                                       | Block various `file://` paths                        | URL Validation      |
+| **ATK-SSRF-08 to ATK-SSRF-09: Dangerous Protocol Blocking**       |                                                      |                     |
+| ATK-SSRF-08                                                       | Block `gopher://` protocol                           | URL Validation      |
+| ATK-SSRF-09                                                       | Block various dangerous protocols (dict, ldap, tftp) | URL Validation      |
+| **ATK-SSRF-10 to ATK-SSRF-13: Private IP Range Blocking**         |                                                      |                     |
+| ATK-SSRF-10                                                       | Block private Class A (10.x.x.x) IPs                 | URL Validation      |
+| ATK-SSRF-11                                                       | Block private Class B (172.16-31.x.x) IPs            | URL Validation      |
+| ATK-SSRF-12                                                       | Block private Class C (192.168.x.x) IPs              | URL Validation      |
+| ATK-SSRF-13                                                       | Block link-local (169.254.x.x) IPs                   | URL Validation      |
+| **ATK-SSRF-14 to ATK-SSRF-15: Cloud Metadata Endpoint Blocking**  |                                                      |                     |
+| ATK-SSRF-14                                                       | Block AWS metadata endpoint (169.254.169.254)        | URL Validation      |
+| ATK-SSRF-15                                                       | Block GCP metadata endpoint                          | URL Validation      |
+| **ATK-SSRF-16 to ATK-SSRF-19: URL Obfuscation Bypass Prevention** |                                                      |                     |
+| ATK-SSRF-16                                                       | Block decimal IP encoding (2130706433 = 127.0.0.1)   | URL Validation      |
+| ATK-SSRF-17                                                       | Block hex IP encoding                                | URL Validation      |
+| ATK-SSRF-18                                                       | Block URL-encoded localhost                          | URL Validation      |
+| ATK-SSRF-19                                                       | Block localhost with different TLDs                  | URL Validation      |
+| **ATK-SSRF-20 to ATK-SSRF-21: Double VM Operation Filtering**     |                                                      |                     |
+| ATK-SSRF-20                                                       | Block disallowed operation names                     | Operation Whitelist |
+| ATK-SSRF-21                                                       | Block blacklisted operation patterns                 | Operation Blacklist |
+| **ATK-SSRF-22 to ATK-SSRF-24: Safe Request Patterns**             |                                                      |                     |
+| ATK-SSRF-22                                                       | Allow public HTTPS URLs                              | ✅ ALLOWED          |
+| ATK-SSRF-23                                                       | Allow public HTTP URLs                               | ✅ ALLOWED          |
+| ATK-SSRF-24                                                       | Allow allowed operations through double VM           | ✅ ALLOWED          |
+
+### Summary
+
+| Category  | Test Count | Blocked | Allowed |
+| --------- | ---------- | ------- | ------- |
+| ATK-REDOS | 23         | 18      | 5       |
+| ATK-ASYNC | 24         | 18      | 6       |
+| ATK-SSRF  | 24         | 21      | 3       |
+| **Total** | **71**     | **57**  | **14**  |
+
+All 71 tests pass, verifying comprehensive protection against ReDoS, Async/Promise bombs, and SSRF attacks
