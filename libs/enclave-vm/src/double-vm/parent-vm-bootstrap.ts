@@ -712,10 +712,30 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   // ============================================================
 
   // Create completely isolated context
-  var innerContext = vm.createContext({});
+  // codeGeneration.strings=false disables new Function() and eval() from strings
+  // This prevents sandbox escape via constructor chain: [][c][c]('malicious code')
+  var innerContext = vm.createContext({}, {
+    codeGeneration: { strings: false, wasm: false }
+  });
 
   // Remove dangerous globals from inner VM
   ${sanitizeContextCode}
+
+  // Freeze all built-in prototypes to prevent prototype pollution
+  // and cut off constructor chain access for sandbox escape prevention
+  Object.freeze(Object.prototype);
+  Object.freeze(Array.prototype);
+  Object.freeze(Function.prototype);
+  Object.freeze(String.prototype);
+  Object.freeze(Number.prototype);
+  Object.freeze(Boolean.prototype);
+  Object.freeze(Date.prototype);
+  Object.freeze(Error.prototype);
+  Object.freeze(TypeError.prototype);
+  Object.freeze(RangeError.prototype);
+  Object.freeze(SyntaxError.prototype);
+  Object.freeze(ReferenceError.prototype);
+  Object.freeze(Promise.prototype);
 
   // Inject safe runtime functions (non-writable, non-configurable)
   // Wrap with secure proxy to block dangerous property access
@@ -821,6 +841,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   var wrappedCode = '(async function() { ' + userCode + ' return typeof __ag_main === "function" ? await __ag_main() : undefined; })()';
 
   var script = new vm.Script(wrappedCode, { filename: 'inner-agentscript.js' });
+  // Note: codeGeneration is set in createContext(), not runInContext()
   var result = await script.runInContext(innerContext, {
     timeout: ${innerTimeout},
     breakOnSigint: true

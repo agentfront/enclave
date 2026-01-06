@@ -384,7 +384,14 @@ export class VmAdapter implements SandboxAdapter {
 
       // Create sandbox context with safe globals only
       // IMPORTANT: Use empty object to get NEW isolated prototypes
-      const baseSandbox = vm.createContext({});
+      // codeGeneration.strings=false disables new Function() and eval() from strings
+      // This prevents sandbox escape via constructor chain: [][c][c]('malicious code')
+      const baseSandbox = vm.createContext(
+        {},
+        {
+          codeGeneration: { strings: false, wasm: false },
+        },
+      );
 
       // Sanitize the VM context by removing dangerous Node.js 24 globals
       // Security: Prevents escape via Iterator helpers, ShadowRealm, etc.
@@ -462,6 +469,7 @@ export class VmAdapter implements SandboxAdapter {
       });
 
       // Execute script with timeout
+      // Note: codeGeneration is set in createContext(), not runInContext()
       const resultPromise = script.runInContext(this.context, {
         timeout: config.timeout,
         breakOnSigint: true,

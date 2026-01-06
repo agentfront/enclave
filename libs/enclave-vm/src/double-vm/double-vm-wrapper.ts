@@ -189,7 +189,14 @@ export class DoubleVmWrapper implements SandboxAdapter {
     const { stats, config } = executionContext;
 
     // Create isolated context for parent VM
-    const parentContext = vm.createContext({});
+    // codeGeneration.strings=false disables new Function() and eval() from strings
+    // This prevents sandbox escape via constructor chain in both parent and inner VMs
+    const parentContext = vm.createContext(
+      {},
+      {
+        codeGeneration: { strings: false, wasm: false },
+      },
+    );
 
     // Inject controlled vm module access
     // CRITICAL: Only expose createContext and Script, nothing else

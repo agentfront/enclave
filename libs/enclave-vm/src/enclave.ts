@@ -317,17 +317,9 @@ export class Enclave {
         });
       }
 
-      // Step 1.5: Apply sidecar transforms if enabled
-      // These transforms extract large strings and convert concatenation to safe calls
-      if (sidecar && this.referenceConfig) {
-        transformedCode = this.applySidecarTransforms(transformedCode, sidecar);
-      } else if (this.config.memoryLimit && this.config.memoryLimit > 0) {
-        // Step 1.6: Apply memory tracking transforms when memoryLimit is set
-        // This transforms concatenation to use __safe_concat for memory tracking
-        transformedCode = this.applyMemoryTrackingTransforms(transformedCode);
-      }
-
-      // Step 2: Validate (if enabled) - validate TRANSFORMED code
+      // Step 1.5: Validate (if enabled) - validate BEFORE memory transforms
+      // This catches malicious patterns like constructor obfuscation BEFORE
+      // they get transformed to __safe_concat calls (which would bypass detection)
       if (this.validateCode) {
         const validationResult = await this.validator.validate(transformedCode);
         if (!validationResult.valid) {
@@ -349,6 +341,16 @@ export class Enclave {
             },
           };
         }
+      }
+
+      // Step 2: Apply sidecar transforms if enabled
+      // These transforms extract large strings and convert concatenation to safe calls
+      if (sidecar && this.referenceConfig) {
+        transformedCode = this.applySidecarTransforms(transformedCode, sidecar);
+      } else if (this.config.memoryLimit && this.config.memoryLimit > 0) {
+        // Step 2.1: Apply memory tracking transforms when memoryLimit is set
+        // This transforms concatenation to use __safe_concat for memory tracking
+        transformedCode = this.applyMemoryTrackingTransforms(transformedCode);
       }
 
       // Step 2.5: AI Scoring Gate (if configured)

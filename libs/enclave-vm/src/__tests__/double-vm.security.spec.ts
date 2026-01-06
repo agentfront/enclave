@@ -1182,7 +1182,7 @@ describe('Double VM Security Layer', () => {
       });
 
       // Try to escape via computed property constructor access on tool result
-      // This bypasses AST validation but is caught by secure proxy which throws an error
+      // This should be caught by AST validation or runtime secure proxy
       const result = await enclave.run(`
         async function __ag_main() {
           const result = await callTool('data:get', {});
@@ -1194,7 +1194,7 @@ describe('Double VM Security Layer', () => {
       `);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
     });
 
     it('should block prototype access on tool results via computed property', async () => {
@@ -1218,7 +1218,7 @@ describe('Double VM Security Layer', () => {
       `);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
     });
 
     it('should block Promise constructor access via computed property', async () => {
@@ -1241,7 +1241,7 @@ describe('Double VM Security Layer', () => {
       `);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
     });
 
     it('should block access to host Function via deeply computed property attacks', async () => {
@@ -1268,7 +1268,7 @@ describe('Double VM Security Layer', () => {
       `);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
     });
 
     it('should prevent chained escapes through multiple tool calls', async () => {
@@ -1313,7 +1313,7 @@ describe('Double VM Security Layer', () => {
       `);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
     });
   });
 

@@ -140,7 +140,7 @@ describe('Serialization Security Tests', () => {
       const result = await enclave.run(code);
       // Constructor access should be blocked with an error
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Security violation');
+      expect(result.error?.message).toMatch(/Security violation|AgentScript validation failed/);
 
       enclave.dispose();
     });
