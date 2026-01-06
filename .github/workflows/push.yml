@@ -94,7 +94,24 @@ jobs:
         uses: nrwl/nx-set-shas@v4
 
       - name: Test libraries
-        run: npx nx affected -t test --passWithNoTests
+        id: test
+        run: npx nx affected -t test --passWithNoTests 2>&1 | tee test-output.txt
+        continue-on-error: true
+
+      - name: Log failed tests to summary
+        if: steps.test.outcome == 'failure'
+        run: |
+          echo "## ❌ Test Failures" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          # Extract failed test names and error messages
+          grep -A 5 "FAIL\|✕\|Error:" test-output.txt | head -100 >> $GITHUB_STEP_SUMMARY || echo "Could not extract failure details" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail if tests failed
+        if: steps.test.outcome == 'failure'
+        run: exit 1
 
   performance:
     name: Performance
