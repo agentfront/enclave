@@ -70,7 +70,13 @@ describe('Enclave Performance', () => {
         { name: 'warm_execution_p50', value: report.latency.p50, unit: 'ms', threshold: 10 },
         { name: 'warm_execution_p95', value: report.latency.p95, unit: 'ms', threshold: 50 },
         { name: 'warm_execution_p99', value: report.latency.p99, unit: 'ms', threshold: 100 },
-        { name: 'warm_execution_throughput', value: report.throughput.executionsPerSecond, unit: 'exec/sec' },
+        {
+          name: 'warm_execution_throughput',
+          value: report.throughput.executionsPerSecond,
+          unit: 'exec/sec',
+          threshold: 100,
+          thresholdType: 'min',
+        },
       ]);
 
       expect(report.throughput.successRate).toBe(1);
@@ -138,10 +144,10 @@ describe('Enclave Performance', () => {
       console.log(`\nThroughput (simple code): ${throughput.toFixed(2)} exec/sec`);
       console.log(`  Total time for ${iterations} executions: ${totalTime.toFixed(2)}ms`);
 
-      // Record metrics for JSON output
-      recordMetric('throughput_simple', 'throughput_simple', throughput, 'exec/sec', undefined);
+      // Record metrics for JSON output (minimum threshold: 100 exec/sec)
+      recordMetric('throughput_simple', 'throughput_simple', throughput, 'exec/sec', 100, 'min');
 
-      expect(throughput).toBeGreaterThan(10); // At least 10 exec/sec
+      expect(throughput).toBeGreaterThan(100); // At least 100 exec/sec
     });
 
     it('measures executions per second with tool calls', async () => {
@@ -180,10 +186,10 @@ describe('Enclave Performance', () => {
 
       console.log(`\nThroughput (with tool calls): ${throughput.toFixed(2)} exec/sec`);
 
-      // Record metrics for JSON output
-      recordMetric('throughput_with_tools', 'throughput_with_tools', throughput, 'exec/sec', undefined);
+      // Record metrics for JSON output (minimum threshold: 50 exec/sec)
+      recordMetric('throughput_with_tools', 'throughput_with_tools', throughput, 'exec/sec', 50, 'min');
 
-      expect(throughput).toBeGreaterThan(5); // At least 5 exec/sec with tool calls
+      expect(throughput).toBeGreaterThan(50); // At least 50 exec/sec with tool calls
     });
 
     it('measures executions per second with loops', async () => {

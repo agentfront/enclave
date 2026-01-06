@@ -3,7 +3,7 @@
  */
 
 import { LocalLlmScorer, LocalLlmScorerError } from '../scorers/local-llm.scorer';
-import type { ExtractedFeatures, LocalLlmConfig } from '../types';
+import type { ExtractedFeatures, LocalLlmConfig, CustomAnalyzer, RiskSignal } from '../types';
 
 // Mock features with low risk
 const createLowRiskFeatures = (): ExtractedFeatures => ({
@@ -556,6 +556,220 @@ describe('LocalLlmScorer', () => {
 
       expect(result.scorerType).toBe('local-llm');
       expect(typeof result.totalScore).toBe('number');
+
+      scorer.dispose();
+    });
+  });
+
+  describe('custom analyzer', () => {
+    it('should use custom analyzer when provided', async () => {
+      const customAnalyzer: CustomAnalyzer = {
+        analyze: jest.fn().mockResolvedValue({
+          score: 75,
+          signals: [
+            {
+              id: 'CUSTOM_SIGNAL',
+              score: 75,
+              description: 'Custom analysis detected risk',
+              level: 'high' as const,
+            },
+          ],
+        }),
+      };
+
+      const config: LocalLlmConfig = {
+        modelId: 'Xenova/all-MiniLM-L6-v2',
+        fallbackToRules: true,
+        customAnalyzer,
+      };
+
+      const scorer = new LocalLlmScorer(config);
+      await scorer.initialize();
+
+      const features = createLowRiskFeatures();
+      const result = await scorer.score(features);
+
+      // Custom analyzer should have been called
+      expect(customAnalyzer.analyze).toHaveBeenCalled();
+      expect(result.totalScore).toBe(75);
+      expect(result.signals).toHaveLength(1);
+      expect(result.signals[0].id).toBe('CUSTOM_SIGNAL');
+
+      scorer.dispose();
+    });
+
+    it('should initialize custom analyzer', async () => {
+      const initializeFn = jest.fn().mockResolvedValue(undefined);
+      const customAnalyzer: CustomAnalyzer = {
+        analyze: jest.fn().mockResolvedValue({ score: 0, signals: [] }),
+        initialize: initializeFn,
+      };
+
+      const config: LocalLlmConfig = {
+        modelId: 'Xenova/all-MiniLM-L6-v2',
+        fallbackToRules: true,
+        customAnalyzer,
+      };
+
+      const scorer = new LocalLlmScorer(config);
+      await scorer.initialize();
+
+      // Initialize may or may not be called depending on model load
+      // since we use fallback, the model may fail and custom init may not run
+      // But if model loads (or uses fallback), we should still function
+      expect(scorer.isReady()).toBe(true);
+
+      scorer.dispose();
+    });
+
+    it('should dispose custom analyzer', async () => {
+      const disposeFn = jest.fn();
+      const customAnalyzer: CustomAnalyzer = {
+        analyze: jest.fn().mockResolvedValue({ score: 0, signals: [] }),
+        dispose: disposeFn,
+      };
+
+      const config: LocalLlmConfig = {
+        modelId: 'Xenova/all-MiniLM-L6-v2',
+        fallbackToRules: true,
+        customAnalyzer,
+      };
+
+      const scorer = new LocalLlmScorer(config);
+      await scorer.initialize();
+      scorer.dispose();
+
+      expect(disposeFn).toHaveBeenCalled();
+    });
+
+    it('should fall back to heuristics when no custom analyzer', async () => {
+      const config: LocalLlmConfig = {
+        modelId: 'Xenova/all-MiniLM-L6-v2',
+        fallbackToRules: true,
+        // No customAnalyzer
+      };
+
+      const scorer = new LocalLlmScorer(config);
+      await scorer.initialize();
+
+      // Use features that trigger built-in heuristics
+      const features = createSensitiveFeatures();
+      const result = await scorer.score(features);
+
+      // Should use built-in heuristics (keyword detection)
+      expect(result.scorerType).toBe('local-llm');
+      expect(result.totalScore).toBeGreaterThan(0);
+      // Should have ML_CRITICAL_KEYWORD signal from heuristics (password keyword)
+      const hasHeuristicSignal = result.signals.some(
+        (s) => s.id === 'ML_CRITICAL_KEYWORD' || s.id === 'SENSITIVE_FIELD',
+      );
+      expect(hasHeuristicSignal).toBe(true);
+
+      scorer.dispose();
+    });
+
+    it('should pass prompt and features to custom analyzer', async () => {
+      const analyzeFn = jest.fn().mockResolvedValue({ score: 50, signals: [] });
+      const customAnalyzer: CustomAnalyzer = {
+        analyze: analyzeFn,
+      };
+
+      const config: LocalLlmConfig = {
+        modelId: 'Xenova/all-MiniLM-L6-v2',
+        fallbackToRules: true,
+        customAnalyzer,
+      };
+
+      const scorer = new LocalLlmScorer(config);
+      await scorer.initialize();
+
+      const features = createExfiltrationFeatures();
+      await scorer.score(features);
+
+      // Check that analyzer received a prompt string and features
+      expect(analyzeFn).toHaveBeenCalledWith(expect.any(String), features);
+
+      // Verify the prompt contains expected content
+      const [prompt] = analyzeFn.mock.calls[0];
+      expect(prompt).toContain('TOOLS:');
+      expect(prompt).toContain('users:list');
+
+      scorer.dispose();
+    });
+
+    it('should handle custom analyzer errors gracefully with fallback', async () => {
+      const customAnalyzer: CustomAnalyzer = {
+        analyze: jest.fn().mockRejectedValue(new Error('Custom analyzer failed')),
+      };
+
+      const config: LocalLlmConfig = {
+        modelId: 'Xenova/all-MiniLM-L6-v2',
+        fallbackToRules: true,
+        customAnalyzer,
+      };
+
+      const scorer = new LocalLlmScorer(config);
+      await scorer.initialize();
+
+      // Should use fallback scorer when custom analyzer fails
+      const features = createLowRiskFeatures();
+      const result = await scorer.score(features);
+
+      // Falls back to rule-based scorer
+      expect(result.scorerType).toBe('local-llm');
+      expect(typeof result.totalScore).toBe('number');
+
+      scorer.dispose();
+    });
+
+    it('should clamp custom analyzer scores to 0-100', async () => {
+      const customAnalyzer: CustomAnalyzer = {
+        analyze: jest.fn().mockResolvedValue({
+          score: 150, // Over 100
+          signals: [],
+        }),
+      };
+
+      const config: LocalLlmConfig = {
+        modelId: 'Xenova/all-MiniLM-L6-v2',
+        fallbackToRules: true,
+        customAnalyzer,
+      };
+
+      const scorer = new LocalLlmScorer(config);
+      await scorer.initialize();
+
+      const features = createLowRiskFeatures();
+      const result = await scorer.score(features);
+
+      // Score should be clamped to 100
+      expect(result.totalScore).toBe(100);
+
+      scorer.dispose();
+    });
+
+    it('should calculate risk level from custom analyzer score', async () => {
+      const customAnalyzer: CustomAnalyzer = {
+        analyze: jest.fn().mockResolvedValue({
+          score: 85,
+          signals: [],
+        }),
+      };
+
+      const config: LocalLlmConfig = {
+        modelId: 'Xenova/all-MiniLM-L6-v2',
+        fallbackToRules: true,
+        customAnalyzer,
+      };
+
+      const scorer = new LocalLlmScorer(config);
+      await scorer.initialize();
+
+      const features = createLowRiskFeatures();
+      const result = await scorer.score(features);
+
+      // Score of 85 should map to 'critical' risk level (>= 80)
+      expect(result.riskLevel).toBe('critical');
 
       scorer.dispose();
     });

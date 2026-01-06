@@ -83,30 +83,21 @@ describe('Worker Pool Performance', () => {
     });
 
     it('measures warm pool first execution time', async () => {
-      const enclave = createWorkerEnclave({
-        minWorkers: 2,
-        maxWorkers: 4,
-        warmOnInit: true,
-      });
-
-      // Pool is warmed, measure first actual execution
+      // Measure first execution time for freshly created worker pools
       const firstExecTimes: number[] = [];
 
       for (let i = 0; i < 20; i++) {
-        // Dispose and recreate to test first execution each time
-        enclave.dispose();
-
-        const newEnclave = createWorkerEnclave({
+        const enclave = createWorkerEnclave({
           minWorkers: 2,
           maxWorkers: 4,
           warmOnInit: true,
         });
 
         const start = performance.now();
-        await newEnclave.run('return 42');
+        await enclave.run('return 42');
         firstExecTimes.push(performance.now() - start);
 
-        newEnclave.dispose();
+        enclave.dispose();
       }
 
       const stats = calculateLatencyStats(firstExecTimes);
@@ -281,9 +272,15 @@ describe('Worker Pool Performance', () => {
 
       // Record metrics for JSON output
       recordMetrics('worker_pool_concurrent_10', [
-        { name: 'worker_pool_throughput_10_concurrent', value: throughput, unit: 'exec/sec' },
-        { name: 'worker_pool_latency_p50_10_concurrent', value: stats.p50, unit: 'ms' },
-        { name: 'worker_pool_latency_p95_10_concurrent', value: stats.p95, unit: 'ms' },
+        {
+          name: 'worker_pool_throughput_10_concurrent',
+          value: throughput,
+          unit: 'exec/sec',
+          threshold: 50,
+          thresholdType: 'min',
+        },
+        { name: 'worker_pool_latency_p50_10_concurrent', value: stats.p50, unit: 'ms', threshold: 100 },
+        { name: 'worker_pool_latency_p95_10_concurrent', value: stats.p95, unit: 'ms', threshold: 500 },
       ]);
 
       expect(throughput).toBeGreaterThan(5); // At least 5 exec/sec
@@ -335,7 +332,9 @@ describe('Worker Pool Performance', () => {
 
       // Should handle load without extreme latency spikes
       // Note: Using 50x multiplier to account for CI environment variability
+      // Also enforce an absolute upper bound to catch severe regressions
       expect(stats.p99).toBeLessThan(stats.p50 * 50); // p99 should be less than 50x p50
+      expect(stats.p99).toBeLessThan(2000); // Absolute upper bound: 2 seconds
     });
 
     it('measures queue wait time when pool is exhausted', async () => {
@@ -514,9 +513,11 @@ describe('Worker Pool Performance', () => {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
-      // Force GC if available
+      // Force GC if available (requires --expose-gc flag)
       if (global.gc) {
         global.gc();
+      } else {
+        console.log('  Note: GC not available. Run with --expose-gc for accurate memory measurements.');
       }
 
       const after = process.memoryUsage().heapUsed;

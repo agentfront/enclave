@@ -345,6 +345,92 @@ const enclave = new Enclave({
 });
 ```
 
+## AI Scoring Gate
+
+The AI Scoring Gate provides semantic security analysis to detect attack patterns beyond what static AST validation can catch. It analyzes tool call patterns, sensitive data access, and exfiltration attempts.
+
+### Configuration
+
+```typescript
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    /* ... */
+  },
+  scoring: {
+    scorer: 'rule-based', // 'disabled' | 'rule-based' | 'local-llm' | 'external-api'
+    blockThreshold: 70, // Block if score >= 70
+    warnThreshold: 40, // Warn if score >= 40
+  },
+});
+```
+
+### Scorer Types
+
+| Type           | Description                                | Latency |
+| -------------- | ------------------------------------------ | ------- |
+| `disabled`     | No scoring (pass-through)                  | 0ms     |
+| `rule-based`   | Pure TypeScript rules, zero dependencies   | ~1ms    |
+| `local-llm`    | On-device ML with HuggingFace transformers | ~5-10ms |
+| `external-api` | External API-based scoring                 | ~100ms  |
+
+### Custom Analyzer (Extensibility)
+
+For advanced use cases, you can provide a custom analyzer to integrate external LLMs or static code analyzers:
+
+```typescript
+import { Enclave, CustomAnalyzer } from 'enclave-vm';
+
+const myAnalyzer: CustomAnalyzer = {
+  async analyze(prompt, features) {
+    // Call your external LLM or static analyzer
+    const response = await fetch('https://my-analyzer-api.com/score', {
+      method: 'POST',
+      body: JSON.stringify({ prompt, features }),
+    });
+    const result = await response.json();
+    return {
+      score: result.riskScore,
+      signals: result.signals,
+    };
+  },
+  // Optional lifecycle methods
+  async initialize() {
+    /* connect to service */
+  },
+  dispose() {
+    /* cleanup */
+  },
+};
+
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    /* ... */
+  },
+  scoring: {
+    scorer: 'local-llm',
+    localLlm: {
+      modelId: 'Xenova/all-MiniLM-L6-v2',
+      customAnalyzer: myAnalyzer,
+    },
+  },
+});
+```
+
+### CustomAnalyzer Interface
+
+```typescript
+interface CustomAnalyzer {
+  // Analyze prompt and features, return risk score and signals
+  analyze(prompt: string, features: ExtractedFeatures): Promise<{ score: number; signals: RiskSignal[] }>;
+
+  // Optional: Initialize resources (e.g., connect to external service)
+  initialize?(): Promise<void>;
+
+  // Optional: Cleanup resources
+  dispose?(): void;
+}
+```
+
 ## Reference Sidecar
 
 The Reference Sidecar is a powerful feature for handling large data in AgentScript without embedding it directly in the script. This is essential when:

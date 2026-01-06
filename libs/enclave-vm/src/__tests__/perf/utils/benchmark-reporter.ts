@@ -18,6 +18,8 @@ export interface BenchmarkMetric {
   value: number;
   unit: string;
   threshold?: number;
+  /** 'max' (default) means value <= threshold, 'min' means value >= threshold */
+  thresholdType?: 'max' | 'min';
   passed?: boolean;
 }
 
@@ -54,18 +56,29 @@ const METRICS_FILE = path.join(os.tmpdir(), 'enclave-perf-metrics.json');
 
 /**
  * Record a benchmark metric (call from within tests)
+ * @param thresholdType 'max' (default) means value <= threshold passes, 'min' means value >= threshold passes
  */
-export function recordMetric(testName: string, name: string, value: number, unit: string, threshold?: number): void {
+export function recordMetric(
+  testName: string,
+  name: string,
+  value: number,
+  unit: string,
+  threshold?: number,
+  thresholdType: 'max' | 'min' = 'max',
+): void {
   const metrics = loadMetricsFromFile();
   if (!metrics[testName]) {
     metrics[testName] = [];
   }
+  const passed =
+    threshold === undefined ? undefined : thresholdType === 'min' ? value >= threshold : value <= threshold;
   metrics[testName].push({
     name,
     value,
     unit,
     threshold,
-    passed: threshold === undefined ? undefined : value <= threshold,
+    thresholdType: threshold !== undefined ? thresholdType : undefined,
+    passed,
   });
   saveMetricsToFile(metrics);
 }
@@ -75,19 +88,29 @@ export function recordMetric(testName: string, name: string, value: number, unit
  */
 export function recordMetrics(
   testName: string,
-  metricsArray: Array<{ name: string; value: number; unit: string; threshold?: number }>,
+  metricsArray: Array<{
+    name: string;
+    value: number;
+    unit: string;
+    threshold?: number;
+    thresholdType?: 'max' | 'min';
+  }>,
 ): void {
   const metrics = loadMetricsFromFile();
   if (!metrics[testName]) {
     metrics[testName] = [];
   }
   for (const m of metricsArray) {
+    const thresholdType = m.thresholdType ?? 'max';
+    const passed =
+      m.threshold === undefined ? undefined : thresholdType === 'min' ? m.value >= m.threshold : m.value <= m.threshold;
     metrics[testName].push({
       name: m.name,
       value: m.value,
       unit: m.unit,
       threshold: m.threshold,
-      passed: m.threshold === undefined ? undefined : m.value <= m.threshold,
+      thresholdType: m.threshold !== undefined ? thresholdType : undefined,
+      passed,
     });
   }
   saveMetricsToFile(metrics);

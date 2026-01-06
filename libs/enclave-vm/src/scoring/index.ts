@@ -66,6 +66,9 @@ export type {
   ScoringCacheConfig,
   LocalLlmConfig,
   ExternalApiConfig,
+
+  // Extensibility types
+  CustomAnalyzer,
 } from './types';
 
 // Constants
