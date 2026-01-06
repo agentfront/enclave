@@ -160,7 +160,7 @@ This document provides a comprehensive mapping of all security tests in the encl
 #### ATK-RSRC: Resource Exhaustion Prevention (CWE-400)
 
 **File:** `resource-exhaustion.spec.ts`
-**Tests:** ~30
+**Tests:** 15
 **Status:** 🔄 Pending Reorganization
 
 | Test ID     | Description                        | Defense Layer       |
@@ -184,22 +184,33 @@ This document provides a comprehensive mapping of all security tests in the encl
 #### ATK-IOFL: I/O Flood Prevention (CWE-779)
 
 **File:** `enclave.io-flood.spec.ts`
-**Tests:** ~15
+**Tests:** 17
 **Status:** 🔄 Pending Reorganization
 
-| Test ID     | Description                | Defense Layer         |
-| ----------- | -------------------------- | --------------------- |
-| ATK-IOFL-01 | Limit console output bytes | maxConsoleOutputBytes |
-| ATK-IOFL-02 | Track output across calls  | Cumulative Tracking   |
-| ATK-IOFL-03 | Track across all methods   | log/warn/error/info   |
-| ATK-IOFL-04 | Allow output within limits | ✅ Safe Pattern       |
-| ATK-IOFL-05 | Limit console call count   | maxConsoleCalls       |
-| ATK-IOFL-06 | Enforce rate limiting      | Rate Limiter          |
+| Test ID     | Description                     | Defense Layer         |
+| ----------- | ------------------------------- | --------------------- |
+| ATK-IOFL-01 | Limit console output bytes      | maxConsoleOutputBytes |
+| ATK-IOFL-02 | Track output across calls       | Cumulative Tracking   |
+| ATK-IOFL-03 | Track across all methods        | log/warn/error/info   |
+| ATK-IOFL-04 | Allow output within limits      | ✅ Safe Pattern       |
+| ATK-IOFL-05 | Limit console call count        | maxConsoleCalls       |
+| ATK-IOFL-06 | Count all methods toward limit  | Cumulative Count      |
+| ATK-IOFL-07 | Allow calls within limit        | ✅ Safe Pattern       |
+| ATK-IOFL-08 | STRICT preset limits            | Security Level        |
+| ATK-IOFL-09 | STRICT large output enforcement | Security Level        |
+| ATK-IOFL-10 | STRICT call limit enforcement   | Security Level        |
+| ATK-IOFL-11 | PERMISSIVE higher limits        | Security Level        |
+| ATK-IOFL-12 | Object serialization size calc  | Output Tracking       |
+| ATK-IOFL-13 | Circular reference handling     | Safe Serialization    |
+| ATK-IOFL-14 | Null/undefined value handling   | ✅ Safe Pattern       |
+| ATK-IOFL-15 | Block excessive loop logging    | Attack Prevention     |
+| ATK-IOFL-16 | Block exponential output growth | Attack Prevention     |
+| ATK-IOFL-17 | Block rapid-fire small messages | Attack Prevention     |
 
 #### ATK-LOOP: Infinite Loop Prevention (CWE-835)
 
 **File:** `enclave.infinite-loop-attacks.spec.ts`
-**Tests:** ~50
+**Tests:** 10
 **Status:** 🔄 Pending Reorganization
 
 | Test ID     | Description                      | Defense Layer     |

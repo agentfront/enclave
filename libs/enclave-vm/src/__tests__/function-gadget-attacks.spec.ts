@@ -798,7 +798,7 @@ describe('ATK-FGAD: Function Gadget Attack Vectors (CWE-94)', () => {
           const result = String.raw${'`'}test\nvalue${'`'};
           // String.raw preserves escape sequences as literal backslash+n
           // Check for literal backslash followed by n (not newline character)
-          // result should be "test\nvalue" (8 chars with literal backslash)
+          // result should be "test\nvalue" (11 chars with literal backslash)
           return result.length === 11 && result.indexOf('\\') === 4 ? 'raw-works' : 'interpreted';
         `;
         const result = await enclave.run(code);
