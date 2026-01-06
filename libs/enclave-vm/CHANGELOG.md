@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-01-06
+
+### Added
+
+- When a memoryLimit is configured the VM patches String.repeat/pad\* and Array.join before execution so they enforce quotas and throw MemoryLimitError instead of allocating unbounded buffers (libs/enclave-vm/src/adapters/vm-adapter.ts:547-632; libs/enclave-vm/src/memory-proxy.ts:45-195).
+- Double VM hosts now propagate memoryLimit metadata into the parent/inner bootstrap so the same pre-allocation guards run inside nested sandboxes (libs/enclave-vm/src/double-vm/double-vm-wrapper.ts:205-246; libs/enclave-vm/src/double-vm/parent-vm-bootstrap.ts:776-870).
+
+### Changed
+
+- AgentScript validation now happens before the sidecar/memory transforms so constructor obfuscation is caught before \_\_safe_concat instrumentation alters the AST (libs/enclave-vm/src/enclave.ts:304-354).
+
+### Security
+
+- Sandbox contexts install a SafeObject that strips defineProperty/defineProperties/setPrototypeOf/getOwnPropertyDescriptor(s) to block serialization hijacks and prototype pollution attacks (libs/enclave-vm/src/adapters/vm-adapter.ts:275-360).
+- All VM entry points disable codeGeneration for strings/wasm and expand the set of removed Node.js 24 globals (Function, eval, Proxy, SharedArrayBuffer, WeakRef, etc.), closing multiple escape vectors (libs/enclave-vm/src/adapters/vm-adapter.ts:549-636; libs/enclave-vm/src/adapters/worker-pool/worker-script.ts:135-161; libs/enclave-vm/src/double-vm/double-vm-wrapper.ts:205-246; libs/enclave-vm/src/double-vm/parent-vm-bootstrap.ts:55-120,776-870).
+
 ## [2.3.0] - 2026-01-06
 
 ### Added

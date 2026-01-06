@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-01-06
+
+### Added
+
+- Introduced ResourceExhaustionRule to detect BigInt exponentiation with huge exponents, oversized array constructors, string repeat/join bombs, and constructor/property obfuscation attempts (libs/ast-guard/src/rules/resource-exhaustion.rule.ts:1-239).
+- AgentScript preset now enables ResourceExhaustionRule with sane defaults so DoS-style scripts are blocked by default and the rule is exported for custom presets (libs/ast-guard/src/presets/agentscript.preset.ts:434-447; libs/ast-guard/src/rules/index.ts:5-23).
+
 ## [2.0.0] - 2026-01-06
 
 ### Added

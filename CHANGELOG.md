@@ -12,6 +12,15 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## 2026-01-06
 
+Sandbox security was hardened in enclave-vm and ast-guard now blocks resource-exhaustion patterns by default.
+
+| Package    | Version | Highlights                                                                                      |
+| ---------- | ------- | ----------------------------------------------------------------------------------------------- |
+| enclave-vm | 3.0.0   | Blocks Function/eval/Object.\* attacks and adds pre-allocation memory guards for all sandboxes. |
+| ast-guard  | 2.1.0   | Ships the new ResourceExhaustionRule and enables it in the AgentScript preset.                  |
+
+## 2026-01-06
+
 Enhanced enclave-vm loop safety and scoring extensibility while ast-guard introduces guarded loop support requiring the new \_\_maxIterations runtime hook.
 
 | Package    | Version | Highlights                                                                                                                                             |
