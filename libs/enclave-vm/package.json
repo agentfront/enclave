@@ -1,6 +1,6 @@
 {
   "name": "enclave-vm",
-  "version": "3.0.0",
+  "version": "2.4.0",
   "description": "Sandbox runtime for secure JavaScript code execution",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",
