@@ -12,37 +12,21 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## 2026-01-06
 
+Sandbox security was hardened in enclave-vm and ast-guard now blocks resource-exhaustion patterns by default.
+
+| Package    | Version | Highlights                                                                                      |
+| ---------- | ------- | ----------------------------------------------------------------------------------------------- |
+| enclave-vm | 2.4.0   | Blocks Function/eval/Object.\* attacks and adds pre-allocation memory guards for all sandboxes. |
+| ast-guard  | 2.1.0   | Ships the new ResourceExhaustionRule and enables it in the AgentScript preset.                  |
+
+## 2026-01-06
+
 Enhanced enclave-vm loop safety and scoring extensibility while ast-guard introduces guarded loop support requiring the new \_\_maxIterations runtime hook.
 
 | Package    | Version | Highlights                                                                                                                                             |
 | ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | enclave-vm | 2.3.0   | Adds configurable rapid-enumeration thresholds, exposes the loop-iteration runtime hook, and allows custom analyzers in the local LLM scorer.          |
 | ast-guard  | 2.0.0   | Transforms loops with iteration counters, requires runtimes to provide `__maxIterations`, and adds an InfiniteLoopRule for obvious endless constructs. |
-
-## 2026-01-05
-
-enclave-vm now ships memory-aware execution limits and stricter secure proxy errors, while ast-guard fixes template literal handling.
-
-| Package    | Version | Highlights                                                                                        |
-| ---------- | ------- | ------------------------------------------------------------------------------------------------- |
-| enclave-vm | 2.2.0   | Adds MemoryTracker-based limits and makes blocked-property access raise explicit security errors. |
-| ast-guard  | 1.1.2   | Template literal transform no longer rewrites tagged templates.                                   |
-
-## 2026-01-05
-
-Defaulted enclave-vm to the new double VM isolation layer and refreshed docs for the surrounding APIs.
-
-| Package    | Version | Highlights                                                                                                               |
-| ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------ |
-| enclave-vm | 2.1.0   | Double VM wrapper is now the default execution path with configurable parent validation and suspicious-pattern blocking. |
-
-## 2026-01-04
-
-Major enclave-vm update introducing the default double VM isolation layer with operation validation.
-
-| Package    | Version | Highlights                                                                |
-| ---------- | ------- | ------------------------------------------------------------------------- |
-| enclave-vm | 2.0.0   | Double VM wrapper default, nested isolation, suspicious-pattern detection |
 
 ## 2025-12-12
 
