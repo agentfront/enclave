@@ -303,17 +303,21 @@ This document provides a comprehensive mapping of all security tests in the encl
 #### ATK-CVE: Known CVE Exploits
 
 **File:** `runtime-attack-vectors.spec.ts` (Category 5)
-**Tests:** ~9
+**Tests:** 10
 **Status:** 🔄 Pending Reorganization
 
-| Test ID               | CVE            | Description               | Defense Layer  |
-| --------------------- | -------------- | ------------------------- | -------------- |
-| ATK-CVE-2023-29017-01 | CVE-2023-29017 | Exception handler escape  | VM Isolation   |
-| ATK-CVE-2023-30547-01 | CVE-2023-30547 | AsyncFunction constructor | VM Isolation   |
-| ATK-CVE-2023-32313-01 | CVE-2023-32313 | Proxy + Reflect bypass    | AST NO_REFLECT |
-| ATK-CVE-2023-32313-02 | CVE-2023-32313 | Proxy.revocable escape    | AST NO_REFLECT |
-| ATK-CVE-2023-37466-01 | CVE-2023-37466 | WeakMap host object       | AST Blocked    |
-| ATK-CVE-2023-37466-02 | CVE-2023-37466 | Symbol.for escape         | AST Blocked    |
+| Test ID               | CVE            | Description                     | Defense Layer  |
+| --------------------- | -------------- | ------------------------------- | -------------- |
+| ATK-CVE-2023-29017-01 | CVE-2023-29017 | Exception handler escape        | VM Isolation   |
+| ATK-CVE-2023-30547-01 | CVE-2023-30547 | AsyncFunction constructor       | VM Isolation   |
+| ATK-CVE-2023-32313-01 | CVE-2023-32313 | Proxy-based constructor         | AST NO_REFLECT |
+| ATK-CVE-2023-32313-02 | CVE-2023-32313 | Reflect-based global access     | AST NO_REFLECT |
+| ATK-CVE-2023-37466-01 | CVE-2023-37466 | WeakRef timing attacks          | AST Blocked    |
+| ATK-CVE-2023-37466-02 | CVE-2023-37466 | FinalizationRegistry            | AST Blocked    |
+| ATK-CVE-2023-37466-03 | CVE-2023-37466 | Symbol.for registry access      | AST Blocked    |
+| ATK-CVE-5.5-01        | N/A            | Array method sandbox isolation  | VM Isolation   |
+| ATK-CVE-5.5-02        | N/A            | String method sandbox isolation | VM Isolation   |
+| ATK-CVE-5.5-03        | N/A            | JSON.parse sandbox isolation    | VM Isolation   |
 
 ---
 
