@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-01-06
+
+### Added
+
+- Expose configurable rapid-enumeration thresholds and per-operation overrides to the double VM validator so enumeration detection can be tuned per workload.
+- Propagate the `__maxIterations` runtime global through the worker pool, safe runtime, and parent VM bootstrap to enforce ast-guard’s loop iteration limits.
+- Local LLM scorer now accepts a `customAnalyzer` plug-in, enabling external LLMs or static analyzers to provide risk signals.
+
+### Changed
+
+- Validation failures now deduplicate issues and include line numbers for clearer error reporting.
+- Rapid-enumeration suspicious-pattern detection now uses the configurable thresholds/overrides when evaluating tool call history.
+- Keyword-based scoring heuristics were refined and the scorer cleanup path now disposes custom analyzers.
+
+### Fixed
+
+- Double VM wrapper now normalizes thrown string errors (e.g., loop limit violations) so sandbox failures return structured execution errors.
+
 ## [2.2.0] - 2026-01-05
 
 ### Added

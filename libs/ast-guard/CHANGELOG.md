@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-01-06
+
+### Added
+
+- `for`/`while`/`do-while` loops are now transformed with injected iteration counters that enforce the runtime `__maxIterations` limit instead of being rejected outright.
+- Agentscript preset now allows the `__maxIterations` global and ships a new `InfiniteLoopRule` that flags obvious infinite-loop syntax.
+
+### Changed
+
+- Loop guards throw a string error when the iteration ceiling is exceeded, so host runtimes must expose `__maxIterations` for transformed scripts to run.
+
 ## [1.1.2] - 2026-01-05
 
 ### Fixed
