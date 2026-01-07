@@ -168,8 +168,8 @@ export class FeatureExtractor {
           memberNode.property?.type === 'Identifier'
             ? memberNode.property.name
             : memberNode.property?.type === 'Literal'
-            ? String(memberNode.property.value)
-            : undefined;
+              ? String(memberNode.property.value)
+              : undefined;
 
         if (propName) {
           this.detectSensitiveField(propName, sensitiveFields, sensitiveCategories);
@@ -344,8 +344,8 @@ export class FeatureExtractor {
         prop.key?.type === 'Identifier'
           ? prop.key.name
           : prop.key?.type === 'Literal'
-          ? String(prop.key.value)
-          : undefined;
+            ? String(prop.key.value)
+            : undefined;
 
       if (keyName) {
         argumentKeys.push(keyName);

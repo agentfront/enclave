@@ -9,25 +9,21 @@ You are updating documentation in an Nx monorepo after code changes. The affecte
 ## Instructions
 
 1. **Review Changed Code**
-
    - For each project in `AFFECTED_PROJECTS`, examine the changes in `libs/{project}/src/`
    - Identify new exports, changed APIs, removed functionality
    - Note any configuration changes or new features
 
 2. **Update API Documentation**
-
    - Update relevant pages in `/docs/api/` to match current exports
    - Ensure function signatures, parameters, and return types are accurate
    - Add documentation for new exports or functions
 
 3. **Update Examples**
-
    - If functionality changed, update code examples in `/docs/examples/`
    - Ensure examples compile and demonstrate current API usage
    - Add new examples for significant new features
 
 4. **Update Guides**
-
    - Update any guides in `/docs/guides/` that reference changed functionality
    - Add new guides for major new features if appropriate
 

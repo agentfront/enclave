@@ -212,26 +212,22 @@ Since all these prerequisites are blocked in the Enclave sandbox, Spectre-class 
 The enclave implements **6 layers of defense** (0-5):
 
 1. **Layer 0 - Pre-Scanner** (`ast-guard`)
-
    - Runs BEFORE parser to block parser-level attacks
    - Blocks ReDoS, BiDi attacks, input size DoS
 
 2. **Layer 1 - AST Validation** (`ast-guard`)
-
    - Blocks eval, Function constructor
    - Validates identifier usage
    - Prevents reserved prefix usage
    - Checks for dangerous patterns
 
 3. **Layer 2 - Code Transformation**
-
    - Wraps code in `async function __ag_main()`
    - Transforms `callTool` → `__safe_callTool`
    - Transforms loops → `__safe_forOf`, `__safe_for`, etc.
    - Whitelists safe globals only
 
 4. **Layer 3 - AI Scoring Gate** (NEW)
-
    - Semantic security analysis via AST feature extraction
    - 8 detection rules for attack patterns
    - Risk scoring (0-100) with configurable thresholds
@@ -241,7 +237,6 @@ The enclave implements **6 layers of defense** (0-5):
    - Pluggable scorer architecture (disabled/rule-based/external-api)
 
 5. **Layer 4 - Runtime Sandbox** (Node.js `vm` module OR Worker Pool)
-
    - Standard mode: Node.js `vm` context
    - Worker Pool mode (optional): OS-level isolation via worker threads
      - Dual-layer sandbox (worker thread + VM context)
@@ -414,7 +409,6 @@ None identified. Core security is solid.
 ### Medium Priority
 
 1. **Fix Top-Level Return Parsing**
-
    - Update transformer to handle top-level returns
    - Or require code to be pre-wrapped
 
@@ -425,12 +419,10 @@ None identified. Core security is solid.
 ### Low Priority
 
 1. **Sanitize Stack Traces**
-
    - Remove file system paths from error stacks
    - Provide generic error locations
 
 2. **Add Memory Limit Enforcement**
-
    - Currently relies on VM timeout
    - Could add explicit memory tracking
 
@@ -521,7 +513,6 @@ All security mechanisms are functioning correctly with zero failures or skipped 
 ## Version History
 
 - **v2.4.0** (2026-01-06): Attack Prevention Test Suite
-
   - Added comprehensive attack prevention tests (71 new tests)
   - New test categories with consistent ATK-XXX naming scheme:
     - ATK-REDOS: ReDoS Attack Prevention (23 tests)
@@ -532,7 +523,6 @@ All security mechanisms are functioning correctly with zero failures or skipped 
   - Total tests increased from 1184 to 1255
 
 - **v0.6.0** (2025-11-28): Comprehensive Security Test Expansion
-
   - Expanded test suite from 516 to 690 tests (+174 tests)
   - Added 100+ attack vector coverage (up from 81+)
   - New test categories:
@@ -548,7 +538,6 @@ All security mechanisms are functioning correctly with zero failures or skipped 
   - All 690 tests passing (100% pass rate)
 
 - **v0.5.0** (2025-11-27): Worker Pool Adapter
-
   - Added optional Worker Pool Adapter for OS-level memory isolation
   - Dual-layer sandbox: worker thread + VM context
   - Hard halt capability via worker.terminate()
@@ -560,7 +549,6 @@ All security mechanisms are functioning correctly with zero failures or skipped 
   - 81+ attack vectors now tested (up from 75)
 
 - **v0.4.0** (2025-11-27): AI Scoring Gate
-
   - Added AI Scoring Gate for semantic security analysis
   - 8 detection rules for attack pattern identification
   - Exfiltration pattern detection (fetch→send sequences)
@@ -572,7 +560,6 @@ All security mechanisms are functioning correctly with zero failures or skipped 
   - 516 total tests (up from 423)
 
 - **v0.0.2** (2025-11-27): I/O Flood Protection & Side-Channel Documentation
-
   - Added console rate limiting (maxConsoleOutputBytes, maxConsoleCalls)
   - Added 17 new I/O flood protection tests
   - Documented Spectre-class side-channel attack non-applicability
@@ -580,7 +567,6 @@ All security mechanisms are functioning correctly with zero failures or skipped 
   - Fixed ATK-44 test to use explicit return (100% pass rate, 0 skipped)
 
 - **v2.0.0** (2026-01-05): Runtime Attack Vector Research + Function Gadget Attack Research
-
   - Added comprehensive runtime attack vectors test suite (74 tests)
   - New test categories:
     - Computed Property Building (24 vectors)
@@ -614,13 +600,11 @@ This research investigated sophisticated JavaScript sandbox escape attacks that 
 The enclave-vm uses a **three-layer security approach**:
 
 1. **WRAPPED OBJECTS (SecureProxy blocks constructor/**proto** access):**
-
    - Built-in globals (Array, Object, Math, JSON, etc.)
    - Custom user-provided globals
    - Tool handler results
 
 2. **SANDBOX-CREATED OBJECTS (vm context isolation):**
-
    - Objects created by method returns (arr.map(), str.split(), etc.)
    - Error objects
    - Iterator objects

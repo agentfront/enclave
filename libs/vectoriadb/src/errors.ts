@@ -7,7 +7,10 @@
  * Base error class for all VectoriaDB errors
  */
 export class VectoriaError extends Error {
-  constructor(message: string, public readonly code: string) {
+  constructor(
+    message: string,
+    public readonly code: string,
+  ) {
     super(message);
     this.name = this.constructor.name;
     Error.captureStackTrace(this, this.constructor);
@@ -27,7 +30,10 @@ export class VectoriaNotInitializedError extends VectoriaError {
  * Thrown when document validation fails
  */
 export class DocumentValidationError extends VectoriaError {
-  constructor(message: string, public readonly documentId?: string) {
+  constructor(
+    message: string,
+    public readonly documentId?: string,
+  ) {
     super(message, 'DOCUMENT_VALIDATION_ERROR');
   }
 }
@@ -57,7 +63,10 @@ export class DocumentExistsError extends VectoriaError {
  * Thrown when a duplicate document ID is found in a batch operation
  */
 export class DuplicateDocumentError extends VectoriaError {
-  constructor(public readonly documentId: string, public readonly context: 'batch' | 'existing') {
+  constructor(
+    public readonly documentId: string,
+    public readonly context: 'batch' | 'existing',
+  ) {
     const message =
       context === 'batch'
         ? `Duplicate document id "${documentId}" in batch`
@@ -79,7 +88,10 @@ export class QueryValidationError extends VectoriaError {
  * Thrown when embedding generation fails or produces unexpected results
  */
 export class EmbeddingError extends VectoriaError {
-  constructor(message: string, public readonly details?: any) {
+  constructor(
+    message: string,
+    public readonly details?: any,
+  ) {
     super(message, 'EMBEDDING_ERROR');
   }
 }
@@ -88,7 +100,10 @@ export class EmbeddingError extends VectoriaError {
  * Thrown when storage operations fail
  */
 export class StorageError extends VectoriaError {
-  constructor(message: string, public readonly originalError?: Error) {
+  constructor(
+    message: string,
+    public readonly originalError?: Error,
+  ) {
     super(message, 'STORAGE_ERROR');
   }
 }

@@ -42,7 +42,6 @@ Use patch bump when:
 ## Instructions
 
 1. For each project in `AFFECTED_PROJECTS`:
-
    - Read the project's current `package.json` to get the current version
    - Analyze the git diff for files in `libs/{project}/`
    - Focus on changes to `src/` files (ignore tests, docs, configs)
@@ -50,7 +49,6 @@ Use patch bump when:
    - Calculate the new version based on the bump type
 
 2. If `IS_FIRST_RELEASE` is "true":
-
    - Set all projects to version `1.0.0`
    - Use reason: "Initial release"
 

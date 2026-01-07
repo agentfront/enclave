@@ -9,6 +9,10 @@
     "build": "nx run-many -t build --outputStyle stream",
     "test": "nx run-many -t test --outputStyle stream",
     "lint": "nx run-many -t lint --outputStyle stream",
+    "format": "git diff --name-only --diff-filter=ACMR main... | grep -E '\\.(js|jsx|ts|tsx|json|css|scss|md|html|yml|yaml)$' | xargs prettier --write",
+    "format:check": "git diff --name-only --diff-filter=ACMR main... | grep -E '\\.(js|jsx|ts|tsx|json|css|scss|md|html|yml|yaml)$' | xargs prettier --check",
+    "format:all": "prettier --write .",
+    "format:all:check": "prettier --check .",
     "prepare": "husky"
   },
   "lint-staged": {

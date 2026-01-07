@@ -68,7 +68,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **Bank-Level Security Enhancements**: STRICT preset now blocks 90+ dangerous identifiers for maximum protection
-
   - **Prototype Manipulation**: Blocks `Object`, `Array`, `String`, `Number`, `Boolean`, `Symbol`, `BigInt`, `constructor`, `__proto__`, `prototype`
   - **Error Stack Manipulation**: Blocks all Error types (`Error`, `TypeError`, `ReferenceError`, `SyntaxError`, etc.) to prevent stack trace exploitation
   - **Reflection & Metaprogramming**: Blocks `Proxy` and `Reflect` to prevent property interception and manipulation

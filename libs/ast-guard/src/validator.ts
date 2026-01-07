@@ -115,8 +115,8 @@ export class JSAstValidator {
             issue.severity === 'error'
               ? ValidationSeverity.ERROR
               : issue.severity === 'warning'
-              ? ValidationSeverity.WARNING
-              : ValidationSeverity.INFO,
+                ? ValidationSeverity.WARNING
+                : ValidationSeverity.INFO,
           message: issue.message,
           location: issue.line !== undefined ? { line: issue.line, column: issue.column ?? 0 } : undefined,
           data: issue.data,

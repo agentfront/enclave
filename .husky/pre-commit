@@ -1,2 +1,11 @@
 #!/usr/bin/env sh
+
+# Check formatting only for files changed from main branch
+CHANGED_FILES=$(git diff --name-only --diff-filter=ACMR main... 2>/dev/null | grep -E '\.(js|jsx|ts|tsx|json|css|scss|md|html|yml|yaml)$' || true)
+
+if [ -n "$CHANGED_FILES" ]; then
+  echo "Checking formatting for changed files..."
+  echo "$CHANGED_FILES" | xargs npx prettier --check
+fi
+
 npx lint-staged

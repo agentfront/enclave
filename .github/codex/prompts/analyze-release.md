@@ -50,12 +50,10 @@ Use patch bump when:
 ### Version Analysis Instructions
 
 1. **Read the last released versions** from `.github/codex/prompts/last-released-versions.txt`
-
    - This file contains `project=version` entries (e.g., `enclave-vm=2.0.0`)
    - These are the versions FROM which you must bump
 
 2. For each project in the affected list:
-
    - Get the last released version from the file above
    - Analyze the git diff in `.github/codex/prompts/diff.patch` for that project
    - Focus on changes to `src/` files (ignore tests, docs, configs)
@@ -64,7 +62,6 @@ Use patch bump when:
    - Example: if last released was `2.0.0` and bump is `minor`, new version is `2.1.0`
 
 3. If a project has `version=0.0.0` (no prior release tag):
-
    - Set it to version `1.0.0`
    - Use reason: "Initial release"
 
@@ -95,7 +92,6 @@ Use these categories (only include categories that have entries):
 ### Changelog Instructions
 
 1. For each project with a version bump:
-
    - Generate changelog entries based on the actual code changes
    - Be specific about what changed (function names, behaviors, etc.)
    - Group entries by category
@@ -113,25 +109,21 @@ Update the Mintlify documentation based on the code changes in this release. Doc
 ### Documentation Instructions
 
 1. **Review Changed Code**
-
    - For each project in `AFFECTED_PROJECTS`, examine the changes in `libs/{project}/src/`
    - Identify new exports, changed APIs, removed functionality
    - Note any configuration changes or new features
 
 2. **Update API Documentation**
-
    - Update relevant pages in `/docs/api/` to match current exports
    - Ensure function signatures, parameters, and return types are accurate
    - Add documentation for new exports or functions
 
 3. **Update Examples**
-
    - If functionality changed, update code examples in `/docs/examples/`
    - Ensure examples compile and demonstrate current API usage
    - Add new examples for significant new features
 
 4. **Update Guides**
-
    - Update any guides in `/docs/guides/` that reference changed functionality
    - Add new guides for major new features if appropriate
 

@@ -1,4 +1,3 @@
-
 # Security Policy
 
 ## Supported Versions
@@ -38,6 +37,7 @@ Report security vulnerabilities via one of these private channels:
 ### Safe Harbor
 
 We consider security research conducted in good faith to be authorized. We will not pursue legal action against researchers who:
+
 - Act in good faith
 - Avoid privacy violations and data destruction
 - Do not exploit vulnerabilities beyond proof-of-concept

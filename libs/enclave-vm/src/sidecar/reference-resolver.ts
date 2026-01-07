@@ -69,7 +69,10 @@ export function isCompositeHandle(value: unknown): value is CompositeHandle {
  * ```
  */
 export class ReferenceResolver {
-  constructor(private readonly sidecar: ReferenceSidecar, private readonly config: ReferenceConfig) {}
+  constructor(
+    private readonly sidecar: ReferenceSidecar,
+    private readonly config: ReferenceConfig,
+  ) {}
 
   /**
    * Predict the expanded size of a value WITHOUT allocating memory
