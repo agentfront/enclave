@@ -1,4 +1,4 @@
-export default {
+module.exports = {
   displayName: 'vectoriadb',
   preset: '../../jest.preset.js',
   testEnvironment: 'node',

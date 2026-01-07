@@ -1,4 +1,4 @@
-export default {
+module.exports = {
   displayName: 'enclave-vm',
   preset: '../../jest.preset.js',
   testEnvironment: 'node',
