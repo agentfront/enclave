@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-01-07
+
+### Fixed
+
+- Regex vulnerability detection now trims analyzed patterns to 500 characters and evaluates them through bounded helper regexes to avoid the analyzer triggering ReDoS.
+- Redis namespace sanitization bounds the namespace prior to regex processing and swaps in precompiled `SAFE_PATTERNS` to strip control characters and unsafe symbols deterministically.
+
+### Security
+
+- Hardened both the regex analyzer and namespace sanitizer so untrusted input can no longer leverage those code paths for ReDoS attacks.
+
 ## [2.0.0] - 2025-12-12
 
 ### Added

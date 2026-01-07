@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-01-07
+
+### Added
+
+- Serialized worker protocol now carries a `securityLevel` flag so worker-pool executions mirror the AST guard preset in use.
+- Worker sandbox utilities now derive security-level-specific global maps and the Enclave validator pulls its base allow list from `getAgentScriptGlobals` before appending custom globals.
+
+### Changed
+
+- `serializeError` now tolerates string throws from transformed loop guards before sanitizing stack traces.
+
+### Security
+
+- Sandbox creation now exposes only the globals permitted for the selected security level, removing constructors like `console`, `Promise`, or `RegExp` under stricter tiers for defense-in-depth.
+- Double-VM bootstrap instantiates safe objects using inner-context intrinsics, makes the injected `__host_vm_module__` removable, and nulls `vm.createContext`/`vm.Script` before user code executes.
+
 ## [2.4.0] - 2026-01-06
 
 ### Added

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-01-07
+
+### Added
+
+- AgentScript transformer now whitelists URI encoding helpers (`encodeURI`, `decodeURI`, `encodeURIComponent`, `decodeURIComponent`) so they survive transformation.
+- AgentScript preset exports security-level-specific global lists (`AGENTSCRIPT_*`), a `getAgentScriptGlobals` helper, and accepts a new `securityLevel` option; the public index also re-exports the new constants and `SecurityLevel` type.
+
+### Changed
+
+- Default AgentScript allowed globals are derived from the chosen security level (falling back to STANDARD) before merging in user-specified identifiers.
+
+### Fixed
+
+- Regex pre-scanner analyzes user patterns through the new `safePatternTest`/`safePatternMatch` helpers so the detector’s own regular expressions are not exploitable.
+
+### Security
+
+- REDOS detection patterns now use bounded quantifiers and truncate inspected patterns, eliminating analyzer-driven ReDoS vectors.
+
 ## [2.1.0] - 2026-01-06
 
 ### Added
