@@ -5,7 +5,11 @@
 **Secure JavaScript execution and vector search libraries for AI agents**
 
 [![Node](https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white)](https://nodejs.org)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+[![License](https://badgen.net/github/license/agentfront/enclave)](./LICENSE)
+![Checks Status](https://badgen.net/github/checks/agentfront/enclave/main)
+
+
+
 
 </div>
 
