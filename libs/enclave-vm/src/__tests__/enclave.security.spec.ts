@@ -1176,7 +1176,8 @@ describe('Enclave Security Tests', () => {
 
   describe('Side Channel Attack Prevention', () => {
     it('should allow console with rate limiting (I/O flood protection)', async () => {
-      const enclave = new Enclave();
+      // Console is only available in PERMISSIVE security level
+      const enclave = new Enclave({ securityLevel: 'PERMISSIVE' });
 
       const code = `
         console.log('test message');
@@ -1194,8 +1195,9 @@ describe('Enclave Security Tests', () => {
     });
 
     it('should enforce console rate limits', async () => {
+      // Console is only available in PERMISSIVE security level
       const enclave = new Enclave({
-        securityLevel: 'STRICT',
+        securityLevel: 'PERMISSIVE',
         maxConsoleCalls: 5, // Very low limit for test
       });
 

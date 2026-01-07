@@ -378,6 +378,29 @@ const validator = new JSAstValidator(
 
 Legend: ❌ Blocked (error) | ⚠️ Detected (warning) | ✅ Allowed
 
+### AgentScript Globals by Security Level
+
+The AgentScript preset uses security-level-aware globals for defense-in-depth:
+
+| Global                                     | STRICT | SECURE | STANDARD | PERMISSIVE |
+| ------------------------------------------ | ------ | ------ | -------- | ---------- |
+| **Core API**                               |        |        |          |            |
+| `callTool`                                 | ✅     | ✅     | ✅       | ✅         |
+| **Data Types**                             |        |        |          |            |
+| `Math`, `JSON`, `Array`                    | ✅     | ✅     | ✅       | ✅         |
+| `Object`, `String`, `Number`, `Date`       | ✅     | ✅     | ✅       | ✅         |
+| **Constants**                              |        |        |          |            |
+| `undefined`, `NaN`, `Infinity`             | ✅     | ✅     | ✅       | ✅         |
+| **Utility Functions**                      |        |        |          |            |
+| `parseInt`, `parseFloat`                   | ❌     | ✅     | ✅       | ✅         |
+| `isNaN`, `isFinite`                        | ❌     | ✅     | ✅       | ✅         |
+| `encodeURI`, `decodeURI`                   | ❌     | ✅     | ✅       | ✅         |
+| `encodeURIComponent`, `decodeURIComponent` | ❌     | ✅     | ✅       | ✅         |
+| **Debugging**                              |        |        |          |            |
+| `console`                                  | ❌     | ❌     | ❌       | ✅         |
+
+**Always Blocked:** `eval`, `Function`, `process`, `require`, `window`, `globalThis`, `constructor`, `__proto__`, `Proxy`, `Reflect`, `Promise`, `setTimeout`, `fetch`, `WebSocket`, `Map`, `Set`, `Symbol`, `RegExp`, and 50+ other dangerous globals.
+
 ### AgentScript Preset
 
 The AgentScript preset is specifically designed for safe AI agent orchestration. It provides security rules tailored for executing LLM-generated code that calls tools via `callTool()`.
@@ -397,16 +420,17 @@ const rules = createAgentScriptPreset({
 
 **Options:**
 
-| Option                            | Type       | Default                     | Description                                              |
-| --------------------------------- | ---------- | --------------------------- | -------------------------------------------------------- |
-| `requireCallTool`                 | `boolean`  | `false`                     | Require at least one `callTool()` invocation in the code |
-| `allowedGlobals`                  | `string[]` | `['callTool', 'Math', ...]` | List of allowed global identifiers                       |
-| `additionalDisallowedIdentifiers` | `string[]` | `[]`                        | Additional identifiers to block beyond the default set   |
-| `allowArrowFunctions`             | `boolean`  | `true`                      | Whether to allow arrow functions (for array methods)     |
-| `allowedLoops`                    | `object`   | `{ allowFor, allowForOf }`  | Override default loop restrictions                       |
-| `reservedPrefixes`                | `string[]` | `['__ag_', '__safe_']`      | Reserved prefixes that user code cannot use              |
-| `staticCallTarget`                | `object`   | `{ enabled: true }`         | Configuration for static call target validation          |
-| `callToolValidation`              | `object`   | -                           | Validation rules for callTool arguments                  |
+| Option                            | Type       | Default                    | Description                                                    |
+| --------------------------------- | ---------- | -------------------------- | -------------------------------------------------------------- |
+| `securityLevel`                   | `string`   | `'STANDARD'`               | Security level: `STRICT`, `SECURE`, `STANDARD`, `PERMISSIVE`   |
+| `requireCallTool`                 | `boolean`  | `false`                    | Require at least one `callTool()` invocation in the code       |
+| `allowedGlobals`                  | `string[]` | (based on securityLevel)   | Override allowed globals (takes precedence over securityLevel) |
+| `additionalDisallowedIdentifiers` | `string[]` | `[]`                       | Additional identifiers to block beyond the default set         |
+| `allowArrowFunctions`             | `boolean`  | `true`                     | Whether to allow arrow functions (for array methods)           |
+| `allowedLoops`                    | `object`   | `{ allowFor, allowForOf }` | Override default loop restrictions                             |
+| `reservedPrefixes`                | `string[]` | `['__ag_', '__safe_']`     | Reserved prefixes that user code cannot use                    |
+| `staticCallTarget`                | `object`   | `{ enabled: true }`        | Configuration for static call target validation                |
+| `callToolValidation`              | `object`   | -                          | Validation rules for callTool arguments                        |
 
 **Example with all options:**
 

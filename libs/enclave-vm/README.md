@@ -106,12 +106,12 @@ interface CreateEnclaveOptions {
 
 ### Security Levels
 
-| Level        | Description                                 | Use Case             |
-| ------------ | ------------------------------------------- | -------------------- |
-| `STRICT`     | Maximum security, blocks all risky patterns | Untrusted code       |
-| `SECURE`     | High security with some flexibility         | Semi-trusted code    |
-| `STANDARD`   | Balanced security for most use cases        | Trusted code         |
-| `PERMISSIVE` | Minimal restrictions                        | Internal/development |
+| Level        | Description                                | Use Case             |
+| ------------ | ------------------------------------------ | -------------------- |
+| `STRICT`     | Maximum security, absolute minimum globals | Untrusted code       |
+| `SECURE`     | High security with safe utility functions  | Semi-trusted code    |
+| `STANDARD`   | Balanced security for most use cases       | Trusted code         |
+| `PERMISSIVE` | Adds console for debugging                 | Internal/development |
 
 ```typescript
 import { Enclave, SecurityLevel } from 'enclave-vm';
@@ -123,6 +123,57 @@ const enclave = new Enclave({
   },
 });
 ```
+
+### Allowed Globals by Security Level
+
+Both AST validation and runtime sandbox enforce the same allowed globals for defense-in-depth:
+
+| Global                | STRICT | SECURE | STANDARD | PERMISSIVE |
+| --------------------- | ------ | ------ | -------- | ---------- |
+| **Core API**          |        |        |          |            |
+| `callTool`            | ✅     | ✅     | ✅       | ✅         |
+| **Data Types**        |        |        |          |            |
+| `Math`                | ✅     | ✅     | ✅       | ✅         |
+| `JSON`                | ✅     | ✅     | ✅       | ✅         |
+| `Array`               | ✅     | ✅     | ✅       | ✅         |
+| `Object`              | ✅     | ✅     | ✅       | ✅         |
+| `String`              | ✅     | ✅     | ✅       | ✅         |
+| `Number`              | ✅     | ✅     | ✅       | ✅         |
+| `Date`                | ✅     | ✅     | ✅       | ✅         |
+| **Constants**         |        |        |          |            |
+| `undefined`           | ✅     | ✅     | ✅       | ✅         |
+| `NaN`                 | ✅     | ✅     | ✅       | ✅         |
+| `Infinity`            | ✅     | ✅     | ✅       | ✅         |
+| **Utility Functions** |        |        |          |            |
+| `parseInt`            | ❌     | ✅     | ✅       | ✅         |
+| `parseFloat`          | ❌     | ✅     | ✅       | ✅         |
+| `isNaN`               | ❌     | ✅     | ✅       | ✅         |
+| `isFinite`            | ❌     | ✅     | ✅       | ✅         |
+| `encodeURI`           | ❌     | ✅     | ✅       | ✅         |
+| `decodeURI`           | ❌     | ✅     | ✅       | ✅         |
+| `encodeURIComponent`  | ❌     | ✅     | ✅       | ✅         |
+| `decodeURIComponent`  | ❌     | ✅     | ✅       | ✅         |
+| **Debugging**         |        |        |          |            |
+| `console`             | ❌     | ❌     | ❌       | ✅         |
+
+### Blocked Globals (All Security Levels)
+
+These dangerous globals are **always blocked** regardless of security level:
+
+| Category           | Blocked Globals                                                                |
+| ------------------ | ------------------------------------------------------------------------------ |
+| **Code Execution** | `eval`, `Function`, `AsyncFunction`, `GeneratorFunction`                       |
+| **System Access**  | `process`, `require`, `module`, `exports`, `__dirname`, `__filename`, `Buffer` |
+| **Global Objects** | `window`, `globalThis`, `self`, `global`, `this`                               |
+| **Prototype**      | `constructor`, `__proto__`, `prototype`                                        |
+| **Reflection**     | `Proxy`, `Reflect`                                                             |
+| **Async Flooding** | `Promise`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`       |
+| **Network**        | `fetch`, `XMLHttpRequest`, `WebSocket`                                         |
+| **Workers**        | `Worker`, `SharedWorker`, `ServiceWorker`                                      |
+| **Memory Hazards** | `Map`, `Set`, `WeakMap`, `WeakSet`, `WeakRef`, `FinalizationRegistry`          |
+| **Binary/Wasm**    | `WebAssembly`, `ArrayBuffer`, `SharedArrayBuffer`, `Atomics`                   |
+| **Error Types**    | `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError`            |
+| **Symbols/Regex**  | `Symbol`, `RegExp`                                                             |
 
 ### AST Presets
 

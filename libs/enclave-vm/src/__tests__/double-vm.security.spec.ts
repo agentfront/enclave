@@ -1459,4 +1459,113 @@ describe('Double VM Security Layer', () => {
       expect(enumCount).toBeLessThanOrEqual(32);
     });
   });
+
+  // ============================================================================
+  // Double VM Escape Prevention (Defense-in-Depth)
+  // ============================================================================
+  describe('Double VM Escape Prevention', () => {
+    // Note: The AST validator blocks access to __host_* identifiers as unknown globals.
+    // This is the first layer of defense. Even if bypassed, the vm module is deleted
+    // from parent context before user code runs (defense-in-depth).
+
+    it('should block __host_vm_module__ access via AST validation', async () => {
+      const enclave = new Enclave();
+      const result = await enclave.run(`
+        return typeof __host_vm_module__;
+      `);
+      // AST validator blocks this as unknown global
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/unknown identifier/i);
+      enclave.dispose();
+    });
+
+    it('should block __host_callTool__ direct access via AST validation', async () => {
+      const enclave = new Enclave();
+      const result = await enclave.run(`
+        return typeof __host_callTool__;
+      `);
+      // AST validator blocks this as unknown global
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/unknown identifier/i);
+      enclave.dispose();
+    });
+
+    it('should block __host_stats__ access via AST validation', async () => {
+      const enclave = new Enclave();
+      const result = await enclave.run(`
+        return typeof __host_stats__;
+      `);
+      // AST validator blocks this as unknown global
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/unknown identifier/i);
+      enclave.dispose();
+    });
+
+    it('should block __host_config__ access via AST validation', async () => {
+      const enclave = new Enclave();
+      const result = await enclave.run(`
+        return typeof __host_config__;
+      `);
+      // AST validator blocks this as unknown global
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/unknown identifier/i);
+      enclave.dispose();
+    });
+
+    it('should block constructor chain escape attempts to parent context', async () => {
+      const enclave = new Enclave();
+      const code = `
+        // Try to get Function constructor and access parent scope
+        try {
+          const c = 'con' + 'struc' + 'tor';
+          const Fn = [][c][c];
+          const payload = Fn('return typeof __host_vm_module__');
+          return payload();
+        } catch (e) {
+          return 'blocked: ' + e.message;
+        }
+      `;
+      const result = await enclave.run(code);
+      // Should be blocked by AST validation (constructor obfuscation detected)
+      // or by codeGeneration.strings=false
+      expect(!result.success || (typeof result.value === 'string' && result.value.startsWith('blocked'))).toBe(true);
+      enclave.dispose();
+    });
+
+    it('should block vm module globals via AST validation', async () => {
+      const enclave = new Enclave();
+      // These should all be blocked as unknown globals
+      const vmResult = await enclave.run(`return typeof vm;`);
+      expect(vmResult.success).toBe(false);
+      expect(vmResult.error?.message).toMatch(/unknown identifier/i);
+
+      const scriptResult = await enclave.run(`return typeof Script;`);
+      expect(scriptResult.success).toBe(false);
+      expect(scriptResult.error?.message).toMatch(/unknown identifier/i);
+
+      enclave.dispose();
+    });
+
+    it('should allow only whitelisted globals', async () => {
+      const enclave = new Enclave();
+      // These are allowed
+      const result = await enclave.run(`
+        return {
+          arrayType: typeof Array,
+          stringType: typeof String,
+          mathType: typeof Math,
+          jsonType: typeof JSON,
+          callToolType: typeof callTool,
+        };
+      `);
+      expect(result.success).toBe(true);
+      const value = result.value as Record<string, string>;
+      expect(value['arrayType']).toBe('function');
+      expect(value['stringType']).toBe('function');
+      expect(value['mathType']).toBe('object');
+      expect(value['jsonType']).toBe('object');
+      expect(value['callToolType']).toBe('function');
+      enclave.dispose();
+    });
+  });
 });

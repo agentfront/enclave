@@ -34,7 +34,7 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
   describe('ATK-IOFL-01 to ATK-IOFL-04: Console Output Size Limiting', () => {
     it('ATK-IOFL-01: should limit total console output bytes', async () => {
       const enclave = new Enclave({
-        securityLevel: 'STRICT',
+        securityLevel: 'PERMISSIVE',
         maxConsoleOutputBytes: 1024, // 1KB limit for test
       });
 
@@ -56,7 +56,7 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
 
     it('ATK-IOFL-02: should track output across multiple console calls', async () => {
       const enclave = new Enclave({
-        securityLevel: 'STRICT',
+        securityLevel: 'PERMISSIVE',
         maxConsoleOutputBytes: 500, // 500 bytes limit
       });
 
@@ -78,7 +78,7 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
 
     it('ATK-IOFL-03: should track output across all console methods', async () => {
       const enclave = new Enclave({
-        securityLevel: 'STRICT',
+        securityLevel: 'PERMISSIVE',
         maxConsoleOutputBytes: 300, // 300 bytes limit
       });
 
@@ -101,7 +101,7 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
 
     it('ATK-IOFL-04: should allow output within limits', async () => {
       const enclave = new Enclave({
-        securityLevel: 'STRICT',
+        securityLevel: 'PERMISSIVE',
         maxConsoleOutputBytes: 1024, // 1KB limit
       });
 
@@ -126,7 +126,7 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
   describe('ATK-IOFL-05 to ATK-IOFL-07: Console Call Count Limiting', () => {
     it('ATK-IOFL-05: should limit console call count', async () => {
       const enclave = new Enclave({
-        securityLevel: 'STRICT',
+        securityLevel: 'PERMISSIVE',
         maxConsoleCalls: 5, // Only 5 calls allowed
       });
 
@@ -148,7 +148,7 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
 
     it('ATK-IOFL-06: should count all console methods toward limit', async () => {
       const enclave = new Enclave({
-        securityLevel: 'STRICT',
+        securityLevel: 'PERMISSIVE',
         maxConsoleCalls: 4, // Only 4 calls allowed
       });
 
@@ -171,7 +171,7 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
 
     it('ATK-IOFL-07: should allow calls within limit', async () => {
       const enclave = new Enclave({
-        securityLevel: 'STRICT',
+        securityLevel: 'PERMISSIVE',
         maxConsoleCalls: 10,
       });
 
@@ -193,23 +193,29 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
 
   // ============================================================================
   // ATK-IOFL-08 to ATK-IOFL-11: Security Level Presets
+  // Note: Console is only available in PERMISSIVE security level, so these
+  // tests verify that PERMISSIVE mode has appropriate rate limits configured.
+  // Other security levels block console at AST validation (defense-in-depth).
   // ============================================================================
   describe('ATK-IOFL-08 to ATK-IOFL-11: Security Level Presets', () => {
-    it('ATK-IOFL-08: should use STRICT preset limits (64KB, 100 calls)', async () => {
-      const enclave = new Enclave({ securityLevel: 'STRICT' });
+    it('ATK-IOFL-08: should verify PERMISSIVE mode is required for console', async () => {
+      const enclave = new Enclave({ securityLevel: 'PERMISSIVE' });
       const config = enclave.getEffectiveConfig();
 
-      // STRICT has tightest limits
-      expect(config.securityLevel).toBe('STRICT');
-      // We can't access maxConsoleOutputBytes directly, but we can test behavior
+      // Console is only available in PERMISSIVE mode
+      expect(config.securityLevel).toBe('PERMISSIVE');
 
       enclave.dispose();
     });
 
-    it('ATK-IOFL-09: should enforce STRICT limits on large output', async () => {
-      const enclave = new Enclave({ securityLevel: 'STRICT' });
+    it('ATK-IOFL-09: should enforce output size limits with custom settings', async () => {
+      // Test that output limits are enforced even in PERMISSIVE mode
+      const enclave = new Enclave({
+        securityLevel: 'PERMISSIVE',
+        maxConsoleOutputBytes: 64 * 1024, // 64KB like the old STRICT limit
+      });
 
-      // STRICT limit is 64KB, try to exceed it
+      // Try to exceed the 64KB limit with 100KB output
       const code = `
         const bigString = 'x'.repeat(100000); // 100KB
         console.log(bigString);
@@ -224,10 +230,14 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
       enclave.dispose();
     });
 
-    it('ATK-IOFL-10: should enforce STRICT call limit', async () => {
-      const enclave = new Enclave({ securityLevel: 'STRICT' });
+    it('ATK-IOFL-10: should enforce call count limits with custom settings', async () => {
+      // Test that call limits are enforced even in PERMISSIVE mode
+      const enclave = new Enclave({
+        securityLevel: 'PERMISSIVE',
+        maxConsoleCalls: 100, // 100 calls like the old STRICT limit
+      });
 
-      // STRICT limit is 100 calls, try to exceed it
+      // Try to exceed the 100 call limit with 150 calls
       const code = `
         for (let i = 0; i < 150; i++) {
           console.log(i);
@@ -270,7 +280,7 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
   describe('ATK-IOFL-12 to ATK-IOFL-14: Object Serialization in Console', () => {
     it('ATK-IOFL-12: should handle object serialization in output size calculation', async () => {
       const enclave = new Enclave({
-        securityLevel: 'STRICT',
+        securityLevel: 'PERMISSIVE',
         maxConsoleOutputBytes: 100,
       });
 
@@ -313,7 +323,7 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
 
     it('ATK-IOFL-14: should handle null and undefined values', async () => {
       const enclave = new Enclave({
-        securityLevel: 'STANDARD',
+        securityLevel: 'PERMISSIVE', // Console only available in PERMISSIVE mode
         maxConsoleOutputBytes: 1024,
       });
 
@@ -339,7 +349,7 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
   describe('ATK-IOFL-15 to ATK-IOFL-17: Attack Scenarios', () => {
     it('ATK-IOFL-15: should prevent excessive console.log in loop attack', async () => {
       const enclave = new Enclave({
-        securityLevel: 'STRICT',
+        securityLevel: 'PERMISSIVE',
         maxConsoleCalls: 100,
         maxIterations: 1000,
       });
@@ -369,7 +379,7 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
 
     it('ATK-IOFL-16: should prevent exponential output growth attack', async () => {
       const enclave = new Enclave({
-        securityLevel: 'STRICT',
+        securityLevel: 'PERMISSIVE',
         maxConsoleOutputBytes: 10000, // 10KB
       });
 
@@ -393,7 +403,7 @@ describe('ATK-IOFL: I/O Flood Attack Prevention (CWE-779)', () => {
 
     it('ATK-IOFL-17: should prevent rapid-fire small message attack', async () => {
       const enclave = new Enclave({
-        securityLevel: 'STRICT',
+        securityLevel: 'PERMISSIVE',
         maxConsoleCalls: 100,
       });
 

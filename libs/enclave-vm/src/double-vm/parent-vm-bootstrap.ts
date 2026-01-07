@@ -969,21 +969,46 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     })(DANGEROUS_OBJECT_STATIC_METHODS[i]);
   }
 
+  // Get INNER context's intrinsic constructors
+  // CRITICAL: We must use the inner context's Array/String/etc constructors
+  // so that objects created with new Array() use the patched prototypes.
+  // Using parent VM constructors would bypass our memory-safe prototype patches.
+  var innerIntrinsics = (function() {
+    var getIntrinsicsCode =
+      '({ ' +
+      '  Array: Array, ' +
+      '  String: String, ' +
+      '  Number: Number, ' +
+      '  Boolean: Boolean, ' +
+      '  Date: Date, ' +
+      '  RegExp: RegExp, ' +
+      '  Error: Error, ' +
+      '  TypeError: TypeError, ' +
+      '  RangeError: RangeError, ' +
+      '  Promise: Promise, ' +
+      '  Math: Math, ' +
+      '  JSON: JSON ' +
+      '})';
+    var script = new vm.Script(getIntrinsicsCode);
+    return script.runInContext(innerContext);
+  })();
+
   // Add safe standard globals wrapped with secure proxy
+  // Use inner context intrinsics for constructors to ensure patched prototypes are used
   var safeGlobals = {
-    Math: createSecureProxy(Math),
-    JSON: createSecureProxy(JSON),
-    Array: createSecureProxy(Array),
+    Math: createSecureProxy(innerIntrinsics.Math),
+    JSON: createSecureProxy(innerIntrinsics.JSON),
+    Array: createSecureProxy(innerIntrinsics.Array),
     Object: createSecureProxy(SafeObject),
-    String: createSecureProxy(String),
-    Number: createSecureProxy(Number),
-    Date: createSecureProxy(Date),
-    Boolean: createSecureProxy(Boolean),
-    RegExp: createSecureProxy(RegExp),
-    Error: createSecureProxy(Error),
-    TypeError: createSecureProxy(TypeError),
-    RangeError: createSecureProxy(RangeError),
-    Promise: createSecureProxy(Promise),
+    String: createSecureProxy(innerIntrinsics.String),
+    Number: createSecureProxy(innerIntrinsics.Number),
+    Date: createSecureProxy(innerIntrinsics.Date),
+    Boolean: createSecureProxy(innerIntrinsics.Boolean),
+    RegExp: createSecureProxy(innerIntrinsics.RegExp),
+    Error: createSecureProxy(innerIntrinsics.Error),
+    TypeError: createSecureProxy(innerIntrinsics.TypeError),
+    RangeError: createSecureProxy(innerIntrinsics.RangeError),
+    Promise: createSecureProxy(innerIntrinsics.Promise),
     undefined: undefined,
     NaN: NaN,
     Infinity: Infinity,
@@ -1044,6 +1069,15 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   var wrappedCode = '(async function() { ' + userCode + ' return typeof __ag_main === "function" ? await __ag_main() : undefined; })()';
 
   var script = new vm.Script(wrappedCode, { filename: 'inner-agentscript.js' });
+
+  // SECURITY HARDENING: Disable vm module before running user code
+  // This prevents access to vm module even if user code escapes to parent context
+  // We null out the vm object's methods since we can't delete globals in strict mode
+  try {
+    vm.createContext = null;
+    vm.Script = null;
+  } catch (e) { /* ignore if properties are non-writable */ }
+
   // Note: codeGeneration is set in createContext(), not runInContext()
   var result = await script.runInContext(innerContext, {
     timeout: ${innerTimeout},

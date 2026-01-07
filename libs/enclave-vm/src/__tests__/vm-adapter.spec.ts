@@ -246,8 +246,10 @@ describe('VmAdapter', () => {
   });
 
   describe('Console Rate Limiting', () => {
+    // Console is only available in PERMISSIVE security level
     it('should allow console output within limits', async () => {
       const enclave = createVmAdapterEnclave({
+        securityLevel: 'PERMISSIVE',
         maxConsoleCalls: 10,
         maxConsoleOutputBytes: 1000,
       });
@@ -266,6 +268,7 @@ describe('VmAdapter', () => {
 
     it('should enforce maxConsoleCalls limit', async () => {
       const enclave = createVmAdapterEnclave({
+        securityLevel: 'PERMISSIVE',
         maxConsoleCalls: 3,
         maxConsoleOutputBytes: 10000,
       });
@@ -285,6 +288,7 @@ describe('VmAdapter', () => {
 
     it('should enforce maxConsoleOutputBytes limit', async () => {
       const enclave = createVmAdapterEnclave({
+        securityLevel: 'PERMISSIVE',
         maxConsoleCalls: 1000,
         maxConsoleOutputBytes: 50,
       });
@@ -302,6 +306,7 @@ describe('VmAdapter', () => {
 
     it('should support all console methods (log, error, warn, info)', async () => {
       const enclave = createVmAdapterEnclave({
+        securityLevel: 'PERMISSIVE',
         maxConsoleCalls: 10,
         maxConsoleOutputBytes: 1000,
       });
@@ -322,6 +327,7 @@ describe('VmAdapter', () => {
 
     it('should handle objects in console output', async () => {
       const enclave = createVmAdapterEnclave({
+        securityLevel: 'PERMISSIVE',
         maxConsoleCalls: 10,
         maxConsoleOutputBytes: 1000,
       });

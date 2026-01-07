@@ -245,36 +245,106 @@ describe('Literal Constructor Escape Prevention', () => {
 });
 
 describe('Memory Exhaustion Prevention', () => {
-  // Note: Memory tracking for Array.join requires single-VM mode
-  // In double-VM mode, the inner VM has its own native Array constructor
-  // that doesn't use the tracked version from memory-proxy.ts
-  it.skip('should block large Array.join operations (requires single-VM mode)', async () => {
-    const enclave = new Enclave({ memoryLimit: 1024 * 1024 }); // 1MB
-    const code = `
-      const huge = new Array(12 * 1024 * 1024).join('x');
-      return huge.length;
-    `;
-    const result = await enclave.run(code);
-    expect(result.success).toBe(false);
-    enclave.dispose();
-  }, 10000);
+  describe('Single VM Mode', () => {
+    it('should block large Array.join operations', async () => {
+      const enclave = new Enclave({
+        memoryLimit: 1024 * 1024, // 1MB
+        doubleVm: { enabled: false },
+      });
+      const code = `
+        const huge = new Array(12 * 1024 * 1024).join('x');
+        return huge.length;
+      `;
+      const result = await enclave.run(code);
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/memory limit/i);
+      enclave.dispose();
+    }, 10000);
 
-  it('should allow small Array.join operations', async () => {
-    const enclave = new Enclave({ memoryLimit: 1024 * 1024 }); // 1MB
-    const code = `
-      const small = new Array(100).fill('x').join(',');
-      return small.length;
-    `;
-    const result = await enclave.run(code);
-    expect(result.success).toBe(true);
-    enclave.dispose();
+    it('should allow small Array.join operations', async () => {
+      const enclave = new Enclave({
+        memoryLimit: 1024 * 1024, // 1MB
+        doubleVm: { enabled: false },
+      });
+      const code = `
+        const small = new Array(100).fill('x').join(',');
+        return small.length;
+      `;
+      const result = await enclave.run(code);
+      expect(result.success).toBe(true);
+      enclave.dispose();
+    });
+  });
+
+  describe('Double VM Mode', () => {
+    // Double VM memory protection works because we use the inner context's
+    // intrinsic constructors (Array, String, etc.) in safeGlobals, ensuring
+    // that new Array() creates arrays with the patched prototype chain.
+    it('should block large Array.join via constructor', async () => {
+      const enclave = new Enclave({ memoryLimit: 1024 * 1024 }); // 1MB, double VM by default
+      const code = `
+        const huge = new Array(12 * 1024 * 1024).join('x');
+        return huge.length;
+      `;
+      const result = await enclave.run(code);
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/memory limit/i);
+      enclave.dispose();
+    }, 10000);
+
+    it('should block large Array.join via literal', async () => {
+      const enclave = new Enclave({ memoryLimit: 1024 * 1024 }); // 1MB
+      const code = `
+        const arr = [];
+        arr.length = 12 * 1024 * 1024;
+        return arr.join('x').length;
+      `;
+      const result = await enclave.run(code);
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/memory limit/i);
+      enclave.dispose();
+    }, 10000);
+
+    it('should block large String.repeat', async () => {
+      const enclave = new Enclave({ memoryLimit: 1024 * 1024 }); // 1MB
+      const code = `
+        const huge = 'x'.repeat(12 * 1024 * 1024);
+        return huge.length;
+      `;
+      const result = await enclave.run(code);
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/memory limit/i);
+      enclave.dispose();
+    }, 10000);
+
+    it('should allow small Array.join operations', async () => {
+      const enclave = new Enclave({ memoryLimit: 1024 * 1024 }); // 1MB
+      const code = `
+        const small = new Array(100).fill('x').join(',');
+        return small.length;
+      `;
+      const result = await enclave.run(code);
+      expect(result.success).toBe(true);
+      enclave.dispose();
+    });
+
+    it('should allow small String.repeat operations', async () => {
+      const enclave = new Enclave({ memoryLimit: 1024 * 1024 }); // 1MB
+      const code = `
+        return 'abc'.repeat(100);
+      `;
+      const result = await enclave.run(code);
+      expect(result.success).toBe(true);
+      expect(result.value).toBe('abc'.repeat(100));
+      enclave.dispose();
+    });
   });
 });
 
 describe('CPU Exhaustion Prevention', () => {
   // Note: BigInt exponentiation performance varies by platform
   // This test verifies timeout mechanism works for CPU-heavy operations
-  it.skip('should timeout on heavy BigInt operations (platform-dependent)', async () => {
+  it('should timeout on heavy BigInt operations (platform-dependent)', async () => {
     const enclave = new Enclave({ timeout: 100 }); // 100ms - very short timeout
     const code = `
       const result = 10n ** 100000n;

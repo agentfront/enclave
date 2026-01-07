@@ -340,7 +340,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     const requestId = `exec-${Date.now()}-${crypto.randomUUID()}`;
     const startTime = Date.now();
 
-    // Serialize config
+    // Serialize config (includes security level for defense-in-depth)
     const serializedConfig: SerializedConfig = {
       timeout: context.config.timeout,
       maxIterations: context.config.maxIterations,
@@ -351,6 +351,9 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       maxSanitizeDepth: context.config.maxSanitizeDepth,
       maxSanitizeProperties: context.config.maxSanitizeProperties,
       globals: context.config.globals,
+      // Security level determines which globals are available in sandbox
+      // This mirrors AST guard's allowed globals for defense-in-depth
+      securityLevel: this.securityLevel,
     };
 
     return new Promise<ExecutionResult<T>>((resolve, reject) => {

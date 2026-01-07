@@ -18,13 +18,137 @@ import {
   ResourceExhaustionRule,
 } from '../rules';
 
+// =============================================================================
+// Security-Level-Aware Allowed Globals
+// =============================================================================
+// These exports define what globals are available at each security level.
+// Both AST guard and worker sandbox use these for defense-in-depth.
+
+/**
+ * Base globals allowed at STRICT security level only
+ * Absolute minimum: core types + callTool
+ */
+export const AGENTSCRIPT_STRICT_GLOBALS = [
+  // Core tool API
+  'callTool',
+  '__safe_callTool',
+
+  // Safe built-in objects for data manipulation
+  'Math',
+  'JSON',
+  'Array',
+  'Object',
+  'String',
+  'Number',
+  'Date',
+
+  // Safe standard globals
+  'undefined',
+  'NaN',
+  'Infinity',
+
+  // Runtime-injected safe loop functions
+  '__safe_forOf',
+  '__safe_for',
+  '__safe_while',
+  '__safe_doWhile',
+
+  // Runtime-injected configuration
+  '__maxIterations',
+] as const;
+
+/**
+ * Globals for SECURE security level
+ * Adds safe utility functions (pure functions with no side effects)
+ */
+export const AGENTSCRIPT_SECURE_GLOBALS = [
+  ...AGENTSCRIPT_STRICT_GLOBALS,
+
+  // Safe parsing functions (pure, no side effects)
+  'parseInt',
+  'parseFloat',
+  'isNaN',
+  'isFinite',
+
+  // URI encoding (safe string manipulation, no side effects)
+  'encodeURI',
+  'decodeURI',
+  'encodeURIComponent',
+  'decodeURIComponent',
+] as const;
+
+/**
+ * Globals for STANDARD security level
+ * Same as SECURE (room for future expansion)
+ */
+export const AGENTSCRIPT_STANDARD_GLOBALS = [...AGENTSCRIPT_SECURE_GLOBALS] as const;
+
+/**
+ * Globals for PERMISSIVE security level
+ * Adds debugging/logging capabilities
+ */
+export const AGENTSCRIPT_PERMISSIVE_GLOBALS = [
+  ...AGENTSCRIPT_STANDARD_GLOBALS,
+
+  // Console for debugging (rate-limited at runtime)
+  'console',
+  '__safe_console',
+] as const;
+
+// Legacy alias for backwards compatibility
+export const AGENTSCRIPT_BASE_GLOBALS = AGENTSCRIPT_STRICT_GLOBALS;
+
+/**
+ * Security level type for globals selection
+ */
+export type SecurityLevel = 'STRICT' | 'SECURE' | 'STANDARD' | 'PERMISSIVE';
+
+/**
+ * Get the allowed globals for a given security level
+ *
+ * Security levels (from most to least restrictive):
+ * - STRICT: Absolute minimum (core types + callTool only)
+ * - SECURE: Adds safe utility functions (parseInt, encodeURI, etc.)
+ * - STANDARD: Same as SECURE (room for future expansion)
+ * - PERMISSIVE: Adds console for debugging
+ *
+ * @param securityLevel The security level
+ * @returns Array of allowed global identifiers
+ */
+export function getAgentScriptGlobals(securityLevel: SecurityLevel | string): readonly string[] {
+  switch (securityLevel) {
+    case 'PERMISSIVE':
+      return AGENTSCRIPT_PERMISSIVE_GLOBALS;
+    case 'STANDARD':
+      return AGENTSCRIPT_STANDARD_GLOBALS;
+    case 'SECURE':
+      return AGENTSCRIPT_SECURE_GLOBALS;
+    case 'STRICT':
+    default:
+      return AGENTSCRIPT_STRICT_GLOBALS;
+  }
+}
+
 /**
  * Configuration options for AgentScript preset
  */
 export interface AgentScriptOptions {
   /**
+   * Security level that determines default allowed globals.
+   * If allowedGlobals is also provided, it takes precedence.
+   *
+   * - STRICT/SECURE: Base globals only (core types + callTool)
+   * - STANDARD: Adds utility functions (parseInt, encodeURI, etc.)
+   * - PERMISSIVE: Adds console for debugging
+   *
+   * Default: 'STANDARD'
+   */
+  securityLevel?: SecurityLevel | string;
+
+  /**
    * List of allowed global identifiers (APIs available to agent code)
-   * Default: ['callTool', 'Math', 'JSON', 'Array', 'Object', 'String', 'Number', 'Date', 'undefined', 'NaN', 'Infinity']
+   * If provided, overrides the securityLevel-based defaults.
+   * Default: Based on securityLevel (see getAgentScriptGlobals)
    */
   allowedGlobals?: string[];
 
@@ -180,32 +304,13 @@ export interface AgentScriptOptions {
 export function createAgentScriptPreset(options: AgentScriptOptions = {}): ValidationRule[] {
   const rules: ValidationRule[] = [];
 
-  // Default allowed globals for AgentScript
-  const allowedGlobals = options.allowedGlobals || [
-    'callTool', // Primary tool invocation API
-    'Math', // Safe mathematical operations
-    'JSON', // Safe JSON parsing/stringification
-    'Array', // Array constructor
-    'Object', // Object methods (filtered at runtime)
-    'String', // String methods
-    'Number', // Number methods
-    'Date', // Date operations
-
-    // Explicitly allow safe standard globals (previously blocked by strict unknown rule)
-    'undefined',
-    'NaN',
-    'Infinity',
-
-    // Runtime-injected safe functions (created by transformer)
-    '__safe_callTool', // Transformed callTool with limits
-    '__safe_forOf', // Transformed for-of with iteration tracking
-    '__safe_for', // Transformed for with iteration tracking
-    '__safe_while', // Transformed while with iteration tracking
-    '__safe_doWhile', // Transformed do-while with iteration tracking
-
-    // Runtime-injected iteration limit (used by loop transformation)
-    '__maxIterations', // Maximum iterations per loop
-  ];
+  // Determine allowed globals based on priority:
+  // 1. Explicit allowedGlobals (if provided)
+  // 2. Security level (if provided)
+  // 3. Default to STANDARD level globals
+  const allowedGlobals: readonly string[] = options.allowedGlobals
+    ? options.allowedGlobals
+    : getAgentScriptGlobals(options.securityLevel || 'STANDARD');
 
   // 1. Block all eval-like constructs
   rules.push(new NoEvalRule());
@@ -221,7 +326,8 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   // 3. Validate all identifiers against whitelist
   rules.push(
     new UnknownGlobalRule({
-      allowedGlobals,
+      // Spread to convert readonly array to mutable (required by UnknownGlobalRule)
+      allowedGlobals: [...allowedGlobals],
       // Strictly disable standard globals to prevent access to RegExp, Promise, etc.
       // We rely on the explicit list above for the few standard globals we actually want.
       allowStandardGlobals: false,

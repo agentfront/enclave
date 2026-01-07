@@ -280,66 +280,160 @@ function handleTerminate(graceful: boolean): void {
 }
 
 // ============================================================================
-// Sandbox Creation
+// Sandbox Creation - Security-Level-Aware
 // ============================================================================
 
+/**
+ * Maps global names to their actual values.
+ * This mapping is used by createSandbox to selectively expose globals
+ * based on the security level.
+ */
+function getGlobalValue(name: string, requestId: string, config: SerializedConfig): unknown {
+  // Runtime-injected safe functions (created dynamically)
+  switch (name) {
+    case '__safe_callTool':
+    case 'callTool': // Both are mapped to the safe version
+      return createProxiedCallTool(requestId, config);
+    case '__safe_forOf':
+      return createSafeForOf();
+    case '__safe_for':
+      return createSafeFor();
+    case '__safe_while':
+    case '__safe_doWhile':
+      return createSafeWhile();
+    case '__maxIterations':
+      return config.maxIterations ?? 10000;
+    case 'console':
+    case '__safe_console':
+      return createSafeConsole(requestId, config);
+
+    // Core built-in objects (always safe)
+    case 'Math':
+      return Math;
+    case 'JSON':
+      return JSON;
+    case 'Object':
+      return Object;
+    case 'Array':
+      return Array;
+    case 'String':
+      return String;
+    case 'Number':
+      return Number;
+    case 'Date':
+      return Date;
+
+    // Safe standard globals
+    case 'undefined':
+      return undefined;
+    case 'NaN':
+      return NaN;
+    case 'Infinity':
+      return Infinity;
+
+    // Utility functions (STANDARD level and above)
+    case 'parseInt':
+      return parseInt;
+    case 'parseFloat':
+      return parseFloat;
+    case 'isNaN':
+      return isNaN;
+    case 'isFinite':
+      return isFinite;
+    case 'encodeURI':
+      return encodeURI;
+    case 'decodeURI':
+      return decodeURI;
+    case 'encodeURIComponent':
+      return encodeURIComponent;
+    case 'decodeURIComponent':
+      return decodeURIComponent;
+
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Get allowed globals based on security level.
+ * This mirrors the AST guard's getAgentScriptGlobals for defense-in-depth.
+ */
+function getAllowedGlobalsForSecurityLevel(securityLevel: string): readonly string[] {
+  // STRICT globals - absolute minimum
+  const strictGlobals = [
+    'callTool',
+    '__safe_callTool',
+    'Math',
+    'JSON',
+    'Array',
+    'Object',
+    'String',
+    'Number',
+    'Date',
+    'undefined',
+    'NaN',
+    'Infinity',
+    '__safe_forOf',
+    '__safe_for',
+    '__safe_while',
+    '__safe_doWhile',
+    '__maxIterations',
+  ] as const;
+
+  // SECURE globals - adds safe utility functions (pure, no side effects)
+  const secureGlobals = [
+    ...strictGlobals,
+    'parseInt',
+    'parseFloat',
+    'isNaN',
+    'isFinite',
+    'encodeURI',
+    'decodeURI',
+    'encodeURIComponent',
+    'decodeURIComponent',
+  ] as const;
+
+  // STANDARD globals - same as SECURE (room for future expansion)
+  const standardGlobals = [...secureGlobals] as const;
+
+  // PERMISSIVE globals - adds console for debugging
+  const permissiveGlobals = [...standardGlobals, 'console', '__safe_console'] as const;
+
+  switch (securityLevel) {
+    case 'PERMISSIVE':
+      return permissiveGlobals;
+    case 'STANDARD':
+      return standardGlobals;
+    case 'SECURE':
+      return secureGlobals;
+    case 'STRICT':
+    default:
+      return strictGlobals;
+  }
+}
+
+/**
+ * Create a security-level-aware sandbox for code execution.
+ *
+ * IMPORTANT: This function enforces the same allowed globals as the AST guard
+ * for defense-in-depth. If code bypasses AST validation, the sandbox still
+ * blocks access to dangerous globals.
+ */
 function createSandbox(requestId: string, config: SerializedConfig): Record<string, unknown> {
   const sandbox: Record<string, unknown> = Object.create(null);
 
-  // Inject safe runtime functions (use bracket notation for Record type)
-  // These match the names produced by the Enclave's AST transformer
-  sandbox['__safe_callTool'] = createProxiedCallTool(requestId, config);
-  sandbox['__safe_forOf'] = createSafeForOf();
-  sandbox['__safe_for'] = createSafeFor();
-  sandbox['__safe_while'] = createSafeWhile();
+  // Get allowed globals based on security level
+  const allowedGlobals = getAllowedGlobalsForSecurityLevel(config.securityLevel);
 
-  // Safe console - both prefixed and non-prefixed for compatibility
-  const safeConsole = createSafeConsole(requestId, config);
-  sandbox['__safe_console'] = safeConsole;
-  sandbox['console'] = safeConsole;
+  // Only add globals that are in the allowed list
+  for (const name of allowedGlobals) {
+    const value = getGlobalValue(name, requestId, config);
+    if (value !== undefined || name === 'undefined') {
+      sandbox[name] = value;
+    }
+  }
 
-  // Safe globals (no timing APIs to prevent attacks)
-  // Provide both prefixed and non-prefixed for transformer compatibility
-  sandbox['Math'] = Math;
-  sandbox['JSON'] = JSON;
-  sandbox['Object'] = Object;
-  sandbox['Array'] = Array;
-  sandbox['String'] = String;
-  sandbox['Number'] = Number;
-  sandbox['Boolean'] = Boolean;
-  sandbox['RegExp'] = RegExp;
-  sandbox['Error'] = Error;
-  sandbox['TypeError'] = TypeError;
-  sandbox['RangeError'] = RangeError;
-  sandbox['SyntaxError'] = SyntaxError;
-
-  // Also provide __safe_ prefixed versions for AST transformer compatibility
-  sandbox['__safe_Error'] = Error;
-  sandbox['__safe_TypeError'] = TypeError;
-  sandbox['__safe_RangeError'] = RangeError;
-  sandbox['__safe_SyntaxError'] = SyntaxError;
-  sandbox['Promise'] = Promise;
-  sandbox['Map'] = Map;
-  sandbox['Set'] = Set;
-  sandbox['WeakMap'] = WeakMap;
-  sandbox['WeakSet'] = WeakSet;
-  sandbox['Symbol'] = Symbol;
-  sandbox['parseInt'] = parseInt;
-  sandbox['parseFloat'] = parseFloat;
-  sandbox['isNaN'] = isNaN;
-  sandbox['isFinite'] = isFinite;
-  sandbox['encodeURI'] = encodeURI;
-  sandbox['decodeURI'] = decodeURI;
-  sandbox['encodeURIComponent'] = encodeURIComponent;
-  sandbox['decodeURIComponent'] = decodeURIComponent;
-  sandbox['undefined'] = undefined;
-  sandbox['NaN'] = NaN;
-  sandbox['Infinity'] = Infinity;
-
-  // Iteration limit for transformed loops
-  sandbox['__maxIterations'] = config.maxIterations ?? 10000;
-
-  // Add custom globals if provided
+  // Add custom globals if provided (these are assumed to be validated by AST guard)
   if (config.globals) {
     for (const [key, value] of Object.entries(config.globals)) {
       // Only allow serializable values (functions are not allowed)
@@ -546,21 +640,27 @@ function sendMessage(msg: WorkerToMainMessage): void {
   port.postMessage(safeSerialize(msg));
 }
 
-function serializeError(error: Error, sanitizeStackTraces: boolean): SerializedError {
-  const serialized: SerializedError = {
-    name: error.name || 'Error',
-    message: error.message || 'Unknown error',
-  };
-
-  if ((error as NodeJS.ErrnoException).code) {
-    serialized.code = (error as NodeJS.ErrnoException).code;
+function serializeError(error: Error | unknown, sanitizeStackTraces: boolean): SerializedError {
+  // Handle thrown strings (from iteration limit checks in transformed loops)
+  if (typeof error === 'string') {
+    return { name: 'Error', message: error };
   }
 
-  if (error.stack && !sanitizeStackTraces) {
-    serialized.stack = error.stack;
-  } else if (error.stack && sanitizeStackTraces) {
+  const err = error as Error;
+  const serialized: SerializedError = {
+    name: err.name || 'Error',
+    message: err.message || 'Unknown error',
+  };
+
+  if ((err as NodeJS.ErrnoException).code) {
+    serialized.code = (err as NodeJS.ErrnoException).code;
+  }
+
+  if (err.stack && !sanitizeStackTraces) {
+    serialized.stack = err.stack;
+  } else if (err.stack && sanitizeStackTraces) {
     // Basic sanitization - remove file paths
-    serialized.stack = error.stack
+    serialized.stack = err.stack
       .split('\n')
       .slice(0, 5)
       .map((line) => line.replace(/\(.*?:\d+:\d+\)/g, '(...)'))
