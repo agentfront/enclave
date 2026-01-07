@@ -58,7 +58,10 @@ function sanitizeStackTrace(stack: string | undefined, sanitize = true): string 
 export class DoubleVmWrapper implements SandboxAdapter {
   private parentContext?: vm.Context;
 
-  constructor(private readonly config: DoubleVmConfig, private readonly securityLevel: SecurityLevel) {}
+  constructor(
+    private readonly config: DoubleVmConfig,
+    private readonly securityLevel: SecurityLevel,
+  ) {}
 
   /**
    * Execute code in the double VM structure
@@ -200,6 +203,8 @@ export class DoubleVmWrapper implements SandboxAdapter {
 
     // Inject controlled vm module access
     // CRITICAL: Only expose createContext and Script, nothing else
+    // NOTE: configurable: true allows parent-vm-bootstrap.ts to delete this
+    // reference after use, preventing access if child VM escapes to parent context
     const safeVm = {
       createContext: vm.createContext.bind(vm),
       Script: vm.Script,
@@ -208,7 +213,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
     Object.defineProperty(parentContext, '__host_vm_module__', {
       value: safeVm,
       writable: false,
-      configurable: false,
+      configurable: true, // Allow deletion after use for defense-in-depth
     });
 
     // Inject tool call proxy to host

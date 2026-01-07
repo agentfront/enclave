@@ -83,7 +83,6 @@
   "release": {
     "projects": ["libs/*"],
     "projectsRelationship": "independent",
-    "releaseTagPattern": "{projectName}@{version}",
     "version": {
       "conventionalCommits": false,
       "preVersionCommand": "npx nx run-many -t build",
@@ -96,6 +95,9 @@
     "changelog": {
       "projectChangelogs": false,
       "workspaceChangelog": false
+    },
+    "releaseTag": {
+      "pattern": "{projectName}@{version}"
     }
   }
 }

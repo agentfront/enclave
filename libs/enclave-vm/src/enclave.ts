@@ -18,6 +18,7 @@ import {
   createSecurePreset,
   createStandardPreset,
   createPermissivePreset,
+  getAgentScriptGlobals,
   type ValidationIssue,
 } from 'ast-guard';
 import { transformAgentScript, isWrappedInMain } from 'ast-guard';
@@ -628,42 +629,28 @@ export class Enclave {
    * @returns A configured JSAstValidator
    */
   private createValidator(presetName: AstPreset, customAllowedGlobals: string[]): JSAstValidator {
-    // Base globals that are always available in the AgentScript runtime
-    const baseAgentScriptGlobals = [
-      'callTool',
-      'parallel',
-      'Math',
-      'JSON',
-      'Array',
-      'Object',
-      'String',
-      'Number',
-      'Date',
-      'console',
-      // Safe standard globals
-      'undefined',
-      'NaN',
-      'Infinity',
-      // Safe runtime wrappers
-      '__safe_callTool',
-      '__safe_forOf',
-      '__safe_for',
-      '__safe_while',
-      '__safe_doWhile',
-      '__safe_concat',
-      '__safe_template',
-      '__safe_parallel',
-      '__safe_console',
-      // Loop transformation runtime support
-      '__maxIterations', // Used by transformed loops for iteration limit
+    // Get base globals from ast-guard based on security level
+    // This ensures AST validation matches worker sandbox restrictions
+    const securityLevelGlobals = getAgentScriptGlobals(this.securityLevel);
+
+    // Additional enclave-specific globals (for memory transforms and parallel execution)
+    const enclaveSpecificGlobals = [
+      'parallel', // Parallel execution API
+      '__safe_parallel', // Transformed parallel
+      '__safe_concat', // Memory-safe string concatenation
+      '__safe_template', // Memory-safe template literals
     ];
+
+    // Combine: security-level globals + enclave-specific + custom
+    const allAllowedGlobals = [...securityLevelGlobals, ...enclaveSpecificGlobals, ...customAllowedGlobals];
 
     switch (presetName) {
       case 'agentscript':
-        // AgentScript preset has allowedGlobals option
+        // AgentScript preset with security-level-aware globals
         return new JSAstValidator(
           createAgentScriptPreset({
-            allowedGlobals: [...baseAgentScriptGlobals, ...customAllowedGlobals],
+            securityLevel: this.securityLevel,
+            allowedGlobals: allAllowedGlobals,
           }),
         );
 

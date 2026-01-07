@@ -90,11 +90,11 @@ export class NoComputedDestructuringRule implements ValidationRule {
                     endColumn: prop.key.loc.end.column,
                   }
                 : node.loc
-                ? {
-                    line: node.loc.start.line,
-                    column: node.loc.start.column,
-                  }
-                : undefined,
+                  ? {
+                      line: node.loc.start.line,
+                      column: node.loc.start.column,
+                    }
+                  : undefined,
               data: {
                 keyType: prop.key?.type,
                 keyDescription,

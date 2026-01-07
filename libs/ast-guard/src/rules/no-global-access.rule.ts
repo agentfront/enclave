@@ -87,8 +87,8 @@ export class NoGlobalAccessRule implements ValidationRule {
               node.property.type === 'Literal'
                 ? String(node.property.value)
                 : node.property.type === 'Identifier'
-                ? node.property.name
-                : '(dynamic)';
+                  ? node.property.name
+                  : '(dynamic)';
 
             report({
               code: 'NO_GLOBAL_ACCESS',

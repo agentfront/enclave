@@ -64,6 +64,11 @@ export interface SerializedConfig {
   maxSanitizeProperties: number;
   /** Custom globals (serializable values only) */
   globals?: Record<string, unknown>;
+  /**
+   * Security level - determines which globals are available in sandbox
+   * Used for defense-in-depth with AST guard
+   */
+  securityLevel: 'STRICT' | 'SECURE' | 'STANDARD' | 'PERMISSIVE';
 }
 
 // ============================================================================

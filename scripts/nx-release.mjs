@@ -104,7 +104,9 @@ async function main() {
       versionResults[project.name] = pkg.version;
 
       if (pkg.version !== project.newVersion) {
-        console.log(`⚠ ${project.name}: Codex specified ${project.newVersion}, but final version is ${pkg.version} (dependency sync)`);
+        console.log(
+          `⚠ ${project.name}: Codex specified ${project.newVersion}, but final version is ${pkg.version} (dependency sync)`,
+        );
       } else {
         console.log(`✓ ${project.name}: ${pkg.version}`);
       }

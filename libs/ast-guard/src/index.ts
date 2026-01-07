@@ -90,9 +90,16 @@ export {
   createStandardPreset,
   createPermissivePreset,
   createAgentScriptPreset,
+  // Security-level-aware globals for multi-layer defense
+  AGENTSCRIPT_STRICT_GLOBALS,
+  AGENTSCRIPT_SECURE_GLOBALS,
+  AGENTSCRIPT_STANDARD_GLOBALS,
+  AGENTSCRIPT_PERMISSIVE_GLOBALS,
+  AGENTSCRIPT_BASE_GLOBALS, // Legacy alias for STRICT
+  getAgentScriptGlobals,
 } from './presets';
 
-export type { PresetOptions, AgentScriptOptions } from './presets';
+export type { PresetOptions, AgentScriptOptions, SecurityLevel } from './presets';
 
 // AgentScript tool descriptions for AI agents
 export {

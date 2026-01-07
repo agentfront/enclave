@@ -162,6 +162,12 @@ export function transformAgentScript(code: string, config: AgentScriptTransformC
       'parseInt',
       'parseFloat',
 
+      // URI encoding/decoding functions (safe string manipulation)
+      'encodeURI',
+      'decodeURI',
+      'encodeURIComponent',
+      'decodeURIComponent',
+
       // Additional identifiers to whitelist (these will NOT be transformed)
       ...additionalIdentifiers,
     ];

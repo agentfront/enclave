@@ -2,7 +2,10 @@
  * Base error class for all AST Guard errors
  */
 export class AstGuardError extends Error {
-  constructor(message: string, public readonly code: string) {
+  constructor(
+    message: string,
+    public readonly code: string,
+  ) {
     super(message);
     this.name = 'AstGuardError';
     Object.setPrototypeOf(this, AstGuardError.prototype);
@@ -13,7 +16,11 @@ export class AstGuardError extends Error {
  * Error thrown when parsing fails
  */
 export class ParseError extends AstGuardError {
-  constructor(message: string, public readonly line?: number, public readonly column?: number) {
+  constructor(
+    message: string,
+    public readonly line?: number,
+    public readonly column?: number,
+  ) {
     super(message, 'PARSE_ERROR');
     this.name = 'ParseError';
     Object.setPrototypeOf(this, ParseError.prototype);
@@ -24,7 +31,10 @@ export class ParseError extends AstGuardError {
  * Error thrown when rule configuration is invalid
  */
 export class RuleConfigurationError extends AstGuardError {
-  constructor(message: string, public readonly ruleName: string) {
+  constructor(
+    message: string,
+    public readonly ruleName: string,
+  ) {
     super(message, 'RULE_CONFIGURATION_ERROR');
     this.name = 'RuleConfigurationError';
     Object.setPrototypeOf(this, RuleConfigurationError.prototype);

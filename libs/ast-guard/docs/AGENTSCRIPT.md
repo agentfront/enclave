@@ -33,7 +33,50 @@ await callTool(toolName: string, arguments: object): Promise<any>
 
 **Returns:** The tool's response (type depends on the tool).
 
-## Allowed Features
+## Security Levels
+
+AgentScript supports four security levels that control which globals are available:
+
+| Level        | Description                                 | Use Case             |
+| ------------ | ------------------------------------------- | -------------------- |
+| `STRICT`     | Absolute minimum globals                    | Untrusted code       |
+| `SECURE`     | Adds safe utility functions                 | Semi-trusted code    |
+| `STANDARD`   | Same as SECURE (default)                    | Trusted code         |
+| `PERMISSIVE` | Adds console for debugging                  | Internal/development |
+
+## Allowed Globals by Security Level
+
+Both AST validation and runtime sandbox enforce the same globals for defense-in-depth:
+
+| Global                     | STRICT | SECURE | STANDARD | PERMISSIVE |
+| -------------------------- | ------ | ------ | -------- | ---------- |
+| **Core API**               |        |        |          |            |
+| `callTool`                 | ✅     | ✅     | ✅       | ✅         |
+| **Data Types**             |        |        |          |            |
+| `Math`                     | ✅     | ✅     | ✅       | ✅         |
+| `JSON`                     | ✅     | ✅     | ✅       | ✅         |
+| `Array`                    | ✅     | ✅     | ✅       | ✅         |
+| `Object`                   | ✅     | ✅     | ✅       | ✅         |
+| `String`                   | ✅     | ✅     | ✅       | ✅         |
+| `Number`                   | ✅     | ✅     | ✅       | ✅         |
+| `Date`                     | ✅     | ✅     | ✅       | ✅         |
+| **Constants**              |        |        |          |            |
+| `undefined`                | ✅     | ✅     | ✅       | ✅         |
+| `NaN`                      | ✅     | ✅     | ✅       | ✅         |
+| `Infinity`                 | ✅     | ✅     | ✅       | ✅         |
+| **Utility Functions**      |        |        |          |            |
+| `parseInt`                 | ❌     | ✅     | ✅       | ✅         |
+| `parseFloat`               | ❌     | ✅     | ✅       | ✅         |
+| `isNaN`                    | ❌     | ✅     | ✅       | ✅         |
+| `isFinite`                 | ❌     | ✅     | ✅       | ✅         |
+| `encodeURI`                | ❌     | ✅     | ✅       | ✅         |
+| `decodeURI`                | ❌     | ✅     | ✅       | ✅         |
+| `encodeURIComponent`       | ❌     | ✅     | ✅       | ✅         |
+| `decodeURIComponent`       | ❌     | ✅     | ✅       | ✅         |
+| **Debugging**              |        |        |          |            |
+| `console`                  | ❌     | ❌     | ❌       | ✅         |
+
+## Allowed Language Features
 
 | Feature            | Status  | Example                                            |
 | ------------------ | ------- | -------------------------------------------------- |
@@ -53,7 +96,26 @@ await callTool(toolName: string, arguments: object): Promise<any>
 | String methods     | Allowed | `str.includes()`, `str.split()`, `str.trim()`      |
 | Array methods      | Allowed | `arr.push()`, `arr.slice()`, `arr.concat()`        |
 
-## Blocked Features
+## Blocked Globals (All Security Levels)
+
+These dangerous globals are **always blocked** regardless of security level:
+
+| Category            | Blocked Globals                                                                 |
+| ------------------- | ------------------------------------------------------------------------------- |
+| **Code Execution**  | `eval`, `Function`, `AsyncFunction`, `GeneratorFunction`                        |
+| **System Access**   | `process`, `require`, `module`, `exports`, `__dirname`, `__filename`, `Buffer`  |
+| **Global Objects**  | `window`, `globalThis`, `self`, `global`, `this`                                |
+| **Prototype**       | `constructor`, `__proto__`, `prototype`                                         |
+| **Reflection**      | `Proxy`, `Reflect`                                                              |
+| **Async Flooding**  | `Promise`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`        |
+| **Network**         | `fetch`, `XMLHttpRequest`, `WebSocket`                                          |
+| **Workers**         | `Worker`, `SharedWorker`, `ServiceWorker`                                       |
+| **Memory Hazards**  | `Map`, `Set`, `WeakMap`, `WeakSet`, `WeakRef`, `FinalizationRegistry`           |
+| **Binary/Wasm**     | `WebAssembly`, `ArrayBuffer`, `SharedArrayBuffer`, `Atomics`                    |
+| **Error Types**     | `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError`             |
+| **Symbols/Regex**   | `Symbol`, `RegExp`                                                              |
+
+## Blocked Language Features
 
 | Feature                     | Reason                 |
 | --------------------------- | ---------------------- |
@@ -61,13 +123,8 @@ await callTool(toolName: string, arguments: object): Promise<any>
 | `while`, `do...while`       | Unbounded loops        |
 | `function` declarations     | No recursion (v1)      |
 | `async function`            | Only top-level async   |
-| `process`, `require`        | System access          |
-| `fetch`, `XMLHttpRequest`   | Network access         |
-| `setTimeout`, `setInterval` | Timing attacks         |
-| `Proxy`, `Reflect`          | Metaprogramming        |
-| `constructor`, `__proto__`  | Prototype manipulation |
-| `window`, `globalThis`      | Global access          |
-| `eval`, `Function`          | Dynamic code execution |
+| Regex literals (`/pattern/`)| ReDoS prevention       |
+| Regex methods               | ReDoS prevention       |
 
 ## Code Structure
 

@@ -277,13 +277,14 @@ describe('WorkerPoolAdapter', () => {
   });
 
   describe('Iteration Limits', () => {
-    // NOTE: Iteration limit tests are skipped because they require specific AST transformation
-    // that's only applied in non-PERMISSIVE modes. The worker pool adapter's iteration
-    // guards (__safe_for, __safe_while) work when the Enclave transforms code to use them.
-    // In PERMISSIVE mode, loops run directly without transformation.
+    // NOTE: These tests use default security level (not PERMISSIVE) because:
+    // 1. PERMISSIVE mode may not transform loops to use __safe_for
+    // 2. While loops are blocked by default - only for loops are allowed
+    // Tests verify that iteration limits are enforced via transformed for loops.
 
-    it.skip('should enforce maxIterations limit in for loops', async () => {
-      const enclave = createWorkerEnclave({ securityLevel: 'PERMISSIVE', maxIterations: 100 });
+    it('should enforce maxIterations limit in for loops', async () => {
+      // Use default security level which transforms for loops to use __safe_for
+      const enclave = createWorkerEnclave({ maxIterations: 100 });
       const result = await enclave.run(`
         async function __ag_main() {
           let count = 0;
@@ -295,39 +296,30 @@ describe('WorkerPoolAdapter', () => {
       `);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('iteration limit');
+      expect(result.error?.message).toMatch(/iteration limit/i);
+      enclave.dispose();
     });
 
-    it.skip('should enforce maxIterations limit in while loops', async () => {
-      const enclave = createWorkerEnclave({ securityLevel: 'PERMISSIVE', maxIterations: 100 });
+    it('should track iteration count in stats', async () => {
+      // Use default security level for proper loop transformation
+      // NOTE: Only for-of loops track iteration count (via __safe_forOf).
+      // Regular for loops use inline checks for limits but don't track count.
+      const enclave = createWorkerEnclave({ maxIterations: 1000 });
       const result = await enclave.run(`
         async function __ag_main() {
-          let count = 0;
-          while (count < 1000) {
-            count++;
-          }
-          return count;
-        }
-      `);
-
-      expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('iteration limit');
-    });
-
-    it.skip('should track iteration count in stats', async () => {
-      const enclave = createWorkerEnclave({ securityLevel: 'PERMISSIVE', maxIterations: 1000 });
-      const result = await enclave.run(`
-        async function __ag_main() {
+          const items = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
           let sum = 0;
-          for (let i = 0; i < 50; i++) {
-            sum += i;
+          for (const item of items) {
+            sum += item;
           }
           return sum;
         }
       `);
 
       expect(result.success).toBe(true);
-      expect(result.stats.iterationCount).toBeGreaterThanOrEqual(50);
+      expect(result.value).toBe(55); // Sum of 1-10
+      expect(result.stats.iterationCount).toBeGreaterThanOrEqual(10);
+      enclave.dispose();
     });
   });
 
@@ -387,7 +379,7 @@ describe('WorkerPoolAdapter', () => {
     // NOTE: Custom globals test is skipped because the AST guard rejects unknown identifiers
     // even in PERMISSIVE mode. The worker pool adapter correctly serializes globals to the
     // worker, but the Enclave's AST validation blocks access to unregistered globals.
-    // This test would work if the globals were registered with the AST guard's allowed globals list.
+    // To use custom globals, they must be registered with the AST guard's allowed globals list.
 
     it.skip('should inject custom globals', async () => {
       const enclave = createWorkerEnclave({
@@ -410,32 +402,31 @@ describe('WorkerPoolAdapter', () => {
   });
 
   describe('Security', () => {
-    // NOTE: These tests verify that worker threads don't expose dangerous globals.
-    // The tests are skipped because AST validation rejects unknown identifiers.
-    // The security property is still enforced - the worker's sandbox simply doesn't
-    // include these globals, and AST validation would block any code trying to access them.
+    // NOTE: These tests verify that dangerous globals are blocked by AST validation.
+    // This is MORE secure than just returning undefined - code cannot even reference them.
+    // The AST validator transforms unknown identifiers to __safe_X which are not allowed.
 
-    it.skip('should not expose worker_threads APIs', async () => {
+    it('should block worker_threads APIs via AST validation', async () => {
       const enclave = createWorkerEnclave({ securityLevel: 'PERMISSIVE' });
-      const result = await enclave.run(`
-        async function __ag_main() {
-          return {
-            parentPort: typeof parentPort,
-            workerData: typeof workerData,
-            Worker: typeof Worker,
-          };
-        }
-      `);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toEqual({
-        parentPort: 'undefined',
-        workerData: 'undefined',
-        Worker: 'undefined',
-      });
+      // Test each separately - AST validation rejects at first unknown identifier
+      const parentPortResult = await enclave.run(`return typeof parentPort;`);
+      expect(parentPortResult.success).toBe(false);
+      expect(parentPortResult.error?.message).toMatch(/unknown identifier/i);
+
+      const workerDataResult = await enclave.run(`return typeof workerData;`);
+      expect(workerDataResult.success).toBe(false);
+      expect(workerDataResult.error?.message).toMatch(/unknown identifier/i);
+
+      // Note: 'Worker' is a known global in browser contexts, but blocked as unknown in node
+      const workerResult = await enclave.run(`return typeof Worker;`);
+      expect(workerResult.success).toBe(false);
+      expect(workerResult.error?.message).toMatch(/unknown identifier/i);
+
+      enclave.dispose();
     });
 
-    it.skip('should not allow access to process', async () => {
+    it('should block process access via AST validation', async () => {
       const enclave = createWorkerEnclave({ securityLevel: 'PERMISSIVE' });
       const result = await enclave.run(`
         async function __ag_main() {
@@ -443,11 +434,13 @@ describe('WorkerPoolAdapter', () => {
         }
       `);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('undefined');
+      // AST validation blocks unknown globals - MORE secure than returning undefined
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/unknown identifier/i);
+      enclave.dispose();
     });
 
-    it.skip('should not allow access to require', async () => {
+    it('should block require access via AST validation', async () => {
       const enclave = createWorkerEnclave({ securityLevel: 'PERMISSIVE' });
       const result = await enclave.run(`
         async function __ag_main() {
@@ -455,8 +448,10 @@ describe('WorkerPoolAdapter', () => {
         }
       `);
 
-      expect(result.success).toBe(true);
-      expect(result.value).toBe('undefined');
+      // AST validation blocks unknown globals - MORE secure than returning undefined
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/unknown identifier/i);
+      enclave.dispose();
     });
   });
 
@@ -474,6 +469,111 @@ describe('WorkerPoolAdapter', () => {
 
       expect(result.success).toBe(true);
       expect(result.value).toEqual({ a: 3, b: 30, c: 4 });
+    });
+  });
+
+  describe('Security Level Dependent Globals', () => {
+    // NOTE: These tests verify that AST validation and worker sandbox
+    // both enforce the same security-level-dependent globals (defense-in-depth).
+
+    it('should allow console in PERMISSIVE mode', async () => {
+      const enclave = createWorkerEnclave({ securityLevel: 'PERMISSIVE' });
+      const result = await enclave.run(`
+        async function __ag_main() {
+          console.log('test message');
+          return 'logged';
+        }
+      `);
+
+      expect(result.success).toBe(true);
+      expect(result.value).toBe('logged');
+      enclave.dispose();
+    });
+
+    it('should block console in STANDARD mode at AST validation', async () => {
+      const enclave = createWorkerEnclave({ securityLevel: 'STANDARD' });
+      const result = await enclave.run(`
+        async function __ag_main() {
+          console.log('test');
+          return 'logged';
+        }
+      `);
+
+      // AST validation should block console in STANDARD mode
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/unknown identifier|not allowed/i);
+      enclave.dispose();
+    });
+
+    it('should block console in STRICT mode at AST validation', async () => {
+      const enclave = createWorkerEnclave({ securityLevel: 'STRICT' });
+      const result = await enclave.run(`
+        async function __ag_main() {
+          console.log('test');
+          return 'logged';
+        }
+      `);
+
+      // AST validation should block console in STRICT mode
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/unknown identifier|not allowed/i);
+      enclave.dispose();
+    });
+
+    it('should allow utility functions in STANDARD mode', async () => {
+      const enclave = createWorkerEnclave({ securityLevel: 'STANDARD' });
+      const result = await enclave.run(`
+        async function __ag_main() {
+          return {
+            parsed: parseInt('42'),
+            encoded: encodeURIComponent('hello world'),
+            isNumber: isFinite(123),
+          };
+        }
+      `);
+
+      expect(result.success).toBe(true);
+      expect(result.value).toEqual({
+        parsed: 42,
+        encoded: 'hello%20world',
+        isNumber: true,
+      });
+      enclave.dispose();
+    });
+
+    it('should block utility functions in STRICT mode at AST validation', async () => {
+      const enclave = createWorkerEnclave({ securityLevel: 'STRICT' });
+      const result = await enclave.run(`
+        async function __ag_main() {
+          return parseInt('42');
+        }
+      `);
+
+      // AST validation should block parseInt in STRICT mode
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/unknown identifier|not allowed/i);
+      enclave.dispose();
+    });
+
+    it('should allow utility functions in SECURE mode', async () => {
+      const enclave = createWorkerEnclave({ securityLevel: 'SECURE' });
+      const result = await enclave.run(`
+        async function __ag_main() {
+          return {
+            parsed: parseInt('42'),
+            encoded: encodeURIComponent('hello world'),
+            isNumber: isFinite(123),
+          };
+        }
+      `);
+
+      expect(result.success).toBe(true);
+      expect(result.value).toEqual({
+        parsed: 42,
+        encoded: 'hello%20world',
+        isNumber: true,
+      });
+      enclave.dispose();
     });
   });
 });

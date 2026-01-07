@@ -1,2 +1,24 @@
 #!/usr/bin/env sh
+
+# Check formatting only for files changed from main branch
+
+# Verify main branch exists
+if ! git show-ref --quiet refs/heads/main; then
+  echo "Warning: 'main' branch not found. Skipping changed-file formatting check."
+  echo "Run 'yarn format:all:check' to check all files instead."
+  npx lint-staged
+  exit $?
+fi
+
+# Check formatting for files changed from main
+# Pipe directly to preserve null-terminated input (don't use intermediate variable)
+echo "Checking formatting for files changed from main..."
+git diff --name-only -z --diff-filter=ACMR main... | grep -zE '\.(js|jsx|ts|tsx|json|css|scss|md|html|yml|yaml)$' | xargs -0 -r npx prettier --check
+PRETTIER_EXIT=$?
+
+if [ $PRETTIER_EXIT -ne 0 ]; then
+  echo "Prettier check failed. Run 'yarn format' to fix formatting."
+  exit $PRETTIER_EXIT
+fi
+
 npx lint-staged
