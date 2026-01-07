@@ -16,7 +16,7 @@ Security-focused release aligning enclave sandbox globals with AST guard while h
 
 | Package    | Version | Highlights                                                                                     |
 | ---------- | ------- | ---------------------------------------------------------------------------------------------- |
-| enclave-vm | 3.0.0   | Sandbox now enforces security-level-specific globals and the double-VM bootstrap was hardened. |
+| enclave-vm | 2.5.0   | Sandbox now enforces security-level-specific globals and the double-VM bootstrap was hardened. |
 | vectoriadb | 2.0.2   | Regex analyzer and Redis namespace sanitization now resist ReDoS inputs.                       |
 | ast-guard  | 2.2.0   | Introduced security-level-aware AgentScript globals plus safer regex pre-scanning.             |
 
