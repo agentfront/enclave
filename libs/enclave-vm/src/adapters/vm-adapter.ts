@@ -11,6 +11,7 @@ import * as vm from 'vm';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { createSafeRuntime } from '../safe-runtime';
 import { createSafeReflect, createSecureProxy } from '../secure-proxy';
+import { createSafeError } from '../safe-error';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 
 /**
@@ -341,8 +342,9 @@ function createSafeConsole(
       // Check call count limit BEFORE doing any work
       stats.callCount++;
       if (stats.callCount > config.maxConsoleCalls) {
-        throw new Error(
+        throw createSafeError(
           `Console call limit exceeded (max: ${config.maxConsoleCalls}). ` + `This limit prevents I/O flood attacks.`,
+          'SecurityError',
         );
       }
 
@@ -365,9 +367,10 @@ function createSafeConsole(
       // Check output size limit
       stats.totalBytes += output.length;
       if (stats.totalBytes > config.maxConsoleOutputBytes) {
-        throw new Error(
+        throw createSafeError(
           `Console output size limit exceeded (max: ${config.maxConsoleOutputBytes} bytes). ` +
             `This limit prevents I/O flood attacks.`,
+          'SecurityError',
         );
       }
 
@@ -402,33 +405,36 @@ function createProtectedSandbox(sandbox: vm.Context): vm.Context {
   return new Proxy(sandbox, {
     set(target, prop, value) {
       if (isProtectedIdentifier(prop)) {
-        throw new Error(
+        throw createSafeError(
           `Cannot modify protected identifier "${String(prop)}". ` +
             `Identifiers starting with ${PROTECTED_PREFIXES.map((p) => `"${p}"`).join(
               ', ',
             )} are protected runtime functions.`,
+          'SecurityError',
         );
       }
       return Reflect.set(target, prop, value);
     },
     defineProperty(target, prop, descriptor) {
       if (isProtectedIdentifier(prop)) {
-        throw new Error(
+        throw createSafeError(
           `Cannot define protected identifier "${String(prop)}". ` +
             `Identifiers starting with ${PROTECTED_PREFIXES.map((p) => `"${p}"`).join(
               ', ',
             )} are protected runtime functions.`,
+          'SecurityError',
         );
       }
       return Reflect.defineProperty(target, prop, descriptor);
     },
     deleteProperty(target, prop) {
       if (isProtectedIdentifier(prop)) {
-        throw new Error(
+        throw createSafeError(
           `Cannot delete protected identifier "${String(prop)}". ` +
             `Identifiers starting with ${PROTECTED_PREFIXES.map((p) => `"${p}"`).join(
               ', ',
             )} are protected runtime functions.`,
+          'SecurityError',
         );
       }
       return Reflect.deleteProperty(target, prop);
@@ -507,7 +513,10 @@ function createSafeObject(originalObject: ObjectConstructor): ObjectConstructor 
   // and does NOT allow property descriptors (second argument)
   SafeObject.create = function (proto: object | null, propertiesObject?: PropertyDescriptorMap) {
     if (propertiesObject !== undefined) {
-      throw new Error('Object.create with property descriptors is not allowed (security restriction)');
+      throw createSafeError(
+        'Object.create with property descriptors is not allowed (security restriction)',
+        'SecurityError',
+      );
     }
     return Object.create(proto);
   };
@@ -518,7 +527,10 @@ function createSafeObject(originalObject: ObjectConstructor): ObjectConstructor 
   // Add blocked methods that throw helpful errors
   for (const method of DANGEROUS_OBJECT_STATIC_METHODS) {
     SafeObject[method] = function () {
-      throw new Error(`Object.${method} is not allowed (security restriction: prevents property manipulation attacks)`);
+      throw createSafeError(
+        `Object.${method} is not allowed (security restriction: prevents property manipulation attacks)`,
+        'SecurityError',
+      );
     };
   }
 

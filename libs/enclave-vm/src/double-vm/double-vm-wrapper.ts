@@ -12,99 +12,12 @@ import * as vm from 'vm';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { sanitizeValue } from '../value-sanitizer';
 import { getBlockedPropertiesForLevel, buildBlockedPropertiesFromConfig } from '../secure-proxy';
+import { createSafeError } from '../safe-error';
 import { ReferenceResolver } from '../sidecar/reference-resolver';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 import type { DoubleVmConfig, SerializableParentValidationConfig } from './types';
 import { generateParentVmBootstrap } from './parent-vm-bootstrap';
 import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-patterns';
-
-/**
- * Creates a "safe" error object that cannot be used to escape the sandbox.
- *
- * SECURITY: This function creates error objects with a severed prototype chain
- * to prevent attacks that climb the prototype chain to reach the host Function constructor.
- *
- * Attack vector blocked:
- * - err.constructor.constructor('return process.env.SECRET')()
- * - err.__proto__.constructor.constructor('malicious code')()
- */
-function createSafeError(message: string, name = 'Error'): Error {
-  // SECURITY: Create a real Error instance but with the constructor property
-  // overridden to break the prototype chain escape attack.
-  //
-  // The key insight is that we need:
-  // 1. A real Error instance (for instanceof checks, proper stack traces)
-  // 2. But with .constructor pointing to a safe object that can't be used to escape
-
-  // Create the real error
-  const error = new Error(message);
-  error.name = name;
-
-  // Create a null-prototype object to use as a safe "constructor"
-  // This object has no prototype chain to climb
-  const SafeConstructor = Object.create(null);
-  Object.defineProperties(SafeConstructor, {
-    // Make constructor point to itself to break the chain
-    constructor: {
-      value: SafeConstructor,
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    },
-    // Block prototype access
-    prototype: {
-      value: null,
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    },
-    // Add name for debugging
-    name: {
-      value: 'SafeError',
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    },
-  });
-  Object.freeze(SafeConstructor);
-
-  // Override the constructor property on the error instance
-  // This breaks the prototype chain: err.constructor.constructor no longer reaches Function
-  Object.defineProperty(error, 'constructor', {
-    value: SafeConstructor,
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-
-  // SECURITY: Override __proto__ on the error instance to prevent prototype chain escape
-  // Attack vector blocked: err.__proto__.constructor.constructor('malicious code')()
-  // By setting __proto__ to null (non-configurable, non-writable, non-enumerable),
-  // we sever the link to Error.prototype, preventing attackers from climbing to Function
-  Object.defineProperty(error, '__proto__', {
-    value: null,
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-
-  // SECURITY: Remove the stack property to prevent information leakage
-  // Attack vector blocked: Vector 270 - Static-Literal Tool Discovery
-  // The stack trace can reveal internal implementation details like function names,
-  // file paths, and line numbers which can be used for reconnaissance attacks.
-  // By setting stack to undefined, we prevent attackers from extracting this information.
-  Object.defineProperty(error, 'stack', {
-    value: undefined,
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-
-  // Freeze the error to prevent modifications
-  Object.freeze(error);
-
-  return error;
-}
 
 /**
  * Sensitive patterns to redact from stack traces

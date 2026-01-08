@@ -9,119 +9,13 @@
 
 import type { ExecutionContext, SecureProxyLevelConfig } from './types';
 import { sanitizeValue } from './value-sanitizer';
+import { createSafeError, createSafeTypeError } from './safe-error';
 import { ReferenceSidecar } from './sidecar/reference-sidecar';
 import { ReferenceResolver, ResolutionLimitError } from './sidecar/reference-resolver';
 import { ReferenceConfig, isReferenceId } from './sidecar/reference-config';
 import { createSecureProxy, wrapGlobalsWithSecureProxy, SecureProxyOptions } from './secure-proxy';
 import { MemoryTracker } from './memory-tracker';
 import { createTrackedString, createTrackedArray } from './memory-proxy';
-
-/**
- * Creates a "safe" error object that cannot be used to escape the sandbox.
- *
- * SECURITY: This function creates error objects with a severed prototype chain
- * to prevent attacks that climb the prototype chain to reach the host Function constructor.
- *
- * Attack vector blocked:
- * - err.constructor.constructor('return process.env.SECRET')()
- * - err.__proto__.constructor.constructor('malicious code')()
- *
- * The returned error has:
- * - Frozen constructor property pointing to a safe, frozen function
- * - Blocked __proto__ access
- * - Standard error properties (name, message, stack) preserved
- *
- * @param message - Error message
- * @param name - Error name (default: 'Error')
- * @returns A safe error object that can be thrown
- */
-function createSafeError(message: string, name = 'Error'): Error {
-  // SECURITY: Create a real Error instance but with the constructor property
-  // overridden to break the prototype chain escape attack.
-  //
-  // Attack vector blocked:
-  // - err.constructor.constructor('return process.env.SECRET')()
-  //
-  // The key insight is that we need:
-  // 1. A real Error instance (for instanceof checks, proper stack traces, Jest compatibility)
-  // 2. But with .constructor pointing to a safe object that can't be used to escape
-
-  // Create the real error
-  const error = new Error(message);
-  error.name = name;
-
-  // Create a null-prototype object to use as a safe "constructor"
-  // This object has no prototype chain to climb
-  const SafeConstructor = Object.create(null);
-  Object.defineProperties(SafeConstructor, {
-    // Make constructor point to itself to break the chain
-    constructor: {
-      value: SafeConstructor,
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    },
-    // Block prototype access
-    prototype: {
-      value: null,
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    },
-    // Add name for debugging
-    name: {
-      value: 'SafeError',
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    },
-  });
-  Object.freeze(SafeConstructor);
-
-  // Override the constructor property on the error instance
-  // This breaks the prototype chain: err.constructor.constructor no longer reaches Function
-  Object.defineProperty(error, 'constructor', {
-    value: SafeConstructor,
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-
-  // SECURITY: Override __proto__ on the error instance to prevent prototype chain escape
-  // Attack vector blocked: err.__proto__.constructor.constructor('malicious code')()
-  // By setting __proto__ to null (non-configurable, non-writable, non-enumerable),
-  // we sever the link to Error.prototype, preventing attackers from climbing to Function
-  Object.defineProperty(error, '__proto__', {
-    value: null,
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-
-  // SECURITY: Remove the stack property to prevent information leakage
-  // Attack vector blocked: Vector 270 - Static-Literal Tool Discovery
-  // The stack trace can reveal internal implementation details like function names,
-  // file paths, and line numbers which can be used for reconnaissance attacks.
-  // By setting stack to undefined, we prevent attackers from extracting this information.
-  Object.defineProperty(error, 'stack', {
-    value: undefined,
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-
-  // Freeze the error to prevent modifications
-  Object.freeze(error);
-
-  return error;
-}
-
-/**
- * Creates a safe TypeError with severed prototype chain
- */
-function createSafeTypeError(message: string): Error {
-  return createSafeError(message, 'TypeError');
-}
 
 /**
  * Options for safe runtime creation
@@ -581,7 +475,12 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
           results[index] = result;
         } catch (error) {
           // SECURITY: Wrap caught errors in safe error to prevent prototype chain escape
-          const errMsg = error instanceof Error ? error.message : String(error);
+          const errMsg =
+            error && typeof error === 'object'
+              ? typeof (error as { message?: unknown }).message === 'string'
+                ? (error as { message: string }).message
+                : Object.prototype.toString.call(error)
+              : String(error);
           errors.push({
             index,
             error: createSafeError(errMsg) as Error,

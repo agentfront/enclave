@@ -675,6 +675,10 @@ ${stackTraceHardeningCode}
     var error = new Error(message);
     error.name = name;
 
+    // CRITICAL: sever the *actual* prototype chain (native getters / Object.getPrototypeOf).
+    // A shadowing __proto__ data property is not sufficient.
+    Object.setPrototypeOf(error, null);
+
     // Create a null-prototype object to use as a safe "constructor"
     // This object has no prototype chain to climb
     var SafeConstructor = Object.create(null);
