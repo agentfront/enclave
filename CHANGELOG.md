@@ -16,7 +16,7 @@ Security-hardening release with stricter enclave VM sandboxing and new AST guard
 
 | Package    | Version | Highlights                                                                                                                                      |
 | ---------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| enclave-vm | 3.0.0   | Introduced stack-trace sanitization controls, policy-violation reporting, and safer error/memory handling across single and double VM adapters. |
+| enclave-vm | 2.6.0   | Introduced stack-trace sanitization controls, policy-violation reporting, and safer error/memory handling across single and double VM adapters. |
 | ast-guard  | 2.3.0   | Added the JSON callback guard and expanded resource-exhaustion detection in the AgentScript preset.                                             |
 
 ## 2026-01-07
