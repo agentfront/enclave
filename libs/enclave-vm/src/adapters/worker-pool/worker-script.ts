@@ -24,6 +24,122 @@ import type {
 } from './protocol';
 import { safeDeserialize, safeSerialize, sanitizeObject } from './safe-deserialize';
 
+/**
+ * Patch code executed inside the sandbox realm to prevent leaking host stack traces via `error.stack`.
+ */
+const STACK_TRACE_HARDENING_CODE = `
+(function() {
+  function __ag_prepareStackTrace(err, stack) {
+    try {
+      var name = (err && err.name) ? String(err.name) : 'Error';
+      var message = (err && err.message) ? String(err.message) : '';
+      var header = message ? (name + ': ' + message) : name;
+      if (!stack || !stack.length) return header;
+      var lines = [header];
+      var max = stack.length;
+      if (max > 25) max = 25;
+      for (var i = 0; i < max; i++) {
+        lines.push('    at [REDACTED]');
+      }
+      if (stack.length > max) {
+        lines.push('    at [REDACTED]');
+      }
+      return lines.join('\\n');
+    } catch (e) {
+      return 'Error';
+    }
+  }
+
+  function __ag_lockPrepareStackTrace(ErrCtor) {
+    if (!ErrCtor) return;
+    try {
+      Object.defineProperty(ErrCtor, 'prepareStackTrace', {
+        value: __ag_prepareStackTrace,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+    } catch (e) {}
+    try {
+      Object.defineProperty(ErrCtor, 'stackTraceLimit', {
+        value: 25,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+    } catch (e) {}
+  }
+
+  __ag_lockPrepareStackTrace(Error);
+  __ag_lockPrepareStackTrace(EvalError);
+  __ag_lockPrepareStackTrace(RangeError);
+  __ag_lockPrepareStackTrace(ReferenceError);
+  __ag_lockPrepareStackTrace(SyntaxError);
+  __ag_lockPrepareStackTrace(TypeError);
+  __ag_lockPrepareStackTrace(URIError);
+  try {
+    if (typeof AggregateError !== 'undefined') __ag_lockPrepareStackTrace(AggregateError);
+  } catch (e) {}
+})();
+`.trim();
+
+const STACK_TRACE_HARDENING_SCRIPT = new vm.Script(STACK_TRACE_HARDENING_CODE);
+
+/**
+ * Detect and report code-generation attempts (Function/eval) even if user code catches the thrown error.
+ *
+ * Used to fail closed in STRICT/SECURE modes.
+ */
+const CODE_GENERATION_VIOLATION_DETECTOR_CODE = `
+(function() {
+  var __ag_report = (typeof __ag_reportViolation__ === 'function') ? __ag_reportViolation__ : null;
+  function __ag_reportOnce(kind) {
+    try {
+      if (__ag_report) __ag_report(kind);
+    } catch (e) {}
+  }
+
+  // Capture intrinsics so later global sanitization can't break the proxy handler.
+  var __ag_Reflect = (typeof Reflect !== 'undefined') ? Reflect : null;
+  var __ag_Proxy = (typeof Proxy !== 'undefined') ? Proxy : null;
+  var __ag_Object = (typeof Object !== 'undefined') ? Object : null;
+
+  function __ag_wrapCtor(Ctor, kind) {
+    if (!Ctor || !__ag_Proxy || !__ag_Reflect || !__ag_Object) return;
+    try {
+      var proxy = new __ag_Proxy(Ctor, {
+        apply: function(target, thisArg, args) {
+          __ag_reportOnce(kind);
+          return __ag_Reflect.apply(target, thisArg, args);
+        },
+        construct: function(target, args, newTarget) {
+          __ag_reportOnce(kind);
+          return __ag_Reflect.construct(target, args, newTarget);
+        }
+      });
+
+      try {
+        if (Ctor.prototype) {
+          __ag_Object.defineProperty(Ctor.prototype, 'constructor', {
+            value: proxy,
+            writable: false,
+            configurable: false,
+            enumerable: false
+          });
+        }
+      } catch (e) {}
+    } catch (e) {}
+  }
+
+  try { __ag_wrapCtor(Function, 'CODE_GENERATION'); } catch (e) {}
+  try { __ag_wrapCtor((async function(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
+  try { __ag_wrapCtor((function*(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
+  try { __ag_wrapCtor((async function*(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
+})();
+`.trim();
+
+const CODE_GENERATION_VIOLATION_DETECTOR_SCRIPT = new vm.Script(CODE_GENERATION_VIOLATION_DETECTOR_CODE);
+
 // ============================================================================
 // SECURITY: Capture parentPort then remove dangerous globals
 // ============================================================================
@@ -141,6 +257,36 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
       codeGeneration: { strings: false, wasm: false },
     });
 
+    const isStrictOrSecure = msg.config.securityLevel === 'STRICT' || msg.config.securityLevel === 'SECURE';
+    const policyViolation: { type?: string } = {};
+
+    // SECURITY HARDENING: prevent leaking host stack traces via error.stack inside the sandbox.
+    const shouldHardenStacks = msg.config.sanitizeStackTraces ?? true;
+    if (shouldHardenStacks) {
+      try {
+        STACK_TRACE_HARDENING_SCRIPT.runInContext(context);
+      } catch {
+        // Ignore if the environment forbids patching (defense-in-depth only)
+      }
+    }
+
+    // STRICT/SECURE: record code-generation attempts (Function/eval) even if caught.
+    if (isStrictOrSecure) {
+      try {
+        Object.defineProperty(context, '__ag_reportViolation__', {
+          value: (type: string) => {
+            if (!policyViolation.type) policyViolation.type = String(type);
+          },
+          writable: false,
+          configurable: false,
+          enumerable: false,
+        });
+        CODE_GENERATION_VIOLATION_DETECTOR_SCRIPT.runInContext(context);
+      } catch {
+        // Best-effort only; codeGeneration.strings=false still blocks execution.
+      }
+    }
+
     // Wrap code in async IIFE to support top-level await
     // Must call __ag_main() if defined, as the enclave transforms code to wrap in async function __ag_main()
     const wrappedCode = `
@@ -163,6 +309,22 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
     // Update stats
     currentExecution.stats.endTime = Date.now();
     currentExecution.stats.duration = currentExecution.stats.endTime - startTime;
+
+    // STRICT/SECURE: Fail closed on recorded policy violations even if user code caught them.
+    if (isStrictOrSecure && policyViolation.type) {
+      sendMessage({
+        type: 'result',
+        requestId: msg.requestId,
+        success: false,
+        error: {
+          name: 'SecurityViolationError',
+          message: 'Blocked operation: security policy violation',
+          code: 'SECURITY_VIOLATION',
+        },
+        stats: currentExecution.stats,
+      });
+      return;
+    }
 
     // Send success result
     sendMessage({

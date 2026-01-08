@@ -17,6 +17,101 @@ import { MemoryTracker } from './memory-tracker';
 import { createTrackedString, createTrackedArray } from './memory-proxy';
 
 /**
+ * Creates a "safe" error object that cannot be used to escape the sandbox.
+ *
+ * SECURITY: This function creates error objects with a severed prototype chain
+ * to prevent attacks that climb the prototype chain to reach the host Function constructor.
+ *
+ * Attack vector blocked:
+ * - err.constructor.constructor('return process.env.SECRET')()
+ * - err.__proto__.constructor.constructor('malicious code')()
+ *
+ * The returned error has:
+ * - Frozen constructor property pointing to a safe, frozen function
+ * - Blocked __proto__ access
+ * - Standard error properties (name, message, stack) preserved
+ *
+ * @param message - Error message
+ * @param name - Error name (default: 'Error')
+ * @returns A safe error object that can be thrown
+ */
+function createSafeError(message: string, name = 'Error'): Error {
+  // SECURITY: Create a real Error instance but with the constructor property
+  // overridden to break the prototype chain escape attack.
+  //
+  // Attack vector blocked:
+  // - err.constructor.constructor('return process.env.SECRET')()
+  //
+  // The key insight is that we need:
+  // 1. A real Error instance (for instanceof checks, proper stack traces, Jest compatibility)
+  // 2. But with .constructor pointing to a safe object that can't be used to escape
+
+  // Create the real error
+  const error = new Error(message);
+  error.name = name;
+
+  // Create a null-prototype object to use as a safe "constructor"
+  // This object has no prototype chain to climb
+  const SafeConstructor = Object.create(null);
+  Object.defineProperties(SafeConstructor, {
+    // Make constructor point to itself to break the chain
+    constructor: {
+      value: SafeConstructor,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    },
+    // Block prototype access
+    prototype: {
+      value: null,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    },
+    // Add name for debugging
+    name: {
+      value: 'SafeError',
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    },
+  });
+  Object.freeze(SafeConstructor);
+
+  // Override the constructor property on the error instance
+  // This breaks the prototype chain: err.constructor.constructor no longer reaches Function
+  Object.defineProperty(error, 'constructor', {
+    value: SafeConstructor,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+
+  // SECURITY: Override __proto__ on the error instance to prevent prototype chain escape
+  // Attack vector blocked: err.__proto__.constructor.constructor('malicious code')()
+  // By setting __proto__ to null (non-configurable, non-writable, non-enumerable),
+  // we sever the link to Error.prototype, preventing attackers from climbing to Function
+  Object.defineProperty(error, '__proto__', {
+    value: null,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+
+  // Freeze the error to prevent modifications
+  Object.freeze(error);
+
+  return error;
+}
+
+/**
+ * Creates a safe TypeError with severed prototype chain
+ */
+function createSafeTypeError(message: string): Error {
+  return createSafeError(message, 'TypeError');
+}
+
+/**
  * Options for safe runtime creation
  */
 export interface SafeRuntimeOptions {
@@ -74,8 +169,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
    */
   async function __safe_callTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
     // Check if aborted
+    // SECURITY: Use createSafeError to prevent prototype chain escape attacks
     if (context.aborted) {
-      throw new Error('Execution aborted');
+      throw createSafeError('Execution aborted');
     }
 
     // Increment tool call count
@@ -83,23 +179,23 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
 
     // Check tool call limit
     if (stats.toolCallCount > config.maxToolCalls) {
-      throw new Error(
+      throw createSafeError(
         `Maximum tool call limit exceeded (${config.maxToolCalls}). ` + `This limit prevents runaway script execution.`,
       );
     }
 
     // Validate inputs
     if (typeof toolName !== 'string' || !toolName) {
-      throw new TypeError('Tool name must be a non-empty string');
+      throw createSafeTypeError('Tool name must be a non-empty string');
     }
 
     if (typeof args !== 'object' || args === null || Array.isArray(args)) {
-      throw new TypeError('Tool arguments must be an object');
+      throw createSafeTypeError('Tool arguments must be an object');
     }
 
     // Check for tool handler
     if (!context.toolHandler) {
-      throw new Error('No tool handler configured. Cannot execute tool calls.');
+      throw createSafeError('No tool handler configured. Cannot execute tool calls.');
     }
 
     // Resolve references if sidecar is available
@@ -107,7 +203,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
     if (resolver && resolver.containsReferences(args)) {
       // Predictive check - fail fast before allocation
       if (resolver.wouldExceedLimit(args)) {
-        throw new Error(
+        throw createSafeError(
           `Tool arguments would exceed maximum resolved size when references are expanded. ` +
             `Reduce the amount of data being passed to the tool.`,
         );
@@ -117,9 +213,11 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
         resolvedArgs = resolver.resolve(args) as Record<string, unknown>;
       } catch (error: unknown) {
         if (error instanceof ResolutionLimitError) {
-          throw new Error(`Failed to resolve references in tool arguments: ${error.message}`);
+          throw createSafeError(`Failed to resolve references in tool arguments: ${error.message}`);
         }
-        throw error;
+        // SECURITY: Wrap unknown errors in safe error to prevent prototype chain escape
+        const err = error as Error;
+        throw createSafeError(`Reference resolution failed: ${err.message || 'Unknown error'}`);
       }
     }
 
@@ -156,9 +254,11 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
 
       return sanitized;
     } catch (error: unknown) {
-      // Re-throw with context
+      // SECURITY: Re-throw with safe error to prevent prototype chain escape attacks
+      // This is critical - the original error from the tool handler could expose
+      // the host Function constructor via error.constructor.constructor
       const err = error as Error;
-      throw new Error(`Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`);
+      throw createSafeError(`Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`);
     }
   }
 
@@ -172,8 +272,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
 
     for (const item of iterable) {
       // Check if aborted
+      // SECURITY: Use createSafeError to prevent prototype chain escape attacks
       if (context.aborted) {
-        throw new Error('Execution aborted');
+        throw createSafeError('Execution aborted');
       }
 
       // Increment iteration count
@@ -182,7 +283,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
 
       // Check iteration limit
       if (iterations > config.maxIterations) {
-        throw new Error(
+        throw createSafeError(
           `Maximum iteration limit exceeded (${config.maxIterations}). ` + `This limit prevents infinite loops.`,
         );
       }
@@ -205,8 +306,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
     // Execute loop
     while (test()) {
       // Check if aborted
+      // SECURITY: Use createSafeError to prevent prototype chain escape attacks
       if (context.aborted) {
-        throw new Error('Execution aborted');
+        throw createSafeError('Execution aborted');
       }
 
       // Increment iteration count
@@ -215,7 +317,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
 
       // Check iteration limit
       if (iterations > config.maxIterations) {
-        throw new Error(
+        throw createSafeError(
           `Maximum iteration limit exceeded (${config.maxIterations}). ` + `This limit prevents infinite loops.`,
         );
       }
@@ -238,8 +340,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
 
     while (test()) {
       // Check if aborted
+      // SECURITY: Use createSafeError to prevent prototype chain escape attacks
       if (context.aborted) {
-        throw new Error('Execution aborted');
+        throw createSafeError('Execution aborted');
       }
 
       // Increment iteration count
@@ -248,7 +351,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
 
       // Check iteration limit
       if (iterations > config.maxIterations) {
-        throw new Error(
+        throw createSafeError(
           `Maximum iteration limit exceeded (${config.maxIterations}). ` + `This limit prevents infinite loops.`,
         );
       }
@@ -292,8 +395,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
       }
 
       // References detected
+      // SECURITY: Use createSafeError to prevent prototype chain escape attacks
       if (!resolver) {
-        throw new Error(
+        throw createSafeError(
           'Cannot concatenate reference IDs: reference system not configured. ' +
             'Pass references directly to callTool arguments instead.',
         );
@@ -310,8 +414,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
 
       if (leftIsRef || rightIsRef) {
         // Reference detected - need special handling
+        // SECURITY: Use createSafeError to prevent prototype chain escape attacks
         if (!resolver) {
-          throw new Error(
+          throw createSafeError(
             'Cannot concatenate reference IDs: reference system not configured. ' +
               'Pass references directly to callTool arguments instead.',
           );
@@ -372,8 +477,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
     }
 
     // References detected - need resolver
+    // SECURITY: Use createSafeError to prevent prototype chain escape attacks
     if (!resolver) {
-      throw new Error(
+      throw createSafeError(
         'Cannot interpolate reference IDs in template literals: reference system not configured. ' +
           'Pass references directly to callTool arguments instead.',
       );
@@ -408,13 +514,14 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
    */
   async function __safe_parallel<T>(fns: Array<() => Promise<T>>, options?: { maxConcurrency?: number }): Promise<T[]> {
     // Check if aborted
+    // SECURITY: Use createSafeError to prevent prototype chain escape attacks
     if (context.aborted) {
-      throw new Error('Execution aborted');
+      throw createSafeError('Execution aborted');
     }
 
     // Validate inputs
     if (!Array.isArray(fns)) {
-      throw new TypeError('__safe_parallel requires an array of functions');
+      throw createSafeTypeError('__safe_parallel requires an array of functions');
     }
 
     if (fns.length === 0) {
@@ -424,7 +531,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
     // Enforce maximum array size to prevent DoS
     const MAX_PARALLEL_ITEMS = 100;
     if (fns.length > MAX_PARALLEL_ITEMS) {
-      throw new Error(
+      throw createSafeError(
         `Cannot execute more than ${MAX_PARALLEL_ITEMS} operations in parallel. ` + `Split into smaller batches.`,
       );
     }
@@ -432,7 +539,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
     // Validate all items are functions
     for (let i = 0; i < fns.length; i++) {
       if (typeof fns[i] !== 'function') {
-        throw new TypeError(`Item at index ${i} is not a function`);
+        throw createSafeTypeError(`Item at index ${i} is not a function`);
       }
     }
 
@@ -451,7 +558,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
       while (currentIndex < fns.length) {
         // Check if aborted before starting new work
         if (context.aborted) {
-          throw new Error('Execution aborted');
+          throw createSafeError('Execution aborted');
         }
 
         const index = currentIndex++;
@@ -461,9 +568,11 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
           const result = await fn();
           results[index] = result;
         } catch (error) {
+          // SECURITY: Wrap caught errors in safe error to prevent prototype chain escape
+          const errMsg = error instanceof Error ? error.message : String(error);
           errors.push({
             index,
-            error: error instanceof Error ? error : new Error(String(error)),
+            error: createSafeError(errMsg) as Error,
           });
         }
       }
@@ -476,9 +585,10 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
     await Promise.all(workers);
 
     // If any errors occurred, throw an aggregate error
+    // SECURITY: Use createSafeError to prevent prototype chain escape attacks
     if (errors.length > 0) {
       const errorMessages = errors.map((e) => `[${e.index}]: ${e.error.message}`).join('\n');
-      throw new Error(`${errors.length} of ${fns.length} parallel operations failed:\n${errorMessages}`);
+      throw createSafeError(`${errors.length} of ${fns.length} parallel operations failed:\n${errorMessages}`);
     }
 
     return results;
@@ -494,8 +604,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
 
     do {
       // Check if aborted
+      // SECURITY: Use createSafeError to prevent prototype chain escape attacks
       if (context.aborted) {
-        throw new Error('Execution aborted');
+        throw createSafeError('Execution aborted');
       }
 
       // Increment iteration count
@@ -504,7 +615,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
 
       // Check iteration limit
       if (iterations > config.maxIterations) {
-        throw new Error(
+        throw createSafeError(
           `Maximum iteration limit exceeded (${config.maxIterations}). ` + `This limit prevents infinite loops.`,
         );
       }

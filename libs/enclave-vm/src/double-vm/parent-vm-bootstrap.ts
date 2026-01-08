@@ -30,6 +30,12 @@ export interface ParentVmBootstrapOptions {
   /** Maximum tool calls allowed */
   maxToolCalls: number;
 
+  /**
+   * Whether to sanitize stack traces in the sandbox.
+   * Prevents host stack frame/path leakage via `error.stack` when user code catches errors.
+   */
+  sanitizeStackTraces: boolean;
+
   /** Security level for dangerous global removal */
   securityLevel: SecurityLevel;
 
@@ -185,6 +191,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     innerTimeout,
     maxIterations,
     maxToolCalls,
+    sanitizeStackTraces,
     securityLevel,
     validationConfig,
     suspiciousPatterns,
@@ -196,6 +203,115 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
 
   const sanitizeContextCode = generateSanitizeContextCode(securityLevel);
   const patternDetectorsCode = generatePatternDetectorsCode(suspiciousPatterns);
+
+  // Patch code executed inside VM realms to prevent leaking host stack traces via error.stack.
+  // We avoid including any file names/paths/line numbers in the formatted stack.
+  const stackTraceHardeningCode = `
+(function() {
+  function __ag_prepareStackTrace(err, stack) {
+    try {
+      var name = (err && err.name) ? String(err.name) : 'Error';
+      var message = (err && err.message) ? String(err.message) : '';
+      var header = message ? (name + ': ' + message) : name;
+      if (!stack || !stack.length) return header;
+      var lines = [header];
+      var max = stack.length;
+      if (max > 25) max = 25;
+      for (var i = 0; i < max; i++) {
+        lines.push('    at [REDACTED]');
+      }
+      if (stack.length > max) {
+        lines.push('    at [REDACTED]');
+      }
+      return lines.join('\\n');
+    } catch (e) {
+      return 'Error';
+    }
+  }
+
+  function __ag_lockPrepareStackTrace(ErrCtor) {
+    if (!ErrCtor) return;
+    try {
+      Object.defineProperty(ErrCtor, 'prepareStackTrace', {
+        value: __ag_prepareStackTrace,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+    } catch (e) {}
+    try {
+      Object.defineProperty(ErrCtor, 'stackTraceLimit', {
+        value: 25,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+    } catch (e) {}
+  }
+
+  __ag_lockPrepareStackTrace(Error);
+  __ag_lockPrepareStackTrace(EvalError);
+  __ag_lockPrepareStackTrace(RangeError);
+  __ag_lockPrepareStackTrace(ReferenceError);
+  __ag_lockPrepareStackTrace(SyntaxError);
+  __ag_lockPrepareStackTrace(TypeError);
+  __ag_lockPrepareStackTrace(URIError);
+  try {
+    if (typeof AggregateError !== 'undefined') __ag_lockPrepareStackTrace(AggregateError);
+  } catch (e) {}
+})();
+`.trim();
+  const stackTraceHardeningCodeJson = JSON.stringify(stackTraceHardeningCode);
+
+  // Detect and report code-generation attempts (Function/eval) even if user code catches the thrown error.
+  // Used to fail closed in STRICT/SECURE modes.
+  const codeGenViolationDetectorCode = `
+(function() {
+  var __ag_report = (typeof __ag_reportViolation__ === 'function') ? __ag_reportViolation__ : null;
+  function __ag_reportOnce(kind) {
+    try {
+      if (__ag_report) __ag_report(kind);
+    } catch (e) {}
+  }
+
+  var __ag_Reflect = (typeof Reflect !== 'undefined') ? Reflect : null;
+  var __ag_Proxy = (typeof Proxy !== 'undefined') ? Proxy : null;
+  var __ag_Object = (typeof Object !== 'undefined') ? Object : null;
+
+  function __ag_wrapCtor(Ctor, kind) {
+    if (!Ctor || !__ag_Proxy || !__ag_Reflect || !__ag_Object) return;
+    try {
+      var proxy = new __ag_Proxy(Ctor, {
+        apply: function(target, thisArg, args) {
+          __ag_reportOnce(kind);
+          return __ag_Reflect.apply(target, thisArg, args);
+        },
+        construct: function(target, args, newTarget) {
+          __ag_reportOnce(kind);
+          return __ag_Reflect.construct(target, args, newTarget);
+        }
+      });
+
+      try {
+        if (Ctor.prototype) {
+          __ag_Object.defineProperty(Ctor.prototype, 'constructor', {
+            value: proxy,
+            writable: false,
+            configurable: false,
+            enumerable: false
+          });
+        }
+      } catch (e) {}
+    } catch (e) {}
+  }
+
+  try { __ag_wrapCtor(Function, 'CODE_GENERATION'); } catch (e) {}
+  try { __ag_wrapCtor((async function(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
+  try { __ag_wrapCtor((function*(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
+  try { __ag_wrapCtor((async function*(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
+})();
+`.trim();
+  const codeGenViolationDetectorCodeJson = JSON.stringify(codeGenViolationDetectorCode);
 
   // Generate allowed/blocked pattern reconstruction code
   let patternReconstructCode = '';
@@ -233,7 +349,25 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   const hostCallTool = __host_callTool__;
   const hostStats = __host_stats__;
   const hostAbortCheck = __host_abort_check__;
+  const hostReportViolation = __host_reportViolation__;
   const hostConfig = __host_config__;
+
+  // Policy violation reporter (best-effort; host decides how to handle based on security level)
+  function __ag_reportViolation(kind) {
+    try {
+      if (typeof hostReportViolation === 'function') hostReportViolation(kind);
+    } catch (e) { /* ignore */ }
+  }
+
+  // SECURITY HARDENING: prevent leaking host stack traces via error.stack inside the sandbox.
+  const sanitizeStackTraces = ${sanitizeStackTraces};
+  if (sanitizeStackTraces) {
+    try {
+      // Patch the PARENT VM realm (errors thrown from safe runtime functions).
+      // Note: we execute code directly here, and separately apply the same patch to the INNER VM.
+      ${stackTraceHardeningCode}
+    } catch (e) { /* ignore */ }
+  }
 
   // Validation configuration
   const validationConfig = ${JSON.stringify({
@@ -301,6 +435,13 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         // Check if property is non-configurable (proxy invariant requires returning actual value)
         var descriptor = Object.getOwnPropertyDescriptor(target, property);
         var isNonConfigurable = descriptor && !descriptor.configurable;
+
+        // Proxy invariant: if the target has a non-configurable, non-writable data property,
+        // the proxy must return the exact same value (cannot wrap/bind/proxy it).
+        // This matters for hardened properties like Error.prepareStackTrace.
+        if (descriptor && isNonConfigurable && 'value' in descriptor && descriptor.writable === false) {
+          return descriptor.value;
+        }
 
         // Block dangerous properties - but respect proxy invariants
         if (blockedPropertiesSet.has(propName)) {
@@ -778,6 +919,28 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   var innerContext = vm.createContext({}, {
     codeGeneration: { strings: false, wasm: false }
   });
+
+  // STRICT/SECURE: record code-generation attempts (Function/eval) even if user code catches them.
+  if (${securityLevel === 'STRICT' || securityLevel === 'SECURE'}) {
+    try {
+      Object.defineProperty(innerContext, '__ag_reportViolation__', {
+        value: __ag_reportViolation,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+      var codeGenPatchScript = new vm.Script(${codeGenViolationDetectorCodeJson});
+      codeGenPatchScript.runInContext(innerContext);
+    } catch (e) { /* ignore */ }
+  }
+
+  // Apply stack trace hardening to INNER VM realm (prevents error.stack leakage to user code).
+  if (sanitizeStackTraces) {
+    try {
+      var stackPatchScript = new vm.Script(${stackTraceHardeningCodeJson});
+      stackPatchScript.runInContext(innerContext);
+    } catch (e) { /* ignore */ }
+  }
 
   // CRITICAL: Inject memory-safe prototype methods BEFORE sanitization
   // This must happen FIRST because sanitization may remove globals needed for patching.

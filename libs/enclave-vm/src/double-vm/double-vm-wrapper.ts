@@ -19,6 +19,82 @@ import { generateParentVmBootstrap } from './parent-vm-bootstrap';
 import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-patterns';
 
 /**
+ * Creates a "safe" error object that cannot be used to escape the sandbox.
+ *
+ * SECURITY: This function creates error objects with a severed prototype chain
+ * to prevent attacks that climb the prototype chain to reach the host Function constructor.
+ *
+ * Attack vector blocked:
+ * - err.constructor.constructor('return process.env.SECRET')()
+ * - err.__proto__.constructor.constructor('malicious code')()
+ */
+function createSafeError(message: string, name = 'Error'): Error {
+  // SECURITY: Create a real Error instance but with the constructor property
+  // overridden to break the prototype chain escape attack.
+  //
+  // The key insight is that we need:
+  // 1. A real Error instance (for instanceof checks, proper stack traces)
+  // 2. But with .constructor pointing to a safe object that can't be used to escape
+
+  // Create the real error
+  const error = new Error(message);
+  error.name = name;
+
+  // Create a null-prototype object to use as a safe "constructor"
+  // This object has no prototype chain to climb
+  const SafeConstructor = Object.create(null);
+  Object.defineProperties(SafeConstructor, {
+    // Make constructor point to itself to break the chain
+    constructor: {
+      value: SafeConstructor,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    },
+    // Block prototype access
+    prototype: {
+      value: null,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    },
+    // Add name for debugging
+    name: {
+      value: 'SafeError',
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    },
+  });
+  Object.freeze(SafeConstructor);
+
+  // Override the constructor property on the error instance
+  // This breaks the prototype chain: err.constructor.constructor no longer reaches Function
+  Object.defineProperty(error, 'constructor', {
+    value: SafeConstructor,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+
+  // SECURITY: Override __proto__ on the error instance to prevent prototype chain escape
+  // Attack vector blocked: err.__proto__.constructor.constructor('malicious code')()
+  // By setting __proto__ to null (non-configurable, non-writable, non-enumerable),
+  // we sever the link to Error.prototype, preventing attackers from climbing to Function
+  Object.defineProperty(error, '__proto__', {
+    value: null,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+
+  // Freeze the error to prevent modifications
+  Object.freeze(error);
+
+  return error;
+}
+
+/**
  * Sensitive patterns to redact from stack traces
  * (Same as vm-adapter for consistency)
  */
@@ -69,6 +145,8 @@ export class DoubleVmWrapper implements SandboxAdapter {
   async execute<T = unknown>(code: string, executionContext: ExecutionContext): Promise<ExecutionResult<T>> {
     const { stats, config } = executionContext;
     const startTime = Date.now();
+    const isStrictOrSecure = this.securityLevel === 'STRICT' || this.securityLevel === 'SECURE';
+    const policyViolation: { type?: string } = {};
 
     // Create memory tracker if memory limit is configured
     const memoryTracker =
@@ -86,7 +164,9 @@ export class DoubleVmWrapper implements SandboxAdapter {
 
     try {
       // Create parent VM context with memory tracker
-      const parentContext = this.createParentContext(executionContext, memoryTracker);
+      const parentContext = this.createParentContext(executionContext, memoryTracker, (type: string) => {
+        if (!policyViolation.type) policyViolation.type = String(type);
+      });
       this.parentContext = parentContext;
 
       // Generate the parent VM bootstrap script
@@ -116,6 +196,20 @@ export class DoubleVmWrapper implements SandboxAdapter {
       if (memoryTracker) {
         const memSnapshot = memoryTracker.getSnapshot();
         stats.memoryUsage = memSnapshot.peakTrackedBytes;
+      }
+
+      // STRICT/SECURE: Fail closed on recorded policy violations even if user code caught them.
+      if (isStrictOrSecure && policyViolation.type) {
+        return {
+          success: false,
+          error: {
+            name: 'SecurityViolationError',
+            message: 'Blocked operation: security policy violation',
+            code: 'SECURITY_VIOLATION',
+            data: { type: policyViolation.type },
+          },
+          stats,
+        };
       }
 
       return {
@@ -188,7 +282,11 @@ export class DoubleVmWrapper implements SandboxAdapter {
    * - Stats and config references
    * - Memory tracking callback (when memoryLimit is set)
    */
-  private createParentContext(executionContext: ExecutionContext, memoryTracker?: MemoryTracker): vm.Context {
+  private createParentContext(
+    executionContext: ExecutionContext,
+    memoryTracker: MemoryTracker | undefined,
+    reportViolation: (type: string) => void,
+  ): vm.Context {
     const { stats, config } = executionContext;
 
     // Create isolated context for parent VM
@@ -234,6 +332,13 @@ export class DoubleVmWrapper implements SandboxAdapter {
     // Inject abort check function
     Object.defineProperty(parentContext, '__host_abort_check__', {
       value: () => executionContext.aborted,
+      writable: false,
+      configurable: false,
+    });
+
+    // Inject policy-violation reporter (used for STRICT/SECURE fail-closed behavior)
+    Object.defineProperty(parentContext, '__host_reportViolation__', {
+      value: reportViolation,
       writable: false,
       configurable: false,
     });
@@ -300,13 +405,14 @@ export class DoubleVmWrapper implements SandboxAdapter {
 
     return async (toolName: string, args: Record<string, unknown>): Promise<unknown> => {
       // Double check abort status
+      // SECURITY: Use createSafeError to prevent prototype chain escape attacks
       if (executionContext.aborted) {
-        throw new Error('Execution aborted');
+        throw createSafeError('Execution aborted');
       }
 
       // Check for tool handler
       if (!toolHandler) {
-        throw new Error('No tool handler configured. Cannot execute tool calls.');
+        throw createSafeError('No tool handler configured. Cannot execute tool calls.');
       }
 
       // Resolve sidecar references if present
@@ -314,7 +420,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
       if (resolver && resolver.containsReferences(args)) {
         // Predictive check - fail fast before allocation
         if (resolver.wouldExceedLimit(args)) {
-          throw new Error(
+          throw createSafeError(
             `Arguments would exceed maximum resolved size when references are expanded. ` +
               `Pass large data directly to tool arguments instead of constructing them.`,
           );
@@ -356,11 +462,11 @@ export class DoubleVmWrapper implements SandboxAdapter {
 
         return sanitized;
       } catch (error: unknown) {
+        // SECURITY: Use createSafeError to prevent prototype chain escape attacks
+        // This is critical - the original error from the tool handler could expose
+        // the host Function constructor via error.constructor.constructor
         const err = error as Error;
-        // Preserve the original error as cause for better debugging
-        const wrappedError = new Error(`Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`);
-        wrappedError.cause = err;
-        throw wrappedError;
+        throw createSafeError(`Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`);
       }
     };
   }
@@ -407,6 +513,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
       innerTimeout: config.timeout,
       maxIterations: config.maxIterations,
       maxToolCalls: config.maxToolCalls,
+      sanitizeStackTraces: config.sanitizeStackTraces ?? true,
       securityLevel: this.securityLevel,
       validationConfig: serializableConfig,
       suspiciousPatterns: serializedPatterns,
