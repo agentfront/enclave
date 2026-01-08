@@ -948,12 +948,27 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   // String.prototype and Array.prototype (not the global realm's).
   // Security: Prevents ATK-JSON-03 (Parser Bomb) and similar attacks
   // These checks happen BEFORE allocation, not after
+  //
+  // SECURITY FIX (Vector 320): Track CUMULATIVE memory usage across all allocations
+  // Previously only checked if single allocation exceeded limit, allowing attackers
+  // to create many smaller allocations that together exceed the limit.
+  // We use __host_memory_track__ to track cumulative memory in the host's MemoryTracker.
   (function() {
     var memoryLimit = hostConfig.memoryLimit || 0;
     if (memoryLimit > 0) {
+      // First, inject the host memory tracking callback into innerContext
+      // This allows the patched methods to track cumulative memory
+      Object.defineProperty(innerContext, '__host_memory_track__', {
+        value: __host_memory_track__,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+
       // Run the patching code in innerContext
       var patchCode = '(function() {' +
         'var memoryLimit = ' + memoryLimit + ';' +
+        'var trackMemory = __host_memory_track__;' +
         // Get the ACTUAL prototype used by literals in this realm
         'var stringProto = Object.getPrototypeOf("");' +
         'var arrayProto = Object.getPrototypeOf([]);' +
@@ -966,6 +981,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         '      Math.round(estimatedSize / 1024 / 1024) + "MB > " +' +
         '      Math.round(memoryLimit / 1024 / 1024) + "MB");' +
         '  }' +
+        '  trackMemory(estimatedSize);' +
         '  return originalRepeat.call(this, count);' +
         '};' +
         // Patch array join
@@ -984,6 +1000,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         '      Math.round(estimatedSize / 1024 / 1024) + "MB > " +' +
         '      Math.round(memoryLimit / 1024 / 1024) + "MB");' +
         '  }' +
+        '  trackMemory(estimatedSize);' +
         '  return originalJoin.call(this, separator);' +
         '};' +
         // Patch string padStart/padEnd
@@ -994,6 +1011,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         '  if (estimatedSize > memoryLimit) {' +
         '    throw new RangeError("String.padStart would exceed memory limit");' +
         '  }' +
+        '  trackMemory(estimatedSize);' +
         '  return originalPadStart.call(this, targetLength, padString);' +
         '};' +
         'stringProto.padEnd = function(targetLength, padString) {' +
@@ -1001,6 +1019,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         '  if (estimatedSize > memoryLimit) {' +
         '    throw new RangeError("String.padEnd would exceed memory limit");' +
         '  }' +
+        '  trackMemory(estimatedSize);' +
         '  return originalPadEnd.call(this, targetLength, padString);' +
         '};' +
         '})();';
@@ -1075,13 +1094,17 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     __maxIterations: ${maxIterations}
   };
 
+  // SECURITY FIX (Vector 640): Use enumerable: false to prevent valueOf context-hijack
+  // Attack uses arrow functions in valueOf hooks where "this" refers to global scope.
+  // Object.values(this) would enumerate all enumerable properties including internal
+  // functions, leaking their source code. Non-enumerable prevents this information leak.
   for (var key in safeRuntime) {
     if (safeRuntime.hasOwnProperty(key)) {
       Object.defineProperty(innerContext, key, {
         value: safeRuntime[key],
         writable: false,
         configurable: false,
-        enumerable: true
+        enumerable: false
       });
     }
   }
@@ -1185,7 +1208,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     decodeURIComponent: decodeURIComponent
   };
 
-  // Define safeGlobals as non-writable for consistency with safeRuntime
+  // SECURITY FIX (Vector 640): Use enumerable: false for defense-in-depth
+  // While standard globals (Math, JSON, etc.) are less sensitive than internal functions,
+  // making them non-enumerable prevents Object.values(this) from revealing sandbox structure.
   // Skip globals that the user is providing their own version of
   for (var gKey in safeGlobals) {
     if (safeGlobals.hasOwnProperty(gKey)) {
@@ -1197,12 +1222,14 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         value: safeGlobals[gKey],
         writable: false,
         configurable: false,
-        enumerable: true
+        enumerable: false
       });
     }
   }
 
   // Add user-provided globals if any (also wrapped with secure proxy and non-writable)
+  // SECURITY: Use enumerable: false to prevent Object.assign({}, this) from copying globals
+  // This blocks Vector 380 (Bridge-Serialized State Reflection) attack
   if (hostConfig.globals) {
     for (var uKey in hostConfig.globals) {
       if (hostConfig.globals.hasOwnProperty(uKey)) {
@@ -1211,14 +1238,14 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
           value: wrappedGlobal,
           writable: false,
           configurable: false,
-          enumerable: true
+          enumerable: false
         });
         // Also add __safe_ prefixed version
         Object.defineProperty(innerContext, '__safe_' + uKey, {
           value: wrappedGlobal,
           writable: false,
           configurable: false,
-          enumerable: true
+          enumerable: false
         });
       }
     }

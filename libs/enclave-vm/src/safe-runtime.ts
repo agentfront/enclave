@@ -98,6 +98,18 @@ function createSafeError(message: string, name = 'Error'): Error {
     configurable: false,
   });
 
+  // SECURITY: Remove the stack property to prevent information leakage
+  // Attack vector blocked: Vector 270 - Static-Literal Tool Discovery
+  // The stack trace can reveal internal implementation details like function names,
+  // file paths, and line numbers which can be used for reconnaissance attacks.
+  // By setting stack to undefined, we prevent attackers from extracting this information.
+  Object.defineProperty(error, 'stack', {
+    value: undefined,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+
   // Freeze the error to prevent modifications
   Object.freeze(error);
 

@@ -682,10 +682,26 @@ export class VmAdapter implements SandboxAdapter {
       // Security: Prevents ATK-JSON-03 (Parser Bomb) and similar attacks
       // that use repeat()/join() to allocate massive strings before we can track them
       // The check happens BEFORE allocation, not after
+      //
+      // SECURITY FIX (Vector 320): Track CUMULATIVE memory usage across all allocations
+      // Previously only checked if single allocation exceeded limit, allowing attackers
+      // to create many smaller allocations that together exceed the limit.
       if (memoryTracker && config.memoryLimit && config.memoryLimit > 0) {
+        // Inject memory tracking callback into the sandbox
+        // This allows the patched methods to track cumulative memory in the host
+        Object.defineProperty(baseSandbox, '__host_memory_track__', {
+          value: (bytes: number) => {
+            memoryTracker.track(bytes);
+          },
+          writable: false,
+          configurable: false,
+          enumerable: false,
+        });
+
         const patchScript = new vm.Script(`
           (function() {
             var memoryLimit = ${config.memoryLimit};
+            var trackMemory = __host_memory_track__;
 
             // Get the ACTUAL prototype used by string literals in this realm
             // Using Object.getPrototypeOf('') gets the intrinsic String.prototype
@@ -697,11 +713,14 @@ export class VmAdapter implements SandboxAdapter {
             stringProto.repeat = function(count) {
               // Pre-check: estimate size BEFORE allocation
               var estimatedSize = this.length * count * 2; // 2 bytes per char (UTF-16)
+              // Check single allocation limit
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('String.repeat would exceed memory limit: ' +
                   Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
                   Math.round(memoryLimit / 1024 / 1024) + 'MB');
               }
+              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
+              trackMemory(estimatedSize);
               return originalRepeat.call(this, count);
             };
 
@@ -718,11 +737,14 @@ export class VmAdapter implements SandboxAdapter {
               }
               estimatedSize *= 2; // UTF-16
 
+              // Check single allocation limit
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('Array.join would exceed memory limit: ' +
                   Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
                   Math.round(memoryLimit / 1024 / 1024) + 'MB');
               }
+              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
+              trackMemory(estimatedSize);
               return originalJoin.call(this, separator);
             };
 
@@ -735,6 +757,8 @@ export class VmAdapter implements SandboxAdapter {
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('String.padStart would exceed memory limit');
               }
+              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
+              trackMemory(estimatedSize);
               return originalPadStart.call(this, targetLength, padString);
             };
 
@@ -743,6 +767,8 @@ export class VmAdapter implements SandboxAdapter {
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('String.padEnd would exceed memory limit');
               }
+              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
+              trackMemory(estimatedSize);
               return originalPadEnd.call(this, targetLength, padString);
             };
           })();
@@ -802,16 +828,23 @@ export class VmAdapter implements SandboxAdapter {
       // Add user-provided globals (if any)
       // Security: Wrap ALL custom globals with secure proxy to prevent prototype chain attacks
       // This blocks access to __proto__, constructor, and other dangerous properties
+      // SECURITY: Use enumerable: false to prevent Object.assign({}, this) from copying globals
+      // This blocks Vector 380 (Bridge-Serialized State Reflection) attack
       if (config.globals) {
         for (const [key, value] of Object.entries(config.globals)) {
           // Only proxy objects, primitives are safe as-is
-          if (value !== null && typeof value === 'object') {
-            (baseSandbox as Record<string, unknown>)[key] = createSecureProxy(value as object, {
-              levelConfig: executionContext.secureProxyConfig,
-            });
-          } else {
-            (baseSandbox as Record<string, unknown>)[key] = value;
-          }
+          const wrappedValue =
+            value !== null && typeof value === 'object'
+              ? createSecureProxy(value as object, {
+                  levelConfig: executionContext.secureProxyConfig,
+                })
+              : value;
+          Object.defineProperty(baseSandbox, key, {
+            value: wrappedValue,
+            writable: false,
+            configurable: false,
+            enumerable: false,
+          });
         }
       }
 
