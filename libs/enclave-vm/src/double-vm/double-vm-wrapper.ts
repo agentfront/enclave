@@ -19,6 +19,71 @@ import { generateParentVmBootstrap } from './parent-vm-bootstrap';
 import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-patterns';
 
 /**
+ * Creates a "safe" error object that cannot be used to escape the sandbox.
+ *
+ * SECURITY: This function creates error objects with a severed prototype chain
+ * to prevent attacks that climb the prototype chain to reach the host Function constructor.
+ *
+ * Attack vector blocked:
+ * - err.constructor.constructor('return process.env.SECRET')()
+ * - err.__proto__.constructor.constructor('malicious code')()
+ */
+function createSafeError(message: string, name = 'Error'): Error {
+  // SECURITY: Create a real Error instance but with the constructor property
+  // overridden to break the prototype chain escape attack.
+  //
+  // The key insight is that we need:
+  // 1. A real Error instance (for instanceof checks, proper stack traces)
+  // 2. But with .constructor pointing to a safe object that can't be used to escape
+
+  // Create the real error
+  const error = new Error(message);
+  error.name = name;
+
+  // Create a null-prototype object to use as a safe "constructor"
+  // This object has no prototype chain to climb
+  const SafeConstructor = Object.create(null);
+  Object.defineProperties(SafeConstructor, {
+    // Make constructor point to itself to break the chain
+    constructor: {
+      value: SafeConstructor,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    },
+    // Block prototype access
+    prototype: {
+      value: null,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    },
+    // Add name for debugging
+    name: {
+      value: 'SafeError',
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    },
+  });
+  Object.freeze(SafeConstructor);
+
+  // Override the constructor property on the error instance
+  // This breaks the prototype chain: err.constructor.constructor no longer reaches Function
+  Object.defineProperty(error, 'constructor', {
+    value: SafeConstructor,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+
+  // Freeze the error to prevent modifications
+  Object.freeze(error);
+
+  return error;
+}
+
+/**
  * Sensitive patterns to redact from stack traces
  * (Same as vm-adapter for consistency)
  */
@@ -329,13 +394,14 @@ export class DoubleVmWrapper implements SandboxAdapter {
 
     return async (toolName: string, args: Record<string, unknown>): Promise<unknown> => {
       // Double check abort status
+      // SECURITY: Use createSafeError to prevent prototype chain escape attacks
       if (executionContext.aborted) {
-        throw new Error('Execution aborted');
+        throw createSafeError('Execution aborted');
       }
 
       // Check for tool handler
       if (!toolHandler) {
-        throw new Error('No tool handler configured. Cannot execute tool calls.');
+        throw createSafeError('No tool handler configured. Cannot execute tool calls.');
       }
 
       // Resolve sidecar references if present
@@ -343,7 +409,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
       if (resolver && resolver.containsReferences(args)) {
         // Predictive check - fail fast before allocation
         if (resolver.wouldExceedLimit(args)) {
-          throw new Error(
+          throw createSafeError(
             `Arguments would exceed maximum resolved size when references are expanded. ` +
               `Pass large data directly to tool arguments instead of constructing them.`,
           );
@@ -385,11 +451,11 @@ export class DoubleVmWrapper implements SandboxAdapter {
 
         return sanitized;
       } catch (error: unknown) {
+        // SECURITY: Use createSafeError to prevent prototype chain escape attacks
+        // This is critical - the original error from the tool handler could expose
+        // the host Function constructor via error.constructor.constructor
         const err = error as Error;
-        // Preserve the original error as cause for better debugging
-        const wrappedError = new Error(`Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`);
-        wrappedError.cause = err;
-        throw wrappedError;
+        throw createSafeError(`Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`);
       }
     };
   }

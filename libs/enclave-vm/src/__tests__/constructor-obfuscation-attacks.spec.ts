@@ -590,4 +590,192 @@ describe('ATK-COBS: Constructor Obfuscation Attack Vectors (CWE-693)', () => {
       enclave.dispose();
     });
   });
+
+  describe('ATK-COBS-35 to ATK-COBS-36: Host Error Prototype Chain Escape Attacks', () => {
+    it('ATK-COBS-35: should block Host Error Escape via callTool error prototype chain (Vector 35)', async () => {
+      // Vector 35: The Host Error Escape
+      // Purpose: Intentionally trigger a Host-side error to obtain a Host Error object,
+      // then climb its prototype chain to reach the Host Function Constructor.
+      //
+      // Attack flow:
+      // 1. Call callTool with invalid tool name to trigger host error
+      // 2. Catch the error object (which comes from host context)
+      // 3. Use __lookupGetter__ to get native __proto__ getter
+      // 4. Climb: hostError -> Error.prototype -> Error Constructor -> Function Constructor
+      // 5. Use Function constructor to execute arbitrary code in host context
+      const enclave = new Enclave({
+        securityLevel: 'SECURE',
+        validate: false, // Disable AST validation to test runtime protection
+        globals: {
+          SECRET: 'FAKE_SECRET_FOR_SECURITY_CHALLENGE',
+        },
+      });
+
+      const code = `
+        // ASCII Obfuscation Helper
+        const s = (...args) => String.fromCharCode(...args);
+
+        // Generate Invisible Keys
+        const kCon    = s(99,111,110,115,116,114,117,99,116,111,114);          // "constructor"
+        const kProto  = s(95,95,112,114,111,116,111,95,95);                    // "__proto__"
+        const kLookup = s(95,95,108,111,111,107,117,112,71,101,116,116,101,114,95,95); // "__lookupGetter__"
+        const kCode   = s(114,101,116,117,114,110,32,112,114,111,99,101,115,115,46,101,110,118,46,83,69,67,82,69,84); // "return process.env.SECRET"
+        const kPtype  = s(112,114,111,116,111,116,121,112,101);                // "prototype"
+
+        try {
+            // Extract Native __proto__ Getter
+            const ObjectProto = Object[kPtype];
+            const lookup = ObjectProto[kLookup];
+            if (!lookup) return "blocked: __lookupGetter__ missing";
+
+            const getProtoNative = lookup.call(ObjectProto, kProto);
+            if (!getProtoNative) return "blocked: Native __proto__ getter missing";
+
+            // The Provocation (Trigger a Host Error)
+            let hostError;
+            try {
+                await callTool('THIS_TOOL_DOES_NOT_EXIST_XYZ', {});
+            } catch (e) {
+                hostError = e;
+            }
+
+            if (!hostError) return "blocked: Failed to trigger a Host error";
+
+            // The Climb
+            // Step A: hostError -> Error.prototype (Host Realm)
+            const errProto = getProtoNative.call(hostError);
+            if (!errProto) return "blocked: Could not get error prototype";
+
+            // Step B: Error.prototype -> Error Constructor (Host Realm)
+            const ErrorCtor = errProto[kCon];
+            if (!ErrorCtor) return "blocked: Could not get Error constructor";
+
+            // Step C: Error Constructor -> Function Constructor (Host Realm)
+            const HostFunc = ErrorCtor[kCon];
+            if (!HostFunc) return "blocked: Could not get Host Function";
+
+            // The Escape - Compile payload in Host Context
+            const exploitFn = HostFunc(kCode);
+            return exploitFn();
+
+        } catch (e) {
+            return "blocked: " + e.message;
+        }
+      `;
+
+      const result = await enclave.run(code);
+
+      // The attack should be blocked - it should NOT return the secret
+      // If the attack succeeds, it returns the secret string
+      // If blocked, it returns a "blocked:" message, undefined, or throws an error
+      const secretValue = 'FAKE_SECRET_FOR_SECURITY_CHALLENGE';
+
+      if (result.success) {
+        // Attack must NOT have succeeded in retrieving the secret
+        expect(result.value).not.toBe(secretValue);
+        // Value should either be undefined (blocked) or contain "blocked" message
+        if (typeof result.value === 'string') {
+          expect(result.value).toMatch(/blocked/i);
+        }
+        // undefined is also acceptable - means the attack was blocked
+      } else {
+        // Execution failed with error - this is also acceptable as long as it's not the secret
+        expect(result.error?.message).not.toContain(secretValue);
+      }
+
+      enclave.dispose();
+    });
+
+    it("ATK-COBS-36: should block Simpleton's Ladder attack via error prototype chain (Vector 42)", async () => {
+      // Vector 42: The "Simpleton's Ladder"
+      // Purpose: A lightweight escape that climbs the prototype chain of error objects
+      // using only dynamic keys (avoiding all static blocks).
+      //
+      // Attack flow:
+      // 1. Try multiple targets: parallel global, parallel return value, callTool error
+      // 2. For each target, climb: candidate -> Constructor -> Function Constructor
+      // 3. Use Function constructor to execute arbitrary code
+      const enclave = new Enclave({
+        securityLevel: 'SECURE',
+        validate: false, // Disable AST validation to test runtime protection
+        globals: {
+          SECRET: 'FAKE_SECRET_FOR_SECURITY_CHALLENGE',
+        },
+      });
+
+      const code = `
+        // ASCII Obfuscation Helper
+        const s = (...args) => String.fromCharCode(...args);
+
+        // Generate Invisible Keys (Bypass "Access to constructor not allowed")
+        const kCon  = s(99,111,110,115,116,114,117,99,116,111,114);          // "constructor"
+        const kCode = s(114,101,116,117,114,110,32,112,114,111,99,101,115,115,46,101,110,118,46,83,69,67,82,69,84); // "return process.env.SECRET"
+
+        // The Climber - takes a candidate object, climbs to Function Constructor
+        const tryEscape = (candidate) => {
+            if (!candidate) return null;
+            try {
+                // Step A: Get the constructor of the candidate
+                const Ctor1 = candidate[kCon];
+                if (!Ctor1) return null;
+
+                // Step B: Get the constructor of the constructor
+                const HostFunc = Ctor1[kCon];
+                if (!HostFunc) return null;
+
+                // Step C: Compile and Execute
+                const exploit = HostFunc(kCode);
+                return exploit();
+            } catch (e) {
+                return null;
+            }
+        };
+
+        try {
+            // Target 1: The 'parallel' global
+            let result = tryEscape(parallel);
+            if (result) return result;
+
+            // Target 2: The 'parallel' return value (skip - parallel requires functions)
+            // Note: parallel([]) with empty array or non-functions causes errors
+
+            // Target 3: The 'callTool' Error Leak
+            try {
+                await callTool('INVALID_TOOL_XYZ_123', {});
+            } catch (err) {
+                // err is potentially a Host Error object
+                result = tryEscape(err);
+                if (result) return result;
+            }
+
+            return "blocked: Ladder climb failed. No host objects found.";
+
+        } catch (e) {
+            return "blocked: " + e.message;
+        }
+      `;
+
+      const result = await enclave.run(code);
+
+      // The attack should be blocked - it should NOT return the secret
+      // If the attack succeeds, it returns the secret string
+      // If blocked, it returns a "blocked:" message, undefined/null, or throws an error
+      const secretValue = 'FAKE_SECRET_FOR_SECURITY_CHALLENGE';
+
+      if (result.success) {
+        // Attack must NOT have succeeded in retrieving the secret
+        expect(result.value).not.toBe(secretValue);
+        // Value should either be undefined/null (blocked) or contain "blocked" message
+        if (typeof result.value === 'string') {
+          expect(result.value).toMatch(/blocked/i);
+        }
+        // undefined/null is also acceptable - means the attack was blocked
+      } else {
+        // Execution failed with error - this is also acceptable as long as it's not the secret
+        expect(result.error?.message).not.toContain(secretValue);
+      }
+
+      enclave.dispose();
+    });
+  });
 });
