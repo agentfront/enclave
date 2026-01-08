@@ -171,11 +171,7 @@ export class ResourceExhaustionRule implements ValidationRule {
                     location: this.getLocation(node),
                   });
                 }
-              } else if (
-                arg.type === 'Identifier' ||
-                arg.type === 'BinaryExpression' ||
-                arg.type === 'CallExpression'
-              ) {
+              } else if (arg.type !== 'Literal') {
                 // Variable-based or computed size - block as error since .fill() immediately allocates
                 // and we cannot verify the size statically. This prevents Vector 1110 attacks.
                 context.report({

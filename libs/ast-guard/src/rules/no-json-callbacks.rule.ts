@@ -203,6 +203,11 @@ export class NoJsonCallbacksRule implements ValidationRule {
       return true;
     }
 
+    // void expression (e.g., void 0) evaluates to undefined
+    if (node.type === 'UnaryExpression' && node.operator === 'void') {
+      return true;
+    }
+
     return false;
   }
 

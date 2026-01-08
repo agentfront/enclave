@@ -22,9 +22,22 @@ type Pipeline = (input: string, options?: Record<string, unknown>) => Promise<{ 
 /**
  * Default model cache directory
  */
-const DEFAULT_CACHE_DIR = join(homedir(), '.enclave', 'models');
+const LEGACY_DEFAULT_CACHE_DIR = './.cache/transformers';
 
-const DISABLE_MODEL_LOAD_ENV = 'ENCLAVE_DISABLE_LOCAL_LLM_MODEL';
+function getDefaultCacheDir(): string {
+  try {
+    const home = homedir();
+    if (typeof home === 'string' && home.trim().length > 0) {
+      return join(home, '.enclave', 'models');
+    }
+  } catch {
+    // fall back below
+  }
+
+  return LEGACY_DEFAULT_CACHE_DIR;
+}
+
+export const DISABLE_MODEL_LOAD_ENV = 'ENCLAVE_DISABLE_LOCAL_LLM_MODEL';
 
 /**
  * Default model for classification
@@ -81,7 +94,7 @@ export class LocalLlmScorer extends BaseScorer {
       ...config,
       modelId: config.modelId || DEFAULT_MODEL_ID,
       mode: config.mode ?? 'classification',
-      cacheDir: config.cacheDir ?? config.modelDir ?? DEFAULT_CACHE_DIR,
+      cacheDir: config.cacheDir ?? config.modelDir ?? getDefaultCacheDir(),
       fallbackToRules: config.fallbackToRules ?? true,
     };
 

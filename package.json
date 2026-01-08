@@ -8,6 +8,7 @@
   "scripts": {
     "build": "nx run-many -t build --outputStyle stream",
     "test": "nx run-many -t test --outputStyle stream --skip-nx-cache",
+    "test:cached": "nx run-many -t test --outputStyle stream",
     "lint": "nx run-many -t lint --outputStyle stream",
     "format": "git show-ref --quiet refs/heads/main && git diff --name-only -z --diff-filter=ACMR main... | grep -zE '\\.(js|jsx|ts|tsx|json|css|scss|md|html|yml|yaml)$' | xargs -0 -r prettier --write || prettier --write .",
     "format:check": "git show-ref --quiet refs/heads/main && git diff --name-only -z --diff-filter=ACMR main... | grep -zE '\\.(js|jsx|ts|tsx|json|css|scss|md|html|yml|yaml)$' | xargs -0 -r prettier --check || prettier --check .",

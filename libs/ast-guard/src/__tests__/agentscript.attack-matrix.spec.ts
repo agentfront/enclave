@@ -498,6 +498,52 @@ describe('AgentScript Attack Matrix', () => {
       );
     });
 
+    it('Vector 1110: blocks Array(member).fill() with dynamic size', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const cfg = { size: 100 };
+          const work = Array(cfg.size).fill(0);
+          return work;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1110: blocks Array(conditional).fill() with dynamic size', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const a = 100;
+          const b = 100;
+          const work = Array(true ? a : b).fill(0);
+          return work;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1110: blocks Array(unary).fill() with dynamic size', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const size = 100;
+          const work = Array(+size).fill(0);
+          return work;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
     it('allows Array(n).fill() with small size', async () => {
       const validator = createValidator();
       const result = await validator.validate(
@@ -506,7 +552,7 @@ describe('AgentScript Attack Matrix', () => {
           return work;
         `),
       );
-      // Should not have RESOURCE_EXHAUSTION error (only warning for dynamic is acceptable)
+      // Should not have RESOURCE_EXHAUSTION error (literal size is below maxArrayFillSize)
       expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION' && issue.severity === 'error')).toBe(
         false,
       );

@@ -395,26 +395,35 @@ describe('Stack Trace Sanitization', () => {
         }
       `);
 
-      // The result should either succeed (if serialization works) or fail safely
-      if (result.success && typeof result.value === 'string') {
-        // If we got a stack trace back, verify it doesn't leak internal details
-        const stackOutput = result.value;
+      const outputsToCheck: string[] = [];
 
+      if (result.success && typeof result.value === 'string') {
+        outputsToCheck.push(result.value);
+      } else if (!result.success && result.error) {
+        outputsToCheck.push(result.error.message);
+        if (result.error.stack) {
+          outputsToCheck.push(result.error.stack);
+        }
+      }
+
+      expect(outputsToCheck.length).toBeGreaterThan(0);
+
+      for (const output of outputsToCheck) {
         // Should NOT contain internal file paths
-        expect(stackOutput).not.toContain('parent-vm.js');
-        expect(stackOutput).not.toContain('inner-agentscript.js');
-        expect(stackOutput).not.toContain('node:vm');
-        expect(stackOutput).not.toContain('/var/task/');
+        expect(output).not.toContain('parent-vm.js');
+        expect(output).not.toContain('inner-agentscript.js');
+        expect(output).not.toContain('node:vm');
+        expect(output).not.toContain('/var/task/');
 
         // Should NOT contain internal function names
-        expect(stackOutput).not.toContain('innerCallTool');
-        expect(stackOutput).not.toContain('sanitizeObject');
-        expect(stackOutput).not.toContain('createSecureProxy');
-        expect(stackOutput).not.toContain('validateOperation');
+        expect(output).not.toContain('innerCallTool');
+        expect(output).not.toContain('sanitizeObject');
+        expect(output).not.toContain('createSecureProxy');
+        expect(output).not.toContain('validateOperation');
 
         // Should NOT contain line numbers from internal code
-        expect(stackOutput).not.toMatch(/parent-vm\.js:\d+:\d+/);
-        expect(stackOutput).not.toMatch(/inner-agentscript\.js:\d+:\d+/);
+        expect(output).not.toMatch(/parent-vm\.js:\d+:\d+/);
+        expect(output).not.toMatch(/inner-agentscript\.js:\d+:\d+/);
       }
 
       enclave.dispose();
@@ -442,16 +451,29 @@ describe('Stack Trace Sanitization', () => {
         }
       `);
 
-      if (result.success && typeof result.value === 'string') {
-        const output = result.value;
+      const outputsToCheck: string[] = [];
 
+      if (result.success && typeof result.value === 'string') {
+        outputsToCheck.push(result.value);
+      } else if (!result.success && result.error) {
+        outputsToCheck.push(result.error.message);
+        if (result.error.stack) {
+          outputsToCheck.push(result.error.stack);
+        }
+      }
+
+      expect(outputsToCheck.length).toBeGreaterThan(0);
+
+      for (const output of outputsToCheck) {
         // Should NOT leak internal implementation details
         expect(output).not.toContain('parent-vm.js');
         expect(output).not.toContain('innerCallTool');
         expect(output).not.toContain('node:vm');
 
-        // Should contain the expected error message
-        expect(output).toContain('JSON-serializable');
+        // Should contain the expected error message (only in the user-returned string)
+        if (output === result.value) {
+          expect(output).toContain('JSON-serializable');
+        }
       }
 
       enclave.dispose();
@@ -487,11 +509,34 @@ describe('Stack Trace Sanitization', () => {
         }
       `);
 
-      // Should either fail or return "BLOCKED"
       if (result.success && typeof result.value === 'string') {
         expect(result.value).not.toContain('ESCAPED');
         // The constructor chain should be blocked
         expect(result.value).toContain('BLOCKED');
+      } else {
+        expect(result.error).toBeDefined();
+
+        if (result.error?.code === 'SECURITY_VIOLATION') {
+          // In STRICT mode, we may fail-closed on attempted code generation even if caught.
+          expect(result.error.name).toBe('SecurityViolationError');
+          expect(result.error.stack).toBeUndefined();
+        } else {
+          // Some blocked-property paths raise a runtime error. Ensure it doesn't leak internal details.
+          expect(result.error?.code).toBe('DOUBLE_VM_EXECUTION_ERROR');
+          expect(result.error?.message).toBeDefined();
+
+          const outputsToCheck = [result.error?.message, result.error?.stack].filter(
+            (output): output is string => typeof output === 'string',
+          );
+          expect(outputsToCheck.length).toBeGreaterThan(0);
+
+          for (const output of outputsToCheck) {
+            expect(output).not.toContain('parent-vm.js');
+            expect(output).not.toContain('inner-agentscript.js');
+            expect(output).not.toContain('node:vm');
+            expect(output).not.toContain('/var/task/');
+          }
+        }
       }
 
       enclave.dispose();

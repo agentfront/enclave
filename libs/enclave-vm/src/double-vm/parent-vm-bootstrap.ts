@@ -370,34 +370,43 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
 ${stackTraceHardeningCode}
 })();
 
-(function() {
-  var __ag_Object = Object;
-  var __ag_Reflect = (typeof Reflect !== 'undefined') ? Reflect : null;
-  var __ag_Proxy = (typeof Proxy !== 'undefined') ? Proxy : null;
+	(function() {
+	  var __ag_Object = Object;
+	  var __ag_Reflect = (typeof Reflect !== 'undefined') ? Reflect : null;
+	  var __ag_Proxy = (typeof Proxy !== 'undefined') ? Proxy : null;
+	  var __ag_WeakMap = (typeof WeakMap !== 'undefined') ? WeakMap : null;
+	  var __ag_proxyCache = __ag_WeakMap ? new __ag_WeakMap() : null;
 
-  // Capture intrinsics before any later global sanitization/proxying.
-  var __ag_String = String;
-  var __ag_ArrayProto = __ag_Object.getPrototypeOf([]);
-  var __ag_refIdPattern = /^__REF_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}__$/i;
+	  // Capture intrinsics before any later global sanitization/proxying.
+	  var __ag_String = String;
+	  var __ag_ArrayProto = __ag_Object.getPrototypeOf([]);
+	  var __ag_refIdPattern = /^__REF_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}__$/i;
   var __ag_allowComposites = ${allowComposites};
   var __ag_memoryLimit = ${memoryLimit};
   var __ag_track = (typeof __host_memory_track__ === 'function') ? __host_memory_track__ : null;
 
-  // Best-effort secure proxy to block dangerous property access on these runtime helpers.
-  // This mirrors the "constructor/__proto__/prototype" defense-in-depth used elsewhere.
-  var __ag_blocked = new Set(${JSON.stringify(blockedProperties)});
-  function __ag_createSecureProxy(obj, depth) {
-    if (depth === undefined) depth = 0;
-    if (!__ag_Proxy || !__ag_Reflect) return obj;
-    if (depth > 10) return obj;
-    if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) return obj;
+	  // Best-effort secure proxy to block dangerous property access on these runtime helpers.
+	  // This mirrors the "constructor/__proto__/prototype" defense-in-depth used elsewhere.
+	  var __ag_blocked = new Set(${JSON.stringify(blockedProperties)});
+	  function __ag_createSecureProxy(obj, depth) {
+	    if (depth === undefined) depth = 0;
+	    if (!__ag_Proxy || !__ag_Reflect) return obj;
+	    if (depth > 10) return obj;
+	    if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) return obj;
 
-    return new __ag_Proxy(obj, {
-      get: function(target, property, receiver) {
-        var propName = __ag_String(property);
-        if (__ag_blocked.has(propName)) {
-          throw new Error(
-            "Security violation: Access to '" + propName + "' is blocked. " +
+	    if (__ag_proxyCache) {
+	      try {
+	        var cached = __ag_proxyCache.get(obj);
+	        if (cached) return cached;
+	      } catch (e) {}
+	    }
+
+	    var proxy = new __ag_Proxy(obj, {
+	      get: function(target, property, receiver) {
+	        var propName = __ag_String(property);
+	        if (__ag_blocked.has(propName)) {
+	          throw new Error(
+	            "Security violation: Access to '" + propName + "' is blocked. " +
             "This property can be used for sandbox escape attacks."
           );
         }
@@ -407,15 +416,23 @@ ${stackTraceHardeningCode}
           try { value = value.bind(target); } catch (e) {}
         }
         return __ag_createSecureProxy(value, depth + 1);
-      },
-      apply: function(target, thisArg, args) {
-        return __ag_Reflect.apply(target, thisArg, args);
-      },
-      construct: function(target, args, newTarget) {
-        return __ag_Reflect.construct(target, args, newTarget);
-      }
-    });
-  }
+	      },
+	      apply: function(target, thisArg, args) {
+	        return __ag_Reflect.apply(target, thisArg, args);
+	      },
+	      construct: function(target, args, newTarget) {
+	        return __ag_Reflect.construct(target, args, newTarget);
+	      }
+	    });
+
+	    if (__ag_proxyCache) {
+	      try {
+	        __ag_proxyCache.set(obj, proxy);
+	      } catch (e) {}
+	    }
+
+	    return proxy;
+	  }
 
   function __ag_createSafeError(message, name) {
     if (name === undefined) name = 'Error';
@@ -1619,21 +1636,21 @@ ${stackTraceHardeningCode}
     }
   }
 
-	  // ============================================================
-	  // Execute User Code
-	  // ============================================================
+  // ============================================================
+  // Execute User Code
+  // ============================================================
 
-	  var userCode = ${JSON.stringify(userCode)};
-	  // IMPORTANT: For stack overflow errors (RangeError: Maximum call stack size exceeded),
-	  // Node/V8 may ignore Error.prepareStackTrace when it was installed by a different Script
-	  // than the one that triggered the overflow. To make stack sanitization reliable,
-	  // we also prepend the hardening code into the same Script that executes user code.
-	  var __ag_stackHardenPrefix = sanitizeStackTraces ? (${stackTraceHardeningCodeJson} + '\\n') : '';
-	  var wrappedCode =
-	    '(async function() { ' +
-	    __ag_stackHardenPrefix +
-	    userCode +
-	    ' return typeof __ag_main === "function" ? await __ag_main() : undefined; })()';
+  var userCode = ${JSON.stringify(userCode)};
+  // IMPORTANT: For stack overflow errors (RangeError: Maximum call stack size exceeded),
+  // Node/V8 may ignore Error.prepareStackTrace when it was installed by a different Script
+  // than the one that triggered the overflow. To make stack sanitization reliable,
+  // we also prepend the hardening code into the same Script that executes user code.
+  var __ag_stackHardenPrefix = sanitizeStackTraces ? (${stackTraceHardeningCodeJson} + '\\n') : '';
+  var wrappedCode =
+    '(async function() { ' +
+    __ag_stackHardenPrefix +
+    userCode +
+    ' return typeof __ag_main === "function" ? await __ag_main() : undefined; })()';
 
   var script = new vm.Script(wrappedCode, { filename: 'inner-agentscript.js' });
 

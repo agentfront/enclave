@@ -381,10 +381,10 @@ export class DoubleVmWrapper implements SandboxAdapter {
         value: (bytes: number) => {
           try {
             memoryTracker.track(bytes);
-          } catch (err) {
+          } catch (err: unknown) {
             // SECURITY: Never throw host Error instances into the sandbox realm.
-            // Convert MemoryLimitError into a null-prototype payload that cannot be
-            // used for prototype chain escape attacks.
+            // Always convert errors into a null-prototype payload that cannot be
+            // used for prototype chain escape attacks (and never includes host stack).
             if (err instanceof MemoryLimitError) {
               const safeError = Object.freeze(
                 Object.assign(Object.create(null), {
@@ -397,7 +397,20 @@ export class DoubleVmWrapper implements SandboxAdapter {
               );
               throw safeError;
             }
-            throw err;
+
+            const code =
+              err && typeof err === 'object' && typeof (err as { code?: unknown }).code !== 'undefined'
+                ? (err as { code?: unknown }).code
+                : undefined;
+
+            const safeError = Object.freeze(
+              Object.assign(Object.create(null), {
+                name: err instanceof Error ? err.name : 'Error',
+                message: err instanceof Error ? err.message : typeof err === 'string' ? err : 'Memory tracking failed',
+                ...(typeof code === 'string' || typeof code === 'number' ? { code } : {}),
+              }),
+            );
+            throw safeError;
           }
         },
         writable: false,
