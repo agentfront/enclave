@@ -591,7 +591,7 @@ describe('ATK-COBS: Constructor Obfuscation Attack Vectors (CWE-693)', () => {
     });
   });
 
-  describe('ATK-COBS-35 to ATK-COBS-36: Host Error Prototype Chain Escape Attacks', () => {
+  describe('ATK-COBS-35 to ATK-COBS-37: Host Error Prototype Chain Escape Attacks', () => {
     it('ATK-COBS-35: should block Host Error Escape via callTool error prototype chain (Vector 35)', async () => {
       // Vector 35: The Host Error Escape
       // Purpose: Intentionally trigger a Host-side error to obtain a Host Error object,
@@ -619,7 +619,7 @@ describe('ATK-COBS: Constructor Obfuscation Attack Vectors (CWE-693)', () => {
         const kCon    = s(99,111,110,115,116,114,117,99,116,111,114);          // "constructor"
         const kProto  = s(95,95,112,114,111,116,111,95,95);                    // "__proto__"
         const kLookup = s(95,95,108,111,111,107,117,112,71,101,116,116,101,114,95,95); // "__lookupGetter__"
-        const kCode   = s(114,101,116,117,114,110,32,112,114,111,99,101,115,115,46,101,110,118,46,83,69,67,82,69,84); // "return process.env.SECRET"
+        const kCode   = s(114,101,116,117,114,110,32,83,69,67,82,69,84); // "return SECRET"
         const kPtype  = s(112,114,111,116,111,116,121,112,101);                // "prototype"
 
         try {
@@ -686,95 +686,8 @@ describe('ATK-COBS: Constructor Obfuscation Attack Vectors (CWE-693)', () => {
       enclave.dispose();
     });
 
-    it('ATK-COBS-37: should block __proto__ access on safe errors to prevent prototype chain escape', async () => {
-      // This test specifically verifies the __proto__ property blocking fix
-      // that was added to createSafeError in safe-runtime.ts and double-vm-wrapper.ts
-      //
-      // The fix adds a non-configurable, non-writable, non-enumerable __proto__ property
-      // with value null on the error instance, preventing:
-      // - err.__proto__.constructor.constructor('malicious code')()
-      //
-      // This is a direct test of the security hardening, separate from the full attack vectors
-      const enclave = new Enclave({
-        securityLevel: 'SECURE',
-        validate: false, // Disable AST validation to test runtime protection
-        globals: {
-          SECRET: 'FAKE_SECRET_FOR_SECURITY_CHALLENGE',
-        },
-      });
-
-      const code = `
-        // ASCII Obfuscation Helper to bypass static analysis
-        const s = (...args) => String.fromCharCode(...args);
-
-        // Generate keys dynamically
-        const kProto = s(95,95,112,114,111,116,111,95,95);  // "__proto__"
-        const kCon   = s(99,111,110,115,116,114,117,99,116,111,114);  // "constructor"
-        const kCode  = s(114,101,116,117,114,110,32,112,114,111,99,101,115,115,46,101,110,118,46,83,69,67,82,69,84); // "return process.env.SECRET"
-
-        try {
-            // Trigger a safe error from callTool
-            let safeError;
-            try {
-                await callTool('NONEXISTENT_TOOL_FOR_TEST', {});
-            } catch (e) {
-                safeError = e;
-            }
-
-            if (!safeError) return "test-failed: no error thrown";
-
-            // Test 1: Direct __proto__ access should return null (the fix)
-            const proto = safeError[kProto];
-            if (proto !== null) {
-                // If __proto__ is not null, try to climb the chain
-                const ErrorCtor = proto[kCon];
-                if (ErrorCtor) {
-                    const FuncCtor = ErrorCtor[kCon];
-                    if (FuncCtor) {
-                        try {
-                            const exploit = FuncCtor(kCode);
-                            return exploit(); // Would return the secret if vulnerable
-                        } catch (e) {
-                            return "blocked: Function constructor blocked";
-                        }
-                    }
-                    return "blocked: Function constructor not accessible";
-                }
-                return "blocked: Error constructor not accessible";
-            }
-
-            // __proto__ is null - the fix is working!
-            return "blocked: __proto__ is null (fix working)";
-
-        } catch (e) {
-            return "blocked: " + e.message;
-        }
-      `;
-
-      const result = await enclave.run(code);
-
-      // The attack should be blocked
-      const secretValue = 'FAKE_SECRET_FOR_SECURITY_CHALLENGE';
-
-      if (result.success) {
-        // Attack must NOT have succeeded in retrieving the secret
-        expect(result.value).not.toBe(secretValue);
-        // Value should contain "blocked" message, specifically about __proto__ being null
-        if (typeof result.value === 'string') {
-          expect(result.value).toMatch(/blocked/i);
-          // Ideally, the fix should make __proto__ return null
-          // But any blocking mechanism is acceptable
-        }
-      } else {
-        // Execution failed with error - also acceptable
-        expect(result.error?.message).not.toContain(secretValue);
-      }
-
-      enclave.dispose();
-    });
-
-    it("ATK-COBS-36: should block Simpleton's Ladder attack via error prototype chain (Vector 42)", async () => {
-      // Vector 42: The "Simpleton's Ladder"
+    it("ATK-COBS-36: should block Simpleton's Ladder attack via error prototype chain", async () => {
+      // ATK-COBS-36: The "Simpleton's Ladder"
       // Purpose: A lightweight escape that climbs the prototype chain of error objects
       // using only dynamic keys (avoiding all static blocks).
       //
@@ -796,7 +709,7 @@ describe('ATK-COBS: Constructor Obfuscation Attack Vectors (CWE-693)', () => {
 
         // Generate Invisible Keys (Bypass "Access to constructor not allowed")
         const kCon  = s(99,111,110,115,116,114,117,99,116,111,114);          // "constructor"
-        const kCode = s(114,101,116,117,114,110,32,112,114,111,99,101,115,115,46,101,110,118,46,83,69,67,82,69,84); // "return process.env.SECRET"
+        const kCode = s(114,101,116,117,114,110,32,83,69,67,82,69,84); // "return SECRET"
 
         // The Climber - takes a candidate object, climbs to Function Constructor
         const tryEscape = (candidate) => {
@@ -859,6 +772,93 @@ describe('ATK-COBS: Constructor Obfuscation Attack Vectors (CWE-693)', () => {
         // undefined/null is also acceptable - means the attack was blocked
       } else {
         // Execution failed with error - this is also acceptable as long as it's not the secret
+        expect(result.error?.message).not.toContain(secretValue);
+      }
+
+      enclave.dispose();
+    });
+
+    it('ATK-COBS-37: should block __proto__ access on safe errors to prevent prototype chain escape', async () => {
+      // This test specifically verifies the __proto__ property blocking fix
+      // that was added to createSafeError in safe-runtime.ts and double-vm-wrapper.ts
+      //
+      // The fix adds a non-configurable, non-writable, non-enumerable __proto__ property
+      // with value null on the error instance, preventing:
+      // - err.__proto__.constructor.constructor('malicious code')()
+      //
+      // This is a direct test of the security hardening, separate from the full attack vectors
+      const enclave = new Enclave({
+        securityLevel: 'SECURE',
+        validate: false, // Disable AST validation to test runtime protection
+        globals: {
+          SECRET: 'FAKE_SECRET_FOR_SECURITY_CHALLENGE',
+        },
+      });
+
+      const code = `
+        // ASCII Obfuscation Helper to bypass static analysis
+        const s = (...args) => String.fromCharCode(...args);
+
+        // Generate keys dynamically
+        const kProto = s(95,95,112,114,111,116,111,95,95);  // "__proto__"
+        const kCon   = s(99,111,110,115,116,114,117,99,116,111,114);  // "constructor"
+        const kCode  = s(114,101,116,117,114,110,32,83,69,67,82,69,84); // "return SECRET"
+
+        try {
+            // Trigger a safe error from callTool
+            let safeError;
+            try {
+                await callTool('NONEXISTENT_TOOL_FOR_TEST', {});
+            } catch (e) {
+                safeError = e;
+            }
+
+            if (!safeError) return "test-failed: no error thrown";
+
+            // Test 1: Direct __proto__ access should return null (the fix)
+            const proto = safeError[kProto];
+            if (proto !== null) {
+                // If __proto__ is not null, try to climb the chain
+                const ErrorCtor = proto[kCon];
+                if (ErrorCtor) {
+                    const FuncCtor = ErrorCtor[kCon];
+                    if (FuncCtor) {
+                        try {
+                            const exploit = FuncCtor(kCode);
+                            return exploit(); // Would return the secret if vulnerable
+                        } catch (e) {
+                            return "blocked: Function constructor blocked";
+                        }
+                    }
+                    return "blocked: Function constructor not accessible";
+                }
+                return "blocked: Error constructor not accessible";
+            }
+
+            // __proto__ is null - the fix is working!
+            return "blocked: __proto__ is null (fix working)";
+
+        } catch (e) {
+            return "blocked: " + e.message;
+        }
+      `;
+
+      const result = await enclave.run(code);
+
+      // The attack should be blocked
+      const secretValue = 'FAKE_SECRET_FOR_SECURITY_CHALLENGE';
+
+      if (result.success) {
+        // Attack must NOT have succeeded in retrieving the secret
+        expect(result.value).not.toBe(secretValue);
+        // Value should contain "blocked" message, specifically about __proto__ being null
+        if (typeof result.value === 'string') {
+          expect(result.value).toMatch(/blocked/i);
+          // Ideally, the fix should make __proto__ return null
+          // But any blocking mechanism is acceptable
+        }
+      } else {
+        // Execution failed with error - also acceptable
         expect(result.error?.message).not.toContain(secretValue);
       }
 
