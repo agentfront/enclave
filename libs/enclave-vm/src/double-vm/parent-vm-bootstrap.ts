@@ -470,7 +470,7 @@ ${stackTraceHardeningCode}
 
       if (!leftIsRef && !rightIsRef) {
         if (__ag_track && __ag_memoryLimit > 0) {
-          try { __ag_track(rightLen * 2); } catch (e) {}
+          __ag_track(rightLen * 2);
         }
         return left + right;
       }
@@ -515,7 +515,7 @@ ${stackTraceHardeningCode}
 
     var result = left + right;
     if (typeof result === 'string' && __ag_track && __ag_memoryLimit > 0) {
-      try { __ag_track(result.length * 2); } catch (e) {}
+      __ag_track(result.length * 2);
     }
     return result;
   }
@@ -539,7 +539,7 @@ ${stackTraceHardeningCode}
     if (!hasReferences) {
       var joined = parts.join('');
       if (typeof joined === 'string' && __ag_track && __ag_memoryLimit > 0) {
-        try { __ag_track(joined.length * 2); } catch (e) {}
+        __ag_track(joined.length * 2);
       }
       return joined;
     }
@@ -1473,7 +1473,7 @@ ${stackTraceHardeningCode}
   // Define __safe_concat and __safe_template in the INNER realm to avoid cross-realm stacks.
   // (See innerRealmSafeConcatAndTemplateCode for rationale.)
   try {
-    var innerRuntimeScript = new vm.Script(${innerRealmSafeConcatAndTemplateCodeJson}, { filename: 'inner-safe-runtime.js' });
+    var innerRuntimeScript = new vm.Script(${innerRealmSafeConcatAndTemplateCodeJson}, { filename: 'inner-runtime.js' });
     innerRuntimeScript.runInContext(innerContext);
   } catch (e) { /* ignore */ }
 

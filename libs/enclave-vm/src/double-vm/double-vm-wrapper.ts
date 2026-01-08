@@ -230,27 +230,33 @@ export class DoubleVmWrapper implements SandboxAdapter {
         stats,
       };
     } catch (error: unknown) {
-      const err = error as Error;
-
       // Update stats
       stats.duration = Date.now() - startTime;
       stats.endTime = Date.now();
 
       // Report memory usage if tracking was enabled
+      let memSnapshot: ReturnType<MemoryTracker['getSnapshot']> | undefined;
       if (memoryTracker) {
-        const memSnapshot = memoryTracker.getSnapshot();
+        memSnapshot = memoryTracker.getSnapshot();
         stats.memoryUsage = memSnapshot.peakTrackedBytes;
       }
 
-      // Handle MemoryLimitError specially
-      if (err instanceof MemoryLimitError) {
+      // Handle memory limit errors specially (host Error or sandbox-safe payload)
+      if (
+        error instanceof MemoryLimitError ||
+        (error && typeof error === 'object' && (error as any).code === 'MEMORY_LIMIT_EXCEEDED')
+      ) {
+        const payload = error as { message?: unknown; usedBytes?: unknown; limitBytes?: unknown };
+        const usedBytes = typeof payload.usedBytes === 'number' ? payload.usedBytes : (memSnapshot?.trackedBytes ?? 0);
+        const limitBytes = typeof payload.limitBytes === 'number' ? payload.limitBytes : (config.memoryLimit ?? 0);
+
         return {
           success: false,
           error: {
             name: 'MemoryLimitError',
-            message: err.message,
+            message: typeof payload.message === 'string' ? payload.message : 'Memory limit exceeded',
             code: 'MEMORY_LIMIT_EXCEEDED',
-            data: { usedBytes: err.usedBytes, limitBytes: err.limitBytes },
+            data: { usedBytes, limitBytes },
           },
           stats,
         };
@@ -260,18 +266,19 @@ export class DoubleVmWrapper implements SandboxAdapter {
       const shouldSanitize = config.sanitizeStackTraces ?? true;
 
       // Handle thrown strings (e.g., iteration limit exceeded throws a string literal)
-      if (typeof err === 'string') {
+      if (typeof error === 'string') {
         return {
           success: false,
           error: {
             name: 'DoubleVMExecutionError',
-            message: err,
+            message: error,
             code: 'DOUBLE_VM_EXECUTION_ERROR',
           },
           stats,
         };
       }
 
+      const err = error as Error;
       return {
         success: false,
         error: {
@@ -372,7 +379,26 @@ export class DoubleVmWrapper implements SandboxAdapter {
     if (memoryTracker) {
       Object.defineProperty(parentContext, '__host_memory_track__', {
         value: (bytes: number) => {
-          memoryTracker.track(bytes);
+          try {
+            memoryTracker.track(bytes);
+          } catch (err) {
+            // SECURITY: Never throw host Error instances into the sandbox realm.
+            // Convert MemoryLimitError into a null-prototype payload that cannot be
+            // used for prototype chain escape attacks.
+            if (err instanceof MemoryLimitError) {
+              const safeError = Object.freeze(
+                Object.assign(Object.create(null), {
+                  name: 'MemoryLimitError',
+                  message: err.message,
+                  code: err.code,
+                  usedBytes: err.usedBytes,
+                  limitBytes: err.limitBytes,
+                }),
+              );
+              throw safeError;
+            }
+            throw err;
+          }
         },
         writable: false,
         configurable: false,
