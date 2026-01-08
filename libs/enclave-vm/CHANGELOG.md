@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-01-08
+
+### Added
+
+- Stack-trace hardening scripts now run in both the single-VM adapter and worker pool so sandboxed errors only return redacted frames, and a new sanitizeStackTraces option is propagated through the double-VM bootstrap (libs/enclave-vm/src/adapters/vm-adapter.ts, libs/enclave-vm/src/double-vm/parent-vm-bootstrap.ts).
+- STRICT/SECURE executions now record code-generation attempts via policy-violation reporters and return SecurityViolationError payloads when user code suppresses the original throw (libs/enclave-vm/src/adapters/vm-adapter.ts, libs/enclave-vm/src/adapters/worker-pool/worker-script.ts, libs/enclave-vm/src/double-vm/double-vm-wrapper.ts).
+- Local LLM scoring exposes the DISABLE_MODEL_LOAD_ENV constant, honors ENCLAVE_DISABLE_LOCAL_LLM_MODEL=1, and defaults its cache under ~/.enclave/models for better operator control (libs/enclave-vm/src/scoring/scorers/index.ts, libs/enclave-vm/src/scoring/scorers/local-llm.scorer.ts).
+
+### Changed
+
+- User-provided globals, safe runtime helpers, and console bridges are now installed as non-enumerable, non-configurable descriptors to block Object.assign/Object.values reconnaissance in the sandbox (libs/enclave-vm/src/adapters/vm-adapter.ts, libs/enclave-vm/src/double-vm/parent-vm-bootstrap.ts).
+- Safe runtime utilities and tool bridge errors are wrapped with prototype-severing helpers so attacker code cannot reach Function via error.constructor.constructor (libs/enclave-vm/src/double-vm/double-vm-wrapper.ts, libs/enclave-vm/src/safe-runtime.ts).
+
+### Fixed
+
+- DoubleVmWrapper now surfaces MemoryLimitError data emitted from sandbox-side tracking so callers receive accurate used/limit bytes even when the sandbox throws its own payload (libs/enclave-vm/src/double-vm/double-vm-wrapper.ts).
+
+### Security
+
+- MemoryTracker enforcement now tracks cumulative allocations made through patched repeat/join/pad helpers by delegating to a host-side callback, preventing incremental heap exhaustion (libs/enclave-vm/src/adapters/vm-adapter.ts, libs/enclave-vm/src/double-vm/parent-vm-bootstrap.ts).
+- Sandbox stack traces have their formatters locked and frames redacted to avoid leaking host file paths or line numbers (libs/enclave-vm/src/adapters/vm-adapter.ts, libs/enclave-vm/src/double-vm/parent-vm-bootstrap.ts).
+- STRICT/SECURE modes fail closed whenever the sandbox attempts code generation or other blocked operations, even if user code catches the initial exception (libs/enclave-vm/src/adapters/vm-adapter.ts, libs/enclave-vm/src/adapters/worker-pool/worker-script.ts, libs/enclave-vm/src/double-vm/double-vm-wrapper.ts).
+
 ## [2.5.0] - 2026-01-07
 
 ### Added

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-01-08
+
+### Added
+
+- AgentScript preset now enables the new NoJsonCallbacksRule that blocks JSON.stringify/parse when replacer or reviver callbacks are supplied to prevent property-enumeration leaks (libs/ast-guard/src/presets/agentscript.preset.ts, libs/ast-guard/src/rules/no-json-callbacks.rule.ts).
+- ResourceExhaustionRule gained maxArrayFillSize and detection for Array(n).fill()/Array(n) patterns so large fills or dynamically sized arrays are reported before execution (libs/ast-guard/src/rules/resource-exhaustion.rule.ts).
+
+### Changed
+
+- AgentScript preset documentation comments reflect the new array-fill coverage for Vector 1110 style attacks (libs/ast-guard/src/presets/agentscript.preset.ts).
+
 ## [2.2.0] - 2026-01-07
 
 ### Added
