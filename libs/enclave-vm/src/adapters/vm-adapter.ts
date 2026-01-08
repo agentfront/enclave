@@ -145,6 +145,126 @@ function sanitizeStackTrace(stack: string | undefined, sanitize = true): string 
 }
 
 /**
+ * Patch code executed inside the sandbox realm to prevent leaking host stack traces via `error.stack`.
+ *
+ * Note: This is intentionally conservative: it avoids emitting any file names/paths/line numbers
+ * and also locks `Error.prepareStackTrace` to prevent CallSite-based exfiltration.
+ */
+const STACK_TRACE_HARDENING_CODE = `
+(function() {
+  function __ag_prepareStackTrace(err, stack) {
+    try {
+      var name = (err && err.name) ? String(err.name) : 'Error';
+      var message = (err && err.message) ? String(err.message) : '';
+      var header = message ? (name + ': ' + message) : name;
+      if (!stack || !stack.length) return header;
+      var lines = [header];
+      var max = stack.length;
+      if (max > 25) max = 25;
+      for (var i = 0; i < max; i++) {
+        lines.push('    at [REDACTED]');
+      }
+      if (stack.length > max) {
+        lines.push('    at [REDACTED]');
+      }
+      return lines.join('\\n');
+    } catch (e) {
+      return 'Error';
+    }
+  }
+
+  function __ag_lockPrepareStackTrace(ErrCtor) {
+    if (!ErrCtor) return;
+    try {
+      Object.defineProperty(ErrCtor, 'prepareStackTrace', {
+        value: __ag_prepareStackTrace,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+    } catch (e) {}
+    try {
+      Object.defineProperty(ErrCtor, 'stackTraceLimit', {
+        value: 25,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+    } catch (e) {}
+  }
+
+  __ag_lockPrepareStackTrace(Error);
+  __ag_lockPrepareStackTrace(EvalError);
+  __ag_lockPrepareStackTrace(RangeError);
+  __ag_lockPrepareStackTrace(ReferenceError);
+  __ag_lockPrepareStackTrace(SyntaxError);
+  __ag_lockPrepareStackTrace(TypeError);
+  __ag_lockPrepareStackTrace(URIError);
+  try {
+    if (typeof AggregateError !== 'undefined') __ag_lockPrepareStackTrace(AggregateError);
+  } catch (e) {}
+})();
+`.trim();
+
+const STACK_TRACE_HARDENING_SCRIPT = new vm.Script(STACK_TRACE_HARDENING_CODE);
+
+/**
+ * Detect and report code-generation attempts (Function/eval) even if user code catches the thrown error.
+ *
+ * In STRICT/SECURE mode we treat these as policy violations and fail the execution after it returns.
+ */
+const CODE_GENERATION_VIOLATION_DETECTOR_CODE = `
+(function() {
+  var __ag_report = (typeof __ag_reportViolation__ === 'function') ? __ag_reportViolation__ : null;
+  function __ag_reportOnce(kind) {
+    try {
+      if (__ag_report) __ag_report(kind);
+    } catch (e) {}
+  }
+
+  // Capture intrinsics BEFORE any sanitization mutates globals like Reflect.
+  var __ag_Reflect = (typeof Reflect !== 'undefined') ? Reflect : null;
+  var __ag_Proxy = (typeof Proxy !== 'undefined') ? Proxy : null;
+  var __ag_Object = (typeof Object !== 'undefined') ? Object : null;
+
+  function __ag_wrapCtor(Ctor, kind) {
+    if (!Ctor || !__ag_Proxy || !__ag_Reflect || !__ag_Object) return;
+    try {
+      var proxy = new __ag_Proxy(Ctor, {
+        apply: function(target, thisArg, args) {
+          __ag_reportOnce(kind);
+          return __ag_Reflect.apply(target, thisArg, args);
+        },
+        construct: function(target, args, newTarget) {
+          __ag_reportOnce(kind);
+          return __ag_Reflect.construct(target, args, newTarget);
+        }
+      });
+
+      // Ensure constructor-chain escapes (x.constructor.constructor) hit the proxy.
+      try {
+        if (Ctor.prototype) {
+          __ag_Object.defineProperty(Ctor.prototype, 'constructor', {
+            value: proxy,
+            writable: false,
+            configurable: false,
+            enumerable: false
+          });
+        }
+      } catch (e) {}
+    } catch (e) {}
+  }
+
+  try { __ag_wrapCtor(Function, 'CODE_GENERATION'); } catch (e) {}
+  try { __ag_wrapCtor((async function(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
+  try { __ag_wrapCtor((function*(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
+  try { __ag_wrapCtor((async function*(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
+})();
+`.trim();
+
+const CODE_GENERATION_VIOLATION_DETECTOR_SCRIPT = new vm.Script(CODE_GENERATION_VIOLATION_DETECTOR_CODE);
+
+/**
  * Protected identifier prefixes that cannot be modified from sandbox code
  * Security: Prevents runtime override attacks on safe functions
  */
@@ -630,6 +750,37 @@ export class VmAdapter implements SandboxAdapter {
         patchScript.runInContext(baseSandbox);
       }
 
+      // SECURITY HARDENING: prevent leaking host stack traces via error.stack inside the sandbox.
+      // Must run BEFORE sanitizeVmContext() replaces Object with SafeObject (which blocks defineProperty).
+      const shouldHardenStacks = config.sanitizeStackTraces ?? true;
+      if (shouldHardenStacks) {
+        try {
+          STACK_TRACE_HARDENING_SCRIPT.runInContext(baseSandbox);
+        } catch {
+          // Ignore if the environment forbids patching (defense-in-depth only)
+        }
+      }
+
+      // STRICT/SECURE: record code-generation attempts (Function/eval) even if caught.
+      // This prevents reconnaissance loops that probe blocked primitives and then "return success".
+      const isStrictOrSecure = this.securityLevel === 'STRICT' || this.securityLevel === 'SECURE';
+      const policyViolation: { type?: string } = {};
+      if (isStrictOrSecure) {
+        Object.defineProperty(baseSandbox, '__ag_reportViolation__', {
+          value: (type: string) => {
+            if (!policyViolation.type) policyViolation.type = String(type);
+          },
+          writable: false,
+          configurable: false,
+          enumerable: false,
+        });
+        try {
+          CODE_GENERATION_VIOLATION_DETECTOR_SCRIPT.runInContext(baseSandbox);
+        } catch {
+          // Best-effort only; codeGeneration.strings=false still blocks execution.
+        }
+      }
+
       // Sanitize the VM context by removing dangerous Node.js 24 globals
       // Security: Prevents escape via Iterator helpers, ShadowRealm, etc.
       sanitizeVmContext(baseSandbox, this.securityLevel);
@@ -726,6 +877,20 @@ export class VmAdapter implements SandboxAdapter {
       if (memoryTracker) {
         const memSnapshot = memoryTracker.getSnapshot();
         stats.memoryUsage = memSnapshot.peakTrackedBytes;
+      }
+
+      // STRICT/SECURE: Fail closed on recorded policy violations even if user code caught them.
+      if (isStrictOrSecure && policyViolation.type) {
+        return {
+          success: false,
+          error: {
+            name: 'SecurityViolationError',
+            message: 'Blocked operation: security policy violation',
+            code: 'SECURITY_VIOLATION',
+            data: { type: policyViolation.type },
+          },
+          stats,
+        };
       }
 
       return {

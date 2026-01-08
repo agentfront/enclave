@@ -1562,10 +1562,10 @@ describe('ATK-RECON-01: Global Reconnaissance Defense', () => {
         }
       `;
       const result = await enclave.run(code);
-      expect(result.success).toBe(true);
-      // Should be blocked - either Function is undefined or code generation fails
-      expect(result.value).toMatchObject({ blocked: true });
-      expect((result.value as { reason?: string }).reason).toMatch(/code generation|strings|undefined/i);
+      // STRICT mode should fail closed on code-generation attempts, even if user code catches the error.
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('SECURITY_VIOLATION');
+      expect(result.error?.name).toBe('SecurityViolationError');
       enclave.dispose();
     });
 

@@ -15,6 +15,65 @@
 import { Enclave } from '../index';
 
 describe('Stack Trace Sanitization', () => {
+  describe('Stack Trace Sanitization in User-Returned Values', () => {
+    it('should not leak host stack frames when user returns e.stack in STRICT mode', async () => {
+      const enclave = new Enclave({ securityLevel: 'STRICT' });
+
+      // Catch inside the sandbox and return e.stack as a string (previously leaked host frames/paths).
+      const result = await enclave.run(`
+        try {
+          const x = undefined;
+          return x.foo;
+        } catch (e) {
+          return String(e && e.stack);
+        }
+      `);
+
+      expect(result.success).toBe(true);
+      expect(typeof result.value).toBe('string');
+
+      // Must not contain internal filenames / host frames.
+      expect(result.value).not.toContain('inner-agentscript.js');
+      expect(result.value).not.toContain('parent-vm.js');
+      expect(result.value).not.toContain('agentscript.js');
+      expect(result.value).not.toContain('node:vm');
+
+      // Sanitized stacks should use redaction markers.
+      expect(result.value).toContain('[REDACTED]');
+
+      enclave.dispose();
+    });
+  });
+
+  describe('Fail-Closed Policy Violations (STRICT/SECURE)', () => {
+    it('should fail the run if code generation is attempted and caught in STRICT mode', async () => {
+      const enclave = new Enclave({ securityLevel: 'STRICT', validate: false });
+
+      const result = await enclave.run(`
+        const str = (...args) => String.fromCharCode(...args);
+        const kCon = str(99,111,110,115,116,114,117,99,116,111,114);
+        const kCode = str(114,101,116,117,114,110,32,49);
+
+        try {
+          const NumCtor = (1)[kCon];
+          const FuncCtor = NumCtor[kCon];
+          const exploit = FuncCtor(kCode);
+          return exploit();
+        } catch (e) {
+          // In STRICT mode, enclave-vm should treat this as a policy violation even if caught.
+          return 'caught: ' + String(e && e.stack);
+        }
+      `);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('SECURITY_VIOLATION');
+      expect(result.error?.name).toBe('SecurityViolationError');
+      expect(result.error?.stack).toBeUndefined();
+
+      enclave.dispose();
+    });
+  });
+
   describe('Stack Trace Sanitization in Runtime Errors', () => {
     it('should redact macOS/Linux home directory paths from stack traces', async () => {
       const enclave = new Enclave({ securityLevel: 'STRICT' });

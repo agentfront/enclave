@@ -69,6 +69,8 @@ export class DoubleVmWrapper implements SandboxAdapter {
   async execute<T = unknown>(code: string, executionContext: ExecutionContext): Promise<ExecutionResult<T>> {
     const { stats, config } = executionContext;
     const startTime = Date.now();
+    const isStrictOrSecure = this.securityLevel === 'STRICT' || this.securityLevel === 'SECURE';
+    const policyViolation: { type?: string } = {};
 
     // Create memory tracker if memory limit is configured
     const memoryTracker =
@@ -86,7 +88,9 @@ export class DoubleVmWrapper implements SandboxAdapter {
 
     try {
       // Create parent VM context with memory tracker
-      const parentContext = this.createParentContext(executionContext, memoryTracker);
+      const parentContext = this.createParentContext(executionContext, memoryTracker, (type: string) => {
+        if (!policyViolation.type) policyViolation.type = String(type);
+      });
       this.parentContext = parentContext;
 
       // Generate the parent VM bootstrap script
@@ -116,6 +120,20 @@ export class DoubleVmWrapper implements SandboxAdapter {
       if (memoryTracker) {
         const memSnapshot = memoryTracker.getSnapshot();
         stats.memoryUsage = memSnapshot.peakTrackedBytes;
+      }
+
+      // STRICT/SECURE: Fail closed on recorded policy violations even if user code caught them.
+      if (isStrictOrSecure && policyViolation.type) {
+        return {
+          success: false,
+          error: {
+            name: 'SecurityViolationError',
+            message: 'Blocked operation: security policy violation',
+            code: 'SECURITY_VIOLATION',
+            data: { type: policyViolation.type },
+          },
+          stats,
+        };
       }
 
       return {
@@ -188,7 +206,11 @@ export class DoubleVmWrapper implements SandboxAdapter {
    * - Stats and config references
    * - Memory tracking callback (when memoryLimit is set)
    */
-  private createParentContext(executionContext: ExecutionContext, memoryTracker?: MemoryTracker): vm.Context {
+  private createParentContext(
+    executionContext: ExecutionContext,
+    memoryTracker: MemoryTracker | undefined,
+    reportViolation: (type: string) => void,
+  ): vm.Context {
     const { stats, config } = executionContext;
 
     // Create isolated context for parent VM
@@ -234,6 +256,13 @@ export class DoubleVmWrapper implements SandboxAdapter {
     // Inject abort check function
     Object.defineProperty(parentContext, '__host_abort_check__', {
       value: () => executionContext.aborted,
+      writable: false,
+      configurable: false,
+    });
+
+    // Inject policy-violation reporter (used for STRICT/SECURE fail-closed behavior)
+    Object.defineProperty(parentContext, '__host_reportViolation__', {
+      value: reportViolation,
       writable: false,
       configurable: false,
     });
@@ -407,6 +436,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
       innerTimeout: config.timeout,
       maxIterations: config.maxIterations,
       maxToolCalls: config.maxToolCalls,
+      sanitizeStackTraces: config.sanitizeStackTraces ?? true,
       securityLevel: this.securityLevel,
       validationConfig: serializableConfig,
       suspiciousPatterns: serializedPatterns,
