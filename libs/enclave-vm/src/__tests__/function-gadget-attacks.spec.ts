@@ -884,7 +884,8 @@ describe('ATK-FGAD: Function Gadget Attack Vectors (CWE-94)', () => {
      */
     describe('ATK-FGAD-35 to ATK-FGAD-36: JSON.parse Reviver Attacks', () => {
       it('ATK-FGAD-35: should verify reviver processes values correctly in sandbox', async () => {
-        const enclave = new Enclave();
+        // PERMISSIVE mode: JSON.parse callbacks are allowed (secure presets block them)
+        const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
           let callCount = 0;
           const parsed = JSON.parse('{"a": 1, "b": 2}', (key, value) => {
@@ -939,7 +940,8 @@ describe('ATK-FGAD: Function Gadget Attack Vectors (CWE-94)', () => {
 
     describe('ATK-FGAD-37: JSON.stringify Replacer Attacks', () => {
       it('ATK-FGAD-37: should verify replacer processes values correctly in sandbox', async () => {
-        const enclave = new Enclave();
+        // PERMISSIVE mode: JSON.stringify callbacks are allowed (secure presets block them)
+        const enclave = new Enclave({ preset: 'permissive', securityLevel: 'PERMISSIVE' });
         const code = `
           const result = JSON.stringify({ a: 1, b: 'test', c: [1, 2] }, (key, value) => {
             if (typeof value === 'number') {

@@ -280,4 +280,522 @@ describe('AgentScript Attack Matrix', () => {
       );
     });
   });
+
+  describe('JSON Callback Attacks · Vector 960', () => {
+    it('Vector 960: blocks JSON.stringify with arrow function replacer (Native Walker leak)', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const keysFound = [];
+          const walker = (key, value) => {
+            if (key && key.length > 0) {
+              keysFound.push(key);
+            }
+            return value;
+          };
+          JSON.stringify(this, walker);
+          return keysFound;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 960: blocks JSON.stringify with inline arrow function replacer', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const result = JSON.stringify({a: 1}, (k, v) => v);
+          return result;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 960: blocks JSON.stringify with function expression replacer', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const result = JSON.stringify({a: 1}, function(k, v) { return v; });
+          return result;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 960: blocks JSON.stringify with identifier replacer (variable reference)', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const replacer = (k, v) => v;
+          const result = JSON.stringify({a: 1}, replacer);
+          return result;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 960: blocks JSON.parse with reviver function', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const result = JSON.parse('{"a":1}', (k, v) => v);
+          return result;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 960: blocks JSON?.stringify with optional chaining and replacer function', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const result = JSON?.stringify({a: 1}, (k, v) => v);
+          return result;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 960: blocks JSON?.parse with optional chaining and reviver function', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const result = JSON?.parse('{"a":1}', (k, v) => v);
+          return result;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(true);
+        },
+      );
+    });
+
+    it('allows JSON.stringify without replacer', async () => {
+      const validator = createValidator();
+      const result = await validator.validate(
+        wrap(`
+          const result = JSON.stringify({a: 1});
+          return result;
+        `),
+      );
+      // Should not have JSON_CALLBACK_NOT_ALLOWED error
+      expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(false);
+    });
+
+    it('allows JSON.stringify with null replacer', async () => {
+      const validator = createValidator();
+      const result = await validator.validate(
+        wrap(`
+          const result = JSON.stringify({a: 1}, null, 2);
+          return result;
+        `),
+      );
+      // Should not have JSON_CALLBACK_NOT_ALLOWED error
+      expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(false);
+    });
+
+    it('allows JSON.stringify with array replacer (property allowlist)', async () => {
+      const validator = createValidator();
+      const result = await validator.validate(
+        wrap(`
+          const result = JSON.stringify({a: 1, b: 2}, ['a']);
+          return result;
+        `),
+      );
+      // Should not have JSON_CALLBACK_NOT_ALLOWED error
+      expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(false);
+    });
+
+    it('allows JSON.parse without reviver', async () => {
+      const validator = createValidator();
+      const result = await validator.validate(
+        wrap(`
+          const result = JSON.parse('{"a":1}');
+          return result;
+        `),
+      );
+      // Should not have JSON_CALLBACK_NOT_ALLOWED error
+      expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(false);
+    });
+  });
+
+  describe('Array Fill CPU Exhaustion · Vector 1110', () => {
+    it('Vector 1110: blocks Array(n).fill() with large size (High-Precision Math Stall)', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const size = 500000;
+          const work = Array(size).fill(0.12345);
+          const result = work.reduce((acc, val) => acc + Math.sin(val), 0);
+          return result;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1110: blocks new Array(n).fill() with large size', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const work = new Array(500000).fill(0);
+          return work.length;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1110: blocks Array(n).fill() with literal large size', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const work = Array(200000).fill(1);
+          return work;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1110: blocks Array(variable).fill() with dynamic size', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const size = 100;
+          const work = Array(size).fill(0);
+          return work;
+        `),
+        (result) => {
+          // Should block dynamic size as error since we can't verify it statically
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1110: blocks Array(member).fill() with dynamic size', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const cfg = { size: 100 };
+          const work = Array(cfg.size).fill(0);
+          return work;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1110: blocks Array(conditional).fill() with dynamic size', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const a = 100;
+          const b = 100;
+          const work = Array(true ? a : b).fill(0);
+          return work;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1110: blocks Array(unary).fill() with dynamic size', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const size = 100;
+          const work = Array(+size).fill(0);
+          return work;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('allows Array(n).fill() with small size', async () => {
+      const validator = createValidator();
+      const result = await validator.validate(
+        wrap(`
+          const work = Array(100).fill(0);
+          return work;
+        `),
+      );
+      // Should not have RESOURCE_EXHAUSTION error (literal size is below maxArrayFillSize)
+      expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION' && issue.severity === 'error')).toBe(
+        false,
+      );
+    });
+
+    it('allows small array operations for legitimate use', async () => {
+      const validator = createValidator();
+      const result = await validator.validate(
+        wrap(`
+          const items = Array(10).fill(0);
+          const doubled = items.map((x) => x * 2);
+          return doubled;
+        `),
+      );
+      // Should not have RESOURCE_EXHAUSTION error
+      expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION' && issue.severity === 'error')).toBe(
+        false,
+      );
+    });
+  });
+
+  describe('Recursive Template Buffer Overflow · Vector 1160', () => {
+    it('Vector 1160: blocks Array(1450000).fill() in toString (Recursive Template Buffer Overflow)', async () => {
+      const validator = createValidator();
+      // This attack uses Array(1450000).fill() which exceeds maxArrayFillSize (100000)
+      await expectBlocked(
+        validator,
+        wrap(`
+          const fragment = {
+            length: 1,
+            toString: () => {
+              Array(1450000).fill(0.123).reduce((a, b) => a + Math.sqrt(b), 0);
+              return "done";
+            }
+          };
+          return fragment;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1160: blocks large string.repeat() in toString', async () => {
+      const validator = createValidator();
+      // This attack uses .repeat(1024 * 1024 * 2) = 2,097,152 which exceeds maxStringRepeat (100000)
+      await expectBlocked(
+        validator,
+        wrap(`
+          const fragment = {
+            toString: () => {
+              return "A".repeat(2097152);
+            }
+          };
+          return fragment;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1160: blocks combined Array.fill + string.repeat attack', async () => {
+      const validator = createValidator();
+      // Full Vector 1160 attack pattern
+      await expectBlocked(
+        validator,
+        wrap(`
+          const s = String.fromCharCode;
+          const fragment = {
+            length: 1,
+            toString: () => {
+              Array(1450000).fill(0.123).reduce((a, b) => a + Math.sqrt(b), 0);
+              return s(65).repeat(1024 * 1024 * 2);
+            }
+          };
+          const bomb = \`\${fragment}\${fragment}\`;
+          await callTool("users.search", { query: bomb });
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('allows template literals with safe interpolations', async () => {
+      const validator = createValidator();
+      const result = await validator.validate(
+        wrap(`
+          const name = "test";
+          const value = 42;
+          const message = \`Hello \${name}, your value is \${value}\`;
+          return message;
+        `),
+      );
+      // Should not have RESOURCE_EXHAUSTION error
+      expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION' && issue.severity === 'error')).toBe(
+        false,
+      );
+    });
+  });
+
+  describe('Interleaved Heap Spray · Vector 1170', () => {
+    it('Vector 1170: blocks Array(1420000).fill() CPU stall (Interleaved Heap Spray)', async () => {
+      const validator = createValidator();
+      // This attack uses Array(1420000).fill() which exceeds maxArrayFillSize (100000)
+      await expectBlocked(
+        validator,
+        wrap(`
+          const size = 1420000;
+          Array(size).fill(0.123).reduce((a, b) => a + Math.sqrt(b), 0);
+          return "done";
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1170: blocks full Interleaved Heap Spray attack pattern', async () => {
+      const validator = createValidator();
+      // Full Vector 1170 attack - CPU stall + string table spray
+      await expectBlocked(
+        validator,
+        wrap(`
+          const s = String.fromCharCode;
+          const size = 1420000;
+          Array(size).fill(0.123).reduce((a, b) => a + Math.sqrt(b), 0);
+          const spray = Array(1000).fill(0).map((_, i) => {
+            return s(83, 69, 67, 82, 69, 84) + i + s(61) + Math.random();
+          });
+          await callTool("users.search", { data: spray });
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1170: blocks literal large array fill for CPU stall', async () => {
+      const validator = createValidator();
+      // Direct literal size that exceeds limit
+      await expectBlocked(
+        validator,
+        wrap(`
+          Array(1420000).fill(0.123).reduce((a, b) => a + Math.sqrt(b), 0);
+          return "stalled";
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('allows small array spray for legitimate use (Vector 1170 secondary pattern)', async () => {
+      const validator = createValidator();
+      // The secondary spray pattern with small arrays should be allowed
+      const result = await validator.validate(
+        wrap(`
+          const s = String.fromCharCode;
+          const spray = Array(100).fill(0).map((_, i) => {
+            return s(72, 69, 76, 76, 79) + i;
+          });
+          await callTool("users.search", { data: spray });
+        `),
+      );
+      // Should not have RESOURCE_EXHAUSTION error for small arrays
+      expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION' && issue.severity === 'error')).toBe(
+        false,
+      );
+    });
+  });
+
+  describe('String-Deduplication Pressure Test · Vector 1220', () => {
+    it('Vector 1220: blocks Array(1400000).fill() CPU stall (String-Deduplication Pressure)', async () => {
+      const validator = createValidator();
+      // This attack uses Array(1400000).fill() which exceeds maxArrayFillSize (100000)
+      await expectBlocked(
+        validator,
+        wrap(`
+          const workSize = 1400000;
+          Array(workSize).fill(0.123).reduce((a, b) => a + Math.sqrt(b), 0);
+          return "done";
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1220: blocks literal large array fill for CPU stall', async () => {
+      const validator = createValidator();
+      // Direct literal size that exceeds limit
+      await expectBlocked(
+        validator,
+        wrap(`
+          Array(1400000).fill(0.123).reduce((a, b) => a + Math.sqrt(b), 0);
+          return "stalled";
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 1220: blocks full String-Deduplication Pressure attack pattern', async () => {
+      const validator = createValidator();
+      // Full Vector 1220 attack - CPU stall + high-entropy string generation
+      await expectBlocked(
+        validator,
+        wrap(`
+          const s = String.fromCharCode;
+          const workSize = 1400000;
+          Array(workSize).fill(0.123).reduce((a, b) => a + Math.sqrt(b), 0);
+          const entropy = Array(1000).fill(s(83, 69, 67, 82, 69, 84)).map((base, i) => {
+            return base + s(95) + Math.random() + i;
+          });
+          await callTool("users.search", {
+            filter: entropy.join(s(124))
+          });
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION')).toBe(true);
+        },
+      );
+    });
+
+    it('allows small high-entropy string generation for legitimate use', async () => {
+      const validator = createValidator();
+      // Small array for string generation should be allowed
+      const result = await validator.validate(
+        wrap(`
+          const s = String.fromCharCode;
+          const entropy = Array(100).fill(s(72, 69, 76, 76, 79)).map((base, i) => {
+            return base + s(95) + i;
+          });
+          await callTool("users.search", { filter: entropy.join(s(124)) });
+        `),
+      );
+      // Should not have RESOURCE_EXHAUSTION error for small arrays
+      expect(result.issues.some((issue) => issue.code === 'RESOURCE_EXHAUSTION' && issue.severity === 'error')).toBe(
+        false,
+      );
+    });
+  });
 });

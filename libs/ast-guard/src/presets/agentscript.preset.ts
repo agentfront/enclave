@@ -16,6 +16,7 @@ import {
   NoComputedDestructuringRule,
   InfiniteLoopRule,
   ResourceExhaustionRule,
+  NoJsonCallbacksRule,
 } from '../rules';
 
 // =============================================================================
@@ -540,16 +541,24 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   // 15. Detect resource exhaustion patterns (CPU/memory DoS)
   // - Large BigInt exponentiation (bypasses VM timeout)
   // - Large array allocations
+  // - Large array fill operations (Vector 1110: "High-Precision Math Stall")
   // - Constructor obfuscation via string concatenation
   rules.push(
     new ResourceExhaustionRule({
       maxBigIntExponent: 10000, // Block 2n ** 10001n and larger
       maxArraySize: 1000000, // Block new Array(1000001) and larger
+      maxArrayFillSize: 100000, // Block Array(100001).fill() - Vector 1110 uses 500000
       maxStringRepeat: 100000, // Block 'x'.repeat(100001) and larger
       blockConstructorAccess: true, // Block obj.constructor and obj['constructor']
       blockBigIntExponentiation: false, // Only block large exponents, not all
     }),
   );
+
+  // 16. Block JSON.stringify/parse with callback functions (property enumeration attack)
+  // Prevents "Native Walker" attacks where replacer/reviver functions are used
+  // to enumerate and leak internal sandbox globals or sensitive object properties.
+  // Vector 960: JSON.stringify(this, walker) can walk and leak global scope properties.
+  rules.push(new NoJsonCallbacksRule());
 
   return rules;
 }

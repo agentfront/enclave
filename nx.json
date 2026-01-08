@@ -17,7 +17,15 @@
     "disabledTaskSyncGenerators": ["@nx/js:typescript-sync"]
   },
   "namedInputs": {
-    "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "default": [
+      "{projectRoot}/**/*",
+      "!{projectRoot}/.cache/**",
+      "!{projectRoot}/coverage/**",
+      "!{projectRoot}/dist/**",
+      "!{projectRoot}/node_modules/**",
+      "!{projectRoot}/tmp/**",
+      "sharedGlobals"
+    ],
     "production": [
       "default",
       "!{projectRoot}/.eslintrc.json",

@@ -88,6 +88,18 @@ function createSafeError(message: string, name = 'Error'): Error {
     configurable: false,
   });
 
+  // SECURITY: Remove the stack property to prevent information leakage
+  // Attack vector blocked: Vector 270 - Static-Literal Tool Discovery
+  // The stack trace can reveal internal implementation details like function names,
+  // file paths, and line numbers which can be used for reconnaissance attacks.
+  // By setting stack to undefined, we prevent attackers from extracting this information.
+  Object.defineProperty(error, 'stack', {
+    value: undefined,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+
   // Freeze the error to prevent modifications
   Object.freeze(error);
 
@@ -218,27 +230,33 @@ export class DoubleVmWrapper implements SandboxAdapter {
         stats,
       };
     } catch (error: unknown) {
-      const err = error as Error;
-
       // Update stats
       stats.duration = Date.now() - startTime;
       stats.endTime = Date.now();
 
       // Report memory usage if tracking was enabled
+      let memSnapshot: ReturnType<MemoryTracker['getSnapshot']> | undefined;
       if (memoryTracker) {
-        const memSnapshot = memoryTracker.getSnapshot();
+        memSnapshot = memoryTracker.getSnapshot();
         stats.memoryUsage = memSnapshot.peakTrackedBytes;
       }
 
-      // Handle MemoryLimitError specially
-      if (err instanceof MemoryLimitError) {
+      // Handle memory limit errors specially (host Error or sandbox-safe payload)
+      if (
+        error instanceof MemoryLimitError ||
+        (error && typeof error === 'object' && (error as any).code === 'MEMORY_LIMIT_EXCEEDED')
+      ) {
+        const payload = error as { message?: unknown; usedBytes?: unknown; limitBytes?: unknown };
+        const usedBytes = typeof payload.usedBytes === 'number' ? payload.usedBytes : (memSnapshot?.trackedBytes ?? 0);
+        const limitBytes = typeof payload.limitBytes === 'number' ? payload.limitBytes : (config.memoryLimit ?? 0);
+
         return {
           success: false,
           error: {
             name: 'MemoryLimitError',
-            message: err.message,
+            message: typeof payload.message === 'string' ? payload.message : 'Memory limit exceeded',
             code: 'MEMORY_LIMIT_EXCEEDED',
-            data: { usedBytes: err.usedBytes, limitBytes: err.limitBytes },
+            data: { usedBytes, limitBytes },
           },
           stats,
         };
@@ -248,18 +266,19 @@ export class DoubleVmWrapper implements SandboxAdapter {
       const shouldSanitize = config.sanitizeStackTraces ?? true;
 
       // Handle thrown strings (e.g., iteration limit exceeded throws a string literal)
-      if (typeof err === 'string') {
+      if (typeof error === 'string') {
         return {
           success: false,
           error: {
             name: 'DoubleVMExecutionError',
-            message: err,
+            message: error,
             code: 'DOUBLE_VM_EXECUTION_ERROR',
           },
           stats,
         };
       }
 
+      const err = error as Error;
       return {
         success: false,
         error: {
@@ -360,7 +379,39 @@ export class DoubleVmWrapper implements SandboxAdapter {
     if (memoryTracker) {
       Object.defineProperty(parentContext, '__host_memory_track__', {
         value: (bytes: number) => {
-          memoryTracker.track(bytes);
+          try {
+            memoryTracker.track(bytes);
+          } catch (err: unknown) {
+            // SECURITY: Never throw host Error instances into the sandbox realm.
+            // Always convert errors into a null-prototype payload that cannot be
+            // used for prototype chain escape attacks (and never includes host stack).
+            if (err instanceof MemoryLimitError) {
+              const safeError = Object.freeze(
+                Object.assign(Object.create(null), {
+                  name: 'MemoryLimitError',
+                  message: err.message,
+                  code: err.code,
+                  usedBytes: err.usedBytes,
+                  limitBytes: err.limitBytes,
+                }),
+              );
+              throw safeError;
+            }
+
+            const code =
+              err && typeof err === 'object' && typeof (err as { code?: unknown }).code !== 'undefined'
+                ? (err as { code?: unknown }).code
+                : undefined;
+
+            const safeError = Object.freeze(
+              Object.assign(Object.create(null), {
+                name: err instanceof Error ? err.name : 'Error',
+                message: err instanceof Error ? err.message : typeof err === 'string' ? err : 'Memory tracking failed',
+                ...(typeof code === 'string' || typeof code === 'number' ? { code } : {}),
+              }),
+            );
+            throw safeError;
+          }
         },
         writable: false,
         configurable: false,

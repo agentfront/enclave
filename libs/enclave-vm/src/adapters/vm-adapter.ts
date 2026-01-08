@@ -152,6 +152,23 @@ function sanitizeStackTrace(stack: string | undefined, sanitize = true): string 
  */
 const STACK_TRACE_HARDENING_CODE = `
 (function() {
+  function __ag_redactStackString(stackStr) {
+    try {
+      if (typeof stackStr !== 'string' || !stackStr) return 'Error';
+      var lines = String(stackStr).split('\\n');
+      var header = lines[0] ? String(lines[0]) : 'Error';
+      var frameCount = (lines.length > 1) ? (lines.length - 1) : 0;
+      var max = frameCount;
+      if (max > 25) max = 25;
+      var out = [header];
+      for (var i = 0; i < max; i++) out.push('    at [REDACTED]');
+      if (frameCount > max) out.push('    at [REDACTED]');
+      return out.join('\\n');
+    } catch (e) {
+      return 'Error';
+    }
+  }
+
   function __ag_prepareStackTrace(err, stack) {
     try {
       var name = (err && err.name) ? String(err.name) : 'Error';
@@ -171,6 +188,32 @@ const STACK_TRACE_HARDENING_CODE = `
     } catch (e) {
       return 'Error';
     }
+  }
+
+  function __ag_lockStackGetter(proto) {
+    if (!proto) return;
+    try {
+      var desc = Object.getOwnPropertyDescriptor(proto, 'stack');
+      if (!desc || typeof desc.get !== 'function') return;
+      var origGet = desc.get;
+      var origSet = desc.set;
+      Object.defineProperty(proto, 'stack', {
+        get: function() {
+          try {
+            return __ag_redactStackString(origGet.call(this));
+          } catch (e) {
+            return 'Error';
+          }
+        },
+        set: function(v) {
+          try {
+            if (typeof origSet === 'function') return origSet.call(this, v);
+          } catch (e) {}
+        },
+        configurable: false,
+        enumerable: false
+      });
+    } catch (e) {}
   }
 
   function __ag_lockPrepareStackTrace(ErrCtor) {
@@ -193,6 +236,7 @@ const STACK_TRACE_HARDENING_CODE = `
     } catch (e) {}
   }
 
+  __ag_lockStackGetter(Error && Error.prototype);
   __ag_lockPrepareStackTrace(Error);
   __ag_lockPrepareStackTrace(EvalError);
   __ag_lockPrepareStackTrace(RangeError);
@@ -682,10 +726,26 @@ export class VmAdapter implements SandboxAdapter {
       // Security: Prevents ATK-JSON-03 (Parser Bomb) and similar attacks
       // that use repeat()/join() to allocate massive strings before we can track them
       // The check happens BEFORE allocation, not after
+      //
+      // SECURITY FIX (Vector 320): Track CUMULATIVE memory usage across all allocations
+      // Previously only checked if single allocation exceeded limit, allowing attackers
+      // to create many smaller allocations that together exceed the limit.
       if (memoryTracker && config.memoryLimit && config.memoryLimit > 0) {
+        // Inject memory tracking callback into the sandbox
+        // This allows the patched methods to track cumulative memory in the host
+        Object.defineProperty(baseSandbox, '__host_memory_track__', {
+          value: (bytes: number) => {
+            memoryTracker.track(bytes);
+          },
+          writable: false,
+          configurable: false,
+          enumerable: false,
+        });
+
         const patchScript = new vm.Script(`
           (function() {
             var memoryLimit = ${config.memoryLimit};
+            var trackMemory = __host_memory_track__;
 
             // Get the ACTUAL prototype used by string literals in this realm
             // Using Object.getPrototypeOf('') gets the intrinsic String.prototype
@@ -697,11 +757,14 @@ export class VmAdapter implements SandboxAdapter {
             stringProto.repeat = function(count) {
               // Pre-check: estimate size BEFORE allocation
               var estimatedSize = this.length * count * 2; // 2 bytes per char (UTF-16)
+              // Check single allocation limit
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('String.repeat would exceed memory limit: ' +
                   Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
                   Math.round(memoryLimit / 1024 / 1024) + 'MB');
               }
+              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
+              trackMemory(estimatedSize);
               return originalRepeat.call(this, count);
             };
 
@@ -718,11 +781,14 @@ export class VmAdapter implements SandboxAdapter {
               }
               estimatedSize *= 2; // UTF-16
 
+              // Check single allocation limit
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('Array.join would exceed memory limit: ' +
                   Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
                   Math.round(memoryLimit / 1024 / 1024) + 'MB');
               }
+              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
+              trackMemory(estimatedSize);
               return originalJoin.call(this, separator);
             };
 
@@ -735,6 +801,8 @@ export class VmAdapter implements SandboxAdapter {
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('String.padStart would exceed memory limit');
               }
+              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
+              trackMemory(estimatedSize);
               return originalPadStart.call(this, targetLength, padString);
             };
 
@@ -743,6 +811,8 @@ export class VmAdapter implements SandboxAdapter {
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('String.padEnd would exceed memory limit');
               }
+              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
+              trackMemory(estimatedSize);
               return originalPadEnd.call(this, targetLength, padString);
             };
           })();
@@ -802,16 +872,23 @@ export class VmAdapter implements SandboxAdapter {
       // Add user-provided globals (if any)
       // Security: Wrap ALL custom globals with secure proxy to prevent prototype chain attacks
       // This blocks access to __proto__, constructor, and other dangerous properties
+      // SECURITY: Use enumerable: false to prevent Object.assign({}, this) from copying globals
+      // This blocks Vector 380 (Bridge-Serialized State Reflection) attack
       if (config.globals) {
         for (const [key, value] of Object.entries(config.globals)) {
           // Only proxy objects, primitives are safe as-is
-          if (value !== null && typeof value === 'object') {
-            (baseSandbox as Record<string, unknown>)[key] = createSecureProxy(value as object, {
-              levelConfig: executionContext.secureProxyConfig,
-            });
-          } else {
-            (baseSandbox as Record<string, unknown>)[key] = value;
-          }
+          const wrappedValue =
+            value !== null && typeof value === 'object'
+              ? createSecureProxy(value as object, {
+                  levelConfig: executionContext.secureProxyConfig,
+                })
+              : value;
+          Object.defineProperty(baseSandbox, key, {
+            value: wrappedValue,
+            writable: false,
+            configurable: false,
+            enumerable: false,
+          });
         }
       }
 

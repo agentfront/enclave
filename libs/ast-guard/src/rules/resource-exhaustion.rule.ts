@@ -9,6 +9,8 @@ export interface ResourceExhaustionOptions {
   maxBigIntExponent?: number;
   /** Maximum allowed array size literal (default: 1000000) */
   maxArraySize?: number;
+  /** Maximum allowed array size for .fill() operations (default: 100000) - lower because fill() immediately allocates */
+  maxArrayFillSize?: number;
   /** Maximum allowed string repeat count (default: 100000) */
   maxStringRepeat?: number;
   /** Block constructor property access patterns (default: true) */
@@ -41,6 +43,7 @@ export class ResourceExhaustionRule implements ValidationRule {
     const {
       maxBigIntExponent = 10000,
       maxArraySize = 1000000,
+      maxArrayFillSize = 100000, // Lower threshold for .fill() - immediately allocates memory
       maxStringRepeat = 100000,
       blockConstructorAccess = true,
       blockBigIntExponentiation = false,
@@ -139,6 +142,59 @@ export class ResourceExhaustionRule implements ValidationRule {
                   });
                 }
               }
+            }
+          }
+        }
+
+        // Detect Array(n).fill() pattern - CPU/memory exhaustion via large array fill
+        // This is particularly dangerous because .fill() immediately allocates and initializes memory
+        // Attack vector (Vector 1110): Array(500000).fill(0.12345).reduce((acc, val) => acc + Math.sin(val), 0)
+        if (
+          node.callee.type === 'MemberExpression' &&
+          node.callee.property.type === 'Identifier' &&
+          node.callee.property.name === 'fill'
+        ) {
+          const object = node.callee.object;
+          // Check if this is new Array(n).fill() or Array(n).fill()
+          if (object.type === 'NewExpression' || object.type === 'CallExpression') {
+            if (
+              object.callee.type === 'Identifier' &&
+              object.callee.name === 'Array' &&
+              object.arguments.length === 1
+            ) {
+              const arg = object.arguments[0];
+              if (arg.type === 'Literal' && typeof arg.value === 'number') {
+                if (arg.value > maxArrayFillSize) {
+                  context.report({
+                    code: 'RESOURCE_EXHAUSTION',
+                    message: `Array.fill with ${arg.value} elements exceeds maximum (${maxArrayFillSize}). Large array fill operations can cause CPU/memory exhaustion.`,
+                    location: this.getLocation(node),
+                  });
+                }
+              } else if (arg.type !== 'Literal') {
+                // Variable-based or computed size - block as error since .fill() immediately allocates
+                // and we cannot verify the size statically. This prevents Vector 1110 attacks.
+                context.report({
+                  code: 'RESOURCE_EXHAUSTION',
+                  message: `Array.fill with dynamic size is not allowed. Use a literal size <= ${maxArrayFillSize} to prevent CPU/memory exhaustion.`,
+                  location: this.getLocation(node),
+                });
+              }
+            }
+          }
+        }
+
+        // Detect direct Array(n) call without new keyword with large size
+        // This creates a sparse array which can still be used for attacks
+        if (node.callee.type === 'Identifier' && node.callee.name === 'Array' && node.arguments.length === 1) {
+          const arg = node.arguments[0];
+          if (arg.type === 'Literal' && typeof arg.value === 'number') {
+            if (arg.value > maxArraySize) {
+              context.report({
+                code: 'RESOURCE_EXHAUSTION',
+                message: `Array size ${arg.value} exceeds maximum allowed (${maxArraySize}). Large arrays can cause memory exhaustion.`,
+                location: this.getLocation(node),
+              });
             }
           }
         }

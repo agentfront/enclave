@@ -281,6 +281,17 @@ const scorer = new LocalLlmScorer({
 });
 ```
 
+> **Migration note:** The default Hugging Face model cache directory moved from
+> `./.cache/transformers` (project-relative) to `~/.enclave/models` (home directory).
+> To migrate an existing cache:
+>
+> ```bash
+> mkdir -p ~/.enclave
+> mv ./.cache/transformers ~/.enclave/models
+> ```
+>
+> If you prefer to keep the old location, set `cacheDir: './.cache/transformers'`.
+
 ### `LocalLlmConfig`
 
 - `modelId` (required): Hugging Face identifier such as `Xenova/codebert-base`
