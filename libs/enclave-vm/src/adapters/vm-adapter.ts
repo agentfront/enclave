@@ -13,6 +13,7 @@ import { createSafeRuntime } from '../safe-runtime';
 import { createSafeReflect, createSecureProxy } from '../secure-proxy';
 import { createSafeError } from '../safe-error';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
+import { createHostToolBridge } from '../tool-bridge';
 
 /**
  * Sensitive patterns to redact from stack traces
@@ -866,6 +867,127 @@ export class VmAdapter implements SandboxAdapter {
       // Sanitize the VM context by removing dangerous Node.js 24 globals
       // Security: Prevents escape via Iterator helpers, ShadowRealm, etc.
       sanitizeVmContext(baseSandbox, this.securityLevel);
+
+      // TOOL BRIDGE (string mode): define __safe_callTool inside the VM realm and
+      // communicate with the host tool handler via JSON string envelopes.
+      if (config.toolBridge?.mode === 'string') {
+        const maxPayloadBytes = config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
+        const hostToolBridge = createHostToolBridge(executionContext, { updateStats: true });
+
+        Object.defineProperty(baseSandbox, '__host_callToolBridge__', {
+          value: hostToolBridge,
+          writable: false,
+          configurable: true, // allow deletion after capture
+          enumerable: false,
+        });
+
+        const bridgeInitScript = new vm.Script(`
+          (function() {
+            var bridge = __host_callToolBridge__;
+            var stringify = JSON.stringify;
+            var parse = JSON.parse;
+            var hasOwn = Object.prototype.hasOwnProperty;
+            var maxBytes = ${maxPayloadBytes};
+
+            // Remove global handle after capture (defense-in-depth)
+            try { delete globalThis.__host_callToolBridge__; } catch (e) { /* ignore */ }
+
+            function estimateBytes(str) {
+              // Conservative: UTF-8 can be up to 4 bytes per code unit.
+              return str.length * 4;
+            }
+
+            function makeError(message, name) {
+              var err = new Error(message);
+              if (name) err.name = name;
+              return err;
+            }
+
+            return async function __safe_callTool(toolName, args) {
+              if (typeof toolName !== 'string' || !toolName) {
+                throw makeError('Tool name must be a non-empty string', 'TypeError');
+              }
+              if (typeof args !== 'object' || args === null || Array.isArray(args)) {
+                throw makeError('Tool arguments must be an object', 'TypeError');
+              }
+              if (typeof bridge !== 'function') {
+                throw makeError('Tool bridge is not available', 'Error');
+              }
+
+              // Defense-in-depth: ensure JSON-serializable input.
+              var sanitizedArgs;
+              try {
+                sanitizedArgs = parse(stringify(args));
+              } catch (e) {
+                throw makeError('Tool arguments must be JSON-serializable', 'TypeError');
+              }
+
+              var requestJson;
+              try {
+                requestJson = stringify({ v: 1, tool: toolName, args: sanitizedArgs });
+              } catch (e) {
+                throw makeError('Tool request must be JSON-serializable', 'TypeError');
+              }
+
+              if (estimateBytes(requestJson) > maxBytes) {
+                throw makeError('Tool request exceeds maximum size (' + maxBytes + ' bytes)', 'RangeError');
+              }
+
+              var responseJson = await bridge(requestJson);
+              if (typeof responseJson !== 'string') {
+                throw makeError('Tool bridge returned invalid response', 'Error');
+              }
+              if (estimateBytes(responseJson) > maxBytes) {
+                throw makeError('Tool response exceeds maximum size (' + maxBytes + ' bytes)', 'RangeError');
+              }
+
+              var response;
+              try {
+                response = parse(responseJson);
+              } catch (e) {
+                throw makeError('Tool bridge returned invalid JSON', 'Error');
+              }
+
+              if (!response || typeof response !== 'object' || Array.isArray(response) || response.v !== 1) {
+                throw makeError('Tool bridge returned invalid response', 'Error');
+              }
+
+              if (response.ok === true) {
+                if (hasOwn.call(response, 'value')) return response.value;
+                return undefined;
+              }
+
+              if (response.ok === false && response.error) {
+                var msg = (typeof response.error.message === 'string') ? response.error.message : 'Tool call failed';
+                var name = (typeof response.error.name === 'string') ? response.error.name : 'Error';
+                throw makeError(msg, name);
+              }
+
+              throw makeError('Tool bridge returned invalid response', 'Error');
+            };
+          })()
+        `);
+
+        const vmSafeCallTool = bridgeInitScript.runInContext(baseSandbox) as unknown as object;
+        const proxiedVmSafeCallTool = createSecureProxy(vmSafeCallTool, {
+          levelConfig: executionContext.secureProxyConfig,
+        });
+
+        Object.defineProperty(baseSandbox, '__safe_callTool', {
+          value: proxiedVmSafeCallTool,
+          writable: false,
+          configurable: false,
+          enumerable: true,
+        });
+
+        // Best-effort cleanup if init script couldn't delete it for any reason.
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          delete (baseSandbox as any).__host_callToolBridge__;
+        } catch {
+          // ignore
+        }
+      }
 
       // Add safe runtime functions to the isolated context as non-writable, non-configurable
       // Security: Prevents runtime override attacks on __safe_* functions

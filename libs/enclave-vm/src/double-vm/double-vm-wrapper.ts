@@ -15,6 +15,7 @@ import { getBlockedPropertiesForLevel, buildBlockedPropertiesFromConfig } from '
 import { createSafeError } from '../safe-error';
 import { ReferenceResolver } from '../sidecar/reference-resolver';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
+import { createHostToolBridge } from '../tool-bridge';
 import type { DoubleVmConfig, SerializableParentValidationConfig } from './types';
 import { generateParentVmBootstrap } from './parent-vm-bootstrap';
 import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-patterns';
@@ -247,32 +248,36 @@ export class DoubleVmWrapper implements SandboxAdapter {
     });
 
     // Inject tool call proxy to host
-    const hostCallTool = this.createHostCallToolProxy(executionContext);
+    const toolBridgeMode = config.toolBridge?.mode ?? 'string';
+    const hostCallTool =
+      toolBridgeMode === 'string'
+        ? createHostToolBridge(executionContext, { updateStats: false })
+        : this.createHostCallToolProxy(executionContext);
     Object.defineProperty(parentContext, '__host_callTool__', {
       value: hostCallTool,
       writable: false,
-      configurable: false,
+      configurable: true, // Allow deletion after capture for defense-in-depth
     });
 
     // Inject mutable stats reference so parent can update counts
     Object.defineProperty(parentContext, '__host_stats__', {
       value: stats,
       writable: false,
-      configurable: false,
+      configurable: true, // Allow deletion after capture for defense-in-depth
     });
 
     // Inject abort check function
     Object.defineProperty(parentContext, '__host_abort_check__', {
       value: () => executionContext.aborted,
       writable: false,
-      configurable: false,
+      configurable: true, // Allow deletion after capture for defense-in-depth
     });
 
     // Inject policy-violation reporter (used for STRICT/SECURE fail-closed behavior)
     Object.defineProperty(parentContext, '__host_reportViolation__', {
       value: reportViolation,
       writable: false,
-      configurable: false,
+      configurable: true, // Allow deletion after capture for defense-in-depth
     });
 
     // Inject config (for globals, console limits, and memory limit)
@@ -284,7 +289,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
         memoryLimit: config.memoryLimit, // Required for pre-allocation checks in inner VM
       },
       writable: false,
-      configurable: false,
+      configurable: true, // Allow deletion after capture for defense-in-depth
     });
 
     // Inject memory tracking callback (when memoryLimit is set)
@@ -472,6 +477,9 @@ export class DoubleVmWrapper implements SandboxAdapter {
     // Whether composite reference handles are allowed
     const allowComposites = referenceConfig?.allowComposites ?? false;
 
+    const toolBridgeMode = config.toolBridge?.mode ?? 'string';
+    const toolBridgeMaxPayloadBytes = config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
+
     return generateParentVmBootstrap({
       userCode: code,
       innerTimeout: config.timeout,
@@ -485,6 +493,8 @@ export class DoubleVmWrapper implements SandboxAdapter {
       allowComposites,
       memoryLimit: config.memoryLimit,
       throwOnBlocked,
+      toolBridgeMode,
+      toolBridgeMaxPayloadBytes,
     });
   }
 
