@@ -10,6 +10,15 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## [Unreleased]
 
+## 2026-01-08
+
+Security-hardening release with stricter enclave VM sandboxing and new AST guards against JSON callback walkers.
+
+| Package    | Version | Highlights                                                                                                                                      |
+| ---------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| enclave-vm | 2.6.0   | Introduced stack-trace sanitization controls, policy-violation reporting, and safer error/memory handling across single and double VM adapters. |
+| ast-guard  | 2.3.0   | Added the JSON callback guard and expanded resource-exhaustion detection in the AgentScript preset.                                             |
+
 ## 2026-01-07
 
 Security-focused release aligning enclave sandbox globals with AST guard while hardening regex analysis and namespace sanitization.
