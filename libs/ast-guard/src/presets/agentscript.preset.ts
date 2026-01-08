@@ -16,6 +16,7 @@ import {
   NoComputedDestructuringRule,
   InfiniteLoopRule,
   ResourceExhaustionRule,
+  NoJsonCallbacksRule,
 } from '../rules';
 
 // =============================================================================
@@ -550,6 +551,12 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
       blockBigIntExponentiation: false, // Only block large exponents, not all
     }),
   );
+
+  // 16. Block JSON.stringify/parse with callback functions (property enumeration attack)
+  // Prevents "Native Walker" attacks where replacer/reviver functions are used
+  // to enumerate and leak internal sandbox globals or sensitive object properties.
+  // Vector 960: JSON.stringify(this, walker) can walk and leak global scope properties.
+  rules.push(new NoJsonCallbacksRule());
 
   return rules;
 }

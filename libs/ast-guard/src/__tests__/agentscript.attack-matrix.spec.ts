@@ -280,4 +280,132 @@ describe('AgentScript Attack Matrix', () => {
       );
     });
   });
+
+  describe('JSON Callback Attacks · Vector 960', () => {
+    it('Vector 960: blocks JSON.stringify with arrow function replacer (Native Walker leak)', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const keysFound = [];
+          const walker = (key, value) => {
+            if (key && key.length > 0) {
+              keysFound.push(key);
+            }
+            return value;
+          };
+          JSON.stringify(this, walker);
+          return keysFound;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 960: blocks JSON.stringify with inline arrow function replacer', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const result = JSON.stringify({a: 1}, (k, v) => v);
+          return result;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 960: blocks JSON.stringify with function expression replacer', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const result = JSON.stringify({a: 1}, function(k, v) { return v; });
+          return result;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 960: blocks JSON.stringify with identifier replacer (variable reference)', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const replacer = (k, v) => v;
+          const result = JSON.stringify({a: 1}, replacer);
+          return result;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(true);
+        },
+      );
+    });
+
+    it('Vector 960: blocks JSON.parse with reviver function', async () => {
+      const validator = createValidator();
+      await expectBlocked(
+        validator,
+        wrap(`
+          const result = JSON.parse('{"a":1}', (k, v) => v);
+          return result;
+        `),
+        (result) => {
+          expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(true);
+        },
+      );
+    });
+
+    it('allows JSON.stringify without replacer', async () => {
+      const validator = createValidator();
+      const result = await validator.validate(
+        wrap(`
+          const result = JSON.stringify({a: 1});
+          return result;
+        `),
+      );
+      // Should not have JSON_CALLBACK_NOT_ALLOWED error
+      expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(false);
+    });
+
+    it('allows JSON.stringify with null replacer', async () => {
+      const validator = createValidator();
+      const result = await validator.validate(
+        wrap(`
+          const result = JSON.stringify({a: 1}, null, 2);
+          return result;
+        `),
+      );
+      // Should not have JSON_CALLBACK_NOT_ALLOWED error
+      expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(false);
+    });
+
+    it('allows JSON.stringify with array replacer (property allowlist)', async () => {
+      const validator = createValidator();
+      const result = await validator.validate(
+        wrap(`
+          const result = JSON.stringify({a: 1, b: 2}, ['a']);
+          return result;
+        `),
+      );
+      // Should not have JSON_CALLBACK_NOT_ALLOWED error
+      expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(false);
+    });
+
+    it('allows JSON.parse without reviver', async () => {
+      const validator = createValidator();
+      const result = await validator.validate(
+        wrap(`
+          const result = JSON.parse('{"a":1}');
+          return result;
+        `),
+      );
+      // Should not have JSON_CALLBACK_NOT_ALLOWED error
+      expect(result.issues.some((issue) => issue.code === 'JSON_CALLBACK_NOT_ALLOWED')).toBe(false);
+    });
+  });
 });
