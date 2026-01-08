@@ -591,7 +591,7 @@ describe('ATK-COBS: Constructor Obfuscation Attack Vectors (CWE-693)', () => {
     });
   });
 
-  describe('ATK-COBS-35 to ATK-COBS-37: Host Error Prototype Chain Escape Attacks', () => {
+  describe('ATK-COBS-35 to ATK-COBS-38: Host Error Prototype Chain Escape Attacks', () => {
     it('ATK-COBS-35: should block Host Error Escape via callTool error prototype chain (Vector 35)', async () => {
       // Vector 35: The Host Error Escape
       // Purpose: Intentionally trigger a Host-side error to obtain a Host Error object,
@@ -859,6 +859,147 @@ describe('ATK-COBS: Constructor Obfuscation Attack Vectors (CWE-693)', () => {
         }
       } else {
         // Execution failed with error - also acceptable
+        expect(result.error?.message).not.toContain(secretValue);
+      }
+
+      enclave.dispose();
+    });
+
+    it('ATK-COBS-38: should block global traversal attack attempting to find Function constructor (Vector 200)', async () => {
+      // Vector 200: Global Traversal Attack
+      // Purpose: Iterate through all available globals trying to find a path to the
+      // Function constructor via prototype chains, then execute arbitrary code.
+      //
+      // Attack flow:
+      // 1. Enumerate all available globals (Array, Object, Math, JSON, String, etc.)
+      // 2. For each global, try to access constructor and climb the prototype chain
+      // 3. If Function constructor is found, use it to execute code and capture secret
+      //
+      // This is a comprehensive attack that tries multiple escape paths systematically.
+      const enclave = new Enclave({
+        securityLevel: 'SECURE',
+        validate: false, // Disable AST validation to test runtime protection
+        globals: {
+          SECRET: 'FAKE_SECRET_FOR_SECURITY_CHALLENGE',
+        },
+      });
+
+      const code = `
+        // Vector 200: Global Traversal Attack
+        // ASCII Obfuscation Helper to bypass static analysis
+        const s = (...args) => String.fromCharCode(...args);
+
+        // Generate keys dynamically to bypass AST detection
+        const kCon   = s(99,111,110,115,116,114,117,99,116,111,114);   // "constructor"
+        const kProto = s(95,95,112,114,111,116,111,95,95);             // "__proto__"
+        const kCode  = s(114,101,116,117,114,110,32,83,69,67,82,69,84); // "return SECRET"
+
+        // List of globals to traverse
+        const globals = [
+          Array, Object, Math, JSON, String, Number, Boolean, Date,
+          parseInt, parseFloat, isNaN, isFinite,
+          encodeURI, decodeURI, encodeURIComponent, decodeURIComponent
+        ];
+
+        // Try to escape via each global
+        const tryEscape = (target, name) => {
+          if (!target) return null;
+          try {
+            // Path 1: target.constructor.constructor
+            const ctor1 = target[kCon];
+            if (ctor1) {
+              const funcCtor1 = ctor1[kCon];
+              if (funcCtor1) {
+                try {
+                  const fn = funcCtor1(kCode);
+                  const result = fn();
+                  if (result) return result;
+                } catch (e) { /* blocked */ }
+              }
+            }
+
+            // Path 2: target.__proto__.constructor.constructor
+            const proto = target[kProto];
+            if (proto) {
+              const ctor2 = proto[kCon];
+              if (ctor2) {
+                const funcCtor2 = ctor2[kCon];
+                if (funcCtor2) {
+                  try {
+                    const fn = funcCtor2(kCode);
+                    const result = fn();
+                    if (result) return result;
+                  } catch (e) { /* blocked */ }
+                }
+              }
+            }
+
+            // Path 3: target.prototype.constructor.constructor (for functions)
+            const prototype = target.prototype;
+            if (prototype) {
+              const ctor3 = prototype[kCon];
+              if (ctor3) {
+                const funcCtor3 = ctor3[kCon];
+                if (funcCtor3) {
+                  try {
+                    const fn = funcCtor3(kCode);
+                    const result = fn();
+                    if (result) return result;
+                  } catch (e) { /* blocked */ }
+                }
+              }
+            }
+
+            return null;
+          } catch (e) {
+            return null;
+          }
+        };
+
+        try {
+          // Traverse all globals
+          for (let i = 0; i < globals.length; i++) {
+            const result = tryEscape(globals[i], 'global-' + i);
+            if (result) return result;
+          }
+
+          // Also try via error objects
+          try {
+            await callTool('NONEXISTENT_TOOL_XYZ', {});
+          } catch (err) {
+            const result = tryEscape(err, 'error');
+            if (result) return result;
+          }
+
+          // Also try via parallel function
+          const parallelResult = tryEscape(parallel, 'parallel');
+          if (parallelResult) return parallelResult;
+
+          // Also try via callTool function itself
+          const callToolResult = tryEscape(callTool, 'callTool');
+          if (callToolResult) return callToolResult;
+
+          return "Vector 200 failed: Global traversal complete, secret not captured.";
+
+        } catch (e) {
+          return "Vector 200 error: " + e.message;
+        }
+      `;
+
+      const result = await enclave.run(code);
+
+      // The attack should be blocked - it should NOT return the secret
+      const secretValue = 'FAKE_SECRET_FOR_SECURITY_CHALLENGE';
+
+      if (result.success) {
+        // Attack must NOT have succeeded in retrieving the secret
+        expect(result.value).not.toBe(secretValue);
+        // Value should indicate the attack failed
+        if (typeof result.value === 'string') {
+          expect(result.value).toMatch(/Vector 200 failed|Vector 200 error|blocked/i);
+        }
+      } else {
+        // Execution failed with error - also acceptable as long as it's not the secret
         expect(result.error?.message).not.toContain(secretValue);
       }
 
