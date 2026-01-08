@@ -26,6 +26,11 @@ describe('Safe Runtime Reference Integration', () => {
       maxSanitizeProperties: 500,
       maxConsoleOutputBytes: 1024 * 1024,
       maxConsoleCalls: 1000,
+      toolBridge: {
+        mode: 'string',
+        maxPayloadBytes: 5 * 1024 * 1024,
+        acknowledgeInsecureDirect: false,
+      },
     },
     stats: {
       duration: 0,
