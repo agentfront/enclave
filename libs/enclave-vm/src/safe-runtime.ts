@@ -87,6 +87,17 @@ function createSafeError(message: string, name = 'Error'): Error {
     configurable: false,
   });
 
+  // SECURITY: Override __proto__ on the error instance to prevent prototype chain escape
+  // Attack vector blocked: err.__proto__.constructor.constructor('malicious code')()
+  // By setting __proto__ to null (non-configurable, non-writable, non-enumerable),
+  // we sever the link to Error.prototype, preventing attackers from climbing to Function
+  Object.defineProperty(error, '__proto__', {
+    value: null,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+
   // Freeze the error to prevent modifications
   Object.freeze(error);
 
