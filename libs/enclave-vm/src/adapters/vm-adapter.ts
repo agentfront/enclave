@@ -152,6 +152,23 @@ function sanitizeStackTrace(stack: string | undefined, sanitize = true): string 
  */
 const STACK_TRACE_HARDENING_CODE = `
 (function() {
+  function __ag_redactStackString(stackStr) {
+    try {
+      if (typeof stackStr !== 'string' || !stackStr) return 'Error';
+      var lines = String(stackStr).split('\\n');
+      var header = lines[0] ? String(lines[0]) : 'Error';
+      var frameCount = (lines.length > 1) ? (lines.length - 1) : 0;
+      var max = frameCount;
+      if (max > 25) max = 25;
+      var out = [header];
+      for (var i = 0; i < max; i++) out.push('    at [REDACTED]');
+      if (frameCount > max) out.push('    at [REDACTED]');
+      return out.join('\\n');
+    } catch (e) {
+      return 'Error';
+    }
+  }
+
   function __ag_prepareStackTrace(err, stack) {
     try {
       var name = (err && err.name) ? String(err.name) : 'Error';
@@ -171,6 +188,32 @@ const STACK_TRACE_HARDENING_CODE = `
     } catch (e) {
       return 'Error';
     }
+  }
+
+  function __ag_lockStackGetter(proto) {
+    if (!proto) return;
+    try {
+      var desc = Object.getOwnPropertyDescriptor(proto, 'stack');
+      if (!desc || typeof desc.get !== 'function') return;
+      var origGet = desc.get;
+      var origSet = desc.set;
+      Object.defineProperty(proto, 'stack', {
+        get: function() {
+          try {
+            return __ag_redactStackString(origGet.call(this));
+          } catch (e) {
+            return 'Error';
+          }
+        },
+        set: function(v) {
+          try {
+            if (typeof origSet === 'function') return origSet.call(this, v);
+          } catch (e) {}
+        },
+        configurable: false,
+        enumerable: false
+      });
+    } catch (e) {}
   }
 
   function __ag_lockPrepareStackTrace(ErrCtor) {
@@ -193,6 +236,7 @@ const STACK_TRACE_HARDENING_CODE = `
     } catch (e) {}
   }
 
+  __ag_lockStackGetter(Error && Error.prototype);
   __ag_lockPrepareStackTrace(Error);
   __ag_lockPrepareStackTrace(EvalError);
   __ag_lockPrepareStackTrace(RangeError);

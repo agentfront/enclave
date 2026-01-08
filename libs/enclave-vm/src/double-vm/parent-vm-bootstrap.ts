@@ -208,6 +208,23 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   // We avoid including any file names/paths/line numbers in the formatted stack.
   const stackTraceHardeningCode = `
 (function() {
+  function __ag_redactStackString(stackStr) {
+    try {
+      if (typeof stackStr !== 'string' || !stackStr) return 'Error';
+      var lines = String(stackStr).split('\\n');
+      var header = lines[0] ? String(lines[0]) : 'Error';
+      var frameCount = (lines.length > 1) ? (lines.length - 1) : 0;
+      var max = frameCount;
+      if (max > 25) max = 25;
+      var out = [header];
+      for (var i = 0; i < max; i++) out.push('    at [REDACTED]');
+      if (frameCount > max) out.push('    at [REDACTED]');
+      return out.join('\\n');
+    } catch (e) {
+      return 'Error';
+    }
+  }
+
   function __ag_prepareStackTrace(err, stack) {
     try {
       var name = (err && err.name) ? String(err.name) : 'Error';
@@ -227,6 +244,32 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     } catch (e) {
       return 'Error';
     }
+  }
+
+  function __ag_lockStackGetter(proto) {
+    if (!proto) return;
+    try {
+      var desc = Object.getOwnPropertyDescriptor(proto, 'stack');
+      if (!desc || typeof desc.get !== 'function') return;
+      var origGet = desc.get;
+      var origSet = desc.set;
+      Object.defineProperty(proto, 'stack', {
+        get: function() {
+          try {
+            return __ag_redactStackString(origGet.call(this));
+          } catch (e) {
+            return 'Error';
+          }
+        },
+        set: function(v) {
+          try {
+            if (typeof origSet === 'function') return origSet.call(this, v);
+          } catch (e) {}
+        },
+        configurable: false,
+        enumerable: false
+      });
+    } catch (e) {}
   }
 
   function __ag_lockPrepareStackTrace(ErrCtor) {
@@ -249,6 +292,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     } catch (e) {}
   }
 
+  __ag_lockStackGetter(Error && Error.prototype);
   __ag_lockPrepareStackTrace(Error);
   __ag_lockPrepareStackTrace(EvalError);
   __ag_lockPrepareStackTrace(RangeError);
@@ -313,6 +357,229 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
 `.trim();
   const codeGenViolationDetectorCodeJson = JSON.stringify(codeGenViolationDetectorCode);
 
+  // Define __safe_concat/__safe_template inside the INNER VM realm.
+  //
+  // Why: when `__safe_concat` is a host/parent-realm function (injected into the inner context),
+  // stack-overflow errors can span multiple realms and Node/V8 may bypass Error.prepareStackTrace
+  // formatting entirely, leaking internal filenames like "parent-vm.js" into user-accessible stacks.
+  //
+  // By defining these helpers inside the inner realm, stack overflows stay within the inner realm
+  // and our stack-trace hardening can reliably redact frames.
+  const innerRealmSafeConcatAndTemplateCode = `
+(function() {
+${stackTraceHardeningCode}
+})();
+
+(function() {
+  var __ag_Object = Object;
+  var __ag_Reflect = (typeof Reflect !== 'undefined') ? Reflect : null;
+  var __ag_Proxy = (typeof Proxy !== 'undefined') ? Proxy : null;
+
+  // Capture intrinsics before any later global sanitization/proxying.
+  var __ag_String = String;
+  var __ag_ArrayProto = __ag_Object.getPrototypeOf([]);
+  var __ag_refIdPattern = /^__REF_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}__$/i;
+  var __ag_allowComposites = ${allowComposites};
+  var __ag_memoryLimit = ${memoryLimit};
+  var __ag_track = (typeof __host_memory_track__ === 'function') ? __host_memory_track__ : null;
+
+  // Best-effort secure proxy to block dangerous property access on these runtime helpers.
+  // This mirrors the "constructor/__proto__/prototype" defense-in-depth used elsewhere.
+  var __ag_blocked = new Set(${JSON.stringify(blockedProperties)});
+  function __ag_createSecureProxy(obj, depth) {
+    if (depth === undefined) depth = 0;
+    if (!__ag_Proxy || !__ag_Reflect) return obj;
+    if (depth > 10) return obj;
+    if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) return obj;
+
+    return new __ag_Proxy(obj, {
+      get: function(target, property, receiver) {
+        var propName = __ag_String(property);
+        if (__ag_blocked.has(propName)) {
+          throw new Error(
+            "Security violation: Access to '" + propName + "' is blocked. " +
+            "This property can be used for sandbox escape attacks."
+          );
+        }
+        var value = __ag_Reflect.get(target, property, receiver);
+        if (typeof value === 'function') {
+          // Bind methods to preserve internal slots when relevant.
+          try { value = value.bind(target); } catch (e) {}
+        }
+        return __ag_createSecureProxy(value, depth + 1);
+      },
+      apply: function(target, thisArg, args) {
+        return __ag_Reflect.apply(target, thisArg, args);
+      },
+      construct: function(target, args, newTarget) {
+        return __ag_Reflect.construct(target, args, newTarget);
+      }
+    });
+  }
+
+  function __ag_createSafeError(message, name) {
+    if (name === undefined) name = 'Error';
+    var error = new Error(message);
+    error.name = name;
+    try {
+      var SafeConstructor = __ag_Object.create(null);
+      __ag_Object.defineProperties(SafeConstructor, {
+        constructor: { value: SafeConstructor, writable: false, enumerable: false, configurable: false },
+        prototype: { value: null, writable: false, enumerable: false, configurable: false },
+        name: { value: 'SafeError', writable: false, enumerable: false, configurable: false }
+      });
+      __ag_Object.freeze(SafeConstructor);
+      __ag_Object.defineProperty(error, 'constructor', {
+        value: SafeConstructor,
+        writable: false,
+        enumerable: false,
+        configurable: false
+      });
+    } catch (e) {}
+    try {
+      __ag_Object.defineProperty(error, '__proto__', {
+        value: null,
+        writable: false,
+        enumerable: false,
+        configurable: false
+      });
+    } catch (e) {}
+    try {
+      __ag_Object.defineProperty(error, 'stack', {
+        value: undefined,
+        writable: false,
+        enumerable: false,
+        configurable: false
+      });
+    } catch (e) {}
+    try { __ag_Object.freeze(error); } catch (e) {}
+    return error;
+  }
+
+  function __ag_innerConcat(left, right) {
+    if (typeof left === 'number' && typeof right === 'number') {
+      return left + right;
+    }
+
+    if (typeof left === 'string' && typeof right === 'string') {
+      var leftLen = left.length;
+      var rightLen = right.length;
+
+      var leftIsRef = __ag_refIdPattern.test(left);
+      var rightIsRef = __ag_refIdPattern.test(right);
+
+      if (!leftIsRef && !rightIsRef) {
+        if (__ag_track && __ag_memoryLimit > 0) {
+          try { __ag_track(rightLen * 2); } catch (e) {}
+        }
+        return left + right;
+      }
+
+      if (!__ag_allowComposites) {
+        throw __ag_createSafeError(
+          'Cannot concatenate reference IDs. Pass references directly to callTool arguments. ' +
+          'Composite handles are disabled in the current security configuration.'
+        );
+      }
+
+      return {
+        __type: 'composite',
+        __operation: 'concat',
+        __parts: [left, right],
+        __estimatedSize: 0
+      };
+    }
+
+    if (typeof left === 'string' || typeof right === 'string') {
+      var leftIsRef2 = typeof left === 'string' && __ag_refIdPattern.test(left);
+      var rightIsRef2 = typeof right === 'string' && __ag_refIdPattern.test(right);
+
+      if (leftIsRef2 || rightIsRef2) {
+        if (!__ag_allowComposites) {
+          throw __ag_createSafeError(
+            'Cannot concatenate reference IDs. Pass references directly to callTool arguments. ' +
+            'Composite handles are disabled in the current security configuration.'
+          );
+        }
+
+        var leftStr = __ag_String(left);
+        var rightStr = __ag_String(right);
+        return {
+          __type: 'composite',
+          __operation: 'concat',
+          __parts: [leftStr, rightStr],
+          __estimatedSize: 0
+        };
+      }
+    }
+
+    var result = left + right;
+    if (typeof result === 'string' && __ag_track && __ag_memoryLimit > 0) {
+      try { __ag_track(result.length * 2); } catch (e) {}
+    }
+    return result;
+  }
+
+  function __ag_innerTemplate(quasis) {
+    var values = __ag_ArrayProto.slice.call(arguments, 1);
+    var parts = [];
+    var hasReferences = false;
+
+    for (var i = 0; i < quasis.length; i++) {
+      parts.push(quasis[i]);
+      if (i < values.length) {
+        var valueStr = __ag_String(values[i]);
+        parts.push(valueStr);
+        if (__ag_refIdPattern.test(valueStr)) {
+          hasReferences = true;
+        }
+      }
+    }
+
+    if (!hasReferences) {
+      var joined = parts.join('');
+      if (typeof joined === 'string' && __ag_track && __ag_memoryLimit > 0) {
+        try { __ag_track(joined.length * 2); } catch (e) {}
+      }
+      return joined;
+    }
+
+    if (!__ag_allowComposites) {
+      throw __ag_createSafeError(
+        'Cannot concatenate reference IDs in template literals. Pass references directly to callTool arguments. ' +
+        'Composite handles are disabled in the current security configuration.'
+      );
+    }
+
+    return {
+      __type: 'composite',
+      __operation: 'concat',
+      __parts: parts,
+      __estimatedSize: 0
+    };
+  }
+
+  try {
+    __ag_Object.defineProperty(globalThis, '__safe_concat', {
+      value: __ag_createSecureProxy(__ag_innerConcat, 0),
+      writable: false,
+      configurable: false,
+      enumerable: false
+    });
+  } catch (e) {}
+
+  try {
+    __ag_Object.defineProperty(globalThis, '__safe_template', {
+      value: __ag_createSecureProxy(__ag_innerTemplate, 0),
+      writable: false,
+      configurable: false,
+      enumerable: false
+    });
+  } catch (e) {}
+})();
+`.trim();
+  const innerRealmSafeConcatAndTemplateCodeJson = JSON.stringify(innerRealmSafeConcatAndTemplateCode);
+
   // Generate allowed/blocked pattern reconstruction code
   let patternReconstructCode = '';
   if (validationConfig.allowedOperationPatternSource) {
@@ -367,6 +634,104 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       // Note: we execute code directly here, and separately apply the same patch to the INNER VM.
       ${stackTraceHardeningCode}
     } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * Creates a "safe" error object that cannot be used to escape the sandbox.
+   *
+   * SECURITY: This function creates error objects with a severed prototype chain
+   * to prevent attacks that climb the prototype chain to reach the host Function constructor.
+   * It also removes the stack trace to prevent information leakage (Vector 1230).
+   *
+   * Attack vectors blocked:
+   * - err.constructor.constructor('return process.env.SECRET')()
+   * - err.__proto__.constructor.constructor('malicious code')()
+   * - err.stack leaking internal function frames and file paths (Vector 1230)
+   */
+  // Unique symbol-like marker for identifying safe errors (not a real Symbol to avoid sandbox escape)
+  var SAFE_ERROR_MARKER = '__enclave_safe_error_' + Math.random().toString(36).slice(2);
+
+  function createSafeError(message, name) {
+    if (name === undefined) name = 'Error';
+
+    // Create the real error
+    var error = new Error(message);
+    error.name = name;
+
+    // Create a null-prototype object to use as a safe "constructor"
+    // This object has no prototype chain to climb
+    var SafeConstructor = Object.create(null);
+    Object.defineProperties(SafeConstructor, {
+      // Make constructor point to itself to break the chain
+      constructor: {
+        value: SafeConstructor,
+        writable: false,
+        enumerable: false,
+        configurable: false
+      },
+      // Block prototype access
+      prototype: {
+        value: null,
+        writable: false,
+        enumerable: false,
+        configurable: false
+      },
+      // Add name for debugging
+      name: {
+        value: 'SafeError',
+        writable: false,
+        enumerable: false,
+        configurable: false
+      }
+    });
+    Object.freeze(SafeConstructor);
+
+    // Override the constructor property on the error instance
+    // This breaks the prototype chain: err.constructor.constructor no longer reaches Function
+    Object.defineProperty(error, 'constructor', {
+      value: SafeConstructor,
+      writable: false,
+      enumerable: false,
+      configurable: false
+    });
+
+    // SECURITY: Override __proto__ on the error instance to prevent prototype chain escape
+    // Attack vector blocked: err.__proto__.constructor.constructor('malicious code')()
+    Object.defineProperty(error, '__proto__', {
+      value: null,
+      writable: false,
+      enumerable: false,
+      configurable: false
+    });
+
+    // SECURITY: Remove the stack property to prevent information leakage (Vector 1230)
+    // The stack trace can reveal internal implementation details like function names,
+    // file paths, and line numbers which can be used for reconnaissance attacks.
+    Object.defineProperty(error, 'stack', {
+      value: undefined,
+      writable: false,
+      enumerable: false,
+      configurable: false
+    });
+
+    // Add a unique marker to identify this as a safe error from our runtime
+    // This is used by suspicious pattern detection to distinguish our errors from user errors
+    Object.defineProperty(error, SAFE_ERROR_MARKER, {
+      value: true,
+      writable: false,
+      enumerable: false,
+      configurable: false
+    });
+
+    // Freeze the error to prevent modifications
+    Object.freeze(error);
+
+    return error;
+  }
+
+  // Helper to check if an error is a safe error from our runtime
+  function isSafeError(e) {
+    return e && e[SAFE_ERROR_MARKER] === true;
   }
 
   // Validation configuration
@@ -451,7 +816,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
             return Reflect.get(target, property, receiver);
           }
           if (throwOnBlocked) {
-            throw new Error(
+            throw createSafeError(
               "Security violation: Access to '" + propName + "' is blocked. " +
               "This property can be used for sandbox escape attacks."
             );
@@ -480,7 +845,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         var propName = String(property);
         if (blockedPropertiesSet.has(propName)) {
           if (throwOnBlocked) {
-            throw new Error(
+            throw createSafeError(
               "Security violation: Setting '" + propName + "' is blocked. " +
               "This property can be used for sandbox escape attacks."
             );
@@ -493,7 +858,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         var propName = String(property);
         if (blockedPropertiesSet.has(propName)) {
           if (throwOnBlocked) {
-            throw new Error(
+            throw createSafeError(
               "Security violation: Defining '" + propName + "' is blocked. " +
               "This property can be used for sandbox escape attacks."
             );
@@ -514,7 +879,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         // Block configurable dangerous properties
         if (blockedPropertiesSet.has(propName)) {
           if (throwOnBlocked) {
-            throw new Error(
+            throw createSafeError(
               "Security violation: Access to property descriptor for '" + propName + "' is blocked. " +
               "This property can be used for sandbox escape attacks."
             );
@@ -562,18 +927,18 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     }
     const recentOperations = operationHistory.filter(function(h) { return now - h.timestamp < 1000; });
     if (recentOperations.length >= validationConfig.maxOperationsPerSecond) {
-      throw new Error('Operation rate limit exceeded (' + validationConfig.maxOperationsPerSecond + ' operations/second)');
+      throw createSafeError('Operation rate limit exceeded (' + validationConfig.maxOperationsPerSecond + ' operations/second)');
     }
 
     // Operation name format validation
     if (typeof operationName !== 'string' || !operationName) {
-      throw new TypeError('Operation name must be a non-empty string');
+      throw createSafeError('Operation name must be a non-empty string', 'TypeError');
     }
 
     // Operation name pattern validation (whitelist)
     if (validationConfig.validateOperationNames && typeof allowedOperationPattern !== 'undefined') {
       if (!allowedOperationPattern.test(operationName)) {
-        throw new Error('Operation "' + operationName + '" does not match allowed pattern');
+        throw createSafeError('Operation "' + operationName + '" does not match allowed pattern');
       }
     }
 
@@ -581,27 +946,25 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     if (typeof blockedOperationPatterns !== 'undefined') {
       for (var i = 0; i < blockedOperationPatterns.length; i++) {
         if (blockedOperationPatterns[i].test(operationName)) {
-          throw new Error('Operation "' + operationName + '" matches blocked pattern');
+          throw createSafeError('Operation "' + operationName + '" matches blocked pattern');
         }
       }
     }
 
     // Suspicious sequence detection
+    // NOTE: User-provided pattern functions can throw; those errors are intentionally ignored to avoid
+    // breaking the sandbox due to a buggy detector. If a detector returns true, we always fail closed.
     if (validationConfig.blockSuspiciousSequences) {
       for (var j = 0; j < suspiciousPatterns.length; j++) {
         var pattern = suspiciousPatterns[j];
+        var detected = false;
         try {
-          if (pattern.detect(operationName, args, operationHistory)) {
-            var patternError = new Error('Suspicious pattern detected: ' + pattern.description + ' [' + pattern.id + ']');
-            patternError.__suspiciousPatternError = true;
-            throw patternError;
-          }
+          detected = !!pattern.detect(operationName, args, operationHistory);
         } catch (e) {
-          // Only propagate errors from our own pattern detection (using marker property)
-          if (e.__suspiciousPatternError === true) {
-            throw e;
-          }
-          // Ignore detection errors from user-provided patterns - they may have bugs
+          detected = false;
+        }
+        if (detected) {
+          throw createSafeError('Suspicious pattern detected: ' + pattern.description + ' [' + pattern.id + ']');
         }
       }
     }
@@ -614,18 +977,18 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   function innerCallTool(toolName, args) {
     // Check if aborted
     if (hostAbortCheck()) {
-      throw new Error('Execution aborted');
+      throw createSafeError('Execution aborted');
     }
 
     // Increment count and check limit
     toolCallCount++;
     if (toolCallCount > ${maxToolCalls}) {
-      throw new Error('Maximum tool call limit exceeded (${maxToolCalls}). This limit prevents runaway script execution.');
+      throw createSafeError('Maximum tool call limit exceeded (${maxToolCalls}). This limit prevents runaway script execution.');
     }
 
     // Validate args
     if (typeof args !== 'object' || args === null || Array.isArray(args)) {
-      throw new TypeError('Tool arguments must be an object');
+      throw createSafeError('Tool arguments must be an object', 'TypeError');
     }
 
     // Double sanitization (defense in depth)
@@ -633,7 +996,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     try {
       sanitizedArgs = JSON.parse(JSON.stringify(args));
     } catch (e) {
-      throw new Error('Tool arguments must be JSON-serializable');
+      throw createSafeError('Tool arguments must be JSON-serializable');
     }
 
     // Enhanced validation
@@ -668,12 +1031,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     var iterations = 0;
     for (var item of iterable) {
       if (hostAbortCheck()) {
-        throw new Error('Execution aborted');
+        throw createSafeError('Execution aborted');
       }
       iterations++;
       hostStats.iterationCount++;
       if (iterations > ${maxIterations}) {
-        throw new Error('Maximum iteration limit exceeded (${maxIterations}). This limit prevents infinite loops.');
+        throw createSafeError('Maximum iteration limit exceeded (${maxIterations}). This limit prevents infinite loops.');
       }
       yield item;
     }
@@ -687,12 +1050,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     init();
     while (test()) {
       if (hostAbortCheck()) {
-        throw new Error('Execution aborted');
+        throw createSafeError('Execution aborted');
       }
       iterations++;
       hostStats.iterationCount++;
       if (iterations > ${maxIterations}) {
-        throw new Error('Maximum iteration limit exceeded (${maxIterations}). This limit prevents infinite loops.');
+        throw createSafeError('Maximum iteration limit exceeded (${maxIterations}). This limit prevents infinite loops.');
       }
       body();
       update();
@@ -706,12 +1069,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     var iterations = 0;
     while (test()) {
       if (hostAbortCheck()) {
-        throw new Error('Execution aborted');
+        throw createSafeError('Execution aborted');
       }
       iterations++;
       hostStats.iterationCount++;
       if (iterations > ${maxIterations}) {
-        throw new Error('Maximum iteration limit exceeded (${maxIterations}). This limit prevents infinite loops.');
+        throw createSafeError('Maximum iteration limit exceeded (${maxIterations}). This limit prevents infinite loops.');
       }
       body();
     }
@@ -724,12 +1087,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     var iterations = 0;
     do {
       if (hostAbortCheck()) {
-        throw new Error('Execution aborted');
+        throw createSafeError('Execution aborted');
       }
       iterations++;
       hostStats.iterationCount++;
       if (iterations > ${maxIterations}) {
-        throw new Error('Maximum iteration limit exceeded (${maxIterations}). This limit prevents infinite loops.');
+        throw createSafeError('Maximum iteration limit exceeded (${maxIterations}). This limit prevents infinite loops.');
       }
       body();
     } while (test());
@@ -764,7 +1127,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
 
       // References detected - check if composites are allowed
       if (!allowComposites) {
-        throw new Error(
+        throw createSafeError(
           'Cannot concatenate reference IDs. Pass references directly to callTool arguments. ' +
           'Composite handles are disabled in the current security configuration.'
         );
@@ -788,7 +1151,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       if (leftIsRef || rightIsRef) {
         // Reference detected - check if composites are allowed
         if (!allowComposites) {
-          throw new Error(
+          throw createSafeError(
             'Cannot concatenate reference IDs. Pass references directly to callTool arguments. ' +
             'Composite handles are disabled in the current security configuration.'
           );
@@ -845,7 +1208,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
 
     // References detected - check if composites are allowed
     if (!allowComposites) {
-      throw new Error(
+      throw createSafeError(
         'Cannot concatenate reference IDs in template literals. Pass references directly to callTool arguments. ' +
         'Composite handles are disabled in the current security configuration.'
       );
@@ -865,10 +1228,10 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
    */
   async function innerParallel(items, fn) {
     if (!Array.isArray(items)) {
-      throw new TypeError('parallel() requires an array');
+      throw createSafeError('parallel() requires an array', 'TypeError');
     }
     if (items.length > 100) {
-      throw new Error('parallel() is limited to 100 items');
+      throw createSafeError('parallel() is limited to 100 items');
     }
     return await Promise.all(items.map(fn));
   }
@@ -884,7 +1247,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     return function() {
       consoleStats.callCount++;
       if (consoleStats.callCount > maxConsoleCalls) {
-        throw new Error('Console call limit exceeded (max: ' + maxConsoleCalls + '). This limit prevents I/O flood attacks.');
+        throw createSafeError('Console call limit exceeded (max: ' + maxConsoleCalls + '). This limit prevents I/O flood attacks.');
       }
       var output = Array.prototype.map.call(arguments, function(a) {
         if (a === undefined) return 'undefined';
@@ -896,7 +1259,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       }).join(' ');
       consoleStats.totalBytes += output.length;
       if (consoleStats.totalBytes > maxConsoleBytes) {
-        throw new Error('Console output size limit exceeded (max: ' + maxConsoleBytes + ' bytes). This limit prevents I/O flood attacks.');
+        throw createSafeError('Console output size limit exceeded (max: ' + maxConsoleBytes + ' bytes). This limit prevents I/O flood attacks.');
       }
       method.apply(console, arguments);
     };
@@ -1084,8 +1447,6 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     __safe_for: createSecureProxy(innerFor),
     __safe_while: createSecureProxy(innerWhile),
     __safe_doWhile: createSecureProxy(innerDoWhile),
-    __safe_concat: createSecureProxy(innerConcat),
-    __safe_template: createSecureProxy(innerTemplate),
     __safe_parallel: createSecureProxy(innerParallel),
     __safe_console: createSecureProxy(innerConsole),
     callTool: createSecureProxy(innerCallTool),
@@ -1108,6 +1469,13 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       });
     }
   }
+
+  // Define __safe_concat and __safe_template in the INNER realm to avoid cross-realm stacks.
+  // (See innerRealmSafeConcatAndTemplateCode for rationale.)
+  try {
+    var innerRuntimeScript = new vm.Script(${innerRealmSafeConcatAndTemplateCodeJson}, { filename: 'inner-safe-runtime.js' });
+    innerRuntimeScript.runInContext(innerContext);
+  } catch (e) { /* ignore */ }
 
   // Create a safe Object that blocks dangerous STATIC methods
   // Prevents ATK-DATA-02 (Serialization Hijack via defineProperty)
@@ -1139,7 +1507,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   // Safe Object.create without property descriptors
   SafeObject.create = function(proto, props) {
     if (props !== undefined) {
-      throw new Error('Object.create with property descriptors is not allowed (security restriction)');
+      throw createSafeError('Object.create with property descriptors is not allowed (security restriction)');
     }
     return Object.create(proto);
   };
@@ -1150,7 +1518,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   for (var i = 0; i < DANGEROUS_OBJECT_STATIC_METHODS.length; i++) {
     (function(method) {
       SafeObject[method] = function() {
-        throw new Error('Object.' + method + ' is not allowed (security restriction: prevents property manipulation attacks)');
+        throw createSafeError('Object.' + method + ' is not allowed (security restriction: prevents property manipulation attacks)');
       };
     })(DANGEROUS_OBJECT_STATIC_METHODS[i]);
   }
@@ -1251,12 +1619,21 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     }
   }
 
-  // ============================================================
-  // Execute User Code
-  // ============================================================
+	  // ============================================================
+	  // Execute User Code
+	  // ============================================================
 
-  var userCode = ${JSON.stringify(userCode)};
-  var wrappedCode = '(async function() { ' + userCode + ' return typeof __ag_main === "function" ? await __ag_main() : undefined; })()';
+	  var userCode = ${JSON.stringify(userCode)};
+	  // IMPORTANT: For stack overflow errors (RangeError: Maximum call stack size exceeded),
+	  // Node/V8 may ignore Error.prepareStackTrace when it was installed by a different Script
+	  // than the one that triggered the overflow. To make stack sanitization reliable,
+	  // we also prepend the hardening code into the same Script that executes user code.
+	  var __ag_stackHardenPrefix = sanitizeStackTraces ? (${stackTraceHardeningCodeJson} + '\\n') : '';
+	  var wrappedCode =
+	    '(async function() { ' +
+	    __ag_stackHardenPrefix +
+	    userCode +
+	    ' return typeof __ag_main === "function" ? await __ag_main() : undefined; })()';
 
   var script = new vm.Script(wrappedCode, { filename: 'inner-agentscript.js' });
 

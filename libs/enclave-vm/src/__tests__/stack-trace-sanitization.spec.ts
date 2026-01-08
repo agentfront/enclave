@@ -352,6 +352,152 @@ describe('Stack Trace Sanitization', () => {
     });
   });
 
+  describe('Vector 1230: Functional Stack-Blaster Attack', () => {
+    /**
+     * Vector 1230: The Functional Stack-Blaster
+     * Purpose: Trigger a Stack Overflow in the host bridge to leak
+     * internal function frames without using loops or forbidden keywords.
+     *
+     * Attack pattern:
+     * 1. Create a deeply nested array (10,000 levels) using .reduce()
+     * 2. Pass it to callTool() which causes a JSON serialization error
+     * 3. Catch the error and extract e.stack to leak internal function frames
+     *
+     * Expected behavior: Error stack traces should NOT contain internal
+     * implementation details like function names, file paths, or line numbers.
+     */
+
+    it('should not leak internal stack frames when deeply nested array causes serialization error', async () => {
+      const enclave = new Enclave({
+        securityLevel: 'STRICT',
+        validate: false, // Skip AST validation to test runtime protection
+        allowFunctionsInGlobals: true, // Allow function globals for testing
+        globals: {
+          callTool: async () => ({ success: true }),
+        },
+      });
+
+      // Vector 1230 attack: create deeply nested array and try to leak stack via error
+      const result = await enclave.run(`
+        const s = String.fromCharCode;
+        try {
+          // Create a deeply nested array (1000 levels - enough to cause issues)
+          const depth = 1000;
+          const deepArray = Array(depth).fill(0).reduce((acc) => [acc], s(88));
+
+          // Try to pass it to callTool - this should fail with serialization error
+          await callTool("users.search", { data: deepArray });
+
+          return s(78, 111, 32, 69, 114, 114, 111, 114); // "No Error"
+        } catch (e) {
+          // Attack: try to capture the stack trace
+          return s(83, 84, 65, 67, 75, 58, 32) + (e.stack || e.message);
+        }
+      `);
+
+      // The result should either succeed (if serialization works) or fail safely
+      if (result.success && typeof result.value === 'string') {
+        // If we got a stack trace back, verify it doesn't leak internal details
+        const stackOutput = result.value;
+
+        // Should NOT contain internal file paths
+        expect(stackOutput).not.toContain('parent-vm.js');
+        expect(stackOutput).not.toContain('inner-agentscript.js');
+        expect(stackOutput).not.toContain('node:vm');
+        expect(stackOutput).not.toContain('/var/task/');
+
+        // Should NOT contain internal function names
+        expect(stackOutput).not.toContain('innerCallTool');
+        expect(stackOutput).not.toContain('sanitizeObject');
+        expect(stackOutput).not.toContain('createSecureProxy');
+        expect(stackOutput).not.toContain('validateOperation');
+
+        // Should NOT contain line numbers from internal code
+        expect(stackOutput).not.toMatch(/parent-vm\.js:\d+:\d+/);
+        expect(stackOutput).not.toMatch(/inner-agentscript\.js:\d+:\d+/);
+      }
+
+      enclave.dispose();
+    });
+
+    it('should not leak stack frames when JSON serialization fails in callTool', async () => {
+      const enclave = new Enclave({
+        securityLevel: 'STRICT',
+        validate: false,
+        allowFunctionsInGlobals: true, // Allow function globals for testing
+        globals: {
+          callTool: async () => ({ success: true }),
+        },
+      });
+
+      // Try to trigger JSON serialization error with circular reference
+      const result = await enclave.run(`
+        try {
+          const obj = {};
+          obj.self = obj; // Circular reference
+          await callTool("test", { data: obj });
+          return "no error";
+        } catch (e) {
+          return "STACK: " + (e.stack || "no stack") + " MESSAGE: " + e.message;
+        }
+      `);
+
+      if (result.success && typeof result.value === 'string') {
+        const output = result.value;
+
+        // Should NOT leak internal implementation details
+        expect(output).not.toContain('parent-vm.js');
+        expect(output).not.toContain('innerCallTool');
+        expect(output).not.toContain('node:vm');
+
+        // Should contain the expected error message
+        expect(output).toContain('JSON-serializable');
+      }
+
+      enclave.dispose();
+    });
+
+    it('should use safe errors that prevent prototype chain escape', async () => {
+      const enclave = new Enclave({
+        securityLevel: 'STRICT',
+        validate: false,
+        allowFunctionsInGlobals: true, // Allow function globals for testing
+        globals: {
+          callTool: async () => ({ success: true }),
+        },
+      });
+
+      // Try to escape via error.constructor.constructor chain
+      const result = await enclave.run(`
+        try {
+          // Trigger an error from the runtime
+          const obj = {};
+          obj.self = obj;
+          await callTool("test", { data: obj });
+          return "no error";
+        } catch (e) {
+          // Try to escape via constructor chain
+          try {
+            const Func = e.constructor.constructor;
+            const exploit = Func('return process.env.SECRET')();
+            return "ESCAPED: " + exploit;
+          } catch (e2) {
+            return "BLOCKED: " + e2.message;
+          }
+        }
+      `);
+
+      // Should either fail or return "BLOCKED"
+      if (result.success && typeof result.value === 'string') {
+        expect(result.value).not.toContain('ESCAPED');
+        // The constructor chain should be blocked
+        expect(result.value).toContain('BLOCKED');
+      }
+
+      enclave.dispose();
+    });
+  });
+
   describe('Pattern Coverage Documentation', () => {
     // These tests document the patterns that are covered by the sanitizer
     // They use string matching to verify the patterns work

@@ -92,17 +92,24 @@ export class NoJsonCallbacksRule implements ValidationRule {
   private checkJsonCall(node: any, context: ValidationContext): void {
     const callee = node.callee;
 
-    // Only check member expressions: JSON.method()
-    if (callee.type !== 'MemberExpression') {
+    // Normalize callee: handle both MemberExpression and ChainExpression (optional chaining)
+    // For JSON?.stringify(...), callee.type is 'ChainExpression' with callee.expression being the MemberExpression
+    let memberExpr: any;
+    if (callee.type === 'MemberExpression') {
+      memberExpr = callee;
+    } else if (callee.type === 'ChainExpression' && callee.expression?.type === 'MemberExpression') {
+      // Extract the inner MemberExpression from optional chaining: JSON?.stringify(...)
+      memberExpr = callee.expression;
+    } else {
       return;
     }
 
     // Check if it's a JSON method call
-    if (!this.isJsonObject(callee.object)) {
+    if (!this.isJsonObject(memberExpr.object)) {
       return;
     }
 
-    const methodName = this.getMethodName(callee);
+    const methodName = this.getMethodName(memberExpr);
     if (!methodName) {
       return;
     }

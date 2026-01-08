@@ -13,6 +13,8 @@
 import { BaseScorer } from '../scorer.interface';
 import { RuleBasedScorer } from './rule-based.scorer';
 import type { ExtractedFeatures, ScoringResult, RiskSignal, LocalLlmConfig, RiskLevel } from '../types';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 // Pipeline type from @huggingface/transformers
 type Pipeline = (input: string, options?: Record<string, unknown>) => Promise<{ data: number[] }>;
@@ -20,7 +22,9 @@ type Pipeline = (input: string, options?: Record<string, unknown>) => Promise<{ 
 /**
  * Default model cache directory
  */
-const DEFAULT_CACHE_DIR = './.cache/transformers';
+const DEFAULT_CACHE_DIR = join(homedir(), '.enclave', 'models');
+
+const DISABLE_MODEL_LOAD_ENV = 'ENCLAVE_DISABLE_LOCAL_LLM_MODEL';
 
 /**
  * Default model for classification
@@ -106,6 +110,10 @@ export class LocalLlmScorer extends BaseScorer {
    */
   private async _initialize(): Promise<void> {
     try {
+      if (process.env[DISABLE_MODEL_LOAD_ENV] === '1') {
+        throw new Error(`Model loading disabled via ${DISABLE_MODEL_LOAD_ENV}=1`);
+      }
+
       // Dynamic import using Function to avoid TypeScript checking for the optional dependency
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const transformers = await (Function('return import("@huggingface/transformers")')() as Promise<any>);
