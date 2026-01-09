@@ -674,10 +674,13 @@ export class Enclave {
     switch (presetName) {
       case 'agentscript':
         // AgentScript preset with security-level-aware globals
+        // Enable allowDynamicArrayFill when memoryLimit is configured
+        // because runtime Array.prototype.fill patching provides protection
         return new JSAstValidator(
           createAgentScriptPreset({
             securityLevel: this.securityLevel,
             allowedGlobals: allAllowedGlobals,
+            allowDynamicArrayFill: this.config.memoryLimit > 0,
           }),
         );
 

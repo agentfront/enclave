@@ -17,6 +17,17 @@ export interface ResourceExhaustionOptions {
   blockConstructorAccess?: boolean;
   /** Block BigInt exponentiation entirely (default: false, only blocks large exponents) */
   blockBigIntExponentiation?: boolean;
+  /**
+   * Allow dynamic (computed) array size for .fill() operations (default: false)
+   *
+   * When true, Array(dynamicSize).fill() is allowed because runtime memory
+   * patching will enforce the limit. Only enable this when memoryLimit is
+   * configured at runtime.
+   *
+   * When false (default), only literal sizes are allowed for .fill() to
+   * prevent memory exhaustion in environments without runtime protection.
+   */
+  allowDynamicArrayFill?: boolean;
 }
 
 /**
@@ -47,6 +58,7 @@ export class ResourceExhaustionRule implements ValidationRule {
       maxStringRepeat = 100000,
       blockConstructorAccess = true,
       blockBigIntExponentiation = false,
+      allowDynamicArrayFill = false, // Allow dynamic sizes when runtime protection is enabled
     } = this.options;
 
     walk.simple(context.ast as any, {
@@ -171,9 +183,10 @@ export class ResourceExhaustionRule implements ValidationRule {
                     location: this.getLocation(node),
                   });
                 }
-              } else if (arg.type !== 'Literal') {
+              } else if (arg.type !== 'Literal' && !allowDynamicArrayFill) {
                 // Variable-based or computed size - block as error since .fill() immediately allocates
                 // and we cannot verify the size statically. This prevents Vector 1110 attacks.
+                // When allowDynamicArrayFill is true, runtime memory patching handles protection.
                 context.report({
                   code: 'RESOURCE_EXHAUSTION',
                   message: `Array.fill with dynamic size is not allowed. Use a literal size <= ${maxArrayFillSize} to prevent CPU/memory exhaustion.`,

@@ -14,6 +14,7 @@ import { createSafeReflect, createSecureProxy } from '../secure-proxy';
 import { createSafeError } from '../safe-error';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 import { createHostToolBridge } from '../tool-bridge';
+import { checkSerializedSize } from '../value-sanitizer';
 
 /**
  * Sensitive patterns to redact from stack traces
@@ -828,6 +829,34 @@ export class VmAdapter implements SandboxAdapter {
               trackMemory(estimatedSize);
               return originalPadEnd.call(this, targetLength, padString);
             };
+
+            // Patch array fill - converts sparse arrays to dense (allocates memory)
+            // Vector 1110/1170: Array(dynamicSize).fill() can exhaust memory
+            // Estimate: each element uses ~8 bytes (pointer) for objects/primitives
+            var originalFill = arrayProto.fill;
+            arrayProto.fill = function(value, start, end) {
+              // Calculate actual fill range
+              var len = this.length >>> 0;
+              var relativeStart = start === undefined ? 0 : (start >> 0);
+              var relativeEnd = end === undefined ? len : (end >> 0);
+              var k = relativeStart < 0 ? Math.max(len + relativeStart, 0) : Math.min(relativeStart, len);
+              var finalEnd = relativeEnd < 0 ? Math.max(len + relativeEnd, 0) : Math.min(relativeEnd, len);
+              var fillCount = Math.max(0, finalEnd - k);
+
+              // Estimate memory: 8 bytes per element (pointer size)
+              // For objects/arrays as fill value, each creates a reference
+              var estimatedSize = fillCount * 8;
+
+              // Check single allocation limit
+              if (estimatedSize > memoryLimit) {
+                throw new RangeError('Array.fill would exceed memory limit: ' +
+                  Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
+                  Math.round(memoryLimit / 1024 / 1024) + 'MB');
+              }
+              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
+              trackMemory(estimatedSize);
+              return originalFill.call(this, value, start, end);
+            };
           })();
         `);
         patchScript.runInContext(baseSandbox);
@@ -1102,6 +1131,30 @@ export class VmAdapter implements SandboxAdapter {
           },
           stats,
         };
+      }
+
+      // SECURITY FIX (Vector 340): Check serialized size of return value BEFORE returning.
+      // Attacks can create structures with many references to the same large string that
+      // appear small in memory (strings are shared by reference) but explode during
+      // JSON serialization when each reference becomes a full copy.
+      // Example: 500 refs × 5 copies × 10KB = 25MB serialized from ~20KB in-memory
+      if (config.memoryLimit && config.memoryLimit > 0 && value !== undefined) {
+        // Use memory limit as serialization limit (or a reasonable cap)
+        // This prevents the serialization size from exceeding what we'd allow in memory
+        const maxSerializedBytes = Math.min(config.memoryLimit, 50 * 1024 * 1024); // Cap at 50MB
+        const sizeCheck = checkSerializedSize(value, maxSerializedBytes);
+
+        if (!sizeCheck.ok) {
+          return {
+            success: false,
+            error: {
+              name: 'MemoryLimitError',
+              message: `Return value serialization would exceed memory limit: ${sizeCheck.error}`,
+              code: 'SERIALIZATION_LIMIT_EXCEEDED',
+            },
+            stats,
+          };
+        }
       }
 
       return {

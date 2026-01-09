@@ -1503,6 +1503,25 @@ ${stackTraceHardeningCode}
         '  trackMemory(estimatedSize);' +
         '  return originalPadEnd.call(this, targetLength, padString);' +
         '};' +
+        // Patch array fill - converts sparse arrays to dense (allocates memory)
+        // Vector 1110/1170: Array(dynamicSize).fill() can exhaust memory
+        'var originalFill = arrayProto.fill;' +
+        'arrayProto.fill = function(value, start, end) {' +
+        '  var len = this.length >>> 0;' +
+        '  var relativeStart = start === undefined ? 0 : (start >> 0);' +
+        '  var relativeEnd = end === undefined ? len : (end >> 0);' +
+        '  var k = relativeStart < 0 ? Math.max(len + relativeStart, 0) : Math.min(relativeStart, len);' +
+        '  var finalEnd = relativeEnd < 0 ? Math.max(len + relativeEnd, 0) : Math.min(relativeEnd, len);' +
+        '  var fillCount = Math.max(0, finalEnd - k);' +
+        '  var estimatedSize = fillCount * 8;' +
+        '  if (estimatedSize > memoryLimit) {' +
+        '    throw new RangeError("Array.fill would exceed memory limit: " +' +
+        '      Math.round(estimatedSize / 1024 / 1024) + "MB > " +' +
+        '      Math.round(memoryLimit / 1024 / 1024) + "MB");' +
+        '  }' +
+        '  trackMemory(estimatedSize);' +
+        '  return originalFill.call(this, value, start, end);' +
+        '};' +
         '})();';
       var patchScript = new vm.Script(patchCode);
       patchScript.runInContext(innerContext);

@@ -10,7 +10,7 @@
 
 import * as vm from 'vm';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
-import { sanitizeValue } from '../value-sanitizer';
+import { sanitizeValue, checkSerializedSize } from '../value-sanitizer';
 import { getBlockedPropertiesForLevel, buildBlockedPropertiesFromConfig } from '../secure-proxy';
 import { createSafeError } from '../safe-error';
 import { ReferenceResolver } from '../sidecar/reference-resolver';
@@ -136,6 +136,30 @@ export class DoubleVmWrapper implements SandboxAdapter {
           },
           stats,
         };
+      }
+
+      // SECURITY FIX (Vector 340): Check serialized size of return value BEFORE returning.
+      // Attacks can create structures with many references to the same large string that
+      // appear small in memory (strings are shared by reference) but explode during
+      // JSON serialization when each reference becomes a full copy.
+      // Example: 500 refs × 5 copies × 10KB = 25MB serialized from ~20KB in-memory
+      if (config.memoryLimit && config.memoryLimit > 0 && value !== undefined) {
+        // Use memory limit as serialization limit (or a reasonable cap)
+        // This prevents the serialization size from exceeding what we'd allow in memory
+        const maxSerializedBytes = Math.min(config.memoryLimit, 50 * 1024 * 1024); // Cap at 50MB
+        const sizeCheck = checkSerializedSize(value, maxSerializedBytes);
+
+        if (!sizeCheck.ok) {
+          return {
+            success: false,
+            error: {
+              name: 'MemoryLimitError',
+              message: `Return value serialization would exceed memory limit: ${sizeCheck.error}`,
+              code: 'SERIALIZATION_LIMIT_EXCEEDED',
+            },
+            stats,
+          };
+        }
       }
 
       return {

@@ -269,6 +269,55 @@ describe('ATK-RSRC: Resource Exhaustion Prevention (CWE-400)', () => {
         enclave.dispose();
       });
     });
+
+    describe('Dynamic Array Fill with Memory Limit', () => {
+      it('should allow dynamic Array.fill when memory limit is set (runtime protection)', async () => {
+        // With memoryLimit set, allowDynamicArrayFill is automatically enabled
+        // Runtime patching of Array.prototype.fill provides protection
+        const enclave = new Enclave({ memoryLimit: 10 * 1024 * 1024 }); // 10MB
+        const code = `
+          const size = 1000; // Dynamic size
+          const arr = Array(size).fill(0);
+          return arr.length;
+        `;
+        const result = await enclave.run(code);
+        expect(result.success).toBe(true);
+        expect(result.value).toBe(1000);
+        enclave.dispose();
+      });
+
+      it('should block large dynamic Array.fill at runtime', async () => {
+        // Runtime protection blocks arrays that exceed memory limit
+        const enclave = new Enclave({ memoryLimit: 1 * 1024 * 1024 }); // 1MB
+        const code = `
+          // Try to create a huge array - will be blocked by runtime patch
+          const size = 50000000; // 50 million elements × 8 bytes = 400MB
+          const arr = Array(size).fill(0);
+          return arr.length;
+        `;
+        const result = await enclave.run(code);
+        expect(result.success).toBe(false);
+        expect(result.error?.message).toMatch(/memory limit|exceed/i);
+        enclave.dispose();
+      });
+
+      it('should allow Array.fill with computed size within limits', async () => {
+        const enclave = new Enclave({ memoryLimit: 10 * 1024 * 1024 }); // 10MB
+        const code = `
+          // Use forEach to iterate and push to array (simulates Vector 1170 pattern)
+          const size = 500;
+          const container = [];
+          Array(size).fill(0).forEach(() => {
+            container.push('item');
+          });
+          return container.length;
+        `;
+        const result = await enclave.run(code);
+        expect(result.success).toBe(true);
+        expect(result.value).toBe(500);
+        enclave.dispose();
+      });
+    });
   });
 
   // ============================================================================
@@ -1603,6 +1652,102 @@ describe('ATK-RECON-01: Global Reconnaissance Defense', () => {
       expect(value['ShadowRealm']).toBe('undefined');
       expect(value['WeakRef']).toBe('undefined');
       expect(value['FinalizationRegistry']).toBe('undefined');
+      enclave.dispose();
+    });
+  });
+
+  // ============================================================================
+  // ATK-RSRC-340: ROPE STRING EXHAUSTION VIA REPEAT + FILL
+  // Creates structure with many references to same string that explodes when serialized.
+  // In-VM memory is small (strings shared by reference) but JSON output is huge.
+  // Defense: estimateSerializedSize() checks return value size before serialization.
+  // ============================================================================
+  describe('ATK-RSRC-340: Rope String Exhaustion (repeat + fill)', () => {
+    it('should block return values that explode during serialization', async () => {
+      const enclave = new Enclave({ memoryLimit: 10 * 1024 * 1024 }); // 10MB limit
+      const code = `
+        // Vector 340: The Rope String Exhaustion
+        // Creates structure with many references to same large string
+        // In-VM: ~20KB (one string shared by reference)
+        // Serialized: 500 × 5 × 10KB = 25MB+
+
+        const s = String.fromCharCode;
+
+        // 1. Create a "Small" base string (~10KB)
+        const base = s(65).repeat(10000);
+
+        // 2. Build array with 500 references to the same string
+        const container = [];
+        Array(500).fill(0).forEach(() => {
+          container.push(base);
+        });
+
+        // 3. Multi-layer return: 5 copies of container = 2500 refs total
+        const payload = [container, container, container, container, container];
+
+        return payload;
+      `;
+      const result = await enclave.run(code);
+
+      // Should fail because serialization would exceed memory limit
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('SERIALIZATION_LIMIT_EXCEEDED');
+      expect(result.error?.message).toMatch(/serialization|exceed|limit/i);
+      enclave.dispose();
+    });
+
+    it('should allow reasonable return values with repeated references', async () => {
+      const enclave = new Enclave({ memoryLimit: 10 * 1024 * 1024 }); // 10MB limit
+      const code = `
+        // Small repetition that stays within limits
+        const base = 'x'.repeat(100); // 100 bytes
+        const container = [];
+        Array(10).fill(0).forEach(() => {
+          container.push(base);
+        });
+        // Total serialized: ~10 × 100 = 1KB - well within limit
+        return container;
+      `;
+      const result = await enclave.run(code);
+      expect(result.success).toBe(true);
+      expect(result.value).toHaveLength(10);
+      enclave.dispose();
+    });
+
+    it('should block nested repetition attacks', async () => {
+      const enclave = new Enclave({ memoryLimit: 5 * 1024 * 1024 }); // 5MB limit
+      const code = `
+        // Nested repetition: array of arrays of strings
+        const base = 'A'.repeat(1000); // 1KB string
+        const inner = [];
+        Array(100).fill(0).forEach(() => inner.push(base));
+        const outer = [];
+        Array(100).fill(0).forEach(() => outer.push(inner));
+        // Total: 100 × 100 × 1KB = 10MB (exceeds 5MB limit)
+        return outer;
+      `;
+      const result = await enclave.run(code);
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('SERIALIZATION_LIMIT_EXCEEDED');
+      enclave.dispose();
+    });
+
+    it('should handle object structures with repeated string values', async () => {
+      const enclave = new Enclave({ memoryLimit: 5 * 1024 * 1024 }); // 5MB limit
+      const code = `
+        // Object-based repetition attack
+        const secret = 'S'.repeat(10000); // 10KB string
+        const entries = {};
+        Array(1000).fill(0).forEach((_, i) => {
+          entries['key' + i] = secret; // 1000 refs to same 10KB string
+        });
+        // Total serialized: 1000 × 10KB = 10MB (clearly exceeds 5MB limit)
+        return entries;
+      `;
+      const result = await enclave.run(code);
+      // Should fail due to serialization limit
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('SERIALIZATION_LIMIT_EXCEEDED');
       enclave.dispose();
     });
   });
