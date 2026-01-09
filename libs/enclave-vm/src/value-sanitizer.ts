@@ -325,7 +325,7 @@ export function estimateSerializedSize(
   // JSON escaping can increase size, estimate 1.1x for escapes + 2 bytes for quotes
   if (type === 'string') {
     const str = value as string;
-    // Estimate UTF-8 bytes (rough: ASCII = 1, non-ASCII up to 3)
+    // Estimate UTF-8 bytes
     let bytes = 2; // quotes
     for (let i = 0; i < str.length; i++) {
       const code = str.charCodeAt(i);
@@ -338,8 +338,17 @@ export function estimateSerializedSize(
         }
       } else if (code < 2048) {
         bytes += 2; // 2-byte UTF-8
+      } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+        // High surrogate - check for low surrogate pair (emoji, supplementary chars)
+        const nextCode = str.charCodeAt(i + 1);
+        if (nextCode >= 0xdc00 && nextCode <= 0xdfff) {
+          bytes += 4; // 4-byte UTF-8 for surrogate pair
+          i++; // Skip the low surrogate
+        } else {
+          bytes += 3; // Unpaired high surrogate (3-byte UTF-8)
+        }
       } else {
-        bytes += 3; // 3-byte UTF-8
+        bytes += 3; // 3-byte UTF-8 (BMP characters U+0800 to U+FFFF)
       }
     }
     if (maxBytes > 0 && bytes > maxBytes) {

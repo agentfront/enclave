@@ -672,9 +672,9 @@ describe('ATK-COBS: Constructor Obfuscation Attack Vectors (CWE-693)', () => {
         }
       `;
 
-      const result = await enclave.run(code);
-
       try {
+        const result = await enclave.run(code);
+
         // The attack should be blocked - it should NOT return the secret from host process.env
         // If the attack succeeds, it returns the env var string.
         // If blocked, it returns a "blocked:" message, undefined, or throws an error.
@@ -691,15 +691,14 @@ describe('ATK-COBS: Constructor Obfuscation Attack Vectors (CWE-693)', () => {
           expect(result.error?.message).not.toContain(secretValue);
         }
       } finally {
-        // Restore env for other tests
+        // Always cleanup: restore env and dispose enclave
         if (prevEnv === undefined) {
           delete process.env[envKey];
         } else {
           process.env[envKey] = prevEnv;
         }
+        enclave.dispose();
       }
-
-      enclave.dispose();
     });
 
     it("ATK-COBS-36: should block Simpleton's Ladder attack via error prototype chain", async () => {
@@ -771,27 +770,29 @@ describe('ATK-COBS: Constructor Obfuscation Attack Vectors (CWE-693)', () => {
         }
       `;
 
-      const result = await enclave.run(code);
+      try {
+        const result = await enclave.run(code);
 
-      // The attack should be blocked - it should NOT return the secret
-      // If the attack succeeds, it returns the secret string
-      // If blocked, it returns a "blocked:" message, undefined/null, or throws an error
-      const secretValue = 'FAKE_SECRET_FOR_SECURITY_CHALLENGE';
+        // The attack should be blocked - it should NOT return the secret
+        // If the attack succeeds, it returns the secret string
+        // If blocked, it returns a "blocked:" message, undefined/null, or throws an error
+        const secretValue = 'FAKE_SECRET_FOR_SECURITY_CHALLENGE';
 
-      if (result.success) {
-        // Attack must NOT have succeeded in retrieving the secret
-        expect(result.value).not.toBe(secretValue);
-        // Value should either be undefined/null (blocked) or contain "blocked" message
-        if (typeof result.value === 'string') {
-          expect(result.value).toMatch(/blocked/i);
+        if (result.success) {
+          // Attack must NOT have succeeded in retrieving the secret
+          expect(result.value).not.toBe(secretValue);
+          // Value should either be undefined/null (blocked) or contain "blocked" message
+          if (typeof result.value === 'string') {
+            expect(result.value).toMatch(/blocked/i);
+          }
+          // undefined/null is also acceptable - means the attack was blocked
+        } else {
+          // Execution failed with error - this is also acceptable as long as it's not the secret
+          expect(result.error?.message).not.toContain(secretValue);
         }
-        // undefined/null is also acceptable - means the attack was blocked
-      } else {
-        // Execution failed with error - this is also acceptable as long as it's not the secret
-        expect(result.error?.message).not.toContain(secretValue);
+      } finally {
+        enclave.dispose();
       }
-
-      enclave.dispose();
     });
 
     it('ATK-COBS-37: should block __proto__ access on safe errors to prevent prototype chain escape', async () => {

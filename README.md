@@ -45,7 +45,7 @@ const result = await enclave.execute('return 1 + 2');
 console.log(result.value); // 3
 ```
 
-**[Read the full documentation →](https://agentfront.dev/docs/guides/enclave)**
+**[Read the full documentation →](https://enclave.agentfront.dev)**
 
 ---
 

@@ -71,16 +71,16 @@
                 "tag": "latest",
                 "group": "Get Started",
                 "pages": [
-                  "docs/getting-started/welcome",
-                  "docs/getting-started/installation"
+                  "docs/docs/getting-started/welcome",
+                  "docs/docs/getting-started/installation"
                 ]
               },
               {
                 "group": "Libraries",
                 "pages": [
-                  "docs/libraries/enclave",
-                  "docs/libraries/ast-guard",
-                  "docs/libraries/vectoriadb"
+                  "docs/docs/libraries/enclave",
+                  "docs/docs/libraries/ast-guard",
+                  "docs/docs/libraries/vectoriadb"
                 ]
               }
             ]

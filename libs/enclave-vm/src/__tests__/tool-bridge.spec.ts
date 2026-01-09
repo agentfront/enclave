@@ -34,6 +34,8 @@ describe('Tool Bridge', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.message).toMatch(/Tool response exceeds maximum size/i);
+    // Note: The internal error code TOOL_BRIDGE_RESPONSE_TOO_LARGE is wrapped
+    // by the double-vm layer, so we verify via message pattern instead
 
     enclave.dispose();
   });
@@ -51,6 +53,8 @@ describe('Tool Bridge', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.message).toMatch(/Tool request exceeds maximum size/i);
+    // Note: The internal error code TOOL_BRIDGE_REQUEST_TOO_LARGE is wrapped
+    // by the double-vm layer, so we verify via message pattern instead
 
     enclave.dispose();
   });
