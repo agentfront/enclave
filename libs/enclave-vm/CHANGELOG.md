@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-01-09
+
+### Added
+
+- Introduced a JSON-based tool bridge with configurable modes and payload limits, exposed via the new `toolBridge` option on `EnclaveConfig`.
+- Added serialized size estimators (`estimateSerializedSize`/`checkSerializedSize`) and enforce them before returning sandbox values when a memory limit is configured.
+
+### Changed
+
+- Enclave construction now normalizes `toolBridge` settings and requires explicit acknowledgement before enabling insecure direct bridging.
+
+### Security
+
+- `Array.prototype.fill` is now memory-tracked inside both VM adapters to block sparse-array exhaustion attacks.
+- Return paths reject values whose serialized size would exceed the configured memory limit, preventing Vector 340 serialization amplification.
+- All host-generated errors now go through centralized `createSafeError`, severing prototype chains and stripping host stack details.
+- String-mode tool bridge validates JSON payloads, enforces payload caps, sanitizes arguments/results, and updates tool-call stats before invoking host handlers.
+
 ## [2.6.0] - 2026-01-08
 
 ### Added
