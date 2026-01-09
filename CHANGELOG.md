@@ -10,6 +10,15 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## [Unreleased]
 
+## 2026-01-09
+
+Security-focused updates to enclave-vm plus a new AST Guard option for controlled Array.fill usage.
+
+| Package    | Version | Highlights                                                                                    |
+| ---------- | ------- | --------------------------------------------------------------------------------------------- |
+| enclave-vm | 2.7.0   | Adds the JSON tool bridge, serialized size enforcement, and multiple security hardenings.     |
+| ast-guard  | 2.4.0   | Adds the allowDynamicArrayFill option to the resource exhaustion rule and AgentScript preset. |
+
 ## 2026-01-08
 
 Security-hardening release with stricter enclave VM sandboxing and new AST guards against JSON callback walkers.

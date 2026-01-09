@@ -1,10 +1,16 @@
 <br/>
 <div align="center">
-<img src="./assets/logo.dark.svg" alt="Enclave" width="80">
+
+<picture>
+  <!-- Source for dark mode -->
+  <source width="100" media="(prefers-color-scheme: dark)" srcset="https://github.com/agentfront/enclave/blob/main/assets/logo.dark.svg">
+  <!-- Fallback image for light mode and unsupported browsers -->
+  <img width="100" src="https://github.com/agentfront/enclave/blob/main/assets/logo.light.svg" alt="An image that changes based on the user's light or dark mode preference.">
+</picture>
 
 # Enclave
 
-## Secure sandbox runtime for AI agents
+**Secure sandbox runtime for AI agents**
 
 [![npm ast-guard](https://img.shields.io/npm/v/ast-guard.svg?label=ast-guard&color=e8a045)](https://www.npmjs.com/package/ast-guard)
 [![npm vectoriadb](https://img.shields.io/npm/v/vectoriadb.svg?label=vectoriadb&color=e8a045)](https://www.npmjs.com/package/vectoriadb)
