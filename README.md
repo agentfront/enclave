@@ -29,7 +29,7 @@ npm install vectoriadb    # Vector search
 
 ## Why Enclave?
 
-- **Bank-grade security** - 1000+ security tests, 100% CVE coverage
+- **Extensive security testing** - See [security audit](./libs/enclave-vm/SECURITY-AUDIT.md) for details
 - **Defense in depth** - 6 security layers for LLM-generated code
 - **Zero-config** - Works out of the box with sensible defaults
 - **TypeScript-first** - Full type safety and excellent DX
@@ -39,10 +39,24 @@ npm install vectoriadb    # Vector search
 ```typescript
 import { Enclave } from 'enclave-vm';
 
-const enclave = new Enclave({ securityLevel: 'SECURE' });
-const result = await enclave.execute('return 1 + 2');
+const enclave = new Enclave({
+  securityLevel: 'SECURE',
+  toolHandler: async (name, args) => {
+    if (name === 'getUser') return { id: args.id, name: 'Alice' };
+    throw new Error(`Unknown tool: ${name}`);
+  },
+});
 
-console.log(result.value); // 3
+const result = await enclave.run(`
+  const user = await callTool('getUser', { id: 123 });
+  return { greeting: 'Hello, ' + user.name };
+`);
+
+if (result.success) {
+  console.log(result.value); // { greeting: 'Hello, Alice' }
+}
+
+enclave.dispose();
 ```
 
 **[Read the full documentation →](https://enclave.agentfront.dev)**

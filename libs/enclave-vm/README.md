@@ -8,13 +8,13 @@
 
 The enclave-vm package provides a hardened execution environment for running LLM-generated JavaScript code (AgentScript) safely. It combines AST validation, code transformation, runtime guards, and VM sandboxing to prevent sandbox escapes and resource exhaustion.
 
-## Bank-Grade Security
+## Security
 
 | Metric         | Value                                                                  |
 | -------------- | ---------------------------------------------------------------------- |
-| Security Tests | 1184+ tests, 100% pass rate                                            |
+| Security Tests | 1100+ tests, 100% pass rate                                            |
 | Attack Vectors | 150+ blocked (including function gadget attacks)                       |
-| CVE Protection | 100% (vm2, isolated-vm, node-vm exploits)                              |
+| CVE Protection | Covers known vm2, isolated-vm, node-vm exploits                        |
 | Defense Layers | 6 (Pre-Scanner, AST, Transform, Scoring, VM/Worker Pool, Sanitization) |
 
 For the full security audit report, see [SECURITY-AUDIT.md](./SECURITY-AUDIT.md).

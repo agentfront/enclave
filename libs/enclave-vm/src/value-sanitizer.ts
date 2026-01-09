@@ -120,9 +120,14 @@ export function sanitizeValue(
 
   const type = typeof value;
 
-  // Primitives are safe (including BigInt - caller is responsible for serialization)
-  if (type === 'string' || type === 'number' || type === 'boolean' || type === 'bigint') {
+  // Primitives are safe
+  if (type === 'string' || type === 'number' || type === 'boolean') {
     return value;
+  }
+
+  // BigInt: Convert to string for JSON-safety (JSON.stringify throws on raw BigInt)
+  if (type === 'bigint') {
+    return String(value);
   }
 
   // Functions are NOT safe - prevent code injection
@@ -349,10 +354,12 @@ export function estimateSerializedSize(
   maxDepth = 2000,
   currentPath: Set<object> = new Set(),
 ): number {
-  // Depth limit to prevent stack overflow
+  // Depth limit to prevent stack overflow - reject deeply nested structures
   if (depth > maxDepth) {
-    // For very deep structures, we estimate conservatively rather than failing
-    return 20; // Estimate a small object placeholder
+    throw new Error(
+      `Structure exceeds maximum nesting depth (${maxDepth}). ` +
+        `Deeply nested structures are rejected to prevent stack overflow attacks.`,
+    );
   }
 
   // Handle null/undefined
