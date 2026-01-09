@@ -1,23 +1,39 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "name": "Enclave",
-  "description": "Secure JavaScript execution and vector search libraries for AI agents",
+  "description": "Secure JavaScript sandbox for AI agent code execution. Protects against code injection, prototype pollution, and sandbox escapes.",
   "appearance": {
-    "default": "system",
+    "default": "dark",
     "strict": false
   },
-  "theme": "almond",
+  "theme": "venus",
   "favicon": {
     "light": "/favicon.ico",
     "dark": "/favicon.ico"
   },
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#e8a045",
+    "light": "#f0b865",
+    "dark": "#c78935",
+    "background": {
+      "dark": "#0a0908",
+      "light": "#fdfbf7"
+    }
+  },
+  "metadata": {
+    "og:site_name": "Enclave Documentation",
+    "og:image": "https://enclave.agentfront.dev/og-image.png",
+    "og:locale": "en_US",
+    "twitter:card": "summary_large_image",
+    "twitter:site": "@agentfront",
+    "twitter:creator": "@agentfront"
   },
   "navbar": {
     "links": [
+      {
+        "href": "https://enclave.agentfront.dev",
+        "label": "Playground"
+      },
       {
         "href": "https://github.com/agentfront/enclave",
         "icon": "github",
@@ -29,8 +45,17 @@
       "type": "github"
     }
   },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/agentfront/enclave",
+      "x": "https://x.com/agentfront"
+    }
+  },
   "search": {
     "prompt": "Search Enclave docs..."
+  },
+  "seo": {
+    "indexHiddenPages": false
   },
   "navigation": {
     "dropdowns": [
@@ -53,9 +78,9 @@
               {
                 "group": "Libraries",
                 "pages": [
+                  "docs/libraries/enclave",
                   "docs/libraries/ast-guard",
-                  "docs/libraries/vectoriadb",
-                  "docs/libraries/enclave-vm"
+                  "docs/libraries/vectoriadb"
                 ]
               }
             ]

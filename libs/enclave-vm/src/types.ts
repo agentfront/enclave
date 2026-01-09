@@ -442,6 +442,40 @@ export interface ExecutionStats {
 /**
  * Configuration for Enclave execution
  */
+export type ToolBridgeMode = 'string' | 'direct';
+
+/**
+ * Tool bridge configuration between the sandbox and host runtime.
+ *
+ * By default, tool calls use a JSON string request/response envelope to avoid
+ * leaking host-realm objects (Errors, Promises, Functions) into the sandbox.
+ *
+ * SECURITY WARNING: `mode: 'direct'` disables the string bridge and passes
+ * objects directly across realms. This is riskier and requires an explicit
+ * acknowledgement.
+ */
+export interface ToolBridgeConfig {
+  /**
+   * Bridge mode.
+   * @default 'string'
+   */
+  mode?: ToolBridgeMode;
+
+  /**
+   * Maximum size (in bytes) of a tool request or response payload.
+   * @default 5 * 1024 * 1024 (5MB)
+   */
+  maxPayloadBytes?: number;
+
+  /**
+   * Required acknowledgement to enable insecure direct bridging.
+   *
+   * When `mode` is set to `'direct'`, enclave construction throws unless this
+   * field is explicitly set to `true`.
+   */
+  acknowledgeInsecureDirect?: boolean;
+}
+
 export interface EnclaveConfig {
   /**
    * Maximum execution time in milliseconds
@@ -496,6 +530,13 @@ export interface EnclaveConfig {
    * This function is called when the script calls __safe_callTool
    */
   toolHandler?: ToolHandler;
+
+  /**
+   * Tool bridge configuration between the sandbox and host.
+   *
+   * Default: `{ mode: 'string', maxPayloadBytes: 5MB }`
+   */
+  toolBridge?: ToolBridgeConfig;
 
   /**
    * Maximum total console output in bytes

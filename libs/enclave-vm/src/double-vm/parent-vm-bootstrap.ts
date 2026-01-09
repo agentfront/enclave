@@ -31,6 +31,18 @@ export interface ParentVmBootstrapOptions {
   maxToolCalls: number;
 
   /**
+   * Tool bridge mode used for host tool calls.
+   * @default 'string'
+   */
+  toolBridgeMode: 'string' | 'direct';
+
+  /**
+   * Maximum size (in bytes) of a tool request/response payload.
+   * @default 5 * 1024 * 1024 (5MB)
+   */
+  toolBridgeMaxPayloadBytes: number;
+
+  /**
    * Whether to sanitize stack traces in the sandbox.
    * Prevents host stack frame/path leakage via `error.stack` when user code catches errors.
    */
@@ -191,6 +203,8 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     innerTimeout,
     maxIterations,
     maxToolCalls,
+    toolBridgeMode = 'string',
+    toolBridgeMaxPayloadBytes = 5 * 1024 * 1024,
     sanitizeStackTraces,
     securityLevel,
     validationConfig,
@@ -437,7 +451,16 @@ ${stackTraceHardeningCode}
   function __ag_createSafeError(message, name) {
     if (name === undefined) name = 'Error';
     var error = new Error(message);
-    error.name = name;
+    // NOTE: Use __ag_Object.defineProperty instead of direct assignment because
+    // Error.prototype.name is frozen, and in strict mode direct assignment fails.
+    try {
+      __ag_Object.defineProperty(error, 'name', {
+        value: name,
+        writable: true,
+        enumerable: false,
+        configurable: true
+      });
+    } catch (e) {}
     try {
       var SafeConstructor = __ag_Object.create(null);
       __ag_Object.defineProperties(SafeConstructor, {
@@ -627,19 +650,30 @@ ${stackTraceHardeningCode}
 // Parent VM Bootstrap Script
 // This code runs inside the Parent VM and creates/manages the Inner VM
 
-(async function parentVmMain() {
-  // Get injected references from host
-  const vm = __host_vm_module__;
-  const hostCallTool = __host_callTool__;
-  const hostStats = __host_stats__;
-  const hostAbortCheck = __host_abort_check__;
-  const hostReportViolation = __host_reportViolation__;
-  const hostConfig = __host_config__;
+  (async function parentVmMain() {
+    // Get injected references from host
+    const vm = __host_vm_module__;
+    const hostCallTool = __host_callTool__;
+    const hostStats = __host_stats__;
+    const hostAbortCheck = __host_abort_check__;
+    const hostReportViolation = __host_reportViolation__;
+    const hostConfig = __host_config__;
+    const toolBridgeMode = ${JSON.stringify(toolBridgeMode)};
+    const toolBridgeMaxPayloadBytes = ${toolBridgeMaxPayloadBytes};
 
-  // Policy violation reporter (best-effort; host decides how to handle based on security level)
-  function __ag_reportViolation(kind) {
-    try {
-      if (typeof hostReportViolation === 'function') hostReportViolation(kind);
+    // Defense-in-depth: remove direct access to host bridge references after capture.
+    // If the inner VM escapes to the parent global, these names should not be discoverable.
+    try { delete globalThis.__host_callTool__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_vm_module__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_stats__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_abort_check__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_reportViolation__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_config__; } catch (e) { /* ignore */ }
+
+    // Policy violation reporter (best-effort; host decides how to handle based on security level)
+    function __ag_reportViolation(kind) {
+      try {
+        if (typeof hostReportViolation === 'function') hostReportViolation(kind);
     } catch (e) { /* ignore */ }
   }
 
@@ -673,7 +707,18 @@ ${stackTraceHardeningCode}
 
     // Create the real error
     var error = new Error(message);
-    error.name = name;
+    // NOTE: Use Object.defineProperty instead of direct assignment because
+    // Error.prototype.name is frozen, and in strict mode direct assignment fails.
+    Object.defineProperty(error, 'name', {
+      value: name,
+      writable: true,
+      enumerable: false,
+      configurable: true
+    });
+
+    // CRITICAL: sever the *actual* prototype chain (native getters / Object.getPrototypeOf).
+    // A shadowing __proto__ data property is not sufficient.
+    Object.setPrototypeOf(error, null);
 
     // Create a null-prototype object to use as a safe "constructor"
     // This object has no prototype chain to climb
@@ -1031,7 +1076,63 @@ ${stackTraceHardeningCode}
 
     // Forward to host and wrap the Promise + result in secure proxies
     // This prevents access to Promise.constructor and result object constructors
-    var promise = hostCallTool(toolName, sanitizedArgs);
+    var promise;
+    if (toolBridgeMode === 'string') {
+      var requestJson;
+      try {
+        requestJson = JSON.stringify({ v: 1, tool: toolName, args: sanitizedArgs });
+      } catch (e) {
+        throw createSafeError('Tool request must be JSON-serializable');
+      }
+
+      // Conservative byte estimate: UTF-8 is at most 4 bytes per code unit.
+      if (requestJson && (requestJson.length * 4) > toolBridgeMaxPayloadBytes) {
+        throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
+      }
+
+      promise = hostCallTool(requestJson).then(function(responseJson) {
+        if (typeof responseJson !== 'string') {
+          throw createSafeError('Tool bridge returned non-string response');
+        }
+
+        if ((responseJson.length * 4) > toolBridgeMaxPayloadBytes) {
+          throw createSafeError('Tool response exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
+        }
+
+        var response;
+        try {
+          response = JSON.parse(responseJson);
+        } catch (e) {
+          throw createSafeError('Tool bridge returned invalid JSON');
+        }
+
+        if (!response || typeof response !== 'object' || Array.isArray(response)) {
+          throw createSafeError('Tool bridge returned invalid response');
+        }
+
+        if (response.v !== 1) {
+          throw createSafeError('Tool bridge protocol version mismatch');
+        }
+
+        if (response.ok === true) {
+          if (Object.prototype.hasOwnProperty.call(response, 'value')) {
+            return response.value;
+          }
+          return undefined;
+        }
+
+        if (response.ok === false) {
+          var err = response.error;
+          var msg = (err && typeof err.message === 'string') ? err.message : 'Tool call failed';
+          var name = (err && typeof err.name === 'string') ? err.name : 'Error';
+          throw createSafeError(msg, name);
+        }
+
+        throw createSafeError('Tool bridge returned invalid response');
+      });
+    } else {
+      promise = hostCallTool(toolName, sanitizedArgs);
+    }
 
     // Create a secure promise that wraps both the promise object and its result
     // Note: We can't just wrap the promise because Promise.then/catch/finally must work
@@ -1401,6 +1502,25 @@ ${stackTraceHardeningCode}
         '  }' +
         '  trackMemory(estimatedSize);' +
         '  return originalPadEnd.call(this, targetLength, padString);' +
+        '};' +
+        // Patch array fill - converts sparse arrays to dense (allocates memory)
+        // Vector 1110/1170: Array(dynamicSize).fill() can exhaust memory
+        'var originalFill = arrayProto.fill;' +
+        'arrayProto.fill = function(value, start, end) {' +
+        '  var len = this.length >>> 0;' +
+        '  var relativeStart = start === undefined ? 0 : (start >> 0);' +
+        '  var relativeEnd = end === undefined ? len : (end >> 0);' +
+        '  var k = relativeStart < 0 ? Math.max(len + relativeStart, 0) : Math.min(relativeStart, len);' +
+        '  var finalEnd = relativeEnd < 0 ? Math.max(len + relativeEnd, 0) : Math.min(relativeEnd, len);' +
+        '  var fillCount = Math.max(0, finalEnd - k);' +
+        '  var estimatedSize = fillCount * 8;' +
+        '  if (estimatedSize > memoryLimit) {' +
+        '    throw new RangeError("Array.fill would exceed memory limit: " +' +
+        '      Math.round(estimatedSize / 1024 / 1024) + "MB > " +' +
+        '      Math.round(memoryLimit / 1024 / 1024) + "MB");' +
+        '  }' +
+        '  trackMemory(estimatedSize);' +
+        '  return originalFill.call(this, value, start, end);' +
         '};' +
         '})();';
       var patchScript = new vm.Script(patchCode);

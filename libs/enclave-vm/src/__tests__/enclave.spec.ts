@@ -440,7 +440,8 @@ describe('Enclave', () => {
       const result = await enclave.run(code);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Tool call failed');
+      // The string bridge preserves the original error message from the tool handler
+      expect(result.error?.message).toContain('Tool execution failed');
 
       enclave.dispose();
     });

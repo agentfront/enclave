@@ -53,6 +53,11 @@ import { ScoringGate, ScoringGateResult } from './scoring';
 const DEFAULT_SECURITY_LEVEL: SecurityLevel = 'STANDARD';
 
 /**
+ * Default maximum tool bridge payload size.
+ */
+const DEFAULT_TOOL_BRIDGE_MAX_PAYLOAD_BYTES = 5 * 1024 * 1024; // 5MB
+
+/**
  * Get merged configuration from security level and explicit options
  * Explicit options override security level defaults
  */
@@ -192,6 +197,27 @@ export class Enclave {
       });
     }
 
+    // Normalize tool bridge configuration (defaults + validation)
+    const normalizedToolBridge = {
+      mode: options.toolBridge?.mode ?? 'string',
+      maxPayloadBytes: options.toolBridge?.maxPayloadBytes ?? DEFAULT_TOOL_BRIDGE_MAX_PAYLOAD_BYTES,
+      acknowledgeInsecureDirect: options.toolBridge?.acknowledgeInsecureDirect ?? false,
+    };
+
+    if (normalizedToolBridge.mode !== 'string' && normalizedToolBridge.mode !== 'direct') {
+      throw new TypeError(`Invalid toolBridge.mode: ${String(normalizedToolBridge.mode)}`);
+    }
+
+    if (!Number.isFinite(normalizedToolBridge.maxPayloadBytes) || normalizedToolBridge.maxPayloadBytes <= 0) {
+      throw new TypeError('toolBridge.maxPayloadBytes must be a positive, finite number');
+    }
+
+    if (normalizedToolBridge.mode === 'direct' && normalizedToolBridge.acknowledgeInsecureDirect !== true) {
+      throw new Error(
+        `toolBridge.mode='direct' is insecure; set toolBridge.acknowledgeInsecureDirect=true to enable it explicitly.`,
+      );
+    }
+
     // Merge with defaults, applying security level configuration
     // Note: We explicitly set secureProxyConfig AFTER spreading options to ensure
     // the merged config from securityConfig takes precedence over partial options
@@ -206,6 +232,7 @@ export class Enclave {
       maxConsoleOutputBytes: securityConfig.maxConsoleOutputBytes,
       maxConsoleCalls: securityConfig.maxConsoleCalls,
       ...options,
+      toolBridge: normalizedToolBridge,
       // secureProxyConfig must come AFTER options spread to use the merged config
       secureProxyConfig: securityConfig.secureProxyConfig,
       globals: {
@@ -647,10 +674,13 @@ export class Enclave {
     switch (presetName) {
       case 'agentscript':
         // AgentScript preset with security-level-aware globals
+        // Enable allowDynamicArrayFill when memoryLimit is configured
+        // because runtime Array.prototype.fill patching provides protection
         return new JSAstValidator(
           createAgentScriptPreset({
             securityLevel: this.securityLevel,
             allowedGlobals: allAllowedGlobals,
+            allowDynamicArrayFill: this.config.memoryLimit > 0,
           }),
         );
 

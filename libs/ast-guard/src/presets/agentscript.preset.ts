@@ -217,6 +217,20 @@ export interface AgentScriptOptions {
    * Default: false
    */
   requireCallTool?: boolean;
+
+  /**
+   * Allow dynamic (computed) array size for .fill() operations
+   *
+   * When true, `Array(dynamicSize).fill()` is allowed because runtime memory
+   * patching will enforce the limit. Only enable this when memoryLimit is
+   * configured at runtime.
+   *
+   * When false (default), only literal sizes are allowed for .fill() to
+   * prevent memory exhaustion in environments without runtime protection.
+   *
+   * Default: false
+   */
+  allowDynamicArrayFill?: boolean;
 }
 
 /**
@@ -551,6 +565,8 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
       maxStringRepeat: 100000, // Block 'x'.repeat(100001) and larger
       blockConstructorAccess: true, // Block obj.constructor and obj['constructor']
       blockBigIntExponentiation: false, // Only block large exponents, not all
+      // Allow dynamic Array.fill when runtime protection is enabled (memoryLimit set)
+      allowDynamicArrayFill: options.allowDynamicArrayFill ?? false,
     }),
   );
 

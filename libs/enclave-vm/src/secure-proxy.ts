@@ -16,6 +16,7 @@
  */
 
 import type { SecureProxyLevelConfig, SecurityLevel } from './types';
+import { createSafeError } from './safe-error';
 
 /**
  * Categorized blocked properties for defense-in-depth
@@ -216,7 +217,7 @@ export function createSafeReflect(securityLevel: SecurityLevel): typeof Reflect 
             ctorTarget === GeneratorFunction ||
             ctorTarget === AsyncGeneratorFunction
           ) {
-            throw new Error('Reflect.construct with function constructors is blocked');
+            throw createSafeError('Reflect.construct with function constructors is blocked', 'SecurityError');
           }
           return Reflect.construct(
             ctorTarget as new (...args: unknown[]) => unknown,
@@ -499,9 +500,10 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
 
           // For configurable properties, throw or return undefined
           if (throwOnBlocked) {
-            throw new Error(
+            throw createSafeError(
               `Security violation: Access to '${propName}' is blocked. ` +
                 `This property can be used for sandbox escape attacks.`,
+              'SecurityError',
             );
           }
           return undefined;
@@ -519,9 +521,10 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
           }
 
           if (throwOnBlocked) {
-            throw new Error(
+            throw createSafeError(
               `Security violation: Access to '${propName}' is blocked. ` +
                 `This property can be used for sandbox escape attacks.`,
+              'SecurityError',
             );
           }
           return undefined;
@@ -562,9 +565,10 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
             options.onBlocked(target, propName);
           }
           if (throwOnBlocked) {
-            throw new Error(
+            throw createSafeError(
               `Security violation: Setting '${propName}' is blocked. ` +
                 `This property can be used for sandbox escape attacks.`,
+              'SecurityError',
             );
           }
           return false; // Silently fail
@@ -582,9 +586,10 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
             options.onBlocked(target, propName);
           }
           if (throwOnBlocked) {
-            throw new Error(
+            throw createSafeError(
               `Security violation: Defining '${propName}' is blocked. ` +
                 `This property can be used for sandbox escape attacks.`,
+              'SecurityError',
             );
           }
           return false;
@@ -630,9 +635,10 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
             options.onBlocked(target, propName);
           }
           if (throwOnBlocked) {
-            throw new Error(
+            throw createSafeError(
               `Security violation: Access to property descriptor for '${propName}' is blocked. ` +
                 `This property can be used for sandbox escape attacks.`,
+              'SecurityError',
             );
           }
           return undefined;

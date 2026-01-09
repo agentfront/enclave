@@ -11,7 +11,10 @@ import * as vm from 'vm';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { createSafeRuntime } from '../safe-runtime';
 import { createSafeReflect, createSecureProxy } from '../secure-proxy';
+import { createSafeError } from '../safe-error';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
+import { createHostToolBridge } from '../tool-bridge';
+import { checkSerializedSize } from '../value-sanitizer';
 
 /**
  * Sensitive patterns to redact from stack traces
@@ -341,8 +344,9 @@ function createSafeConsole(
       // Check call count limit BEFORE doing any work
       stats.callCount++;
       if (stats.callCount > config.maxConsoleCalls) {
-        throw new Error(
+        throw createSafeError(
           `Console call limit exceeded (max: ${config.maxConsoleCalls}). ` + `This limit prevents I/O flood attacks.`,
+          'SecurityError',
         );
       }
 
@@ -365,9 +369,10 @@ function createSafeConsole(
       // Check output size limit
       stats.totalBytes += output.length;
       if (stats.totalBytes > config.maxConsoleOutputBytes) {
-        throw new Error(
+        throw createSafeError(
           `Console output size limit exceeded (max: ${config.maxConsoleOutputBytes} bytes). ` +
             `This limit prevents I/O flood attacks.`,
+          'SecurityError',
         );
       }
 
@@ -402,33 +407,36 @@ function createProtectedSandbox(sandbox: vm.Context): vm.Context {
   return new Proxy(sandbox, {
     set(target, prop, value) {
       if (isProtectedIdentifier(prop)) {
-        throw new Error(
+        throw createSafeError(
           `Cannot modify protected identifier "${String(prop)}". ` +
             `Identifiers starting with ${PROTECTED_PREFIXES.map((p) => `"${p}"`).join(
               ', ',
             )} are protected runtime functions.`,
+          'SecurityError',
         );
       }
       return Reflect.set(target, prop, value);
     },
     defineProperty(target, prop, descriptor) {
       if (isProtectedIdentifier(prop)) {
-        throw new Error(
+        throw createSafeError(
           `Cannot define protected identifier "${String(prop)}". ` +
             `Identifiers starting with ${PROTECTED_PREFIXES.map((p) => `"${p}"`).join(
               ', ',
             )} are protected runtime functions.`,
+          'SecurityError',
         );
       }
       return Reflect.defineProperty(target, prop, descriptor);
     },
     deleteProperty(target, prop) {
       if (isProtectedIdentifier(prop)) {
-        throw new Error(
+        throw createSafeError(
           `Cannot delete protected identifier "${String(prop)}". ` +
             `Identifiers starting with ${PROTECTED_PREFIXES.map((p) => `"${p}"`).join(
               ', ',
             )} are protected runtime functions.`,
+          'SecurityError',
         );
       }
       return Reflect.deleteProperty(target, prop);
@@ -507,7 +515,10 @@ function createSafeObject(originalObject: ObjectConstructor): ObjectConstructor 
   // and does NOT allow property descriptors (second argument)
   SafeObject.create = function (proto: object | null, propertiesObject?: PropertyDescriptorMap) {
     if (propertiesObject !== undefined) {
-      throw new Error('Object.create with property descriptors is not allowed (security restriction)');
+      throw createSafeError(
+        'Object.create with property descriptors is not allowed (security restriction)',
+        'SecurityError',
+      );
     }
     return Object.create(proto);
   };
@@ -518,7 +529,10 @@ function createSafeObject(originalObject: ObjectConstructor): ObjectConstructor 
   // Add blocked methods that throw helpful errors
   for (const method of DANGEROUS_OBJECT_STATIC_METHODS) {
     SafeObject[method] = function () {
-      throw new Error(`Object.${method} is not allowed (security restriction: prevents property manipulation attacks)`);
+      throw createSafeError(
+        `Object.${method} is not allowed (security restriction: prevents property manipulation attacks)`,
+        'SecurityError',
+      );
     };
   }
 
@@ -815,6 +829,34 @@ export class VmAdapter implements SandboxAdapter {
               trackMemory(estimatedSize);
               return originalPadEnd.call(this, targetLength, padString);
             };
+
+            // Patch array fill - converts sparse arrays to dense (allocates memory)
+            // Vector 1110/1170: Array(dynamicSize).fill() can exhaust memory
+            // Estimate: each element uses ~8 bytes (pointer) for objects/primitives
+            var originalFill = arrayProto.fill;
+            arrayProto.fill = function(value, start, end) {
+              // Calculate actual fill range
+              var len = this.length >>> 0;
+              var relativeStart = start === undefined ? 0 : (start >> 0);
+              var relativeEnd = end === undefined ? len : (end >> 0);
+              var k = relativeStart < 0 ? Math.max(len + relativeStart, 0) : Math.min(relativeStart, len);
+              var finalEnd = relativeEnd < 0 ? Math.max(len + relativeEnd, 0) : Math.min(relativeEnd, len);
+              var fillCount = Math.max(0, finalEnd - k);
+
+              // Estimate memory: 8 bytes per element (pointer size)
+              // For objects/arrays as fill value, each creates a reference
+              var estimatedSize = fillCount * 8;
+
+              // Check single allocation limit
+              if (estimatedSize > memoryLimit) {
+                throw new RangeError('Array.fill would exceed memory limit: ' +
+                  Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
+                  Math.round(memoryLimit / 1024 / 1024) + 'MB');
+              }
+              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
+              trackMemory(estimatedSize);
+              return originalFill.call(this, value, start, end);
+            };
           })();
         `);
         patchScript.runInContext(baseSandbox);
@@ -854,6 +896,127 @@ export class VmAdapter implements SandboxAdapter {
       // Sanitize the VM context by removing dangerous Node.js 24 globals
       // Security: Prevents escape via Iterator helpers, ShadowRealm, etc.
       sanitizeVmContext(baseSandbox, this.securityLevel);
+
+      // TOOL BRIDGE (string mode): define __safe_callTool inside the VM realm and
+      // communicate with the host tool handler via JSON string envelopes.
+      if (config.toolBridge?.mode === 'string') {
+        const maxPayloadBytes = config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
+        const hostToolBridge = createHostToolBridge(executionContext, { updateStats: true });
+
+        Object.defineProperty(baseSandbox, '__host_callToolBridge__', {
+          value: hostToolBridge,
+          writable: false,
+          configurable: true, // allow deletion after capture
+          enumerable: false,
+        });
+
+        const bridgeInitScript = new vm.Script(`
+          (function() {
+            var bridge = __host_callToolBridge__;
+            var stringify = JSON.stringify;
+            var parse = JSON.parse;
+            var hasOwn = Object.prototype.hasOwnProperty;
+            var maxBytes = ${maxPayloadBytes};
+
+            // Remove global handle after capture (defense-in-depth)
+            try { delete globalThis.__host_callToolBridge__; } catch (e) { /* ignore */ }
+
+            function estimateBytes(str) {
+              // Conservative: UTF-8 can be up to 4 bytes per code unit.
+              return str.length * 4;
+            }
+
+            function makeError(message, name) {
+              var err = new Error(message);
+              if (name) err.name = name;
+              return err;
+            }
+
+            return async function __safe_callTool(toolName, args) {
+              if (typeof toolName !== 'string' || !toolName) {
+                throw makeError('Tool name must be a non-empty string', 'TypeError');
+              }
+              if (typeof args !== 'object' || args === null || Array.isArray(args)) {
+                throw makeError('Tool arguments must be an object', 'TypeError');
+              }
+              if (typeof bridge !== 'function') {
+                throw makeError('Tool bridge is not available', 'Error');
+              }
+
+              // Defense-in-depth: ensure JSON-serializable input.
+              var sanitizedArgs;
+              try {
+                sanitizedArgs = parse(stringify(args));
+              } catch (e) {
+                throw makeError('Tool arguments must be JSON-serializable', 'TypeError');
+              }
+
+              var requestJson;
+              try {
+                requestJson = stringify({ v: 1, tool: toolName, args: sanitizedArgs });
+              } catch (e) {
+                throw makeError('Tool request must be JSON-serializable', 'TypeError');
+              }
+
+              if (estimateBytes(requestJson) > maxBytes) {
+                throw makeError('Tool request exceeds maximum size (' + maxBytes + ' bytes)', 'RangeError');
+              }
+
+              var responseJson = await bridge(requestJson);
+              if (typeof responseJson !== 'string') {
+                throw makeError('Tool bridge returned invalid response', 'Error');
+              }
+              if (estimateBytes(responseJson) > maxBytes) {
+                throw makeError('Tool response exceeds maximum size (' + maxBytes + ' bytes)', 'RangeError');
+              }
+
+              var response;
+              try {
+                response = parse(responseJson);
+              } catch (e) {
+                throw makeError('Tool bridge returned invalid JSON', 'Error');
+              }
+
+              if (!response || typeof response !== 'object' || Array.isArray(response) || response.v !== 1) {
+                throw makeError('Tool bridge returned invalid response', 'Error');
+              }
+
+              if (response.ok === true) {
+                if (hasOwn.call(response, 'value')) return response.value;
+                return undefined;
+              }
+
+              if (response.ok === false && response.error) {
+                var msg = (typeof response.error.message === 'string') ? response.error.message : 'Tool call failed';
+                var name = (typeof response.error.name === 'string') ? response.error.name : 'Error';
+                throw makeError(msg, name);
+              }
+
+              throw makeError('Tool bridge returned invalid response', 'Error');
+            };
+          })()
+        `);
+
+        const vmSafeCallTool = bridgeInitScript.runInContext(baseSandbox) as unknown as object;
+        const proxiedVmSafeCallTool = createSecureProxy(vmSafeCallTool, {
+          levelConfig: executionContext.secureProxyConfig,
+        });
+
+        Object.defineProperty(baseSandbox, '__safe_callTool', {
+          value: proxiedVmSafeCallTool,
+          writable: false,
+          configurable: false,
+          enumerable: true,
+        });
+
+        // Best-effort cleanup if init script couldn't delete it for any reason.
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          delete (baseSandbox as any).__host_callToolBridge__;
+        } catch {
+          // ignore
+        }
+      }
 
       // Add safe runtime functions to the isolated context as non-writable, non-configurable
       // Security: Prevents runtime override attacks on __safe_* functions
@@ -968,6 +1131,30 @@ export class VmAdapter implements SandboxAdapter {
           },
           stats,
         };
+      }
+
+      // SECURITY FIX (Vector 340): Check serialized size of return value BEFORE returning.
+      // Attacks can create structures with many references to the same large string that
+      // appear small in memory (strings are shared by reference) but explode during
+      // JSON serialization when each reference becomes a full copy.
+      // Example: 500 refs × 5 copies × 10KB = 25MB serialized from ~20KB in-memory
+      if (config.memoryLimit && config.memoryLimit > 0 && value !== undefined) {
+        // Use memory limit as serialization limit (or a reasonable cap)
+        // This prevents the serialization size from exceeding what we'd allow in memory
+        const maxSerializedBytes = Math.min(config.memoryLimit, 50 * 1024 * 1024); // Cap at 50MB
+        const sizeCheck = checkSerializedSize(value, maxSerializedBytes);
+
+        if (!sizeCheck.ok) {
+          return {
+            success: false,
+            error: {
+              name: 'MemoryLimitError',
+              message: `Return value serialization would exceed memory limit: ${sizeCheck.error}`,
+              code: 'SERIALIZATION_LIMIT_EXCEEDED',
+            },
+            stats,
+          };
+        }
       }
 
       return {

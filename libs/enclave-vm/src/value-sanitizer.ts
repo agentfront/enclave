@@ -121,8 +121,13 @@ export function sanitizeValue(
   const type = typeof value;
 
   // Primitives are safe
-  if (type === 'string' || type === 'number' || type === 'boolean' || type === 'bigint') {
+  if (type === 'string' || type === 'number' || type === 'boolean') {
     return value;
+  }
+
+  // BigInt: Convert to string for JSON-safety (JSON.stringify throws on raw BigInt)
+  if (type === 'bigint') {
+    return String(value);
   }
 
   // Functions are NOT safe - prevent code injection
@@ -274,5 +279,241 @@ export function sanitizeValueOrFallback<T>(value: unknown, fallback: T, options:
     return sanitizeValue(value, options);
   } catch {
     return fallback;
+  }
+}
+
+/**
+ * Estimate the serialized (JSON) size of a string in bytes.
+ * Accounts for quotes and proper JSON escaping.
+ *
+ * @param str The string to estimate
+ * @returns Size in bytes when serialized as JSON string
+ */
+function estimateStringSize(str: string): number {
+  let bytes = 2; // quotes
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code < 128) {
+      // ASCII: check if needs escaping
+      if (code === 34 || code === 92) {
+        // Quote and backslash: 2-byte escape (\" or \\)
+        bytes += 2;
+      } else if (code < 32) {
+        // Control characters: 6-byte \uXXXX escape
+        bytes += 6;
+      } else {
+        bytes += 1;
+      }
+    } else if (code < 2048) {
+      bytes += 2; // 2-byte UTF-8
+    } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+      // High surrogate - check for low surrogate pair (emoji, supplementary chars)
+      const nextCode = str.charCodeAt(i + 1);
+      if (nextCode >= 0xdc00 && nextCode <= 0xdfff) {
+        bytes += 4; // 4-byte UTF-8 for surrogate pair
+        i++; // Skip the low surrogate
+      } else {
+        bytes += 3; // Unpaired high surrogate (3-byte UTF-8)
+      }
+    } else {
+      bytes += 3; // 3-byte UTF-8 (BMP characters U+0800 to U+FFFF)
+    }
+  }
+  return bytes;
+}
+
+/**
+ * Estimates the serialized (JSON) size of a value in bytes.
+ *
+ * Security feature: Prevents memory exhaustion attacks (Vector 340) where:
+ * - Attacker creates a structure with many references to the same large string
+ * - In-VM memory is small (strings are shared by reference)
+ * - But JSON serialization expands each reference to full string copy
+ * - Example: 500 refs × 5 copies × 10KB string = 25MB serialized from ~20KB in-memory
+ *
+ * This function counts EVERY string occurrence, not unique strings,
+ * to accurately estimate the serialized output size.
+ *
+ * IMPORTANT: Circular reference handling:
+ * - Uses a "current path" Set to detect circular references (ancestor chain)
+ * - Repeated (non-circular) references to the same object are counted fully each time
+ * - This matches JSON.stringify behavior where repeated refs are serialized multiple times
+ *
+ * @param value The value to estimate
+ * @param maxBytes Maximum allowed serialized bytes (0 = no limit)
+ * @param depth Current recursion depth (internal)
+ * @param maxDepth Maximum recursion depth (default 2000 to handle deep structures)
+ * @param currentPath Set tracking the current ancestor path (for circular detection only)
+ * @returns Estimated serialized size in bytes
+ * @throws Error if estimated size exceeds maxBytes or depth limit
+ */
+export function estimateSerializedSize(
+  value: unknown,
+  maxBytes = 0,
+  depth = 0,
+  maxDepth = 2000,
+  currentPath: Set<object> = new Set(),
+): number {
+  // Depth limit to prevent stack overflow - reject deeply nested structures
+  if (depth > maxDepth) {
+    throw new Error(
+      `Structure exceeds maximum nesting depth (${maxDepth}). ` +
+        `Deeply nested structures are rejected to prevent stack overflow attacks.`,
+    );
+  }
+
+  // Handle null/undefined
+  if (value === null) return 4; // "null"
+  if (value === undefined) return 0; // undefined is omitted in JSON
+
+  const type = typeof value;
+
+  // String: count actual bytes (each occurrence, not unique!)
+  if (type === 'string') {
+    const bytes = estimateStringSize(value as string);
+    if (maxBytes > 0 && bytes > maxBytes) {
+      throw new Error(`String serialization would exceed limit: ${bytes} > ${maxBytes} bytes`);
+    }
+    return bytes;
+  }
+
+  // Number: estimate digit count
+  if (type === 'number') {
+    const num = value as number;
+    if (!Number.isFinite(num)) return 4; // "null" for Infinity/NaN
+    return String(num).length;
+  }
+
+  // Boolean
+  if (type === 'boolean') {
+    return value ? 4 : 5; // "true" or "false"
+  }
+
+  // BigInt: Cannot be JSON.stringify'd directly, but estimate as string for size purposes
+  // (caller is responsible for actual serialization, e.g., converting to string first)
+  if (type === 'bigint') {
+    return String(value).length + 2; // Estimate as quoted string
+  }
+
+  // Function/Symbol: shouldn't be serialized
+  if (type === 'function' || type === 'symbol') {
+    return 0; // omitted in JSON
+  }
+
+  // Arrays
+  if (Array.isArray(value)) {
+    // Check for circular reference (is this object an ancestor of itself?)
+    if (currentPath.has(value)) {
+      // Circular reference detected - JSON.stringify would throw, but we estimate small
+      return 4;
+    }
+
+    // Add to current path for descendant checks
+    currentPath.add(value);
+
+    let size = 2; // brackets []
+    for (let i = 0; i < value.length; i++) {
+      if (i > 0) size += 1; // comma
+      let elementSize = estimateSerializedSize(value[i], maxBytes, depth + 1, maxDepth, currentPath);
+      // JSON.stringify turns undefined/function/symbol array elements into null (4 bytes)
+      if (elementSize === 0) elementSize = 4;
+      size += elementSize;
+
+      // Check limit incrementally to fail fast
+      if (maxBytes > 0 && size > maxBytes) {
+        currentPath.delete(value); // Clean up before throwing
+        throw new Error(
+          `Array serialization would exceed limit: estimated ${size}+ > ${maxBytes} bytes. ` +
+            `This often indicates repeated references to large strings that expand during JSON serialization.`,
+        );
+      }
+    }
+
+    // Remove from current path (we're done with this branch)
+    currentPath.delete(value);
+    return size;
+  }
+
+  // Objects
+  if (type === 'object' && value !== null) {
+    // Check for circular reference (is this object an ancestor of itself?)
+    if (currentPath.has(value as object)) {
+      // Circular reference detected
+      return 4;
+    }
+
+    // Add to current path for descendant checks
+    currentPath.add(value as object);
+
+    // Handle special objects
+    if (value instanceof Date) {
+      currentPath.delete(value as object);
+      return 26; // ISO date string with quotes: "2024-01-01T00:00:00.000Z"
+    }
+    if (value instanceof RegExp) {
+      // RegExp serializes to "{}" in JSON.stringify
+      currentPath.delete(value as object);
+      return 2; // "{}"
+    }
+
+    let size = 2; // braces {}
+    const keys = Object.keys(value as Record<string, unknown>);
+    let first = true;
+
+    for (const key of keys) {
+      // Skip dangerous keys (they're stripped)
+      if (key === '__proto__' || key === 'constructor') continue;
+
+      if (!first) size += 1; // comma
+      first = false;
+
+      // Key: quoted string + colon (accounting for JSON escaping)
+      size += estimateStringSize(key) + 1; // "key":
+
+      // Value
+      let propValue: unknown;
+      try {
+        propValue = (value as Record<string, unknown>)[key];
+      } catch {
+        continue; // Skip throwing properties
+      }
+
+      const valueSize = estimateSerializedSize(propValue, maxBytes, depth + 1, maxDepth, currentPath);
+      size += valueSize;
+
+      // Check limit incrementally to fail fast
+      if (maxBytes > 0 && size > maxBytes) {
+        currentPath.delete(value as object); // Clean up before throwing
+        throw new Error(
+          `Object serialization would exceed limit: estimated ${size}+ > ${maxBytes} bytes. ` +
+            `This often indicates repeated references to large strings that expand during JSON serialization.`,
+        );
+      }
+    }
+
+    // Remove from current path (we're done with this branch)
+    currentPath.delete(value as object);
+    return size;
+  }
+
+  return 0;
+}
+
+/**
+ * Check if a value's serialized size is within limits
+ *
+ * @param value Value to check
+ * @param maxBytes Maximum allowed serialized bytes
+ * @returns Object with ok status and estimated size or error message
+ */
+export function checkSerializedSize(
+  value: unknown,
+  maxBytes: number,
+): { ok: true; estimatedBytes: number } | { ok: false; error: string } {
+  try {
+    const estimatedBytes = estimateSerializedSize(value, maxBytes);
+    return { ok: true, estimatedBytes };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };
   }
 }
