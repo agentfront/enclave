@@ -12,7 +12,7 @@ The enclave-vm package provides a hardened execution environment for running LLM
 
 | Metric         | Value                                                                  |
 | -------------- | ---------------------------------------------------------------------- |
-| Security Tests | 1100+ tests, 100% pass rate                                            |
+| Security Tests | 1900+ tests, 100% pass rate                                            |
 | Attack Vectors | 150+ blocked (including function gadget attacks)                       |
 | CVE Protection | Covers known vm2, isolated-vm, node-vm exploits                        |
 | Defense Layers | 6 (Pre-Scanner, AST, Transform, Scoring, VM/Worker Pool, Sanitization) |

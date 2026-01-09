@@ -414,7 +414,9 @@ export function estimateSerializedSize(
     let size = 2; // brackets []
     for (let i = 0; i < value.length; i++) {
       if (i > 0) size += 1; // comma
-      const elementSize = estimateSerializedSize(value[i], 0, depth + 1, maxDepth, currentPath);
+      let elementSize = estimateSerializedSize(value[i], maxBytes, depth + 1, maxDepth, currentPath);
+      // JSON.stringify turns undefined/function/symbol array elements into null (4 bytes)
+      if (elementSize === 0) elementSize = 4;
       size += elementSize;
 
       // Check limit incrementally to fail fast
@@ -476,7 +478,7 @@ export function estimateSerializedSize(
         continue; // Skip throwing properties
       }
 
-      const valueSize = estimateSerializedSize(propValue, 0, depth + 1, maxDepth, currentPath);
+      const valueSize = estimateSerializedSize(propValue, maxBytes, depth + 1, maxDepth, currentPath);
       size += valueSize;
 
       // Check limit incrementally to fail fast
