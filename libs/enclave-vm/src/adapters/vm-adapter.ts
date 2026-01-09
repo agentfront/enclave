@@ -14,7 +14,7 @@ import { createSafeReflect, createSecureProxy } from '../secure-proxy';
 import { createSafeError } from '../safe-error';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 import { createHostToolBridge } from '../tool-bridge';
-import { checkSerializedSize } from '../value-sanitizer';
+import { checkSerializedSize, sanitizeValue } from '../value-sanitizer';
 
 /**
  * Sensitive patterns to redact from stack traces
@@ -1157,9 +1157,18 @@ export class VmAdapter implements SandboxAdapter {
         }
       }
 
+      // Sanitize the return value to convert Error objects to { name, message } format
+      // This prevents Error objects from serializing to {} and provides useful error info
+      const sanitizedValue = sanitizeValue(value, {
+        maxDepth: 20,
+        maxProperties: 10000,
+        allowDates: true,
+        allowErrors: true,
+      });
+
       return {
         success: true,
-        value: value as T,
+        value: sanitizedValue as T,
         stats,
       };
     } catch (error: unknown) {

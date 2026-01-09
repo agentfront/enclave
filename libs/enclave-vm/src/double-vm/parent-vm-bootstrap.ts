@@ -1348,6 +1348,9 @@ ${stackTraceHardeningCode}
     if (!Array.isArray(items)) {
       throw createSafeError('parallel() requires an array', 'TypeError');
     }
+    if (typeof fn !== 'function') {
+      throw createSafeError('parallel() requires a callback function as second argument', 'TypeError');
+    }
     if (items.length > 100) {
       throw createSafeError('parallel() is limited to 100 items');
     }
