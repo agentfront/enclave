@@ -1159,9 +1159,12 @@ export class VmAdapter implements SandboxAdapter {
 
       // Sanitize the return value to convert Error objects to { name, message } format
       // This prevents Error objects from serializing to {} and provides useful error info
+      // Use security-config-backed values, clamped to allowed ranges (depth: 5-50, properties: 50-1000)
+      const clampedDepth = Math.max(5, Math.min(50, config.maxSanitizeDepth));
+      const clampedProperties = Math.max(50, Math.min(1000, config.maxSanitizeProperties));
       const sanitizedValue = sanitizeValue(value, {
-        maxDepth: 20,
-        maxProperties: 10000,
+        maxDepth: clampedDepth,
+        maxProperties: clampedProperties,
         allowDates: true,
         allowErrors: true,
       });
