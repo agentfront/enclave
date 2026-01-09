@@ -4,7 +4,7 @@
 
 # Enclave
 
-**Secure sandbox runtime for AI agents**
+## Secure sandbox runtime for AI agents
 
 [![npm ast-guard](https://img.shields.io/npm/v/ast-guard.svg?label=ast-guard&color=e8a045)](https://www.npmjs.com/package/ast-guard)
 [![npm vectoriadb](https://img.shields.io/npm/v/vectoriadb.svg?label=vectoriadb&color=e8a045)](https://www.npmjs.com/package/vectoriadb)

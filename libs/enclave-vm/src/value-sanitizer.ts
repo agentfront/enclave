@@ -120,7 +120,7 @@ export function sanitizeValue(
 
   const type = typeof value;
 
-  // Primitives are safe
+  // Primitives are safe (including BigInt - caller is responsible for serialization)
   if (type === 'string' || type === 'number' || type === 'boolean' || type === 'bigint') {
     return value;
   }
@@ -278,6 +278,46 @@ export function sanitizeValueOrFallback<T>(value: unknown, fallback: T, options:
 }
 
 /**
+ * Estimate the serialized (JSON) size of a string in bytes.
+ * Accounts for quotes and proper JSON escaping.
+ *
+ * @param str The string to estimate
+ * @returns Size in bytes when serialized as JSON string
+ */
+function estimateStringSize(str: string): number {
+  let bytes = 2; // quotes
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code < 128) {
+      // ASCII: check if needs escaping
+      if (code === 34 || code === 92) {
+        // Quote and backslash: 2-byte escape (\" or \\)
+        bytes += 2;
+      } else if (code < 32) {
+        // Control characters: 6-byte \uXXXX escape
+        bytes += 6;
+      } else {
+        bytes += 1;
+      }
+    } else if (code < 2048) {
+      bytes += 2; // 2-byte UTF-8
+    } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+      // High surrogate - check for low surrogate pair (emoji, supplementary chars)
+      const nextCode = str.charCodeAt(i + 1);
+      if (nextCode >= 0xdc00 && nextCode <= 0xdfff) {
+        bytes += 4; // 4-byte UTF-8 for surrogate pair
+        i++; // Skip the low surrogate
+      } else {
+        bytes += 3; // Unpaired high surrogate (3-byte UTF-8)
+      }
+    } else {
+      bytes += 3; // 3-byte UTF-8 (BMP characters U+0800 to U+FFFF)
+    }
+  }
+  return bytes;
+}
+
+/**
  * Estimates the serialized (JSON) size of a value in bytes.
  *
  * Security feature: Prevents memory exhaustion attacks (Vector 340) where:
@@ -322,35 +362,8 @@ export function estimateSerializedSize(
   const type = typeof value;
 
   // String: count actual bytes (each occurrence, not unique!)
-  // JSON escaping can increase size, estimate 1.1x for escapes + 2 bytes for quotes
   if (type === 'string') {
-    const str = value as string;
-    // Estimate UTF-8 bytes
-    let bytes = 2; // quotes
-    for (let i = 0; i < str.length; i++) {
-      const code = str.charCodeAt(i);
-      if (code < 128) {
-        // ASCII: check if needs escaping
-        if (code === 34 || code === 92 || code < 32) {
-          bytes += 2; // escaped char like \" or \\
-        } else {
-          bytes += 1;
-        }
-      } else if (code < 2048) {
-        bytes += 2; // 2-byte UTF-8
-      } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
-        // High surrogate - check for low surrogate pair (emoji, supplementary chars)
-        const nextCode = str.charCodeAt(i + 1);
-        if (nextCode >= 0xdc00 && nextCode <= 0xdfff) {
-          bytes += 4; // 4-byte UTF-8 for surrogate pair
-          i++; // Skip the low surrogate
-        } else {
-          bytes += 3; // Unpaired high surrogate (3-byte UTF-8)
-        }
-      } else {
-        bytes += 3; // 3-byte UTF-8 (BMP characters U+0800 to U+FFFF)
-      }
-    }
+    const bytes = estimateStringSize(value as string);
     if (maxBytes > 0 && bytes > maxBytes) {
       throw new Error(`String serialization would exceed limit: ${bytes} > ${maxBytes} bytes`);
     }
@@ -369,9 +382,10 @@ export function estimateSerializedSize(
     return value ? 4 : 5; // "true" or "false"
   }
 
-  // BigInt: convert to string
+  // BigInt: Cannot be JSON.stringify'd directly, but estimate as string for size purposes
+  // (caller is responsible for actual serialization, e.g., converting to string first)
   if (type === 'bigint') {
-    return String(value).length + 2; // quoted string
+    return String(value).length + 2; // Estimate as quoted string
   }
 
   // Function/Symbol: shouldn't be serialized
@@ -428,8 +442,9 @@ export function estimateSerializedSize(
       return 26; // ISO date string with quotes: "2024-01-01T00:00:00.000Z"
     }
     if (value instanceof RegExp) {
+      // RegExp serializes to "{}" in JSON.stringify
       currentPath.delete(value as object);
-      return String(value).length + 2;
+      return 2; // "{}"
     }
 
     let size = 2; // braces {}
@@ -443,8 +458,8 @@ export function estimateSerializedSize(
       if (!first) size += 1; // comma
       first = false;
 
-      // Key: quoted string + colon
-      size += key.length + 3; // "key":
+      // Key: quoted string + colon (accounting for JSON escaping)
+      size += estimateStringSize(key) + 1; // "key":
 
       // Value
       let propValue: unknown;
