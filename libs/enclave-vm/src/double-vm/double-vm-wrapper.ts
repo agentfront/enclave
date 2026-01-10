@@ -162,9 +162,18 @@ export class DoubleVmWrapper implements SandboxAdapter {
         }
       }
 
+      // Sanitize the return value to convert Error objects to { name, message } format
+      // This prevents Error objects from serializing to {} and provides useful error info
+      const sanitizedValue = sanitizeValue(value, {
+        maxDepth: config.maxSanitizeDepth,
+        maxProperties: config.maxSanitizeProperties,
+        allowDates: true,
+        allowErrors: true,
+      });
+
       return {
         success: true,
-        value: value as T,
+        value: sanitizedValue as T,
         stats,
       };
     } catch (error: unknown) {
