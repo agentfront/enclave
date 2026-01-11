@@ -1,0 +1,43 @@
+{
+  "name": "enclavejs-react",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/enclavejs-react/src",
+  "projectType": "library",
+  "tags": [],
+  "targets": {
+    "build-tsc": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "libs/enclavejs-react/dist",
+        "main": "libs/enclavejs-react/src/index.ts",
+        "tsConfig": "libs/enclavejs-react/tsconfig.lib.json",
+        "assets": ["libs/enclavejs-react/*.md"]
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build-tsc"],
+      "options": {
+        "commands": [
+          "cp libs/enclavejs-react/package.json libs/enclavejs-react/dist/package.json",
+          "node scripts/strip-dist-from-pkg.js libs/enclavejs-react/dist/package.json"
+        ],
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "@nx/jest:jest",
+      "outputs": ["{workspaceRoot}/coverage/{projectRoot}"],
+      "options": {
+        "jestConfig": "libs/enclavejs-react/jest.config.ts"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": ["libs/enclavejs-react/**/*.ts", "libs/enclavejs-react/**/*.tsx"]
+      }
+    }
+  }
+}

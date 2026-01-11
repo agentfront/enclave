@@ -1,21 +1,17 @@
 {
-  "name": "enclave-vm",
-  "version": "2.7.0",
-  "description": "Sandbox runtime for secure JavaScript code execution",
+  "name": "@enclavejs/react",
+  "version": "0.1.0",
+  "description": "React hooks and components for the EnclaveJS streaming runtime",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",
   "license": "Apache-2.0",
   "keywords": [
-    "sandbox",
-    "vm",
+    "enclavejs",
     "enclave",
-    "enclave-vm",
-    "agentscript",
-    "llm",
-    "javascript",
-    "execution",
-    "security",
-    "ast-guard"
+    "react",
+    "hooks",
+    "streaming",
+    "runtime"
   ],
   "repository": {
     "type": "git",
@@ -29,26 +25,16 @@
   "exports": {
     "./package.json": "./package.json",
     ".": {
-      "development": "./src/index.ts",
       "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js",
       "default": "./dist/src/index.js"
     }
   },
   "dependencies": {
-    "@enclavejs/types": "0.1.0",
-    "ast-guard": "2.4.0",
-    "acorn": "8.15.0",
-    "acorn-walk": "8.3.4",
-    "astring": "1.9.0",
-    "zod": "^4.1.13"
+    "@enclavejs/client": "0.1.0"
   },
   "peerDependencies": {
-    "@huggingface/transformers": "^3.2.2"
+    "react": ">=17.0.0"
   },
-  "peerDependenciesMeta": {
-    "@huggingface/transformers": {
-      "optional": true
-    }
-  }
+  "type": "commonjs"
 }

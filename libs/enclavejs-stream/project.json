@@ -1,0 +1,34 @@
+{
+  "name": "enclavejs-stream",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/enclavejs-stream/src",
+  "projectType": "library",
+  "tags": ["scope:libs", "scope:publishable", "versioning:independent"],
+  "implicitDependencies": ["enclavejs-types"],
+  "targets": {
+    "build-tsc": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "libs/enclavejs-stream/dist",
+        "main": "libs/enclavejs-stream/src/index.ts",
+        "tsConfig": "libs/enclavejs-stream/tsconfig.lib.json",
+        "assets": ["libs/enclavejs-stream/README.md", "LICENSE"]
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build-tsc"],
+      "options": {
+        "command": "node scripts/strip-dist-from-pkg.js libs/enclavejs-stream/dist/package.json"
+      }
+    },
+    "nx-release-publish": {
+      "executor": "@nx/js:release-publish",
+      "dependsOn": ["build"],
+      "options": {
+        "packageRoot": "libs/enclavejs-stream/dist"
+      }
+    }
+  }
+}

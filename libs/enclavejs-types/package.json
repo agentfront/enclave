@@ -1,21 +1,18 @@
 {
-  "name": "enclave-vm",
-  "version": "2.7.0",
-  "description": "Sandbox runtime for secure JavaScript code execution",
+  "name": "@enclavejs/types",
+  "version": "0.1.0",
+  "description": "Type definitions and Zod schemas for the EnclaveJS streaming runtime protocol",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",
   "license": "Apache-2.0",
   "keywords": [
-    "sandbox",
-    "vm",
+    "enclavejs",
     "enclave",
-    "enclave-vm",
-    "agentscript",
-    "llm",
-    "javascript",
-    "execution",
-    "security",
-    "ast-guard"
+    "streaming",
+    "types",
+    "zod",
+    "protocol",
+    "runtime"
   ],
   "repository": {
     "type": "git",
@@ -36,19 +33,6 @@
     }
   },
   "dependencies": {
-    "@enclavejs/types": "0.1.0",
-    "ast-guard": "2.4.0",
-    "acorn": "8.15.0",
-    "acorn-walk": "8.3.4",
-    "astring": "1.9.0",
     "zod": "^4.1.13"
-  },
-  "peerDependencies": {
-    "@huggingface/transformers": "^3.2.2"
-  },
-  "peerDependenciesMeta": {
-    "@huggingface/transformers": {
-      "optional": true
-    }
   }
 }

@@ -1,0 +1,42 @@
+{
+  "name": "@enclavejs/broker",
+  "version": "0.1.0",
+  "description": "Tool broker and session management for the EnclaveJS streaming runtime",
+  "author": "AgentFront <info@agentfront.dev>",
+  "homepage": "https://github.com/agentfront/enclave",
+  "license": "Apache-2.0",
+  "keywords": [
+    "enclavejs",
+    "enclave",
+    "broker",
+    "middleware",
+    "streaming",
+    "session",
+    "runtime"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentfront/enclave.git"
+  },
+  "bugs": {
+    "url": "https://github.com/agentfront/enclave/issues"
+  },
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js",
+      "default": "./src/index.js"
+    }
+  },
+  "dependencies": {
+    "@enclavejs/types": "0.1.0",
+    "@enclavejs/stream": "0.1.0",
+    "enclave-vm": "2.7.0",
+    "zod": "^4.1.13"
+  },
+  "type": "commonjs"
+}
