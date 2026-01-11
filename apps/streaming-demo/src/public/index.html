@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EnclaveJS Streaming Demo</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #1a1a2e;
+        color: #eee;
+        min-height: 100vh;
+        padding: 20px;
+      }
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+      h1 {
+        text-align: center;
+        margin-bottom: 10px;
+        color: #4fc3f7;
+      }
+      .subtitle {
+        text-align: center;
+        color: #888;
+        margin-bottom: 15px;
+      }
+
+      .mode-selector {
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+        margin-bottom: 15px;
+        flex-wrap: wrap;
+      }
+      .mode-option {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 12px 16px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.2s;
+        border: 2px solid transparent;
+        min-width: 200px;
+      }
+      .mode-option:hover {
+        background: rgba(79, 195, 247, 0.1);
+      }
+      .mode-option.selected {
+        border-color: #4fc3f7;
+        background: rgba(79, 195, 247, 0.15);
+      }
+      .mode-option input {
+        display: none;
+      }
+      .mode-name {
+        font-weight: 600;
+        color: #4fc3f7;
+        margin-bottom: 4px;
+      }
+      .mode-arch {
+        font-family: 'Monaco', 'Menlo', monospace;
+        font-size: 11px;
+        color: #888;
+        margin-bottom: 4px;
+      }
+      .mode-desc {
+        font-size: 11px;
+        color: #666;
+        text-align: center;
+      }
+      .mode-option.selected .mode-name {
+        color: #81d4fa;
+      }
+      .mode-option.embedded {
+        border-left: 3px solid #81c784;
+      }
+      .mode-option.lambda {
+        border-left: 3px solid #4fc3f7;
+      }
+      .mode-option.direct {
+        border-left: 3px solid #ffb74d;
+      }
+
+      .architecture-display {
+        text-align: center;
+        font-family: 'Monaco', 'Menlo', monospace;
+        font-size: 13px;
+        color: #4fc3f7;
+        margin-bottom: 20px;
+        padding: 12px;
+        background: rgba(79, 195, 247, 0.1);
+        border-radius: 4px;
+      }
+      .architecture-display .secure {
+        color: #81c784;
+      }
+      .architecture-display .warning {
+        color: #ffb74d;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+      }
+      @media (max-width: 800px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .panel {
+        background: #16213e;
+        border-radius: 8px;
+        padding: 20px;
+        border: 1px solid #0f3460;
+      }
+      .panel h2 {
+        color: #4fc3f7;
+        margin-bottom: 15px;
+        font-size: 16px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+      textarea {
+        width: 100%;
+        height: 180px;
+        background: #0f3460;
+        border: 1px solid #1a1a2e;
+        border-radius: 4px;
+        color: #fff;
+        font-family: 'Monaco', 'Menlo', monospace;
+        font-size: 14px;
+        padding: 12px;
+        resize: vertical;
+      }
+      textarea:focus {
+        outline: none;
+        border-color: #4fc3f7;
+      }
+
+      .buttons {
+        margin-top: 15px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      button {
+        background: #4fc3f7;
+        color: #1a1a2e;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 14px;
+        transition: all 0.2s;
+      }
+      button:hover {
+        background: #81d4fa;
+      }
+      button:disabled {
+        background: #555;
+        cursor: not-allowed;
+      }
+      button.secondary {
+        background: transparent;
+        border: 1px solid #4fc3f7;
+        color: #4fc3f7;
+      }
+      button.secondary:hover {
+        background: rgba(79, 195, 247, 0.1);
+      }
+
+      .output {
+        background: #0f3460;
+        border-radius: 4px;
+        padding: 12px;
+        min-height: 180px;
+        max-height: 350px;
+        overflow-y: auto;
+        font-family: 'Monaco', 'Menlo', monospace;
+        font-size: 13px;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .event {
+        padding: 4px 0;
+        border-bottom: 1px solid #1a1a2e;
+      }
+      .event:last-child {
+        border-bottom: none;
+      }
+      .event-type {
+        color: #4fc3f7;
+        font-weight: 600;
+      }
+      .event-stdout {
+        color: #81c784;
+      }
+      .event-tool {
+        color: #ffb74d;
+      }
+      .event-error {
+        color: #ef5350;
+      }
+      .event-final {
+        color: #ce93d8;
+      }
+
+      .result-panel {
+        margin-top: 20px;
+      }
+      .result-success {
+        color: #81c784;
+      }
+      .result-error {
+        color: #ef5350;
+      }
+
+      .examples {
+        margin-top: 15px;
+      }
+      .example-btn {
+        background: #0f3460;
+        color: #4fc3f7;
+        border: 1px solid #4fc3f7;
+        padding: 6px 10px;
+        margin: 3px;
+        font-size: 11px;
+      }
+
+      .status-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 0;
+        color: #888;
+        font-size: 12px;
+      }
+      .status-indicator {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 6px;
+      }
+      .status-idle {
+        background: #888;
+      }
+      .status-running {
+        background: #4fc3f7;
+        animation: pulse 1s infinite;
+      }
+      .status-success {
+        background: #81c784;
+      }
+      .status-error {
+        background: #ef5350;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>EnclaveJS Streaming Demo</h1>
+      <p class="subtitle">Compare Different Execution Architectures</p>
+
+      <div class="mode-selector">
+        <label class="mode-option embedded selected" onclick="selectMode('embedded')">
+          <input type="radio" name="mode" value="embedded" checked />
+          <span class="mode-name">Embedded</span>
+          <span class="mode-arch">Client &rarr; Broker</span>
+          <span class="mode-desc">Code runs in broker process</span>
+        </label>
+        <label class="mode-option lambda" onclick="selectMode('lambda')">
+          <input type="radio" name="mode" value="lambda" />
+          <span class="mode-name">3-Tier (Lambda)</span>
+          <span class="mode-arch">Client &rarr; Broker &rarr; Lambda</span>
+          <span class="mode-desc">Secure: Broker validates, Lambda executes</span>
+        </label>
+        <label class="mode-option direct" onclick="selectMode('direct')">
+          <input type="radio" name="mode" value="direct" />
+          <span class="mode-name">Direct (Unsafe)</span>
+          <span class="mode-arch">Client &rarr; Lambda</span>
+          <span class="mode-desc">Bypasses broker - for comparison only</span>
+        </label>
+      </div>
+
+      <div class="architecture-display" id="archDisplay">
+        Client (4100) &rarr; <span class="secure">[Broker]</span> (4101) &mdash; Code + Tools in one place
+      </div>
+
+      <div class="grid">
+        <div class="panel">
+          <h2>Code Input</h2>
+          <textarea id="code" placeholder="Enter JavaScript code to execute...">
+// Try calling a tool!
+return await callTool('getCurrentTime', {});</textarea
+          >
+
+          <div class="buttons">
+            <button onclick="executeCode()" id="runBtn">Execute</button>
+            <button onclick="clearOutput()" class="secondary">Clear</button>
+          </div>
+
+          <div class="examples">
+            <button class="example-btn" onclick="setExample('time')">Get Time</button>
+            <button class="example-btn" onclick="setExample('add')">Add Numbers</button>
+            <button class="example-btn" onclick="setExample('secret')">Use Secret</button>
+            <button class="example-btn" onclick="setExample('chain')">Chain Tools</button>
+            <button class="example-btn" onclick="setExample('greet')">Greet</button>
+            <button class="example-btn" onclick="setExample('simple')">Simple Math</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Events Stream</h2>
+          <div class="status-bar">
+            <span>
+              <span class="status-indicator status-idle" id="statusIndicator"></span>
+              <span id="statusText">Idle</span>
+            </span>
+            <span id="eventCount">0 events</span>
+          </div>
+          <div class="output" id="events"></div>
+        </div>
+      </div>
+
+      <div class="panel result-panel">
+        <h2>Final Result</h2>
+        <div class="output" id="result">Execute code to see the result...</div>
+      </div>
+    </div>
+
+    <script>
+      const examples = {
+        time: `// Get current server time
+return await callTool('getCurrentTime', {});`,
+        add: `// Add two numbers
+return await callTool('addNumbers', { a: 42, b: 58 });`,
+        secret: `// Use secrets (broker-only feature!)
+return await callTool('useSecret', {});`,
+        chain: `// Chain multiple tool calls
+const time = await callTool('getCurrentTime', {});
+const sum = await callTool('addNumbers', { a: 10, b: 20 });
+const product = await callTool('multiply', { a: sum.result, b: 2 });
+
+return {
+  serverTime: time.timestamp,
+  calculation: \`(10 + 20) * 2 = \${product.result}\`
+};`,
+        greet: `// Greet someone
+return await callTool('greet', { name: 'World' });`,
+        simple: `// Simple math (no tools)
+const x = 10;
+const y = 20;
+return { result: x + y, calculation: x + ' + ' + y };`,
+      };
+
+      const archDescriptions = {
+        embedded: 'Client (4100) &rarr; <span class="secure">[Broker]</span> (4101) &mdash; Code + Tools in one place',
+        lambda:
+          'Client (4100) &rarr; <span class="secure">[Broker validates]</span> (4101) &rarr; <span class="secure">[WebSocket]</span> &rarr; Lambda (4102)',
+        direct:
+          '<span class="warning">WARNING:</span> Client (4100) &rarr; Lambda (4102) &mdash; <span class="warning">No validation, limited tools</span>',
+      };
+
+      let currentMode = 'embedded';
+
+      function selectMode(mode) {
+        currentMode = mode;
+        document.querySelectorAll('.mode-option').forEach((el) => el.classList.remove('selected'));
+        document.querySelector(`.mode-option.${mode}`).classList.add('selected');
+        document.querySelector(`input[value="${mode}"]`).checked = true;
+        document.getElementById('archDisplay').innerHTML = archDescriptions[mode];
+      }
+
+      function setExample(name) {
+        document.getElementById('code').value = examples[name];
+      }
+
+      function setStatus(status, text) {
+        document.getElementById('statusIndicator').className = 'status-indicator status-' + status;
+        document.getElementById('statusText').textContent = text;
+      }
+
+      function clearOutput() {
+        document.getElementById('events').innerHTML = '';
+        document.getElementById('result').textContent = 'Execute code to see the result...';
+        document.getElementById('eventCount').textContent = '0 events';
+        setStatus('idle', 'Idle');
+      }
+
+      async function executeCode() {
+        const code = document.getElementById('code').value;
+        const eventsDiv = document.getElementById('events');
+        const resultDiv = document.getElementById('result');
+        const runBtn = document.getElementById('runBtn');
+
+        eventsDiv.innerHTML = '';
+        resultDiv.textContent = 'Running...';
+        runBtn.disabled = true;
+        setStatus('running', `Running (${currentMode})...`);
+
+        let eventCount = 0;
+
+        try {
+          const response = await fetch(`/api/execute/${currentMode}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+            body: JSON.stringify({ code }),
+          });
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              try {
+                const event = JSON.parse(line);
+                eventCount++;
+                document.getElementById('eventCount').textContent = eventCount + ' events';
+
+                if (event.type === 'client_result') {
+                  displayResult(event.result);
+                } else if (event.type === 'client_error') {
+                  resultDiv.innerHTML = '<span class="result-error">Error: ' + event.error + '</span>';
+                  setStatus('error', 'Error');
+                } else {
+                  displayEvent(event, eventsDiv);
+                }
+              } catch (e) {
+                console.error('Parse error:', e, line);
+              }
+            }
+          }
+        } catch (error) {
+          resultDiv.innerHTML = '<span class="result-error">Network Error: ' + error.message + '</span>';
+          setStatus('error', 'Error');
+        } finally {
+          runBtn.disabled = false;
+        }
+      }
+
+      function displayEvent(event, container) {
+        const div = document.createElement('div');
+        div.className = 'event';
+        let content = '';
+
+        switch (event.type) {
+          case 'session_init':
+            content = `<span class="event-type">[init]</span> Session ${event.sessionId?.slice(0, 20)}...`;
+            break;
+          case 'tool_call':
+            content = `<span class="event-tool">[tool]</span> ${event.payload.toolName}(${JSON.stringify(event.payload.args)})`;
+            break;
+          case 'tool_result_applied':
+            content = `<span class="event-tool">[result]</span> ${event.payload.callId} applied`;
+            break;
+          case 'error':
+            content = `<span class="event-error">[error]</span> ${event.payload.code}: ${event.payload.message}`;
+            break;
+          case 'final':
+            content = `<span class="event-final">[final]</span> ${event.payload.ok ? 'Success' : 'Failed'}`;
+            break;
+          default:
+            content = `<span class="event-type">[${event.type}]</span> ${JSON.stringify(event.payload || {})}`;
+        }
+
+        div.innerHTML = content;
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+      }
+
+      function displayResult(result) {
+        const resultDiv = document.getElementById('result');
+        if (result.success) {
+          setStatus('success', 'Complete');
+          resultDiv.innerHTML = `<span class="result-success">Success!</span>\n\nValue: ${JSON.stringify(result.value, null, 2)}\n\nStats:\n- Duration: ${result.stats?.durationMs || 0}ms\n- Tool calls: ${result.stats?.toolCallCount || 0}`;
+        } else {
+          setStatus('error', 'Failed');
+          resultDiv.innerHTML = `<span class="result-error">Failed!</span>\n\nError: ${result.error?.code || 'Unknown'}\n${result.error?.message || 'Unknown error'}`;
+        }
+      }
+    </script>
+  </body>
+</html>

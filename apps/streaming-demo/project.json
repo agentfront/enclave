@@ -1,0 +1,53 @@
+{
+  "name": "streaming-demo",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/streaming-demo/src",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "dist/apps/streaming-demo",
+        "main": "apps/streaming-demo/src/broker-server.ts",
+        "tsConfig": "apps/streaming-demo/tsconfig.app.json",
+        "assets": ["apps/streaming-demo/src/public"]
+      }
+    },
+    "serve:runtime": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx tsx apps/streaming-demo/src/runtime-server.ts"
+      }
+    },
+    "serve:broker": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx tsx apps/streaming-demo/src/broker-server.ts"
+      }
+    },
+    "serve:client": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx tsx apps/streaming-demo/src/client-server.ts"
+      }
+    },
+    "demo": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "npx tsx apps/streaming-demo/src/runtime-server.ts",
+          "sleep 1 && npx tsx apps/streaming-demo/src/broker-server.ts",
+          "sleep 2 && npx tsx apps/streaming-demo/src/client-server.ts"
+        ],
+        "parallel": true
+      }
+    },
+    "test": {
+      "options": {
+        "passWithNoTests": true
+      }
+    }
+  },
+  "tags": []
+}
