@@ -18,6 +18,7 @@ import type {
   ListSessionsResponse,
   ErrorResponse,
 } from './types';
+import { EventFilter, createEventFilter } from '../event-filter';
 
 /**
  * Session handler configuration
@@ -167,6 +168,12 @@ export class SessionHandler {
         limits['heartbeatIntervalMs'] = body.config.heartbeatIntervalMs;
       }
 
+      // Create event filter if configured
+      let eventFilter: EventFilter | undefined;
+      if (body.filter) {
+        eventFilter = createEventFilter({ config: body.filter });
+      }
+
       // Create session
       const session = this.broker.createSession({
         sessionId: body.sessionId,
@@ -179,8 +186,12 @@ export class SessionHandler {
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('X-Session-ID', session.sessionId);
 
-      // Subscribe to events and stream
+      // Subscribe to events and stream (with filtering)
       const unsubscribe = session.onEvent((event: StreamEvent) => {
+        // Apply filter if configured
+        if (eventFilter && !eventFilter.shouldSend(event)) {
+          return; // Skip filtered events
+        }
         this.writeEvent(res, event);
       });
 
@@ -239,7 +250,7 @@ export class SessionHandler {
   /**
    * Stream session events (for reconnection)
    *
-   * GET /sessions/:sessionId/stream?fromSeq=N
+   * GET /sessions/:sessionId/stream?fromSeq=N&filter=JSON
    */
   async streamSession(req: BrokerRequest, res: BrokerResponse): Promise<void> {
     this.addCorsHeaders(req, res);
@@ -259,16 +270,31 @@ export class SessionHandler {
     // Parse stream options
     const fromSeq = parseInt(req.query['fromSeq'] ?? '0', 10);
 
+    // Parse filter config if provided (JSON-encoded query parameter)
+    let eventFilter: EventFilter | undefined;
+    if (req.query['filter']) {
+      try {
+        const filterConfig = JSON.parse(req.query['filter']);
+        eventFilter = createEventFilter({ config: filterConfig });
+      } catch {
+        this.sendError(res, 400, 'INVALID_FILTER', 'Invalid filter configuration');
+        return;
+      }
+    }
+
     // Set up streaming response
     res.setHeader('Content-Type', 'application/x-ndjson');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Session-ID', session.sessionId);
 
-    // Replay missed events
+    // Replay missed events (with filtering)
     const pastEvents = session.getEvents();
     for (const event of pastEvents) {
       if (event.seq >= fromSeq) {
+        if (eventFilter && !eventFilter.shouldSend(event)) {
+          continue; // Skip filtered events
+        }
         this.writeEvent(res, event);
       }
     }
@@ -279,9 +305,18 @@ export class SessionHandler {
       return;
     }
 
-    // Subscribe to new events
+    // Subscribe to new events (with filtering)
     const unsubscribe = session.onEvent((event: StreamEvent) => {
       if (event.seq >= fromSeq) {
+        // Apply filter if configured
+        if (eventFilter && !eventFilter.shouldSend(event)) {
+          // Still check for final event to end stream
+          if (event.type === 'final') {
+            unsubscribe();
+            res.end();
+          }
+          return; // Skip filtered events
+        }
         this.writeEvent(res, event);
       }
 

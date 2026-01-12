@@ -36,6 +36,7 @@
     "@enclavejs/types": "0.1.0",
     "@enclavejs/stream": "0.1.0",
     "enclave-vm": "2.7.0",
+    "minimatch": "^10.0.1",
     "zod": "^4.1.13"
   },
   "type": "commonjs"

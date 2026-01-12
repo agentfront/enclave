@@ -171,3 +171,8 @@ export type {
   ParsedRuntimeChannelMessage,
   ParsedCreateSessionRequest,
 } from './schemas.js';
+
+// Filter exports
+export { FilterMode, PatternType, DEFAULT_ALWAYS_ALLOW } from './filter.js';
+
+export type { ContentPattern, TypeFilter, ContentFilter, FilterRule, EventFilterConfig } from './filter.js';

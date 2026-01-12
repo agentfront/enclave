@@ -4,6 +4,10 @@
 /.nx/cache
 /.nx/workspace-data
 
+# Lock files (use yarn.lock only)
+package-lock.json
+pnpm-lock.yaml
+
 node_modules
 dist
 build

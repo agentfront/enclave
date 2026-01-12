@@ -41,3 +41,7 @@ export type {
   ErrorResponse,
   StreamOptions,
 } from './http';
+
+// Event Filtering
+export { EventFilter, createEventFilter, createTypeFilter, createContentFilter } from './event-filter';
+export type { EventFilterOptions } from './event-filter';

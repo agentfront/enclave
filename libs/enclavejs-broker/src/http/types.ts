@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import type { SessionId } from '@enclavejs/types';
+import type { SessionId, EventFilterConfig } from '@enclavejs/types';
 
 /**
  * HTTP request abstraction
@@ -116,6 +116,12 @@ export interface CreateSessionRequest {
      */
     heartbeatIntervalMs?: number;
   };
+
+  /**
+   * Event filter configuration (server-side filtering).
+   * Controls which events are sent to the client.
+   */
+  filter?: EventFilterConfig;
 }
 
 /**
@@ -199,4 +205,10 @@ export interface StreamOptions {
    * Include heartbeats in stream
    */
   heartbeats?: boolean;
+
+  /**
+   * Event filter configuration (server-side filtering).
+   * Controls which events are sent to the client.
+   */
+  filter?: EventFilterConfig;
 }
