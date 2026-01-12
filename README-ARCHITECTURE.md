@@ -12,15 +12,15 @@ The design intentionally supports:
 
 ## Implementation Status
 
-| Package              | Status     | Description                             |
-| -------------------- | ---------- | --------------------------------------- |
-| `enclave-vm`         | ✅ Done    | Core sandbox VM engine                  |
-| `@enclavejs/types`   | ✅ Done    | Shared TypeScript types and Zod schemas |
-| `@enclavejs/stream`  | ✅ Done    | NDJSON streaming protocol               |
-| `@enclavejs/broker`  | ✅ Done    | Middleware/tool broker with HTTP API    |
-| `@enclavejs/client`  | 🔲 Planned | Browser + Node client SDK               |
-| `@enclavejs/runtime` | 🔲 Planned | Extracted runtime worker                |
-| `@enclavejs/react`   | 🔲 Planned | React hooks                             |
+| Package              | Status  | Description                             |
+| -------------------- | ------- | --------------------------------------- |
+| `enclave-vm`         | ✅ Done | Core sandbox VM engine                  |
+| `@enclavejs/types`   | ✅ Done | Shared TypeScript types and Zod schemas |
+| `@enclavejs/stream`  | ✅ Done | NDJSON streaming protocol               |
+| `@enclavejs/broker`  | ✅ Done | Middleware/tool broker with HTTP API    |
+| `@enclavejs/client`  | ✅ Done | Browser + Node client SDK               |
+| `@enclavejs/runtime` | ✅ Done | Extracted runtime worker                |
+| `@enclavejs/react`   | ✅ Done | React hooks & components                |
 
 ## Table of contents
 
