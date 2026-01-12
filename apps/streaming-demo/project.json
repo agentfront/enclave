@@ -44,8 +44,10 @@
       }
     },
     "test": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/coverage/{projectRoot}"],
       "options": {
-        "passWithNoTests": true
+        "command": "NODE_OPTIONS='--experimental-vm-modules' npx jest --config apps/streaming-demo/jest.config.ts --passWithNoTests --runInBand"
       }
     }
   },
