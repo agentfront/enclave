@@ -17,7 +17,6 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import WebSocket from 'ws';
-import type { SessionId } from '@enclavejs/types';
 import { generateSessionId } from '@enclavejs/types';
 
 const PORT = 4100;
@@ -26,10 +25,17 @@ const LAMBDA_WS_URL = 'ws://localhost:4102/ws';
 
 const app = express();
 
-app.use((_req, res, next) => {
+app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+
   next();
 });
 
@@ -37,9 +43,110 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ============================================================================
+// NDJSON HELPER - Buffered parsing with abort support
+// ============================================================================
+interface NdjsonPipeOptions {
+  req: Request;
+  res: Response;
+  brokerUrl: string;
+  code: string;
+  onToolCall?: (toolName: string) => void;
+}
+
+interface NdjsonPipeResult {
+  lastEvent: unknown;
+  aborted: boolean;
+}
+
+async function pipeNdjsonWithAbort(options: NdjsonPipeOptions): Promise<NdjsonPipeResult> {
+  const { req, res, brokerUrl, code, onToolCall } = options;
+  const controller = new AbortController();
+  let aborted = false;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
+  // Handle client disconnect
+  const onClose = () => {
+    aborted = true;
+    controller.abort();
+    if (reader) {
+      void reader.cancel();
+    }
+  };
+  req.on('close', onClose);
+  res.on('close', onClose);
+
+  try {
+    const response = await fetch(brokerUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+      body: JSON.stringify({ code }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) throw new Error(`Broker returned ${response.status}`);
+
+    reader = response.body?.getReader() ?? null;
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let lastEvent: unknown = null;
+
+    while (!aborted) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+
+      // Write raw chunk to response
+      if (res.writable) {
+        res.write(chunk);
+      }
+
+      // Buffer-based NDJSON parsing
+      buffer += chunk;
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        try {
+          const event = JSON.parse(trimmed);
+          lastEvent = event;
+          if (event.type === 'tool_call' && onToolCall) {
+            onToolCall(event.payload.toolName);
+          }
+        } catch {
+          // Ignore parse errors for incomplete JSON
+        }
+      }
+    }
+
+    // Process any remaining buffer content
+    if (buffer.trim()) {
+      try {
+        const event = JSON.parse(buffer.trim());
+        lastEvent = event;
+      } catch {
+        // Ignore
+      }
+    }
+
+    return { lastEvent, aborted };
+  } finally {
+    req.off('close', onClose);
+    res.off('close', onClose);
+    if (reader) {
+      void reader.cancel();
+    }
+  }
+}
+
+// ============================================================================
 // MODE 1: EMBEDDED - Client → Broker (embedded runtime)
 // ============================================================================
-// Handler for embedded mode execution
 async function handleEmbeddedExecute(req: Request, res: Response): Promise<void> {
   const { code } = req.body;
   if (!code || typeof code !== 'string') {
@@ -54,39 +161,19 @@ async function handleEmbeddedExecute(req: Request, res: Response): Promise<void>
   res.setHeader('Connection', 'keep-alive');
 
   try {
-    const response = await fetch(`${BROKER_URL}/sessions/embedded`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
-      body: JSON.stringify({ code }),
+    const { lastEvent, aborted } = await pipeNdjsonWithAbort({
+      req,
+      res,
+      brokerUrl: `${BROKER_URL}/sessions/embedded`,
+      code,
+      onToolCall: (toolName) => {
+        console.log(`\x1b[34m[Client → Embedded]\x1b[0m Tool: ${toolName}`);
+      },
     });
 
-    if (!response.ok) throw new Error(`Broker returned ${response.status}`);
-
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('No response body');
-
-    const decoder = new TextDecoder();
-    let lastEvent: unknown = null;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value, { stream: true });
-      res.write(chunk);
-
-      const lines = chunk.split('\n').filter((l) => l.trim());
-      for (const line of lines) {
-        try {
-          const event = JSON.parse(line);
-          lastEvent = event;
-          if (event.type === 'tool_call') {
-            console.log(`\x1b[34m[Client → Embedded]\x1b[0m Tool: ${event.payload.toolName}`);
-          }
-        } catch {
-          // Ignore
-        }
-      }
+    if (aborted) {
+      console.log(`\x1b[34m[Client → Embedded]\x1b[0m Aborted`);
+      return;
     }
 
     if (lastEvent && (lastEvent as { type: string }).type === 'final') {
@@ -102,9 +189,15 @@ async function handleEmbeddedExecute(req: Request, res: Response): Promise<void>
     res.end();
     console.log(`\x1b[34m[Client → Embedded]\x1b[0m Complete`);
   } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+      console.log(`\x1b[34m[Client → Embedded]\x1b[0m Aborted`);
+      return;
+    }
     console.error(`\x1b[31m[Client → Embedded error]\x1b[0m`, error);
-    res.write(JSON.stringify({ type: 'client_error', error: String(error) }) + '\n');
-    res.end();
+    if (res.writable) {
+      res.write(JSON.stringify({ type: 'client_error', error: String(error) }) + '\n');
+      res.end();
+    }
   }
 }
 
@@ -127,39 +220,19 @@ app.post('/api/execute/lambda', async (req: Request, res: Response) => {
   res.setHeader('Connection', 'keep-alive');
 
   try {
-    const response = await fetch(`${BROKER_URL}/sessions/lambda`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
-      body: JSON.stringify({ code }),
+    const { lastEvent, aborted } = await pipeNdjsonWithAbort({
+      req,
+      res,
+      brokerUrl: `${BROKER_URL}/sessions/lambda`,
+      code,
+      onToolCall: (toolName) => {
+        console.log(`\x1b[34m[Client → Broker → Lambda]\x1b[0m Tool: ${toolName}`);
+      },
     });
 
-    if (!response.ok) throw new Error(`Broker returned ${response.status}`);
-
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('No response body');
-
-    const decoder = new TextDecoder();
-    let lastEvent: unknown = null;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value, { stream: true });
-      res.write(chunk);
-
-      const lines = chunk.split('\n').filter((l) => l.trim());
-      for (const line of lines) {
-        try {
-          const event = JSON.parse(line);
-          lastEvent = event;
-          if (event.type === 'tool_call') {
-            console.log(`\x1b[34m[Client → Broker → Lambda]\x1b[0m Tool: ${event.payload.toolName}`);
-          }
-        } catch {
-          // Ignore
-        }
-      }
+    if (aborted) {
+      console.log(`\x1b[34m[Client → Broker → Lambda]\x1b[0m Aborted`);
+      return;
     }
 
     if (lastEvent && (lastEvent as { type: string }).type === 'final') {
@@ -175,9 +248,15 @@ app.post('/api/execute/lambda', async (req: Request, res: Response) => {
     res.end();
     console.log(`\x1b[34m[Client → Broker → Lambda]\x1b[0m Complete`);
   } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+      console.log(`\x1b[34m[Client → Broker → Lambda]\x1b[0m Aborted`);
+      return;
+    }
     console.error(`\x1b[31m[Client → Broker → Lambda error]\x1b[0m`, error);
-    res.write(JSON.stringify({ type: 'client_error', error: String(error) }) + '\n');
-    res.end();
+    if (res.writable) {
+      res.write(JSON.stringify({ type: 'client_error', error: String(error) }) + '\n');
+      res.end();
+    }
   }
 });
 

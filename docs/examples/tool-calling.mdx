@@ -209,8 +209,9 @@ console.log('Tool call log:', toolLogs);
 ## Conditional Tool Calls
 
 ```ts
+// Pass userId via globals
 const result = await enclave.run(`
-  const user = await callTool('users:get', { id: userId });
+  const user = await callTool('users:get', { id: 'user-123' });
 
   // Conditional tool calls based on data
   if (user.role === 'admin') {
@@ -285,32 +286,35 @@ interface ExecutionContext {
   permissions: string[];
 }
 
-const enclave = new Enclave({
-  toolHandler: async (name, args, context: ExecutionContext) => {
-    // Check permissions
-    const requiredPermission = `${name.split(':')[0]}:access`;
-    if (!context.permissions.includes(requiredPermission)) {
-      throw new Error(`Permission denied: ${requiredPermission}`);
-    }
+// Context is captured via closure - toolHandler only receives (name, args)
+function createContextAwareEnclave(context: ExecutionContext) {
+  return new Enclave({
+    toolHandler: async (name, args) => {
+      // Check permissions using captured context
+      const requiredPermission = `${name.split(':')[0]}:access`;
+      if (!context.permissions.includes(requiredPermission)) {
+        throw new Error(`Permission denied: ${requiredPermission}`);
+      }
 
-    // Add tenant context to all queries
-    const contextArgs = {
-      ...args,
-      tenantId: context.tenantId,
-    };
+      // Add tenant context to all queries
+      const contextArgs = {
+        ...args,
+        tenantId: context.tenantId,
+      };
 
-    return executeTool(name, contextArgs);
-  },
+      return executeTool(name, contextArgs);
+    },
+  });
+}
+
+// Create enclave with context
+const enclave = createContextAwareEnclave({
+  userId: 'user-123',
+  tenantId: 'tenant-456',
+  permissions: ['users:access', 'orders:access'],
 });
 
-// Execute with context
-const result = await enclave.run(code, {
-  context: {
-    userId: 'user-123',
-    tenantId: 'tenant-456',
-    permissions: ['users:access', 'orders:access'],
-  },
-});
+const result = await enclave.run(code);
 ```
 
 ## Rate-Limited Tools

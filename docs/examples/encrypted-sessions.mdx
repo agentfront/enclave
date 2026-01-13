@@ -482,21 +482,39 @@ export function SecureCodeEditor() {
   const [connected, setConnected] = useState(false);
   const [code, setCode] = useState('');
   const [result, setResult] = useState<unknown>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const newClient = new EncryptedEnclaveClient('https://api.example.com');
     setClient(newClient);
+    let mounted = true;
 
-    newClient.connect().then(() => {
-      setConnected(true);
-    });
+    newClient.connect()
+      .then(() => {
+        if (mounted) setConnected(true);
+      })
+      .catch((err) => {
+        if (mounted) setError(`Connection failed: ${err.message}`);
+      });
+
+    // Cleanup on unmount
+    return () => {
+      mounted = false;
+      // Disconnect if client supports it
+      // newClient.disconnect?.();
+    };
   }, []);
 
   const execute = async () => {
     if (!client || !connected) return;
 
-    const result = await client.execute(code);
-    setResult(result);
+    setError(null);
+    try {
+      const result = await client.execute(code);
+      setResult(result);
+    } catch (err) {
+      setError(`Execution failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   return (
@@ -512,6 +530,8 @@ export function SecureCodeEditor() {
         />
         <span>{connected ? 'Encrypted Connection' : 'Connecting...'}</span>
       </div>
+
+      {error && <div style={{ color: '#ef4444' }}>{error}</div>}
 
       <textarea
         value={code}
