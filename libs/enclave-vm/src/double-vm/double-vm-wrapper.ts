@@ -33,6 +33,10 @@ const SENSITIVE_STACK_PATTERNS = [
 
 /**
  * Sanitize stack trace by removing host file system paths
+ *
+ * Uses line-by-line processing with pre-checks to prevent ReDoS attacks.
+ * The vulnerable pattern /at\s+(\S+)\s+\([^)]*:\d+:\d+\)/g can cause polynomial
+ * backtracking on malicious input like "at ! (at ! (at ! (...".
  */
 function sanitizeStackTrace(stack: string | undefined, sanitize = true): string | undefined {
   if (!stack || !sanitize) return stack;
@@ -43,11 +47,38 @@ function sanitizeStackTrace(stack: string | undefined, sanitize = true): string 
     sanitized = sanitized.replace(pattern, '[REDACTED]');
   }
 
-  // Remove line/column numbers (uses [^):]* instead of [^)]* to prevent ReDoS)
-  sanitized = sanitized.replace(/at\s+(\S+)\s+\([^):]*:\d+:\d+\)/g, 'at $1 ([REDACTED])');
-  sanitized = sanitized.replace(/at\s+[^\s]+:\d+:\d+/g, 'at [REDACTED]');
+  // Remove line/column numbers - process line by line with pre-checks to prevent ReDoS
+  // Pre-checking the ending pattern before applying full regex avoids polynomial backtracking
+  const lines = sanitized.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
 
-  return sanitized;
+    // Defense-in-depth: skip very long lines
+    if (line.length > 1000) continue;
+
+    // Pattern 1: "at functionName (path:line:column)" format
+    // Quick check: does line contain ":digits:digits)" pattern?
+    if (/:\d+:\d+\)/.test(line)) {
+      // Extract function name using indexOf to avoid regex backtracking
+      const atIdx = line.indexOf('at ');
+      if (atIdx !== -1) {
+        const afterAt = line.substring(atIdx + 3).trimStart();
+        const spaceIdx = afterAt.indexOf(' ');
+        if (spaceIdx !== -1 && afterAt.charAt(spaceIdx + 1) === '(') {
+          const funcName = afterAt.substring(0, spaceIdx);
+          lines[i] = line.substring(0, atIdx) + 'at ' + funcName + ' ([REDACTED])';
+          continue;
+        }
+      }
+    }
+
+    // Pattern 2: "at path:line:column" format (no parentheses)
+    if (/:\d+:\d+$/.test(line) && /^\s*at\s/.test(line)) {
+      lines[i] = line.replace(/:\d+:\d+$/, '') + '[REDACTED]';
+    }
+  }
+
+  return lines.join('\n');
 }
 
 /**
