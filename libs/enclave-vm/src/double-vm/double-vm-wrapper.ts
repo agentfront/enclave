@@ -43,8 +43,8 @@ function sanitizeStackTrace(stack: string | undefined, sanitize = true): string 
     sanitized = sanitized.replace(pattern, '[REDACTED]');
   }
 
-  // Remove line/column numbers
-  sanitized = sanitized.replace(/at\s+([^\s]+)\s+\([^)]*:\d+:\d+\)/g, 'at $1 ([REDACTED])');
+  // Remove line/column numbers (uses [^):]* instead of [^)]* to prevent ReDoS)
+  sanitized = sanitized.replace(/at\s+(\S+)\s+\([^):]*:\d+:\d+\)/g, 'at $1 ([REDACTED])');
   sanitized = sanitized.replace(/at\s+[^\s]+:\d+:\d+/g, 'at [REDACTED]');
 
   return sanitized;

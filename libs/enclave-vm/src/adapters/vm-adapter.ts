@@ -139,7 +139,8 @@ function sanitizeStackTrace(stack: string | undefined, sanitize = true): string 
 
   // Additional: Remove line and column numbers from stack frames
   // Format: "at functionName (file:line:column)" -> "at functionName ([REDACTED])"
-  sanitized = sanitized.replace(/at\s+([^\s]+)\s+\([^)]*:\d+:\d+\)/g, 'at $1 ([REDACTED])');
+  // Uses [^):]* instead of [^)]* to prevent ReDoS (colons excluded since Windows paths are already redacted)
+  sanitized = sanitized.replace(/at\s+(\S+)\s+\([^):]*:\d+:\d+\)/g, 'at $1 ([REDACTED])');
 
   // Format: "at file:line:column" -> "at [REDACTED]"
   sanitized = sanitized.replace(/at\s+[^\s]+:\d+:\d+/g, 'at [REDACTED]');
