@@ -1,0 +1,281 @@
+---
+title: 'Debugging'
+description: 'Techniques for debugging Enclave code execution'
+---
+
+This page covers techniques for debugging issues with Enclave code execution.
+
+## Validation Debugging
+
+### Pre-validate Code
+
+Before running code in the enclave, validate it separately:
+
+```ts
+import { JSAstValidator, createAgentScriptPreset, PreScanner, createPreScannerConfig } from 'ast-guard';
+
+async function debugValidation(code: string) {
+  // Step 1: Pre-scan
+  const scanner = new PreScanner(createPreScannerConfig('agentscript'));
+  const scanResult = scanner.scan(code);
+
+  if (!scanResult.valid) {
+    console.log('Pre-scan failed:');
+    for (const issue of scanResult.issues) {
+      console.log(`  [${issue.severity}] ${issue.message}`);
+    }
+    return;
+  }
+
+  // Step 2: AST validation
+  const validator = new JSAstValidator(createAgentScriptPreset());
+  const result = await validator.validate(code);
+
+  if (!result.valid) {
+    console.log('AST validation failed:');
+    for (const issue of result.issues) {
+      console.log(`  [${issue.rule}] ${issue.message}`);
+      if (issue.location) {
+        console.log(`    Line ${issue.location.line}, Column ${issue.location.column}`);
+      }
+    }
+  } else {
+    console.log('Validation passed!');
+  }
+}
+```
+
+### View Transformed Code
+
+See what the code looks like after transformation:
+
+```ts
+import { transformAgentScript } from 'ast-guard';
+
+const original = `
+  const users = await callTool('users:list', {});
+  return users.length;
+`;
+
+const transformed = transformAgentScript(original, {
+  wrapInMain: true,
+  transformCallTool: true,
+  transformLoops: true,
+});
+
+console.log('Transformed code:');
+console.log(transformed);
+```
+
+## Runtime Debugging
+
+### Use Console Logging
+
+Console output is captured and available in results:
+
+```ts
+const code = `
+  console.log('Starting execution');
+  const users = await callTool('users:list', {});
+  console.log('Got', users.length, 'users');
+
+  for (const user of users) {
+    console.log('Processing:', user.name);
+  }
+
+  console.log('Done!');
+  return users.length;
+`;
+
+const result = await enclave.run(code);
+
+// Access captured console output
+console.log('Script output:', result.stdout);
+```
+
+### Track Tool Calls
+
+Log all tool calls in your handler:
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    console.log(`[Tool] ${name}`, JSON.stringify(args));
+
+    const start = Date.now();
+    const result = await executeTool(name, args);
+    const duration = Date.now() - start;
+
+    console.log(`[Tool] ${name} completed in ${duration}ms`);
+    return result;
+  },
+});
+```
+
+### Inspect Execution Stats
+
+```ts
+const result = await enclave.run(code);
+
+console.log('Execution stats:', {
+  success: result.success,
+  duration: `${result.stats.duration}ms`,
+  toolCalls: result.stats.toolCallCount,
+  iterations: result.stats.iterationCount,
+  memoryUsed: result.stats.memoryUsage
+    ? `${Math.round(result.stats.memoryUsage / 1024)}KB`
+    : 'not tracked',
+});
+```
+
+## Error Debugging
+
+### Detailed Error Information
+
+```ts
+const result = await enclave.run(code);
+
+if (!result.success) {
+  console.log('Execution failed:');
+  console.log('  Code:', result.error?.code);
+  console.log('  Name:', result.error?.name);
+  console.log('  Message:', result.error?.message);
+
+  if (result.error?.stack) {
+    console.log('  Stack:', result.error.stack);
+  }
+
+  if (result.error?.data) {
+    console.log('  Additional data:', result.error.data);
+  }
+}
+```
+
+### Error Code Reference
+
+| Code | Meaning | Debug Steps |
+|------|---------|-------------|
+| `VALIDATION_ERROR` | AST validation failed | Check validation issues |
+| `TIMEOUT` | Exceeded timeout | Profile slow operations |
+| `MAX_TOOL_CALLS` | Too many tool calls | Review call patterns |
+| `MAX_ITERATIONS` | Loop limit hit | Check loop bounds |
+| `TOOL_ERROR` | Tool handler error | Debug tool handler |
+| `MEMORY_LIMIT_EXCEEDED` | Memory limit | Profile memory usage |
+
+## Scoring Gate Debugging
+
+### Log Score Details
+
+```ts
+const enclave = new Enclave({
+  scoringGate: {
+    scorer: 'rule-based',
+    blockThreshold: 70,
+    warnThreshold: 40,
+    onScore: (result) => {
+      console.log('Scoring result:', {
+        score: result.score,
+        signals: result.signals,
+        blocked: result.score >= 70,
+      });
+    },
+  },
+});
+```
+
+### Test Scoring Separately
+
+```ts
+import { RuleBasedScorer } from 'enclave-vm';
+
+const scorer = new RuleBasedScorer();
+const result = scorer.score(code);
+
+console.log('Score:', result.score);
+console.log('Signals:', result.signals);
+```
+
+## Performance Debugging
+
+### Measure Tool Call Latency
+
+```ts
+const toolMetrics: Map<string, number[]> = new Map();
+
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    const start = performance.now();
+    const result = await executeTool(name, args);
+    const duration = performance.now() - start;
+
+    const metrics = toolMetrics.get(name) || [];
+    metrics.push(duration);
+    toolMetrics.set(name, metrics);
+
+    return result;
+  },
+});
+
+// After execution
+for (const [name, durations] of toolMetrics) {
+  const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
+  console.log(`${name}: ${durations.length} calls, avg ${avg.toFixed(2)}ms`);
+}
+```
+
+### Profile Memory Usage
+
+```ts
+const enclave = new Enclave({
+  memoryLimit: 64 * 1024 * 1024,
+});
+
+const result = await enclave.run(code);
+
+if (result.stats.memoryUsage) {
+  const mb = result.stats.memoryUsage / (1024 * 1024);
+  console.log(`Peak memory: ${mb.toFixed(2)}MB`);
+}
+```
+
+## Testing Scripts
+
+### Create a Test Harness
+
+```ts
+async function testScript(
+  code: string,
+  expectedResult: unknown,
+  tools: Record<string, Function>
+) {
+  const enclave = new Enclave({
+    securityLevel: 'SECURE',
+    toolHandler: async (name, args) => {
+      const tool = tools[name];
+      if (!tool) throw new Error(`Unknown tool: ${name}`);
+      return tool(...Object.values(args));
+    },
+  });
+
+  const result = await enclave.run(code);
+  enclave.dispose();
+
+  if (!result.success) {
+    throw new Error(`Script failed: ${result.error?.message}`);
+  }
+
+  expect(result.value).toEqual(expectedResult);
+}
+
+// Usage
+await testScript(
+  `return await callTool('add', { a: 1, b: 2 })`,
+  3,
+  { add: (a: number, b: number) => a + b }
+);
+```
+
+## Related
+
+- [Common Errors](/troubleshooting/common-errors) - Error reference
+- [FAQ](/troubleshooting/faq) - Frequently asked questions

@@ -1,0 +1,377 @@
+---
+title: 'enclave-vm API'
+description: 'Complete API reference for the enclave-vm package'
+---
+
+Complete API reference for the `enclave-vm` package.
+
+## Installation
+
+```bash
+npm install enclave-vm
+```
+
+## Enclave Class
+
+The main class for secure code execution.
+
+### Constructor
+
+```ts
+new Enclave(options?: EnclaveOptions)
+```
+
+### EnclaveOptions
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `securityLevel` | `SecurityLevel` | `'STANDARD'` | Security preset |
+| `timeout` | `number` | `30000` | Execution timeout in ms |
+| `maxToolCalls` | `number` | `100` | Maximum tool calls per execution |
+| `maxIterations` | `number` | `10000` | Maximum loop iterations |
+| `memoryLimit` | `number` | `67108864` | Memory limit in bytes (64MB) |
+| `toolHandler` | `ToolHandler` | `undefined` | Tool execution function |
+| `globals` | `Record<string, unknown>` | `{}` | Custom globals |
+| `scoringGate` | `ScoringGateOptions` | `undefined` | AI scoring configuration |
+| `adapter` | `EnclaveAdapter` | `undefined` | Execution adapter |
+| `verboseErrors` | `boolean` | `false` | Include detailed error info |
+
+### Methods
+
+#### run(code, options?)
+
+Execute code in the sandbox.
+
+```ts
+async run(code: string, options?: RunOptions): Promise<ExecutionResult>
+```
+
+**Parameters:**
+- `code` - JavaScript code to execute
+- `options` - Optional execution options
+
+**Returns:** `ExecutionResult`
+
+```ts
+interface RunOptions {
+  timeout?: number;
+  context?: Record<string, unknown>;
+  maxToolCalls?: number;
+}
+
+interface ExecutionResult {
+  success: boolean;
+  value?: unknown;
+  error?: ExecutionError;
+  stdout?: string;
+  stats?: ExecutionStats;
+}
+```
+
+**Example:**
+```ts
+const result = await enclave.run(`
+  const x = 1 + 2;
+  return x;
+`);
+console.log(result.value); // 3
+```
+
+#### validate(code)
+
+Validate code without executing.
+
+```ts
+async validate(code: string): Promise<ValidationResult>
+```
+
+**Returns:** `ValidationResult`
+
+```ts
+interface ValidationResult {
+  valid: boolean;
+  issues: ValidationIssue[];
+}
+
+interface ValidationIssue {
+  rule: string;
+  message: string;
+  severity: 'error' | 'warning';
+  location?: {
+    line: number;
+    column: number;
+  };
+}
+```
+
+**Example:**
+```ts
+const validation = await enclave.validate(`
+  eval('dangerous');
+`);
+// validation.valid === false
+// validation.issues[0].message === "Identifier 'eval' is not allowed"
+```
+
+#### dispose()
+
+Clean up resources.
+
+```ts
+dispose(): void
+```
+
+**Example:**
+```ts
+const enclave = new Enclave();
+try {
+  await enclave.run(code);
+} finally {
+  enclave.dispose();
+}
+```
+
+## Types
+
+### SecurityLevel
+
+```ts
+type SecurityLevel = 'STRICT' | 'SECURE' | 'STANDARD' | 'PERMISSIVE';
+```
+
+| Level | Description |
+|-------|-------------|
+| `STRICT` | Maximum security for untrusted code |
+| `SECURE` | High security for semi-trusted code |
+| `STANDARD` | Balanced security for internal tools |
+| `PERMISSIVE` | Minimal restrictions (testing only) |
+
+### ToolHandler
+
+```ts
+type ToolHandler = (
+  name: string,
+  args: Record<string, unknown>,
+  context?: Record<string, unknown>
+) => Promise<unknown>;
+```
+
+**Example:**
+```ts
+const toolHandler: ToolHandler = async (name, args, context) => {
+  switch (name) {
+    case 'users:list':
+      return db.users.findAll({ limit: args.limit });
+    default:
+      throw new Error(`Unknown tool: ${name}`);
+  }
+};
+```
+
+### ExecutionError
+
+```ts
+interface ExecutionError {
+  code: ErrorCode;
+  name: string;
+  message: string;
+  stack?: string;
+  data?: Record<string, unknown>;
+}
+
+type ErrorCode =
+  | 'VALIDATION_ERROR'
+  | 'TIMEOUT'
+  | 'MAX_TOOL_CALLS'
+  | 'MAX_ITERATIONS'
+  | 'TOOL_ERROR'
+  | 'MEMORY_LIMIT_EXCEEDED'
+  | 'SCORING_BLOCKED'
+  | 'RUNTIME_ERROR';
+```
+
+### ExecutionStats
+
+```ts
+interface ExecutionStats {
+  duration: number;
+  toolCallCount: number;
+  iterationCount: number;
+  memoryUsage?: number;
+}
+```
+
+### ScoringGateOptions
+
+```ts
+interface ScoringGateOptions {
+  scorer: 'rule-based' | 'custom';
+  blockThreshold: number;
+  warnThreshold?: number;
+  onScore?: (result: ScoringResult) => void;
+  customScorer?: (code: string) => Promise<ScoringResult>;
+}
+
+interface ScoringResult {
+  score: number;
+  signals: string[];
+}
+```
+
+## Factory Functions
+
+### createWorkerPoolAdapter(options)
+
+Create a worker pool adapter for OS-level isolation.
+
+```ts
+function createWorkerPoolAdapter(options: WorkerPoolOptions): EnclaveAdapter
+```
+
+**Options:**
+```ts
+interface WorkerPoolOptions {
+  poolSize: number;
+  maxWorkerMemory?: number;
+  maxExecutionsPerWorker?: number;
+  idleTimeout?: number;
+}
+```
+
+**Example:**
+```ts
+import { Enclave, createWorkerPoolAdapter } from 'enclave-vm';
+
+const enclave = new Enclave({
+  adapter: createWorkerPoolAdapter({
+    poolSize: 4,
+    maxWorkerMemory: 128 * 1024 * 1024,
+  }),
+});
+```
+
+### createDoubleVmAdapter(options)
+
+Create a double-VM adapter for nested isolation.
+
+```ts
+function createDoubleVmAdapter(options?: DoubleVmOptions): EnclaveAdapter
+```
+
+**Options:**
+```ts
+interface DoubleVmOptions {
+  outerTimeout?: number;
+  innerTimeout?: number;
+}
+```
+
+## RuleBasedScorer Class
+
+Semantic pattern detection scorer.
+
+```ts
+import { RuleBasedScorer } from 'enclave-vm';
+
+const scorer = new RuleBasedScorer();
+const result = scorer.score(code);
+
+console.log(result.score);   // 0-100
+console.log(result.signals); // ['list-send-pattern', 'bulk-operation']
+```
+
+### Methods
+
+#### score(code)
+
+```ts
+score(code: string): ScoringResult
+```
+
+## Reference Sidecar
+
+Handle large tool responses.
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({
+  sidecar: {
+    enabled: true,
+    threshold: 1024 * 1024, // 1MB
+  },
+});
+```
+
+### SidecarOptions
+
+```ts
+interface SidecarOptions {
+  enabled: boolean;
+  threshold?: number; // Size threshold for reference creation
+  storage?: 'memory' | 'redis';
+  ttl?: number; // Time-to-live in ms
+}
+```
+
+## Complete Example
+
+```ts
+import { Enclave, createWorkerPoolAdapter } from 'enclave-vm';
+
+// Create enclave with full configuration
+const enclave = new Enclave({
+  // Security
+  securityLevel: 'STRICT',
+
+  // Limits
+  timeout: 30000,
+  maxToolCalls: 50,
+  maxIterations: 10000,
+  memoryLimit: 64 * 1024 * 1024,
+
+  // Custom globals
+  globals: {
+    config: { debug: true },
+  },
+
+  // Tool handling
+  toolHandler: async (name, args) => {
+    console.log(`Tool: ${name}`, args);
+    return { success: true };
+  },
+
+  // AI Scoring
+  scoringGate: {
+    scorer: 'rule-based',
+    blockThreshold: 70,
+    warnThreshold: 40,
+    onScore: (result) => {
+      console.log('Score:', result.score);
+    },
+  },
+
+  // Worker pool isolation
+  adapter: createWorkerPoolAdapter({
+    poolSize: 4,
+  }),
+});
+
+// Execute code
+const result = await enclave.run(`
+  console.log('Hello from Enclave');
+  const data = await callTool('fetch', { url: '/api/data' });
+  return data;
+`);
+
+console.log(result);
+
+// Clean up
+enclave.dispose();
+```
+
+## Related
+
+- [Overview](/core-libraries/enclave-vm/overview) - Feature overview
+- [Configuration](/core-libraries/enclave-vm/configuration) - All options
+- [Security Levels](/core-libraries/enclave-vm/security-levels) - Security details

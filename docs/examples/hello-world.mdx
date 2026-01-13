@@ -1,0 +1,208 @@
+---
+title: 'Hello World'
+description: 'Simplest Enclave example - your first secure code execution'
+---
+
+The simplest possible Enclave example - execute code and get results.
+
+## Basic Example
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+// Create an enclave instance
+const enclave = new Enclave();
+
+// Execute code
+const result = await enclave.run(`
+  const greeting = 'Hello, World!';
+  console.log(greeting);
+  return greeting;
+`);
+
+console.log(result.value); // "Hello, World!"
+console.log(result.stdout); // "Hello, World!\n"
+
+// Clean up
+enclave.dispose();
+```
+
+## With TypeScript
+
+```ts
+import { Enclave, ExecutionResult } from 'enclave-vm';
+
+async function main(): Promise<void> {
+  const enclave = new Enclave({
+    securityLevel: 'STRICT',
+    timeout: 5000,
+  });
+
+  try {
+    const result: ExecutionResult = await enclave.run(`
+      return 2 + 2;
+    `);
+
+    if (result.success) {
+      console.log('Result:', result.value); // 4
+    } else {
+      console.error('Error:', result.error?.message);
+    }
+  } finally {
+    enclave.dispose();
+  }
+}
+
+main();
+```
+
+## With Console Output
+
+```ts
+const result = await enclave.run(`
+  console.log('Step 1: Initialize');
+  const numbers = [1, 2, 3, 4, 5];
+
+  console.log('Step 2: Process');
+  const doubled = numbers.map(n => n * 2);
+
+  console.log('Step 3: Complete');
+  console.log('Doubled:', doubled);
+
+  return doubled;
+`);
+
+// Result
+console.log('Return value:', result.value);
+// [2, 4, 6, 8, 10]
+
+// Console output
+console.log('Output:', result.stdout);
+// Step 1: Initialize
+// Step 2: Process
+// Step 3: Complete
+// Doubled: [2, 4, 6, 8, 10]
+```
+
+## With Variables
+
+Pass data into the execution:
+
+```ts
+const enclave = new Enclave({
+  globals: {
+    userName: 'Alice',
+    items: [1, 2, 3],
+  },
+});
+
+const result = await enclave.run(`
+  console.log('Hello,', userName);
+  const sum = items.reduce((a, b) => a + b, 0);
+  return { user: userName, total: sum };
+`);
+
+console.log(result.value);
+// { user: 'Alice', total: 6 }
+```
+
+## With Tool Calls
+
+Execute code that calls tools:
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    if (name === 'greet') {
+      return `Hello, ${args.name}!`;
+    }
+    throw new Error(`Unknown tool: ${name}`);
+  },
+});
+
+const result = await enclave.run(`
+  const greeting = await callTool('greet', { name: 'World' });
+  return greeting;
+`);
+
+console.log(result.value); // "Hello, World!"
+```
+
+## Error Handling
+
+```ts
+const result = await enclave.run(`
+  throw new Error('Something went wrong');
+`);
+
+if (!result.success) {
+  console.log('Failed:', result.error?.message);
+  // "Something went wrong"
+}
+```
+
+## Complete Example
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+async function helloWorld() {
+  // Create enclave with all options
+  const enclave = new Enclave({
+    securityLevel: 'STRICT',
+    timeout: 10000,
+    maxIterations: 1000,
+    globals: {
+      config: { debug: true },
+    },
+    toolHandler: async (name, args) => {
+      console.log(`Tool called: ${name}`, args);
+      return { success: true };
+    },
+  });
+
+  try {
+    // Run code
+    const result = await enclave.run(`
+      console.log('Config:', config);
+
+      const data = await callTool('process', { input: 'test' });
+      console.log('Tool result:', data);
+
+      return 'Hello from Enclave!';
+    `);
+
+    // Check result
+    if (result.success) {
+      console.log('✓ Execution succeeded');
+      console.log('Value:', result.value);
+      console.log('Duration:', result.stats?.duration, 'ms');
+    } else {
+      console.log('✗ Execution failed');
+      console.log('Error:', result.error);
+    }
+  } finally {
+    // Always clean up
+    enclave.dispose();
+  }
+}
+
+helloWorld();
+```
+
+## Expected Output
+
+```
+Config: { debug: true }
+Tool called: process { input: 'test' }
+Tool result: { success: true }
+✓ Execution succeeded
+Value: Hello from Enclave!
+Duration: 12 ms
+```
+
+## Next Steps
+
+- [Tool Calling](/examples/tool-calling) - More complex tool examples
+- [Quickstart](/getting-started/quickstart) - Full setup guide
+- [Security Levels](/core-libraries/enclave-vm/security-levels) - Security options

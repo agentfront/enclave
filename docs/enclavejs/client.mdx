@@ -1,0 +1,352 @@
+---
+title: '@enclavejs/client'
+description: 'Browser and Node.js client SDK for the EnclaveJS streaming runtime'
+---
+
+# @enclavejs/client
+
+Browser and Node.js client SDK for connecting to an EnclaveJS broker. Provides streaming execution, event handling, and automatic reconnection.
+
+## Installation
+
+```bash
+npm install @enclavejs/client
+```
+
+## Quick Start
+
+```typescript
+import { EnclaveClient } from '@enclavejs/client';
+
+const client = new EnclaveClient({
+  baseUrl: 'http://localhost:3000',
+});
+
+// Execute code and handle events
+const handle = await client.execute('console.log("Hello!"); return 42;', {
+  onStdout: (chunk) => process.stdout.write(chunk),
+  onLog: (level, message) => console.log(`[${level}]`, message),
+  onFinal: (result) => console.log('Result:', result),
+  onError: (error) => console.error('Error:', error),
+});
+
+// Wait for completion
+const result = await handle.result;
+console.log('Execution completed:', result);
+```
+
+## Client Configuration
+
+```typescript
+import { EnclaveClient, type EnclaveClientConfig } from '@enclavejs/client';
+
+const config: EnclaveClientConfig = {
+  // Required: Broker URL
+  baseUrl: 'http://localhost:3000',
+
+  // Custom headers (e.g., for authentication)
+  headers: {
+    'Authorization': 'Bearer token',
+  },
+
+  // Request timeout (ms)
+  timeout: 30000,
+
+  // Reconnection settings
+  reconnect: {
+    enabled: true,
+    maxAttempts: 5,
+    initialDelay: 1000,
+    maxDelay: 30000,
+  },
+
+  // Custom fetch implementation (for Node.js or testing)
+  fetch: customFetch,
+};
+
+const client = new EnclaveClient(config);
+```
+
+## Executing Code
+
+### Basic Execution
+
+```typescript
+const handle = await client.execute(code);
+
+// The handle provides:
+handle.sessionId;    // Session ID
+handle.result;       // Promise resolving to final result
+handle.cancel();     // Cancel execution
+```
+
+### Execution Options
+
+```typescript
+import type { ExecuteOptions } from '@enclavejs/client';
+
+const options: ExecuteOptions = {
+  // Session limits
+  limits: {
+    timeout: 60000,
+    memoryLimit: 256 * 1024 * 1024,
+    maxToolCalls: 100,
+  },
+
+  // Event handlers (see below)
+  onStdout: (chunk) => { /* ... */ },
+  onFinal: (result) => { /* ... */ },
+
+  // Abort signal for cancellation
+  signal: abortController.signal,
+};
+
+const handle = await client.execute(code, options);
+```
+
+## Event Handlers
+
+### All Event Types
+
+```typescript
+import type { SessionEventHandlers } from '@enclavejs/client';
+
+const handlers: SessionEventHandlers = {
+  // Session started
+  onSessionInit: (event) => {
+    console.log('Session started:', event.sessionId);
+    console.log('Limits:', event.payload.limits);
+  },
+
+  // Console output
+  onStdout: (chunk) => {
+    process.stdout.write(chunk);
+  },
+
+  // Log messages
+  onLog: (level, message, data) => {
+    console.log(`[${level.toUpperCase()}]`, message, data);
+  },
+
+  // Tool call requested
+  onToolCall: (callId, name, args) => {
+    console.log(`Tool call: ${name}`, args);
+    // Tool results are handled by the broker
+  },
+
+  // Tool result applied
+  onToolResultApplied: (callId) => {
+    console.log(`Tool result applied: ${callId}`);
+  },
+
+  // Execution completed
+  onFinal: (result, stats) => {
+    console.log('Result:', result);
+    console.log('Stats:', stats);
+  },
+
+  // Heartbeat received
+  onHeartbeat: (timestamp) => {
+    console.log('Heartbeat:', new Date(timestamp));
+  },
+
+  // Error occurred
+  onError: (error) => {
+    console.error('Execution error:', error.message);
+    console.error('Code:', error.code);
+  },
+
+  // Any event (for custom handling)
+  onEvent: (event) => {
+    console.log('Event:', event.type, event.seq);
+  },
+};
+
+const handle = await client.execute(code, handlers);
+```
+
+### Event Handler Shortcuts
+
+```typescript
+// Just handle stdout
+await client.execute(code, {
+  onStdout: console.log,
+});
+
+// Just handle final result
+await client.execute(code, {
+  onFinal: (result) => saveResult(result),
+});
+```
+
+## Session Handle
+
+The execute method returns a session handle for managing the execution:
+
+```typescript
+import type { SessionHandle } from '@enclavejs/client';
+
+const handle: SessionHandle = await client.execute(code);
+
+// Session ID
+console.log('Session:', handle.sessionId);
+
+// Wait for result
+const result = await handle.result;
+
+// Cancel execution
+await handle.cancel('User cancelled');
+
+// Check if still running
+console.log('Active:', handle.isActive);
+```
+
+## Session Result
+
+```typescript
+import type { SessionResult } from '@enclavejs/client';
+
+const result: SessionResult = await handle.result;
+
+if (result.success) {
+  console.log('Value:', result.value);
+  console.log('Stats:', result.stats);
+} else {
+  console.log('Error:', result.error);
+}
+
+// Stats available
+result.stats.executionTime;   // ms
+result.stats.toolCalls;       // number of tool calls
+result.stats.memoryUsage;     // bytes
+```
+
+## Error Handling
+
+```typescript
+import { EnclaveClientError, type ClientErrorCode } from '@enclavejs/client';
+
+try {
+  await client.execute(code);
+} catch (error) {
+  if (error instanceof EnclaveClientError) {
+    console.log('Error code:', error.code);
+    console.log('Message:', error.message);
+
+    switch (error.code) {
+      case 'TIMEOUT':
+        console.log('Execution timed out');
+        break;
+      case 'CONNECTION_FAILED':
+        console.log('Failed to connect to broker');
+        break;
+      case 'VALIDATION_ERROR':
+        console.log('Invalid request');
+        break;
+      case 'CANCELLED':
+        console.log('Execution was cancelled');
+        break;
+    }
+  }
+}
+```
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `TIMEOUT` | Execution exceeded time limit |
+| `CONNECTION_FAILED` | Failed to connect to broker |
+| `CONNECTION_LOST` | Connection lost during execution |
+| `VALIDATION_ERROR` | Invalid code or options |
+| `CANCELLED` | Execution was cancelled |
+| `BROKER_ERROR` | Error from the broker |
+| `UNKNOWN` | Unknown error |
+
+## Connection State
+
+```typescript
+import { ConnectionState } from '@enclavejs/client';
+
+// Available states
+ConnectionState.DISCONNECTED   // Not connected
+ConnectionState.CONNECTING     // Connecting to broker
+ConnectionState.CONNECTED      // Active connection
+ConnectionState.RECONNECTING   // Attempting reconnection
+```
+
+## Multiple Sessions
+
+```typescript
+// Execute multiple scripts concurrently
+const handles = await Promise.all([
+  client.execute('return 1 + 1'),
+  client.execute('return 2 + 2'),
+  client.execute('return 3 + 3'),
+]);
+
+// Wait for all results
+const results = await Promise.all(
+  handles.map(h => h.result)
+);
+
+console.log(results.map(r => r.value)); // [2, 4, 6]
+```
+
+## Browser Usage
+
+```typescript
+// Works in browsers with no additional setup
+const client = new EnclaveClient({
+  baseUrl: 'https://api.example.com',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+  },
+});
+
+// Execute from browser
+const handle = await client.execute(code, {
+  onStdout: (chunk) => {
+    outputElement.textContent += chunk;
+  },
+});
+```
+
+## Node.js Usage
+
+```typescript
+// Works in Node.js 18+ with native fetch
+const client = new EnclaveClient({
+  baseUrl: 'http://localhost:3000',
+});
+
+// Or provide custom fetch for older Node.js
+import fetch from 'node-fetch';
+
+const client = new EnclaveClient({
+  baseUrl: 'http://localhost:3000',
+  fetch: fetch as any,
+});
+```
+
+## TypeScript Types
+
+```typescript
+// Re-exported from @enclavejs/types
+import type {
+  SessionId,
+  SessionLimits,
+  StreamEvent,
+  SessionInitEvent,
+  StdoutEvent,
+  LogEvent,
+  ToolCallEvent,
+  FinalEvent,
+  ErrorEvent,
+} from '@enclavejs/client';
+```
+
+## Links
+
+- [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclavejs-client)
+- [npm](https://www.npmjs.com/package/@enclavejs/client)

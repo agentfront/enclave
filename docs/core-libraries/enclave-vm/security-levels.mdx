@@ -1,0 +1,144 @@
+---
+title: 'Security Levels'
+description: 'Pre-configured security profiles that balance functionality against risk'
+---
+
+Enclave provides pre-configured security profiles that balance functionality against risk. Choose the appropriate level based on your trust model and use case.
+
+## Using Security Levels
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+// Use STRICT for untrusted AI-generated code
+const strictEnclave = new Enclave({ securityLevel: 'STRICT' });
+
+// Use STANDARD for internal tools (default)
+const standardEnclave = new Enclave({ securityLevel: 'STANDARD' });
+
+// Override specific values from the preset
+const customEnclave = new Enclave({
+  securityLevel: 'SECURE',
+  timeout: 20000,  // Override SECURE's 15s default
+});
+```
+
+## Security Level Comparison
+
+| Setting               | STRICT | SECURE | STANDARD | PERMISSIVE |
+| --------------------- | ------ | ------ | -------- | ---------- |
+| timeout               | 5s     | 15s    | 30s      | 60s        |
+| maxIterations         | 1,000  | 5,000  | 10,000   | 100,000    |
+| maxToolCalls          | 10     | 50     | 100      | 1,000      |
+| maxConsoleCalls       | 100    | 500    | 1,000    | 10,000     |
+| maxConsoleOutputBytes | 64KB   | 256KB  | 1MB      | 10MB       |
+| sanitizeStackTraces   | YES    | YES    | NO       | NO         |
+| blockTimingAPIs       | YES    | NO     | NO       | NO         |
+| allowUnboundedLoops   | NO     | NO     | YES      | YES        |
+| unicodeSecurityCheck  | YES    | YES    | NO       | NO         |
+
+## When to Use Each Level
+
+### STRICT
+
+Use for maximum security with untrusted code:
+
+- AI-generated scripts from external sources
+- User-submitted code
+- Third-party plugin code
+- Any code where you cannot verify the source
+
+```ts
+const enclave = new Enclave({
+  securityLevel: 'STRICT',
+  toolHandler: async (name, args) => {
+    // Only expose read-only tools
+    if (!name.startsWith('read:')) {
+      throw new Error('Only read operations allowed');
+    }
+    return executeReadOnlyTool(name, args);
+  },
+});
+```
+
+### SECURE
+
+Balanced security for semi-trusted scenarios:
+
+- Internal automation scripts
+- Validated AI-generated code
+- Scripts from authenticated users
+
+```ts
+const enclave = new Enclave({
+  securityLevel: 'SECURE',
+  maxToolCalls: 100, // Allow more tool calls
+});
+```
+
+### STANDARD
+
+Default level for trusted internal use:
+
+- Internal workflow automation
+- Development and testing
+- Scripts you control
+
+```ts
+const enclave = new Enclave({
+  securityLevel: 'STANDARD', // Default if not specified
+});
+```
+
+### PERMISSIVE
+
+Minimal restrictions for controlled environments:
+
+- Internal testing
+- Performance benchmarking
+- Trusted scripts where you need maximum flexibility
+
+```ts
+const enclave = new Enclave({
+  securityLevel: 'PERMISSIVE',
+});
+```
+
+<Warning>
+  Use `STRICT` for any untrusted code, including AI-generated scripts from external sources or user-submitted scripts.
+</Warning>
+
+## Customizing Security Levels
+
+You can start with a preset and override specific settings:
+
+```ts
+const enclave = new Enclave({
+  securityLevel: 'SECURE',
+
+  // Override specific limits
+  timeout: 30000,           // Increase timeout
+  maxToolCalls: 200,        // Allow more tool calls
+  maxIterations: 20000,     // Allow more iterations
+
+  // Add additional restrictions
+  sanitizeStackTraces: true, // Enable stack sanitization
+});
+```
+
+## Defense-in-Depth
+
+Security levels configure multiple defense layers:
+
+1. **AST Validation** - Blocked constructs vary by level
+2. **Resource Limits** - Timeout, iterations, tool calls
+3. **Output Controls** - Console rate limiting, output size
+4. **Stack Sanitization** - Information leakage prevention
+
+Each level provides appropriate defaults for its trust model.
+
+## Related
+
+- [Configuration](/core-libraries/enclave-vm/configuration) - All configuration options
+- [Worker Pool](/core-libraries/enclave-vm/worker-pool) - OS-level isolation presets
+- [Double VM](/core-libraries/enclave-vm/double-vm) - Enhanced security layer

@@ -169,3 +169,45 @@ export {
   MemoryMonitor,
   MemoryMonitorStats,
 } from './adapters/worker-pool';
+
+// Session support (streaming runtime)
+export {
+  // Session class and factory
+  Session,
+  createSession,
+  // Event emitter
+  SessionEmitter,
+  createSessionEmitter,
+  // State machine
+  SessionStateMachine,
+  createSessionStateMachine,
+  // Runtime channels
+  EmbeddedChannel,
+  createEmbeddedChannelPair,
+} from './session';
+
+export type {
+  SessionOptions,
+  SessionEmitterConfig,
+  StateTransitionEvent,
+  StateTransitionHandler,
+  EmbeddedChannelOptions,
+} from './session';
+
+// Session types
+export type {
+  SessionStateValue,
+  SessionConfig,
+  PendingToolCall,
+  AsyncToolHandler,
+  ToolResult,
+  SessionFinalResult,
+  RuntimeChannel,
+  EmbeddedChannelConfig,
+  WebSocketChannelConfig,
+  RuntimeChannelConfig,
+  SessionManager,
+  SessionEventEmitter,
+} from './session-types';
+
+export { isSession, isWaitingForTool, isTerminalState } from './session-types';

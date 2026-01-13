@@ -1,0 +1,233 @@
+---
+title: 'HNSW Indexing'
+description: 'Scale to large datasets with HNSW approximate nearest neighbor search'
+---
+
+Enable HNSW (Hierarchical Navigable Small World) for datasets above roughly 10,000 documents. HNSW provides sub-millisecond queries with more than 95% recall.
+
+## When to Use HNSW
+
+| Documents | Recommendation |
+|-----------|----------------|
+| < 1,000 | Brute-force (default) |
+| 1,000 - 10,000 | Either works |
+| > 10,000 | Use HNSW |
+| > 100,000 | HNSW required |
+
+## Basic Configuration
+
+```ts
+const toolIndex = new VectoriaDB<ToolDocument>({
+  useHNSW: true,
+  hnsw: { M: 16, efConstruction: 200, efSearch: 64 },
+  maxDocuments: 150_000,
+  maxBatchSize: 2_000,
+});
+```
+
+## HNSW Parameters
+
+| Option           | Default | Description                                                |
+| ---------------- | ------- | ---------------------------------------------------------- |
+| `M`              | 16      | Connections per node in layer > 0 (higher = better recall) |
+| `M0`             | 32      | Connections for layer 0 (typically M × 2)                  |
+| `efConstruction` | 200     | Candidate list size during construction                    |
+| `efSearch`       | 50      | Candidate list size during search                          |
+
+## Understanding the Parameters
+
+### M (Max Connections)
+
+Controls the number of connections each node has in the graph.
+
+```ts
+// Low M (8-12) - faster build, less memory, lower recall
+const fast = new VectoriaDB({
+  useHNSW: true,
+  hnsw: { M: 8 },
+});
+
+// High M (24-48) - slower build, more memory, higher recall
+const accurate = new VectoriaDB({
+  useHNSW: true,
+  hnsw: { M: 32 },
+});
+```
+
+### efConstruction
+
+Controls build-time quality. Higher values = better graph structure but slower indexing.
+
+```ts
+// Fast construction, acceptable quality
+const quickBuild = new VectoriaDB({
+  useHNSW: true,
+  hnsw: { efConstruction: 100 },
+});
+
+// Slow construction, excellent quality
+const highQuality = new VectoriaDB({
+  useHNSW: true,
+  hnsw: { efConstruction: 400 },
+});
+```
+
+### efSearch
+
+Controls search-time quality. Can be adjusted per-query:
+
+```ts
+const db = new VectoriaDB({
+  useHNSW: true,
+  hnsw: { efSearch: 50 }, // Default
+});
+
+// High-precision search
+const results = await db.search(query, {
+  topK: 10,
+  efSearch: 200, // Override for this query
+});
+
+// Fast search (lower recall)
+const quick = await db.search(query, {
+  topK: 10,
+  efSearch: 20,
+});
+```
+
+## Performance Characteristics
+
+### Build Time
+
+| Documents | M=16, ef=200 |
+|-----------|--------------|
+| 10,000 | ~5 seconds |
+| 50,000 | ~30 seconds |
+| 100,000 | ~2 minutes |
+
+### Search Time
+
+| Documents | Brute-force | HNSW (ef=50) |
+|-----------|-------------|--------------|
+| 10,000 | ~50ms | ~1ms |
+| 50,000 | ~250ms | ~1ms |
+| 100,000 | ~500ms | ~2ms |
+
+### Memory Usage
+
+HNSW adds approximately 50-100 bytes per document for graph connections on top of the embedding storage.
+
+## Recall vs Speed Trade-offs
+
+```ts
+// Configuration presets
+
+// Speed-optimized (95%+ recall)
+const speedOptimized = {
+  M: 12,
+  efConstruction: 100,
+  efSearch: 30,
+};
+
+// Balanced (97%+ recall)
+const balanced = {
+  M: 16,
+  efConstruction: 200,
+  efSearch: 50,
+};
+
+// Quality-optimized (99%+ recall)
+const qualityOptimized = {
+  M: 32,
+  efConstruction: 400,
+  efSearch: 100,
+};
+```
+
+## Incremental Updates
+
+HNSW supports incremental updates without full rebuilds:
+
+```ts
+const db = new VectoriaDB({
+  useHNSW: true,
+});
+
+await db.initialize();
+
+// Initial bulk load
+await db.addMany(initialDocuments);
+
+// Later additions - HNSW index updated incrementally
+await db.add('new-doc', 'New document text', { /* ... */ });
+```
+
+<Tip>
+  For very large bulk loads (100,000+ documents), consider disabling HNSW during import and enabling it after, then rebuilding the index.
+</Tip>
+
+## Persistence with HNSW
+
+The HNSW index structure is persisted along with embeddings:
+
+```ts
+const db = new VectoriaDB({
+  useHNSW: true,
+  storageAdapter: new FileStorageAdapter({
+    cacheDir: './.cache/vectoriadb',
+  }),
+});
+
+await db.initialize();
+await db.addMany(documents);
+await db.saveToStorage(); // Saves HNSW structure too
+
+// On restart, HNSW index is restored from storage
+```
+
+## Tuning Guidelines
+
+### For Real-Time Search Applications
+
+```ts
+const realtime = new VectoriaDB({
+  useHNSW: true,
+  hnsw: {
+    M: 16,
+    efConstruction: 200,
+    efSearch: 40, // Low for speed
+  },
+});
+```
+
+### For High-Precision Applications
+
+```ts
+const precision = new VectoriaDB({
+  useHNSW: true,
+  hnsw: {
+    M: 24,
+    efConstruction: 400,
+    efSearch: 200, // High for accuracy
+  },
+});
+```
+
+### For Memory-Constrained Environments
+
+```ts
+const lowMemory = new VectoriaDB({
+  useHNSW: true,
+  hnsw: {
+    M: 8,  // Lower M uses less memory
+    efConstruction: 100,
+    efSearch: 30,
+  },
+});
+```
+
+## Related
+
+- [Search](/core-libraries/vectoriadb/search) - Search options
+- [Persistence](/core-libraries/vectoriadb/persistence) - Storage adapters
+- [Overview](/core-libraries/vectoriadb/overview) - Getting started

@@ -1,0 +1,38 @@
+{
+  "name": "@enclavejs/types",
+  "version": "0.1.0",
+  "description": "Type definitions and Zod schemas for the EnclaveJS streaming runtime protocol",
+  "author": "AgentFront <info@agentfront.dev>",
+  "homepage": "https://github.com/agentfront/enclave",
+  "license": "Apache-2.0",
+  "keywords": [
+    "enclavejs",
+    "enclave",
+    "streaming",
+    "types",
+    "zod",
+    "protocol",
+    "runtime"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentfront/enclave.git"
+  },
+  "bugs": {
+    "url": "https://github.com/agentfront/enclave/issues"
+  },
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "dependencies": {
+    "zod": "^4.1.13"
+  }
+}

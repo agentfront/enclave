@@ -1,0 +1,402 @@
+---
+title: 'ast-guard API'
+description: 'Complete API reference for the ast-guard package'
+---
+
+Complete API reference for the `ast-guard` package.
+
+## Installation
+
+```bash
+npm install ast-guard
+```
+
+## JSAstValidator Class
+
+Main AST validation class.
+
+### Constructor
+
+```ts
+new JSAstValidator(preset: ValidationPreset)
+```
+
+### Methods
+
+#### validate(code)
+
+Validate JavaScript code against the preset rules.
+
+```ts
+async validate(code: string): Promise<ValidationResult>
+```
+
+**Returns:** `ValidationResult`
+
+```ts
+interface ValidationResult {
+  valid: boolean;
+  issues: ValidationIssue[];
+  ast?: ESTree.Program;
+}
+
+interface ValidationIssue {
+  rule: string;
+  message: string;
+  severity: 'error' | 'warning' | 'info';
+  location?: {
+    line: number;
+    column: number;
+    endLine?: number;
+    endColumn?: number;
+  };
+  fix?: {
+    range: [number, number];
+    text: string;
+  };
+}
+```
+
+**Example:**
+```ts
+import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+
+const validator = new JSAstValidator(createAgentScriptPreset());
+const result = await validator.validate(`
+  const x = eval('code');
+`);
+
+if (!result.valid) {
+  for (const issue of result.issues) {
+    console.log(`${issue.rule}: ${issue.message}`);
+  }
+}
+```
+
+## PreScanner Class
+
+Fast pre-scanning for DoS protection.
+
+### Constructor
+
+```ts
+new PreScanner(config: PreScannerConfig)
+```
+
+### Methods
+
+#### scan(code)
+
+Scan code for potential issues before parsing.
+
+```ts
+scan(code: string): PreScanResult
+```
+
+**Returns:** `PreScanResult`
+
+```ts
+interface PreScanResult {
+  valid: boolean;
+  issues: PreScanIssue[];
+}
+
+interface PreScanIssue {
+  message: string;
+  severity: 'error' | 'warning';
+}
+```
+
+**Example:**
+```ts
+import { PreScanner, createPreScannerConfig } from 'ast-guard';
+
+const scanner = new PreScanner(createPreScannerConfig('agentscript'));
+const result = scanner.scan(code);
+
+if (!result.valid) {
+  console.log('Pre-scan failed:', result.issues);
+}
+```
+
+## Factory Functions
+
+### createAgentScriptPreset(options?)
+
+Create the AgentScript validation preset.
+
+```ts
+function createAgentScriptPreset(options?: AgentScriptOptions): ValidationPreset
+```
+
+**Options:**
+```ts
+interface AgentScriptOptions {
+  // Globals
+  allowedGlobals?: string[];
+  additionalDisallowedIdentifiers?: string[];
+
+  // Features
+  requireCallTool?: boolean;
+
+  // Loops
+  allowedLoops?: {
+    allowFor?: boolean;
+    allowForOf?: boolean;
+    allowWhile?: boolean;
+    allowDoWhile?: boolean;
+    allowForIn?: boolean;
+  };
+
+  // Functions
+  allowArrowFunctions?: boolean;
+  allowFunctionDeclarations?: boolean;
+}
+```
+
+**Example:**
+```ts
+const preset = createAgentScriptPreset({
+  allowedGlobals: ['callTool', 'Math', 'JSON', 'console', 'context'],
+  allowedLoops: {
+    allowFor: true,
+    allowForOf: true,
+    allowWhile: false,
+  },
+});
+```
+
+### createPreScannerConfig(preset)
+
+Create pre-scanner configuration.
+
+```ts
+function createPreScannerConfig(preset: 'agentscript' | 'standard'): PreScannerConfig
+```
+
+**PreScannerConfig:**
+```ts
+interface PreScannerConfig {
+  maxInputSize: number;
+  maxNestingDepth: number;
+  maxStringLength: number;
+  maxArrayLiteralLength: number;
+  checkReDoS: boolean;
+  blockedPatterns: RegExp[];
+}
+```
+
+### createSecurityRules()
+
+Get all built-in security rules.
+
+```ts
+function createSecurityRules(): ValidationRule[]
+```
+
+## ValidationPreset
+
+```ts
+interface ValidationPreset {
+  rules: ValidationRule[];
+  globals: GlobalConfig;
+  transforms?: TransformConfig[];
+}
+
+interface GlobalConfig {
+  allowed: string[];
+  disallowed: string[];
+}
+```
+
+## ValidationRule
+
+```ts
+interface ValidationRule {
+  id: string;
+  name: string;
+  description: string;
+  severity: 'error' | 'warning' | 'info';
+  check: (node: ESTree.Node, context: RuleContext) => void;
+}
+
+interface RuleContext {
+  report: (issue: Omit<ValidationIssue, 'rule'>) => void;
+  getSource: () => string;
+  getAncestors: () => ESTree.Node[];
+}
+```
+
+## Built-in Rules
+
+| Rule ID | Description |
+|---------|-------------|
+| `no-eval` | Block eval() and Function() |
+| `no-dynamic-code` | Block setTimeout/setInterval with strings |
+| `no-system-access` | Block process, require, import |
+| `no-global-access` | Block window, global, globalThis |
+| `no-prototype-access` | Block __proto__, constructor |
+| `no-metaprogramming` | Block Proxy, Reflect |
+| `no-network` | Block fetch, XMLHttpRequest, WebSocket |
+| `no-storage` | Block localStorage, sessionStorage |
+| `no-native-code` | Block WebAssembly, Worker |
+| `no-this` | Block this keyword |
+| `no-user-functions` | Block function declarations |
+| `no-unbounded-loops` | Block while, do-while |
+| `no-for-in` | Block for-in loops |
+| `allowed-globals-only` | Only allow specified globals |
+| `static-tool-calls` | Require string literals for tool names |
+| `bounded-iterations` | Enforce iteration limits |
+
+## Code Transformation
+
+### transformAgentScript(code, options)
+
+Transform code for safe execution.
+
+```ts
+function transformAgentScript(
+  code: string,
+  options?: TransformOptions
+): string
+```
+
+**Options:**
+```ts
+interface TransformOptions {
+  wrapInMain?: boolean;
+  transformCallTool?: boolean;
+  transformLoops?: boolean;
+  transformConsole?: boolean;
+}
+```
+
+**Example:**
+```ts
+import { transformAgentScript } from 'ast-guard';
+
+const transformed = transformAgentScript(`
+  const users = await callTool('users:list', {});
+  for (const user of users) {
+    console.log(user.name);
+  }
+  return users.length;
+`, {
+  wrapInMain: true,
+  transformCallTool: true,
+  transformLoops: true,
+});
+
+// Output:
+// async function __ag_main() {
+//   const users = await __safe_callTool('users:list', {});
+//   for (const user of __safe_forOf(users)) {
+//     __safe_console.log(user.name);
+//   }
+//   return users.length;
+// }
+```
+
+## Custom Rules
+
+### Creating a Custom Rule
+
+```ts
+import { ValidationRule, RuleContext } from 'ast-guard';
+
+const noConsoleRule: ValidationRule = {
+  id: 'no-console',
+  name: 'No Console',
+  description: 'Disallow console statements',
+  severity: 'warning',
+
+  check(node, context) {
+    if (
+      node.type === 'CallExpression' &&
+      node.callee.type === 'MemberExpression' &&
+      node.callee.object.type === 'Identifier' &&
+      node.callee.object.name === 'console'
+    ) {
+      context.report({
+        message: 'Console statements are not allowed',
+        severity: 'warning',
+        location: {
+          line: node.loc?.start.line || 0,
+          column: node.loc?.start.column || 0,
+        },
+      });
+    }
+  },
+};
+```
+
+### Using Custom Rules
+
+```ts
+import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+
+const preset = createAgentScriptPreset();
+preset.rules.push(noConsoleRule);
+
+const validator = new JSAstValidator(preset);
+```
+
+## Complete Example
+
+```ts
+import {
+  JSAstValidator,
+  PreScanner,
+  createAgentScriptPreset,
+  createPreScannerConfig,
+  transformAgentScript,
+} from 'ast-guard';
+
+async function validateAndTransform(code: string) {
+  // Step 1: Pre-scan
+  const scanner = new PreScanner(createPreScannerConfig('agentscript'));
+  const scanResult = scanner.scan(code);
+
+  if (!scanResult.valid) {
+    return { valid: false, error: 'Pre-scan failed', issues: scanResult.issues };
+  }
+
+  // Step 2: AST validation
+  const preset = createAgentScriptPreset({
+    allowedGlobals: ['callTool', 'Math', 'JSON', 'console'],
+  });
+  const validator = new JSAstValidator(preset);
+  const validation = await validator.validate(code);
+
+  if (!validation.valid) {
+    return { valid: false, error: 'Validation failed', issues: validation.issues };
+  }
+
+  // Step 3: Transform
+  const transformed = transformAgentScript(code, {
+    wrapInMain: true,
+    transformCallTool: true,
+    transformLoops: true,
+  });
+
+  return { valid: true, code: transformed };
+}
+
+// Usage
+const result = await validateAndTransform(`
+  const users = await callTool('users:list', { limit: 10 });
+  return users.length;
+`);
+
+if (result.valid) {
+  console.log('Transformed code:', result.code);
+} else {
+  console.log('Validation errors:', result.issues);
+}
+```
+
+## Related
+
+- [Overview](/core-libraries/ast-guard/overview) - Feature overview
+- [AgentScript Preset](/core-libraries/ast-guard/agentscript-preset) - Preset details
+- [Custom Rules](/core-libraries/ast-guard/custom-rules) - Writing rules

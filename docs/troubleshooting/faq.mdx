@@ -1,0 +1,216 @@
+---
+title: 'FAQ'
+description: 'Frequently asked questions about Enclave'
+---
+
+## General
+
+### What is Enclave?
+
+Enclave is a secure JavaScript execution environment for running untrusted code, such as AI-generated scripts or user-provided code. It provides a defense-in-depth security model with AST validation, code transformation, and runtime sandboxing.
+
+### When should I use Enclave?
+
+Use Enclave when you need to:
+- Execute LLM-generated code safely
+- Run user-provided scripts in a controlled environment
+- Build plugin/extension systems
+- Create workflow automation with tool access
+
+### What JavaScript features are supported?
+
+Enclave uses AgentScript, a safe subset of JavaScript. It supports:
+- Variables (`const`, `let`)
+- Conditionals (`if/else`, ternary)
+- Bounded loops (`for`, `for-of`)
+- Array methods with arrow functions
+- Tool calls via `callTool()`
+- Safe globals (`Math`, `JSON`, `Array`, etc.)
+
+See [AgentScript](/concepts/agentscript) for the full specification.
+
+### What's blocked and why?
+
+Blocked constructs include:
+- `eval`, `Function` - Prevents code injection
+- `process`, `require` - Prevents system access
+- `window`, `global` - Prevents sandbox escape
+- `while` loops - Prevents infinite loops
+- User functions - Prevents recursion bombs
+
+## Security
+
+### How secure is Enclave?
+
+Enclave uses a 6-layer defense-in-depth model:
+1. Pre-scanner (DoS protection)
+2. AST validation (blocked constructs)
+3. Code transformation (safe wrappers)
+4. AI Scoring Gate (pattern detection)
+5. Runtime sandbox (isolation)
+6. Output sanitization
+
+Even if one layer is bypassed, subsequent layers provide protection.
+
+### Can scripts access the file system?
+
+No. Scripts have no access to `fs`, `require`, or any Node.js APIs. All external interactions must go through tools you provide.
+
+### Can scripts make network requests?
+
+No. `fetch`, `XMLHttpRequest`, and `WebSocket` are blocked. To allow network access, create a tool that performs the request on behalf of the script.
+
+### Can scripts access environment variables?
+
+No. `process` is blocked. If you need to provide configuration, pass it through custom globals or tools.
+
+## Performance
+
+### What's the performance overhead?
+
+Typical overhead is 5-15ms per execution for validation and transformation. Actual execution time depends on the script complexity and tool call latency.
+
+### How many concurrent executions can I run?
+
+With the default VM adapter, limited by Node.js event loop. With worker pool adapter, you can run concurrent executions across workers (configurable pool size).
+
+### How much memory does each execution use?
+
+Base overhead is ~10-20MB per enclave instance. Actual usage depends on script data and tool responses. Use `memoryLimit` to cap usage.
+
+## Tools
+
+### How do I create tools?
+
+Define a tool handler function:
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (toolName, args) => {
+    switch (toolName) {
+      case 'users:list':
+        return db.users.findAll({ limit: args.limit });
+      default:
+        throw new Error(`Unknown tool: ${toolName}`);
+    }
+  },
+});
+```
+
+### Can scripts call any tool?
+
+Only tools you handle in `toolHandler` are available. Unknown tool calls throw errors. You control exactly what scripts can do.
+
+### How do I limit tool access per user?
+
+Filter in your tool handler:
+
+```ts
+toolHandler: async (name, args, context) => {
+  const allowed = getAllowedToolsForUser(context.userId);
+  if (!allowed.includes(name)) {
+    throw new Error(`Tool ${name} not allowed`);
+  }
+  return executeToolSafely(name, args);
+}
+```
+
+## Configuration
+
+### Which security level should I use?
+
+| Level | Use Case |
+|-------|----------|
+| STRICT | Untrusted AI/user code |
+| SECURE | Semi-trusted automation |
+| STANDARD | Internal tools |
+| PERMISSIVE | Testing only |
+
+### How do I increase the timeout?
+
+```ts
+const enclave = new Enclave({
+  timeout: 60000, // 60 seconds
+});
+```
+
+### How do I allow more iterations?
+
+```ts
+const enclave = new Enclave({
+  maxIterations: 50000, // Default is 10000
+});
+```
+
+## Streaming
+
+### What is EnclaveJS?
+
+EnclaveJS is a streaming runtime layer that adds real-time code execution with tool orchestration, session management, and client SDKs for browser and React applications.
+
+### When should I use EnclaveJS vs enclave-vm directly?
+
+Use **enclave-vm** directly for:
+- Server-side batch processing
+- Simple request/response patterns
+- Internal tools
+
+Use **EnclaveJS** for:
+- Real-time streaming UIs
+- React applications
+- Production SaaS with multiple clients
+- Distributed deployments
+
+## Troubleshooting
+
+### Why is my code being blocked?
+
+Check validation results:
+
+```ts
+const validator = new JSAstValidator(createAgentScriptPreset());
+const result = await validator.validate(code);
+console.log(result.issues);
+```
+
+Common reasons:
+- Using blocked identifiers
+- Declaring functions
+- Using `while` loops
+- Accessing unknown globals
+
+### Why is execution timing out?
+
+Common causes:
+- Slow tool calls
+- Too many iterations
+- Waiting for external resources
+
+Debug by logging tool call durations and reviewing iteration counts.
+
+### Why am I getting MAX_TOOL_CALLS?
+
+Your script is making too many tool calls. Solutions:
+- Batch operations in tools
+- Increase `maxToolCalls`
+- Review script logic
+
+## Integration
+
+### Can I use Enclave with TypeScript?
+
+Yes! Enclave is written in TypeScript and provides full type definitions.
+
+### Can I use Enclave in the browser?
+
+No. Enclave requires Node.js for the vm module. For browser use, use the EnclaveJS client SDK to connect to a server running Enclave.
+
+### Does Enclave work with Next.js/Express/Fastify?
+
+Yes. Enclave is a library that runs in any Node.js environment. See [Guides](/guides/first-agent) for integration examples.
+
+## Related
+
+- [Common Errors](/troubleshooting/common-errors) - Error reference
+- [Debugging](/troubleshooting/debugging) - Debug techniques
+- [AgentScript](/concepts/agentscript) - Language specification

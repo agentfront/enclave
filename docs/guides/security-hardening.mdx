@@ -1,0 +1,626 @@
+---
+title: 'Security Hardening'
+description: 'Best practices for securing Enclave deployments'
+---
+
+This guide covers security best practices for hardening Enclave deployments in production environments.
+
+## Security Checklist
+
+### Critical
+
+- [ ] Use `STRICT` security level for untrusted code
+- [ ] Enable AI Scoring Gate
+- [ ] Set memory limits
+- [ ] Configure timeouts
+- [ ] Validate all tool inputs
+- [ ] Run as non-root user
+
+### Recommended
+
+- [ ] Enable end-to-end encryption
+- [ ] Implement rate limiting
+- [ ] Use network segmentation
+- [ ] Enable audit logging
+- [ ] Set up intrusion detection
+- [ ] Regular security updates
+
+## Security Levels
+
+Always use the appropriate security level:
+
+| Level | Use Case | Restrictions |
+|-------|----------|--------------|
+| `STRICT` | Untrusted AI/user code | Maximum restrictions |
+| `SECURE` | Semi-trusted automation | High restrictions |
+| `STANDARD` | Internal tools | Moderate restrictions |
+| `PERMISSIVE` | Testing only | Minimal restrictions |
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+// For untrusted code - always use STRICT
+const enclave = new Enclave({
+  securityLevel: 'STRICT',
+});
+```
+
+## Defense in Depth
+
+### Layer 1: Input Validation
+
+Validate code before it reaches Enclave:
+
+```ts
+import { z } from 'zod';
+
+const executeSchema = z.object({
+  code: z
+    .string()
+    .min(1)
+    .max(100000) // Limit code size
+    .refine(
+      (code) => !code.includes('__proto__'),
+      'Suspicious code pattern detected'
+    ),
+  timeout: z.number().min(1000).max(300000).optional(),
+});
+
+app.post('/execute', async (req, res) => {
+  const result = executeSchema.safeParse(req.body);
+  if (!result.success) {
+    return res.status(400).json({ error: 'Invalid request' });
+  }
+  // Proceed with validated input
+});
+```
+
+### Layer 2: Pre-Scanner
+
+Block obvious attacks early:
+
+```ts
+import { PreScanner, createPreScannerConfig } from 'ast-guard';
+
+const scanner = new PreScanner(createPreScannerConfig('agentscript'));
+
+function preScreen(code: string): boolean {
+  const result = scanner.scan(code);
+  if (!result.valid) {
+    logger.warn('Pre-scan blocked code', {
+      issues: result.issues,
+    });
+    return false;
+  }
+  return true;
+}
+```
+
+### Layer 3: AST Validation
+
+Strict AST validation:
+
+```ts
+import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+
+const validator = new JSAstValidator(
+  createAgentScriptPreset({
+    // Only allow specific globals
+    allowedGlobals: ['callTool', 'Math', 'JSON', 'console'],
+
+    // Block additional identifiers
+    additionalDisallowedIdentifiers: [
+      'fetch',
+      'XMLHttpRequest',
+      'WebSocket',
+    ],
+
+    // Strict loop configuration
+    allowedLoops: {
+      allowFor: true,
+      allowForOf: true,
+      allowWhile: false,
+      allowDoWhile: false,
+      allowForIn: false,
+    },
+  })
+);
+```
+
+### Layer 4: AI Scoring Gate
+
+Detect suspicious semantic patterns:
+
+```ts
+const enclave = new Enclave({
+  scoringGate: {
+    scorer: 'rule-based',
+    blockThreshold: 70,
+    warnThreshold: 40,
+    onScore: (result) => {
+      if (result.score >= 40) {
+        logger.warn('Suspicious code pattern', {
+          score: result.score,
+          signals: result.signals,
+        });
+      }
+    },
+  },
+});
+```
+
+### Layer 5: Runtime Isolation
+
+Maximum runtime isolation:
+
+```ts
+const enclave = new Enclave({
+  // Memory limit
+  memoryLimit: 64 * 1024 * 1024, // 64MB
+
+  // Execution timeout
+  timeout: 30000, // 30 seconds
+
+  // Tool call limit
+  maxToolCalls: 50,
+
+  // Iteration limit
+  maxIterations: 10000,
+
+  // Use worker pool for OS-level isolation
+  adapter: createWorkerPoolAdapter({
+    poolSize: 4,
+    maxWorkerMemory: 128 * 1024 * 1024,
+  }),
+});
+```
+
+### Layer 6: Output Sanitization
+
+Sanitize all outputs:
+
+```ts
+function sanitizeOutput(output: unknown): unknown {
+  // Remove circular references
+  const seen = new WeakSet();
+
+  function sanitize(value: unknown): unknown {
+    if (value === null || typeof value !== 'object') {
+      // Truncate long strings
+      if (typeof value === 'string' && value.length > 10000) {
+        return value.slice(0, 10000) + '... [truncated]';
+      }
+      return value;
+    }
+
+    if (seen.has(value)) {
+      return '[Circular]';
+    }
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      // Limit array size
+      const limited = value.slice(0, 1000);
+      return limited.map(sanitize);
+    }
+
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value)) {
+      // Skip sensitive keys
+      if (key.match(/password|secret|token|key/i)) {
+        sanitized[key] = '[REDACTED]';
+      } else {
+        sanitized[key] = sanitize(val);
+      }
+    }
+    return sanitized;
+  }
+
+  return sanitize(output);
+}
+```
+
+## Tool Security
+
+### Input Validation
+
+Always validate tool inputs:
+
+```ts
+import { z } from 'zod';
+
+const toolSchemas = {
+  'users:get': z.object({
+    id: z.string().uuid(),
+  }),
+  'users:list': z.object({
+    limit: z.number().int().min(1).max(100).default(10),
+    offset: z.number().int().min(0).default(0),
+  }),
+  'email:send': z.object({
+    to: z.string().email(),
+    subject: z.string().max(200),
+    body: z.string().max(10000),
+  }),
+};
+
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    const schema = toolSchemas[name];
+    if (!schema) {
+      throw new Error(`Unknown tool: ${name}`);
+    }
+
+    const result = schema.safeParse(args);
+    if (!result.success) {
+      throw new Error(`Invalid arguments: ${result.error.message}`);
+    }
+
+    return executeTool(name, result.data);
+  },
+});
+```
+
+### Permission Control
+
+Implement tool permissions per user:
+
+```ts
+interface UserPermissions {
+  tools: string[];
+  limits: {
+    maxToolCalls: number;
+    maxDataSize: number;
+  };
+}
+
+const enclave = new Enclave({
+  toolHandler: async (name, args, context) => {
+    const permissions = await getUserPermissions(context.userId);
+
+    // Check tool access
+    if (!permissions.tools.includes(name)) {
+      throw new Error(`Tool ${name} not allowed for user`);
+    }
+
+    // Check limits
+    if (context.toolCallCount >= permissions.limits.maxToolCalls) {
+      throw new Error('Tool call limit exceeded');
+    }
+
+    return executeTool(name, args);
+  },
+});
+```
+
+### Data Filtering
+
+Filter sensitive data from tool responses:
+
+```ts
+function filterSensitiveData(data: unknown): unknown {
+  if (data === null || typeof data !== 'object') {
+    return data;
+  }
+
+  if (Array.isArray(data)) {
+    return data.map(filterSensitiveData);
+  }
+
+  const filtered: Record<string, unknown> = {};
+  const sensitiveKeys = ['password', 'secret', 'token', 'ssn', 'creditCard'];
+
+  for (const [key, value] of Object.entries(data)) {
+    if (sensitiveKeys.some(s => key.toLowerCase().includes(s))) {
+      continue; // Omit sensitive fields
+    }
+    filtered[key] = filterSensitiveData(value);
+  }
+
+  return filtered;
+}
+```
+
+## Network Security
+
+### Isolation
+
+Run Enclave in isolated network:
+
+```yaml
+# docker-compose.yml
+services:
+  enclave-runtime:
+    networks:
+      - enclave-internal
+    # No external network access
+
+  enclave-broker:
+    networks:
+      - enclave-internal
+      - external
+
+networks:
+  enclave-internal:
+    internal: true
+  external:
+```
+
+### TLS Configuration
+
+```ts
+import { createServer } from 'https';
+import { readFileSync } from 'fs';
+
+const server = createServer({
+  key: readFileSync('/certs/server.key'),
+  cert: readFileSync('/certs/server.crt'),
+  ca: readFileSync('/certs/ca.crt'),
+
+  // Modern TLS settings
+  minVersion: 'TLSv1.2',
+  ciphers: [
+    'ECDHE-ECDSA-AES128-GCM-SHA256',
+    'ECDHE-RSA-AES128-GCM-SHA256',
+    'ECDHE-ECDSA-AES256-GCM-SHA384',
+    'ECDHE-RSA-AES256-GCM-SHA384',
+  ].join(':'),
+});
+```
+
+### End-to-End Encryption
+
+Enable E2E encryption for sensitive data:
+
+```ts
+const client = new EnclaveClient({
+  serverUrl: 'https://broker.example.com',
+  encryption: {
+    enabled: true,
+    curve: 'P-256',
+  },
+});
+```
+
+## Rate Limiting
+
+### Per-User Limits
+
+```ts
+import { RateLimiterRedis } from 'rate-limiter-flexible';
+import Redis from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL);
+
+const rateLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: 'enclave_rl',
+  points: 100, // 100 requests
+  duration: 60, // per minute
+});
+
+app.use('/execute', async (req, res, next) => {
+  try {
+    await rateLimiter.consume(req.user.id);
+    next();
+  } catch {
+    res.status(429).json({ error: 'Too many requests' });
+  }
+});
+```
+
+### Per-Tool Limits
+
+```ts
+const toolLimits = new Map([
+  ['email:send', { points: 10, duration: 60 }], // 10 emails per minute
+  ['db:query', { points: 100, duration: 60 }], // 100 queries per minute
+]);
+
+async function checkToolLimit(userId: string, tool: string) {
+  const limit = toolLimits.get(tool);
+  if (!limit) return true;
+
+  const limiter = new RateLimiterRedis({
+    storeClient: redis,
+    keyPrefix: `tool_${tool}`,
+    ...limit,
+  });
+
+  try {
+    await limiter.consume(userId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+```
+
+## Audit Logging
+
+### Comprehensive Logging
+
+```ts
+interface AuditLog {
+  timestamp: string;
+  userId: string;
+  sessionId: string;
+  action: string;
+  details: Record<string, unknown>;
+  result: 'success' | 'failure';
+  errorCode?: string;
+}
+
+function logAudit(log: AuditLog) {
+  // Send to secure logging system
+  auditLogger.info(log);
+
+  // Store for compliance
+  auditStore.insert(log);
+}
+
+const enclave = new Enclave({
+  toolHandler: async (name, args, context) => {
+    const start = Date.now();
+    let result: unknown;
+    let error: Error | undefined;
+
+    try {
+      result = await executeTool(name, args);
+      return result;
+    } catch (e) {
+      error = e as Error;
+      throw e;
+    } finally {
+      logAudit({
+        timestamp: new Date().toISOString(),
+        userId: context.userId,
+        sessionId: context.sessionId,
+        action: `tool:${name}`,
+        details: {
+          args: sanitizeForLog(args),
+          duration: Date.now() - start,
+        },
+        result: error ? 'failure' : 'success',
+        errorCode: error?.message,
+      });
+    }
+  },
+});
+```
+
+### Log Retention
+
+```ts
+// Configure log retention
+const logConfig = {
+  // Keep detailed logs for 30 days
+  detailedRetention: 30,
+
+  // Keep summary logs for 1 year
+  summaryRetention: 365,
+
+  // Archive to cold storage after 90 days
+  archiveAfter: 90,
+};
+```
+
+## Container Security
+
+### Dockerfile Best Practices
+
+```dockerfile
+# Use specific version
+FROM node:20.10-slim
+
+# Run as non-root
+RUN useradd -m -u 1001 enclave
+
+# Set secure permissions
+WORKDIR /app
+COPY --chown=enclave:enclave . .
+
+# Remove unnecessary packages
+RUN apt-get purge -y --auto-remove \
+  && rm -rf /var/lib/apt/lists/*
+
+# Drop all capabilities
+USER enclave
+
+# Read-only filesystem
+VOLUME ["/tmp"]
+
+# Health check
+HEALTHCHECK --interval=30s CMD curl -f http://localhost:3000/health || exit 1
+
+EXPOSE 3000
+CMD ["node", "--no-warnings", "dist/server.js"]
+```
+
+### Security Context
+
+```yaml
+# k8s/deployment.yaml
+spec:
+  containers:
+    - name: enclave
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+```
+
+## Secrets Management
+
+### Environment Variables
+
+Never hardcode secrets:
+
+```ts
+// Bad
+const apiKey = 'sk-1234567890';
+
+// Good
+const apiKey = process.env.API_KEY;
+if (!apiKey) {
+  throw new Error('API_KEY not configured');
+}
+```
+
+### Kubernetes Secrets
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: enclave-secrets
+type: Opaque
+data:
+  api-key: base64-encoded-value
+  redis-url: base64-encoded-value
+```
+
+```yaml
+# deployment.yaml
+env:
+  - name: API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: enclave-secrets
+        key: api-key
+```
+
+## Incident Response
+
+### Detection
+
+Monitor for anomalies:
+
+```ts
+// Alert on unusual patterns
+const alerts = {
+  highErrorRate: (rate: number) => rate > 0.1, // >10% error rate
+  unusualToolUsage: (count: number) => count > 1000, // >1000 calls/min
+  memorySpike: (mb: number) => mb > 500, // >500MB
+  longExecution: (ms: number) => ms > 60000, // >60s
+};
+```
+
+### Response Plan
+
+1. **Detect** - Automated monitoring alerts
+2. **Contain** - Isolate affected components
+3. **Investigate** - Review audit logs
+4. **Remediate** - Fix vulnerability
+5. **Recover** - Restore normal operation
+6. **Learn** - Post-incident review
+
+## Related
+
+- [Security Model](/concepts/security-model) - Architecture overview
+- [AI Scoring](/core-libraries/enclave-vm/ai-scoring) - Semantic analysis
+- [Production Deployment](/guides/production-deployment) - Deployment guide

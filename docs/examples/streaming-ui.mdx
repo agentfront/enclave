@@ -1,0 +1,512 @@
+---
+title: 'Streaming UI'
+description: 'Build real-time code execution interfaces with streaming output'
+---
+
+Build real-time interfaces that show code execution as it happens.
+
+## Basic Streaming
+
+```ts
+import { EnclaveClient } from '@enclavejs/client';
+
+const client = new EnclaveClient({
+  serverUrl: 'http://localhost:3001',
+});
+
+const code = `
+  console.log('Starting...');
+  const users = await callTool('users:list', {});
+  console.log('Found', users.length, 'users');
+
+  for (const user of users) {
+    console.log('Processing:', user.name);
+    await callTool('process', { userId: user.id });
+  }
+
+  console.log('Done!');
+  return users.length;
+`;
+
+// Execute with streaming
+const stream = client.execute(code);
+
+for await (const event of stream) {
+  switch (event.type) {
+    case 'stdout':
+      console.log('[Output]', event.payload.data);
+      break;
+    case 'tool_call':
+      console.log('[Tool]', event.payload.tool, event.payload.args);
+      break;
+    case 'final':
+      console.log('[Result]', event.payload.result);
+      break;
+    case 'error':
+      console.error('[Error]', event.payload.message);
+      break;
+  }
+}
+```
+
+## React Streaming Hook
+
+```tsx
+import { useState, useCallback } from 'react';
+import { EnclaveClient, StreamEvent } from '@enclavejs/client';
+
+interface StreamState {
+  status: 'idle' | 'running' | 'completed' | 'error';
+  output: string[];
+  toolCalls: ToolCall[];
+  result: unknown;
+  error: string | null;
+}
+
+interface ToolCall {
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  status: 'pending' | 'completed';
+}
+
+export function useStreaming(client: EnclaveClient) {
+  const [state, setState] = useState<StreamState>({
+    status: 'idle',
+    output: [],
+    toolCalls: [],
+    result: null,
+    error: null,
+  });
+
+  const execute = useCallback(async (code: string) => {
+    setState({
+      status: 'running',
+      output: [],
+      toolCalls: [],
+      result: null,
+      error: null,
+    });
+
+    try {
+      const stream = client.execute(code);
+
+      for await (const event of stream) {
+        setState(prev => processEvent(prev, event));
+      }
+    } catch (error) {
+      setState(prev => ({
+        ...prev,
+        status: 'error',
+        error: (error as Error).message,
+      }));
+    }
+  }, [client]);
+
+  return { ...state, execute };
+}
+
+function processEvent(state: StreamState, event: StreamEvent): StreamState {
+  switch (event.type) {
+    case 'stdout':
+      return {
+        ...state,
+        output: [...state.output, event.payload.data],
+      };
+
+    case 'tool_call':
+      return {
+        ...state,
+        toolCalls: [
+          ...state.toolCalls,
+          {
+            id: event.payload.callId,
+            tool: event.payload.tool,
+            args: event.payload.args,
+            status: 'pending',
+          },
+        ],
+      };
+
+    case 'tool_result_applied':
+      return {
+        ...state,
+        toolCalls: state.toolCalls.map(tc =>
+          tc.id === event.payload.callId
+            ? { ...tc, status: 'completed' }
+            : tc
+        ),
+      };
+
+    case 'final':
+      return {
+        ...state,
+        status: 'completed',
+        result: event.payload.result,
+      };
+
+    case 'error':
+      return {
+        ...state,
+        status: 'error',
+        error: event.payload.message,
+      };
+
+    default:
+      return state;
+  }
+}
+```
+
+## Streaming Console Component
+
+```tsx
+import React, { useRef, useEffect } from 'react';
+
+interface StreamingConsoleProps {
+  output: string[];
+  autoScroll?: boolean;
+}
+
+export function StreamingConsole({ output, autoScroll = true }: StreamingConsoleProps) {
+  const consoleRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (autoScroll && consoleRef.current) {
+      consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+    }
+  }, [output, autoScroll]);
+
+  return (
+    <div
+      ref={consoleRef}
+      style={{
+        fontFamily: 'monospace',
+        backgroundColor: '#1e1e1e',
+        color: '#d4d4d4',
+        padding: '1rem',
+        borderRadius: '4px',
+        height: '300px',
+        overflowY: 'auto',
+      }}
+    >
+      {output.length === 0 ? (
+        <span style={{ color: '#666' }}>Waiting for output...</span>
+      ) : (
+        output.map((line, i) => (
+          <div key={i} style={{ whiteSpace: 'pre-wrap' }}>
+            {line}
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+```
+
+## Tool Call Timeline
+
+```tsx
+import React from 'react';
+
+interface ToolCall {
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  status: 'pending' | 'completed';
+}
+
+interface ToolTimelineProps {
+  toolCalls: ToolCall[];
+}
+
+export function ToolTimeline({ toolCalls }: ToolTimelineProps) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      {toolCalls.map((call, i) => (
+        <div
+          key={call.id}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            padding: '8px 12px',
+            backgroundColor: '#f5f5f5',
+            borderRadius: '4px',
+            borderLeft: `4px solid ${
+              call.status === 'completed' ? '#22c55e' : '#f59e0b'
+            }`,
+          }}
+        >
+          <span style={{ marginRight: '8px', fontSize: '14px' }}>
+            {call.status === 'completed' ? '✓' : '...'}
+          </span>
+          <span style={{ fontWeight: 600, marginRight: '8px' }}>
+            {call.tool}
+          </span>
+          <span style={{ color: '#666', fontSize: '12px' }}>
+            {JSON.stringify(call.args)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+## Complete Streaming UI
+
+```tsx
+import React, { useState } from 'react';
+import { EnclaveClient } from '@enclavejs/client';
+import { useStreaming } from './hooks/useStreaming';
+import { StreamingConsole } from './components/StreamingConsole';
+import { ToolTimeline } from './components/ToolTimeline';
+
+const client = new EnclaveClient({
+  serverUrl: 'http://localhost:3001',
+});
+
+export function CodeExecutor() {
+  const [code, setCode] = useState(`
+console.log('Hello, streaming!');
+
+const users = await callTool('users:list', { limit: 5 });
+console.log('Loaded', users.length, 'users');
+
+for (const user of users) {
+  console.log('Processing:', user.name);
+}
+
+return { count: users.length };
+`);
+
+  const { status, output, toolCalls, result, error, execute } = useStreaming(client);
+
+  return (
+    <div style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto' }}>
+      <h1>Code Executor</h1>
+
+      {/* Code Input */}
+      <div style={{ marginBottom: '1rem' }}>
+        <textarea
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          style={{
+            width: '100%',
+            height: '200px',
+            fontFamily: 'monospace',
+            padding: '1rem',
+          }}
+          disabled={status === 'running'}
+        />
+      </div>
+
+      {/* Execute Button */}
+      <button
+        onClick={() => execute(code)}
+        disabled={status === 'running'}
+        style={{
+          padding: '0.5rem 1rem',
+          backgroundColor: status === 'running' ? '#ccc' : '#0070f3',
+          color: 'white',
+          border: 'none',
+          borderRadius: '4px',
+          cursor: status === 'running' ? 'not-allowed' : 'pointer',
+          marginBottom: '1rem',
+        }}
+      >
+        {status === 'running' ? 'Running...' : 'Execute'}
+      </button>
+
+      {/* Status */}
+      <div style={{ marginBottom: '1rem' }}>
+        Status: <strong>{status}</strong>
+      </div>
+
+      {/* Output Grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+        {/* Console Output */}
+        <div>
+          <h3>Console Output</h3>
+          <StreamingConsole output={output} />
+        </div>
+
+        {/* Tool Calls */}
+        <div>
+          <h3>Tool Calls</h3>
+          <ToolTimeline toolCalls={toolCalls} />
+        </div>
+      </div>
+
+      {/* Result */}
+      {result !== null && (
+        <div style={{ marginTop: '1rem' }}>
+          <h3>Result</h3>
+          <pre style={{
+            backgroundColor: '#f5f5f5',
+            padding: '1rem',
+            borderRadius: '4px',
+            overflow: 'auto',
+          }}>
+            {JSON.stringify(result, null, 2)}
+          </pre>
+        </div>
+      )}
+
+      {/* Error */}
+      {error && (
+        <div style={{
+          marginTop: '1rem',
+          padding: '1rem',
+          backgroundColor: '#fee2e2',
+          color: '#dc2626',
+          borderRadius: '4px',
+        }}>
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+## Server-Sent Events (SSE) Alternative
+
+For simpler setups, use SSE instead of WebSockets:
+
+```ts
+// Server
+import express from 'express';
+import { Enclave } from 'enclave-vm';
+
+const app = express();
+app.use(express.json());
+
+app.post('/execute', async (req, res) => {
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  const enclave = new Enclave({
+    toolHandler: async (name, args) => {
+      // Send tool call event
+      res.write(`event: tool_call\ndata: ${JSON.stringify({ tool: name, args })}\n\n`);
+      const result = await executeTool(name, args);
+      res.write(`event: tool_result\ndata: ${JSON.stringify({ tool: name })}\n\n`);
+      return result;
+    },
+    onConsole: (level, ...args) => {
+      res.write(`event: stdout\ndata: ${JSON.stringify({ data: args.join(' ') })}\n\n`);
+    },
+  });
+
+  try {
+    const result = await enclave.run(req.body.code);
+    res.write(`event: final\ndata: ${JSON.stringify(result)}\n\n`);
+  } catch (error) {
+    res.write(`event: error\ndata: ${JSON.stringify({ message: (error as Error).message })}\n\n`);
+  } finally {
+    res.end();
+    enclave.dispose();
+  }
+});
+```
+
+```ts
+// Client
+async function executeWithSSE(code: string) {
+  const response = await fetch('/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+
+  if (!response.body) {
+    throw new Error('Response body is null');
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n\n');
+    buffer = lines.pop() || '';
+
+    for (const chunk of lines) {
+      if (chunk.startsWith('event:')) {
+        const [eventLine, dataLine] = chunk.split('\n');
+        const event = eventLine.replace('event: ', '');
+        const data = JSON.parse(dataLine.replace('data: ', ''));
+        handleEvent(event, data);
+      }
+    }
+  }
+}
+```
+
+## Progress Indicators
+
+```tsx
+interface ProgressProps {
+  status: 'idle' | 'running' | 'completed' | 'error';
+  toolCallCount: number;
+  duration?: number;
+}
+
+export function ExecutionProgress({ status, toolCallCount, duration }: ProgressProps) {
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: '16px',
+      padding: '12px',
+      backgroundColor: '#f5f5f5',
+      borderRadius: '8px',
+    }}>
+      {/* Status Indicator */}
+      <div style={{
+        width: '12px',
+        height: '12px',
+        borderRadius: '50%',
+        backgroundColor: {
+          idle: '#9ca3af',
+          running: '#f59e0b',
+          completed: '#22c55e',
+          error: '#ef4444',
+        }[status],
+        animation: status === 'running' ? 'pulse 1s infinite' : 'none',
+      }} />
+
+      {/* Status Text */}
+      <span style={{ fontWeight: 500 }}>
+        {status.charAt(0).toUpperCase() + status.slice(1)}
+      </span>
+
+      {/* Tool Calls */}
+      {toolCallCount > 0 && (
+        <span style={{ color: '#666' }}>
+          {toolCallCount} tool call{toolCallCount !== 1 ? 's' : ''}
+        </span>
+      )}
+
+      {/* Duration */}
+      {duration !== undefined && (
+        <span style={{ color: '#666' }}>
+          {duration}ms
+        </span>
+      )}
+    </div>
+  );
+}
+```
+
+## Next Steps
+
+- [React Code Editor Guide](/guides/react-code-editor) - Full implementation
+- [@enclavejs/react](/enclavejs/react) - React SDK
+- [Multi-Tenant](/examples/multi-tenant) - Per-user isolation

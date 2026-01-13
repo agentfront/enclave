@@ -1,0 +1,152 @@
+---
+title: 'Quickstart'
+description: 'Get up and running with Enclave in 5 minutes'
+---
+
+This guide walks you through building your first secure code execution environment with Enclave. By the end, you'll have a working sandbox that safely executes untrusted JavaScript with tool access.
+
+## Prerequisites
+
+- Node.js 22 or later
+- npm, pnpm, or yarn
+
+## Step 1: Install Packages
+
+```bash
+npm install enclave-vm ast-guard
+```
+
+## Step 2: Create Your First Sandbox
+
+Create a new file `sandbox.ts`:
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+// Define your tools
+const tools = {
+  'math:add': async (a: number, b: number) => a + b,
+  'math:multiply': async (a: number, b: number) => a * b,
+  'users:list': async () => [
+    { id: 1, name: 'Alice', active: true },
+    { id: 2, name: 'Bob', active: false },
+    { id: 3, name: 'Charlie', active: true },
+  ],
+};
+
+// Create the enclave
+const enclave = new Enclave({
+  securityLevel: 'SECURE',
+  timeout: 5000,
+  maxToolCalls: 10,
+  toolHandler: async (toolName, args) => {
+    const tool = tools[toolName as keyof typeof tools];
+    if (!tool) {
+      throw new Error(`Unknown tool: ${toolName}`);
+    }
+    return tool(...(args as any[]));
+  },
+});
+
+// Run some code
+async function main() {
+  const code = `
+    // Get users and filter active ones
+    const users = await callTool('users:list');
+    const activeUsers = users.filter(u => u.active);
+
+    // Calculate something
+    const sum = await callTool('math:add', 10, 20);
+
+    return {
+      activeCount: activeUsers.length,
+      sum,
+      names: activeUsers.map(u => u.name),
+    };
+  `;
+
+  const result = await enclave.run(code);
+
+  if (result.success) {
+    console.log('Result:', result.value);
+    console.log('Stats:', result.stats);
+  } else {
+    console.error('Error:', result.error);
+  }
+
+  enclave.dispose();
+}
+
+main();
+```
+
+## Step 3: Run It
+
+```bash
+npx tsx sandbox.ts
+```
+
+You should see:
+
+```
+Result: { activeCount: 2, sum: 30, names: ['Alice', 'Charlie'] }
+Stats: { duration: 12, toolCallCount: 2, iterationCount: 4 }
+```
+
+## What Just Happened?
+
+1. **AST Validation** - Before executing, Enclave validated the code using ast-guard to block dangerous constructs like `eval`, `process`, and prototype manipulation.
+
+2. **Code Transformation** - The code was wrapped in a safe execution context with rate-limited loops and proxied tool calls.
+
+3. **Sandboxed Execution** - The code ran in an isolated Node.js vm context with no access to the host environment.
+
+4. **Tool Calls** - The script called your tools through a controlled interface, letting you audit and control all external interactions.
+
+## Security Levels
+
+Enclave provides preset security levels. The most common:
+
+| Level | Use Case | Restrictions |
+|-------|----------|--------------|
+| `STRICT` | Untrusted AI/user code | Maximum restrictions |
+| `SECURE` | Semi-trusted automation | Balanced security |
+| `STANDARD` | Internal tools | Basic guardrails |
+
+```ts
+// For untrusted code, use STRICT
+const strictEnclave = new Enclave({
+  securityLevel: 'STRICT',
+  toolHandler: async (name, args) => { /* ... */ },
+});
+```
+
+## What's Blocked?
+
+AgentScript (the language subset Enclave uses) blocks:
+
+- `eval`, `Function`, `setTimeout`, `setInterval`
+- `process`, `require`, `import`
+- `window`, `global`, `globalThis`
+- `__proto__`, `constructor`, `prototype`
+- User-defined functions (prevents recursion bombs)
+- `while` and `do-while` loops (prevents infinite loops)
+
+See [AgentScript](/concepts/agentscript) for the full language definition.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Concepts" icon="lightbulb" href="/concepts/architecture">
+    Understand the architecture and security model
+  </Card>
+  <Card title="enclave-vm" icon="lock" href="/core-libraries/enclave-vm/overview">
+    Deep dive into configuration and features
+  </Card>
+  <Card title="Guides" icon="map" href="/guides/first-agent">
+    Build a complete AI agent with tools
+  </Card>
+  <Card title="Examples" icon="flask" href="/examples/hello-world">
+    Copy-paste examples for common use cases
+  </Card>
+</CardGroup>

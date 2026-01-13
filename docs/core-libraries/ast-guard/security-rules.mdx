@@ -1,0 +1,285 @@
+---
+title: 'Security Rules'
+description: 'Built-in security rules for AST validation'
+---
+
+ast-guard ships with 16 built-in security rules that cover common attack vectors. Each rule can be configured and combined to match your security requirements.
+
+## NoGlobalAccessRule
+
+Blocks access to dangerous global objects via member expressions.
+
+```ts
+import { NoGlobalAccessRule } from 'ast-guard';
+
+const rule = new NoGlobalAccessRule({
+  blockedGlobals: ['window', 'process', 'global', 'globalThis'],
+  allowedMembers: { console: ['log', 'warn', 'error'] },
+});
+```
+
+**Blocks:**
+- `window.location`
+- `process.env`
+- `global.setTimeout`
+
+**Allows:**
+- `console.log()` (if configured)
+
+## ReservedPrefixRule
+
+Prevents user code from declaring identifiers with reserved prefixes.
+
+```ts
+import { ReservedPrefixRule } from 'ast-guard';
+
+const rule = new ReservedPrefixRule({
+  prefixes: ['__ag_', '__safe_'],
+  allowedIdentifiers: ['__ag_main'],
+});
+```
+
+**Blocks:**
+- `const __ag_hack = 1;`
+- `let __safe_bypass = true;`
+
+## NoCallTargetAssignmentRule
+
+Protects critical call targets from being reassigned or shadowed.
+
+```ts
+import { NoCallTargetAssignmentRule } from 'ast-guard';
+
+const rule = new NoCallTargetAssignmentRule({
+  protectedTargets: ['callTool', '__safe_callTool'],
+});
+```
+
+**Blocks:**
+- `callTool = malicious;` - Direct assignment
+- `const callTool = () => {};` - Variable shadowing
+- `const { callTool } = obj;` - Destructuring shadowing
+- `function callTool() {}` - Function declaration shadowing
+
+## UnicodeSecurityRule
+
+Detects Unicode-based attacks including Trojan Source and homoglyphs.
+
+```ts
+import { UnicodeSecurityRule } from 'ast-guard';
+
+const rule = new UnicodeSecurityRule({
+  blockBidi: true,          // Block bidirectional text attacks
+  blockHomoglyphs: true,    // Block lookalike characters
+  blockZeroWidth: true,     // Block zero-width characters
+  blockInvisible: true,     // Block invisible formatting
+  checkComments: true,      // Also check inside comments
+});
+```
+
+<Warning>
+  Trojan Source attacks (CVE-2021-42574) use Unicode bidirectional control characters to make code appear different than it actually executes. Always enable `blockBidi: true` for untrusted code.
+</Warning>
+
+## StaticCallTargetRule
+
+Enforces static string literals for call targets.
+
+```ts
+import { StaticCallTargetRule } from 'ast-guard';
+
+const rule = new StaticCallTargetRule({
+  targetFunctions: ['callTool', '__safe_callTool'],
+  argumentPosition: 0,
+  allowedToolNames: ['users:list', 'billing:*'], // Optional whitelist
+});
+```
+
+**Blocks:**
+- `callTool(dynamicName, {})` - Variable as tool name
+- `callTool(getToolName(), {})` - Function call as tool name
+
+**Allows:**
+- `callTool('users:list', {})` - Static string literal
+
+## NoRegexLiteralRule
+
+Blocks or analyzes regex literals for ReDoS vulnerabilities.
+
+```ts
+import { NoRegexLiteralRule } from 'ast-guard';
+
+// Block all regex (AgentScript preset)
+new NoRegexLiteralRule({ blockAll: true });
+
+// Analyze patterns for ReDoS
+new NoRegexLiteralRule({
+  analyzePatterns: true,
+  analysisLevel: 'catastrophic',
+  blockThreshold: 80,
+  warnThreshold: 50,
+});
+```
+
+## ResourceExhaustionRule
+
+Detects AST patterns that could cause CPU or memory exhaustion.
+
+```ts
+import { ResourceExhaustionRule } from 'ast-guard';
+
+const rule = new ResourceExhaustionRule({
+  maxBigIntExponent: 10000,
+  maxArraySize: 1000000,
+  maxStringRepeat: 100000,
+  blockConstructorAccess: true,
+});
+```
+
+**Blocks:**
+- `2n ** 1000000n` - BigInt exponentiation
+- `new Array(10000000)` - Large array allocations
+- `'x'.repeat(10000000)` - String repeat exploits
+- Constructor property access chains
+
+## DisallowedIdentifierRule
+
+Blocks specific identifier names.
+
+```ts
+import { DisallowedIdentifierRule } from 'ast-guard';
+
+const rule = new DisallowedIdentifierRule({
+  disallowed: ['eval', 'Function', 'process', 'require'],
+});
+```
+
+## ForbiddenLoopRule
+
+Restricts which loop constructs are allowed.
+
+```ts
+import { ForbiddenLoopRule } from 'ast-guard';
+
+const rule = new ForbiddenLoopRule({
+  allowFor: true,
+  allowForOf: true,
+  allowWhile: false,
+  allowDoWhile: false,
+  allowForIn: false,
+});
+```
+
+## RequiredFunctionCallRule
+
+Ensures code contains required function calls.
+
+```ts
+import { RequiredFunctionCallRule } from 'ast-guard';
+
+const rule = new RequiredFunctionCallRule({
+  required: ['callTool'],
+  minCalls: 1,
+});
+```
+
+## UnknownGlobalRule
+
+Rejects references to undeclared identifiers (whitelist mode).
+
+```ts
+import { UnknownGlobalRule } from 'ast-guard';
+
+const rule = new UnknownGlobalRule({
+  allowedGlobals: ['callTool', 'Math', 'JSON', 'Array', 'Object'],
+  allowStandardGlobals: true, // Allow undefined, null, NaN, etc.
+});
+```
+
+## NoEvalRule
+
+Blocks eval and dynamic code execution.
+
+```ts
+import { NoEvalRule } from 'ast-guard';
+
+const rule = new NoEvalRule();
+```
+
+**Blocks:**
+- `eval('code')`
+- `new Function('return 1')`
+- `setTimeout('code', 100)` - String form
+
+## NoAsyncRule
+
+Restricts async/await usage.
+
+```ts
+import { NoAsyncRule } from 'ast-guard';
+
+const rule = new NoAsyncRule({
+  allowTopLevelAwait: true,
+  allowAsyncFunctions: false,
+});
+```
+
+## NoUserDefinedFunctionsRule
+
+Blocks user-defined functions (prevents recursion).
+
+```ts
+import { NoUserDefinedFunctionsRule } from 'ast-guard';
+
+const rule = new NoUserDefinedFunctionsRule({
+  allowArrowFunctions: true, // For array methods
+});
+```
+
+**Blocks:**
+- `function foo() {}`
+- `const fn = function() {}`
+
+**Allows:**
+- `array.map(x => x * 2)` - Arrow functions (if enabled)
+
+## UnreachableCodeRule
+
+Detects code after return/throw statements.
+
+```ts
+import { UnreachableCodeRule } from 'ast-guard';
+
+const rule = new UnreachableCodeRule();
+```
+
+## CallArgumentValidationRule
+
+Validates function call arguments.
+
+```ts
+import { CallArgumentValidationRule } from 'ast-guard';
+
+const rule = new CallArgumentValidationRule({
+  targetFunctions: ['callTool'],
+  minArgs: 1,
+  maxArgs: 2,
+});
+```
+
+## Rule Severity
+
+All rules support severity configuration:
+
+```ts
+const rule = new DisallowedIdentifierRule({
+  disallowed: ['eval'],
+  severity: 'error', // 'error' or 'warning'
+});
+```
+
+## Related
+
+- [Custom Rules](/core-libraries/ast-guard/custom-rules) - Writing your own rules
+- [AgentScript Preset](/core-libraries/ast-guard/agentscript-preset) - Pre-configured ruleset
+- [Pre-Scanner](/core-libraries/ast-guard/pre-scanner) - Layer 0 defense

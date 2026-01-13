@@ -1,0 +1,265 @@
+---
+title: 'Custom Rules'
+description: 'Writing custom validation rules and combining built-in rules'
+---
+
+ast-guard allows you to write custom validation rules and combine built-in rules to match your specific security requirements.
+
+## Combining Built-in Rules
+
+Create a custom validator by combining built-in rules:
+
+```ts
+import {
+  JSAstValidator,
+  DisallowedIdentifierRule,
+  ForbiddenLoopRule,
+  RequiredFunctionCallRule,
+  UnknownGlobalRule,
+} from 'ast-guard';
+
+const customValidator = new JSAstValidator([
+  new DisallowedIdentifierRule({
+    disallowed: ['eval', 'Function', 'process', 'require'],
+  }),
+  new ForbiddenLoopRule({
+    allowFor: true,
+    allowWhile: false,
+  }),
+  new RequiredFunctionCallRule({
+    required: ['callTool'],
+    minCalls: 1,
+  }),
+  new UnknownGlobalRule({
+    allowedGlobals: ['callTool', 'Math', 'JSON', 'Array', 'Object'],
+    allowStandardGlobals: true,
+  }),
+]);
+
+const result = await customValidator.validate(code);
+```
+
+## Security Presets
+
+ast-guard includes pre-built security presets:
+
+| Preset          | Use Case                     | Security Level              |
+| --------------- | ---------------------------- | --------------------------- |
+| **AgentScript** | LLM-generated code           | Highest - whitelist-only    |
+| **STRICT**      | Untrusted guest code         | High - no loops, no async   |
+| **SECURE**      | Automation scripts           | Medium - bounded loops only |
+| **STANDARD**    | Trusted scripts              | Low - basic guardrails      |
+| **PERMISSIVE**  | Internal/test code           | Minimal - eval blocked      |
+
+```ts
+import { JSAstValidator, createAgentScriptPreset, Presets } from 'ast-guard';
+
+// AgentScript (recommended for LLM code)
+const agentScript = new JSAstValidator(createAgentScriptPreset());
+
+// STRICT preset
+const strict = new JSAstValidator(Presets.strict({
+  requiredFunctions: ['callTool'],
+  minFunctionCalls: 1,
+}));
+
+// SECURE preset
+const secure = new JSAstValidator(Presets.secure({
+  allowedLoops: { allowForOf: true },
+}));
+
+// STANDARD preset
+const standard = new JSAstValidator(Presets.standard());
+```
+
+## Writing Custom Rules
+
+### Rule Interface
+
+```ts
+interface ValidationRule {
+  name: string;
+  validate(context: ValidationContext): ValidationIssue[];
+}
+
+interface ValidationContext {
+  ast: Node;           // Parsed AST (acorn)
+  code: string;        // Original source code
+  options: object;     // Validation options
+}
+
+interface ValidationIssue {
+  rule: string;
+  message: string;
+  severity: 'error' | 'warning';
+  location?: { line: number; column: number };
+}
+```
+
+### Example: Custom Rule
+
+```ts
+import { ValidationRule, ValidationContext, ValidationIssue } from 'ast-guard';
+import { walk } from 'estree-walker';
+
+class NoMagicNumbersRule implements ValidationRule {
+  name = 'no-magic-numbers';
+  private allowedNumbers: number[];
+
+  constructor(options: { allowed?: number[] } = {}) {
+    this.allowedNumbers = options.allowed || [0, 1, -1];
+  }
+
+  validate(context: ValidationContext): ValidationIssue[] {
+    const issues: ValidationIssue[] = [];
+
+    walk(context.ast, {
+      enter: (node) => {
+        if (node.type === 'Literal' && typeof node.value === 'number') {
+          if (!this.allowedNumbers.includes(node.value)) {
+            issues.push({
+              rule: this.name,
+              message: `Magic number ${node.value} should be a named constant`,
+              severity: 'warning',
+              location: node.loc?.start,
+            });
+          }
+        }
+      },
+    });
+
+    return issues;
+  }
+}
+
+// Usage
+const validator = new JSAstValidator([
+  ...createAgentScriptPreset().rules,
+  new NoMagicNumbersRule({ allowed: [0, 1, -1, 10, 100] }),
+]);
+```
+
+### Example: Block Specific API Calls
+
+```ts
+class BlockedApiCallsRule implements ValidationRule {
+  name = 'blocked-api-calls';
+  private blockedApis: string[];
+
+  constructor(options: { blocked: string[] }) {
+    this.blockedApis = options.blocked;
+  }
+
+  validate(context: ValidationContext): ValidationIssue[] {
+    const issues: ValidationIssue[] = [];
+
+    walk(context.ast, {
+      enter: (node) => {
+        if (
+          node.type === 'CallExpression' &&
+          node.callee.type === 'Identifier' &&
+          node.callee.name === 'callTool'
+        ) {
+          const firstArg = node.arguments[0];
+          if (firstArg?.type === 'Literal' && typeof firstArg.value === 'string') {
+            if (this.blockedApis.some(api => firstArg.value.startsWith(api))) {
+              issues.push({
+                rule: this.name,
+                message: `API "${firstArg.value}" is blocked`,
+                severity: 'error',
+                location: node.loc?.start,
+              });
+            }
+          }
+        }
+      },
+    });
+
+    return issues;
+  }
+}
+
+// Usage
+const validator = new JSAstValidator([
+  ...createAgentScriptPreset().rules,
+  new BlockedApiCallsRule({
+    blocked: ['admin:', 'system:', 'internal:'],
+  }),
+]);
+```
+
+## Extending Presets
+
+Add rules to an existing preset:
+
+```ts
+import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+
+const preset = createAgentScriptPreset();
+
+const validator = new JSAstValidator([
+  ...preset.rules,
+  new CustomRule1(),
+  new CustomRule2(),
+]);
+```
+
+## Removing Rules from Presets
+
+Filter out rules you don't need:
+
+```ts
+const preset = createAgentScriptPreset();
+
+const validator = new JSAstValidator(
+  preset.rules.filter(rule => rule.name !== 'no-regex-literal')
+);
+```
+
+## Rule Ordering
+
+Rules are executed in array order. For performance, order rules by:
+
+1. **Fast rejections first** - Rules that quickly identify invalid code
+2. **Complex analysis last** - Rules that traverse the entire AST
+
+```ts
+const validator = new JSAstValidator([
+  // Fast: Check for blocked identifiers
+  new DisallowedIdentifierRule({ disallowed: ['eval'] }),
+
+  // Medium: Check call structure
+  new RequiredFunctionCallRule({ required: ['callTool'] }),
+
+  // Slower: Full AST traversal
+  new UnknownGlobalRule({ allowedGlobals: ['Math', 'JSON', 'console', 'callTool'] }),
+]);
+```
+
+## Testing Custom Rules
+
+```ts
+import { JSAstValidator } from 'ast-guard';
+import { describe, it, expect } from 'vitest';
+
+describe('CustomRule', () => {
+  const validator = new JSAstValidator([new CustomRule()]);
+
+  it('should block dangerous pattern', async () => {
+    const result = await validator.validate('dangerous code');
+    expect(result.valid).toBe(false);
+    expect(result.issues[0].rule).toBe('custom-rule');
+  });
+
+  it('should allow safe pattern', async () => {
+    const result = await validator.validate('safe code');
+    expect(result.valid).toBe(true);
+  });
+});
+```
+
+## Related
+
+- [Security Rules](/core-libraries/ast-guard/security-rules) - Built-in rules reference
+- [AgentScript Preset](/core-libraries/ast-guard/agentscript-preset) - Default preset
+- [Overview](/core-libraries/ast-guard/overview) - Getting started

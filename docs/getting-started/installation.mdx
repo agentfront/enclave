@@ -12,9 +12,19 @@ Each library in the Enclave monorepo can be installed independently.
 - **Node.js**: >= 22.0.0
 - **npm**: >= 10 (or yarn/pnpm equivalent)
 
-## Installing Libraries
+## Core Libraries
+
+### enclave-vm
+
+Secure AgentScript execution environment with defense-in-depth.
+
+```bash
+npm install enclave-vm
+```
 
 ### ast-guard
+
+AST-based JavaScript validator with 100% CVE coverage.
 
 ```bash
 npm install ast-guard
@@ -22,14 +32,114 @@ npm install ast-guard
 
 ### vectoriadb
 
+Lightweight in-memory vector database for semantic search.
+
 ```bash
 npm install vectoriadb
 ```
 
-### enclave-vm
+## EnclaveJS Streaming Runtime
+
+The EnclaveJS packages provide a streaming runtime for real-time code execution with tool orchestration.
+
+### Full Stack (Recommended)
+
+Install all packages needed for a complete streaming setup:
 
 ```bash
-npm install enclave-vm
+# Server-side
+npm install @enclavejs/broker
+
+# Client-side
+npm install @enclavejs/client @enclavejs/react
+```
+
+### Individual Packages
+
+#### @enclavejs/types
+
+Protocol types and Zod schemas (automatically installed as dependency).
+
+```bash
+npm install @enclavejs/types
+```
+
+#### @enclavejs/stream
+
+Streaming protocol implementation with encryption support.
+
+```bash
+npm install @enclavejs/stream
+```
+
+#### @enclavejs/broker
+
+Tool broker with session management and HTTP API.
+
+```bash
+npm install @enclavejs/broker
+```
+
+#### @enclavejs/client
+
+Browser and Node.js client SDK.
+
+```bash
+npm install @enclavejs/client
+```
+
+#### @enclavejs/react
+
+React hooks and components.
+
+```bash
+npm install @enclavejs/react
+```
+
+**Peer dependency:** React >= 17.0.0
+
+#### @enclavejs/runtime
+
+Standalone deployable runtime worker.
+
+```bash
+npm install @enclavejs/runtime
+```
+
+## Quick Start Examples
+
+### Basic Sandbox (enclave-vm)
+
+```typescript
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({ securityLevel: 'SECURE' });
+const result = await enclave.execute('return 1 + 1');
+console.log(result.value); // 2
+```
+
+### Streaming with React
+
+```tsx
+import { EnclaveProvider, useEnclaveSession } from '@enclavejs/react';
+
+function App() {
+  return (
+    <EnclaveProvider brokerUrl="http://localhost:3000">
+      <CodeRunner />
+    </EnclaveProvider>
+  );
+}
+
+function CodeRunner() {
+  const { execute, stdout, result } = useEnclaveSession();
+
+  return (
+    <button onClick={() => execute('console.log("Hello!")')}>
+      Run
+    </button>
+  );
+}
 ```
 
 ## Development Setup
@@ -50,3 +160,17 @@ yarn build
 # Run tests
 yarn test
 ```
+
+## Package Versions
+
+| Package | Version | Description |
+|---------|---------|-------------|
+| enclave-vm | 2.7.0 | Secure sandbox runtime |
+| ast-guard | 2.4.0 | AST security validator |
+| vectoriadb | 2.0.2 | Vector database |
+| @enclavejs/types | 0.1.0 | Protocol types |
+| @enclavejs/stream | 0.1.0 | Streaming protocol |
+| @enclavejs/broker | 0.1.0 | Tool broker |
+| @enclavejs/client | 0.1.0 | Client SDK |
+| @enclavejs/react | 0.1.0 | React integration |
+| @enclavejs/runtime | 0.1.0 | Runtime worker |

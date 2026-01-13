@@ -1,0 +1,407 @@
+---
+title: '@enclavejs/runtime'
+description: 'Standalone deployable runtime worker for EnclaveJS'
+---
+
+# @enclavejs/runtime
+
+Standalone runtime worker for EnclaveJS that can be deployed separately from the broker. Enables distributed execution, serverless deployments, and horizontal scaling.
+
+## Installation
+
+```bash
+npm install @enclavejs/runtime
+```
+
+## Quick Start
+
+### CLI Usage
+
+```bash
+# Start runtime worker on port 3001
+npx enclave-runtime --port 3001
+
+# With debug logging
+npx enclave-runtime --port 3001 --debug
+
+# With custom max sessions
+npx enclave-runtime --port 3001 --max-sessions 20
+```
+
+### Programmatic Usage
+
+```typescript
+import { createRuntimeWorker } from '@enclavejs/runtime';
+
+const worker = createRuntimeWorker({
+  port: 3001,
+  maxSessions: 10,
+  debug: true,
+});
+
+await worker.start();
+console.log('Runtime worker is ready on port 3001');
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  await worker.stop();
+});
+```
+
+## Architecture
+
+The runtime worker receives code execution requests from a broker via WebSocket and runs them in isolated `enclave-vm` instances.
+
+```
+┌─────────────┐    HTTP     ┌─────────────┐    WebSocket    ┌─────────────┐
+│   Client    │ ─────────▶  │   Broker    │ ──────────────▶ │   Runtime   │
+│   (React)   │ ◀───stream─ │             │ ◀──────stream── │   Worker    │
+└─────────────┘             └─────────────┘                 └─────────────┘
+                                   │                               │
+                                   │                               │
+                            Tool Registry                    enclave-vm
+                            Session Manager                  Sandboxed Code
+```
+
+**Why separate runtime?**
+- **Process Isolation**: Code execution in a separate process
+- **Horizontal Scaling**: Run multiple runtime workers
+- **Serverless**: Deploy as Lambda/Cloud Functions
+- **Resource Management**: Dedicated resources for execution
+
+## Runtime Configuration
+
+```typescript
+import { createRuntimeWorker, type RuntimeConfig } from '@enclavejs/runtime';
+
+const config: RuntimeConfig = {
+  // WebSocket port
+  port: 3001,
+
+  // Maximum concurrent sessions
+  maxSessions: 10,
+
+  // Security level for enclave-vm
+  securityLevel: 'SECURE',
+
+  // Default session limits
+  defaultLimits: {
+    timeout: 30000,
+    memoryLimit: 128 * 1024 * 1024,
+    maxToolCalls: 100,
+  },
+
+  // Heartbeat interval (ms)
+  heartbeatInterval: 30000,
+
+  // Enable debug logging
+  debug: false,
+};
+
+const worker = createRuntimeWorker(config);
+```
+
+## Runtime Worker API
+
+```typescript
+import { createRuntimeWorker, type RuntimeWorker } from '@enclavejs/runtime';
+
+const worker: RuntimeWorker = createRuntimeWorker(config);
+
+// Start the worker
+await worker.start();
+
+// Get runtime stats
+const stats = worker.getStats();
+console.log('Active sessions:', stats.activeSessions);
+console.log('Total executions:', stats.totalExecutions);
+
+// Get runtime state
+const state = worker.getState();
+console.log('State:', state);  // 'starting' | 'running' | 'stopping' | 'stopped'
+
+// Stop gracefully
+await worker.stop();
+```
+
+### Runtime Stats
+
+```typescript
+import type { RuntimeStats } from '@enclavejs/runtime';
+
+const stats: RuntimeStats = {
+  activeSessions: 5,
+  totalExecutions: 1234,
+  successfulExecutions: 1200,
+  failedExecutions: 34,
+  averageExecutionTime: 250,  // ms
+  memoryUsage: 512 * 1024 * 1024,  // bytes
+  uptime: 3600000,  // ms
+};
+```
+
+## Session Executor
+
+Lower-level API for executing code within the runtime.
+
+```typescript
+import { createSessionExecutor, type SessionExecutorOptions } from '@enclavejs/runtime';
+
+const executor = createSessionExecutor({
+  securityLevel: 'SECURE',
+  limits: {
+    timeout: 30000,
+  },
+});
+
+// Execute code and get event stream
+const stream = executor.execute(sessionId, code);
+
+for await (const event of stream) {
+  console.log(event.type, event.payload);
+}
+```
+
+## Communication Channels
+
+### Memory Channel (Testing)
+
+```typescript
+import { createMemoryChannel, createMemoryChannelPair } from '@enclavejs/runtime';
+
+// Create a pair for testing
+const [clientChannel, serverChannel] = createMemoryChannelPair();
+
+// Send messages
+clientChannel.send({ type: 'execute', code: '...' });
+
+// Receive messages
+serverChannel.onMessage((msg) => {
+  console.log('Received:', msg);
+});
+```
+
+### WebSocket Channel
+
+```typescript
+import { createWebSocketChannel, type WebSocketChannelConfig } from '@enclavejs/runtime';
+
+const config: WebSocketChannelConfig = {
+  url: 'ws://localhost:3001',
+  reconnect: true,
+  reconnectDelay: 1000,
+  maxReconnectAttempts: 5,
+};
+
+const channel = createWebSocketChannel(config);
+
+// Connection events
+channel.onOpen(() => console.log('Connected'));
+channel.onClose(() => console.log('Disconnected'));
+channel.onError((error) => console.error('Error:', error));
+
+// Message handling
+channel.onMessage((msg) => {
+  console.log('Received:', msg);
+});
+
+// Send messages
+channel.send({ type: 'execute', ... });
+
+// Close connection
+channel.close();
+```
+
+### Channel State
+
+```typescript
+import type { WebSocketChannelState } from '@enclavejs/runtime';
+
+type WebSocketChannelState =
+  | 'connecting'
+  | 'connected'
+  | 'disconnected'
+  | 'reconnecting';
+```
+
+## Broker Configuration
+
+Configure the broker to use an extracted runtime:
+
+```typescript
+import { createBroker } from '@enclavejs/broker';
+
+const broker = createBroker({
+  mode: 'extracted',
+  runtimeUrl: 'ws://localhost:3001',
+  // Multiple runtimes for load balancing
+  runtimes: [
+    'ws://runtime-1:3001',
+    'ws://runtime-2:3001',
+    'ws://runtime-3:3001',
+  ],
+});
+```
+
+## Docker Deployment
+
+### Dockerfile
+
+```dockerfile
+FROM node:22-alpine
+
+WORKDIR /app
+
+# Install runtime
+RUN npm install @enclavejs/runtime
+
+# Expose WebSocket port
+EXPOSE 3001
+
+# Run with production settings
+CMD ["npx", "enclave-runtime", "--port", "3001", "--max-sessions", "20"]
+```
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+
+services:
+  broker:
+    build: ./broker
+    ports:
+      - "3000:3000"
+    environment:
+      RUNTIME_URL: ws://runtime:3001
+
+  runtime:
+    image: node:22-alpine
+    command: npx @enclavejs/runtime --port 3001
+    ports:
+      - "3001:3001"
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          memory: 512M
+```
+
+## AWS Lambda Deployment
+
+```typescript
+// lambda.ts
+import { createRuntimeWorker } from '@enclavejs/runtime';
+
+let worker: RuntimeWorker | null = null;
+
+export async function handler(event: any) {
+  if (!worker) {
+    worker = createRuntimeWorker({
+      maxSessions: 1,
+      securityLevel: 'STRICT',
+    });
+    await worker.start();
+  }
+
+  // Process the execution request
+  const { code, sessionId, limits } = JSON.parse(event.body);
+
+  const result = await worker.executeSync(sessionId, code, limits);
+
+  return {
+    statusCode: 200,
+    body: JSON.stringify(result),
+  };
+}
+```
+
+## Runtime Request Types
+
+```typescript
+import type {
+  RuntimeRequest,
+  ExecuteRequest,
+  CancelRequest,
+  ToolResultRequest,
+  PingRequest,
+} from '@enclavejs/runtime';
+
+// Execute code request
+const executeReq: ExecuteRequest = {
+  type: 'execute',
+  sessionId: 'ses_...',
+  code: 'return 1 + 1',
+  limits: { timeout: 30000 },
+};
+
+// Cancel execution request
+const cancelReq: CancelRequest = {
+  type: 'cancel',
+  sessionId: 'ses_...',
+  reason: 'User cancelled',
+};
+
+// Submit tool result
+const toolResultReq: ToolResultRequest = {
+  type: 'tool_result',
+  sessionId: 'ses_...',
+  callId: 'call_...',
+  result: { data: 'fetched' },
+};
+
+// Ping request
+const pingReq: PingRequest = {
+  type: 'ping',
+  timestamp: Date.now(),
+};
+```
+
+## Event Handling
+
+```typescript
+import type { RuntimeEventHandler } from '@enclavejs/runtime';
+
+const handler: RuntimeEventHandler = {
+  onExecute: (sessionId, code) => {
+    console.log(`Executing in session ${sessionId}`);
+  },
+
+  onComplete: (sessionId, result) => {
+    console.log(`Session ${sessionId} completed:`, result);
+  },
+
+  onError: (sessionId, error) => {
+    console.error(`Session ${sessionId} error:`, error);
+  },
+
+  onCancel: (sessionId) => {
+    console.log(`Session ${sessionId} cancelled`);
+  },
+};
+```
+
+## Connection Handling
+
+```typescript
+import type { ConnectionHandler } from '@enclavejs/runtime';
+
+const connectionHandler: ConnectionHandler = {
+  onConnect: (clientId) => {
+    console.log(`Client ${clientId} connected`);
+  },
+
+  onDisconnect: (clientId) => {
+    console.log(`Client ${clientId} disconnected`);
+  },
+
+  onError: (clientId, error) => {
+    console.error(`Client ${clientId} error:`, error);
+  },
+};
+```
+
+## Links
+
+- [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclavejs-runtime)
+- [npm](https://www.npmjs.com/package/@enclavejs/runtime)

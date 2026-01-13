@@ -1,0 +1,433 @@
+---
+title: '@enclavejs/react'
+description: 'React hooks and components for the EnclaveJS streaming runtime'
+---
+
+# @enclavejs/react
+
+React hooks and components for building interactive code execution UIs with the EnclaveJS streaming runtime.
+
+## Installation
+
+```bash
+npm install @enclavejs/react
+```
+
+**Peer Dependencies:**
+- `react` >= 17.0.0
+
+## Quick Start
+
+```tsx
+import { EnclaveProvider, useEnclaveSession } from '@enclavejs/react';
+
+function App() {
+  return (
+    <EnclaveProvider brokerUrl="http://localhost:3000">
+      <CodeEditor />
+    </EnclaveProvider>
+  );
+}
+
+function CodeEditor() {
+  const { execute, state, stdout, result, error } = useEnclaveSession();
+
+  return (
+    <div>
+      <button
+        onClick={() => execute('console.log("Hello!"); return 42;')}
+        disabled={state === 'running'}
+      >
+        Run
+      </button>
+      <pre>{stdout}</pre>
+      {result && <div>Result: {JSON.stringify(result)}</div>}
+      {error && <div className="error">{error.message}</div>}
+    </div>
+  );
+}
+```
+
+## EnclaveProvider
+
+The provider sets up the EnclaveClient context for your application.
+
+```tsx
+import { EnclaveProvider, type EnclaveProviderProps } from '@enclavejs/react';
+
+const props: EnclaveProviderProps = {
+  // Required: Broker URL
+  brokerUrl: 'http://localhost:3000',
+
+  // Optional: Custom headers
+  headers: {
+    'Authorization': 'Bearer token',
+  },
+
+  // Optional: Timeout (ms)
+  timeout: 30000,
+
+  // Optional: Reconnection config
+  reconnect: {
+    enabled: true,
+    maxAttempts: 5,
+  },
+};
+
+function App() {
+  return (
+    <EnclaveProvider {...props}>
+      <MyApp />
+    </EnclaveProvider>
+  );
+}
+```
+
+## useEnclaveSession Hook
+
+The main hook for executing code and managing session state.
+
+### Basic Usage
+
+```tsx
+import { useEnclaveSession } from '@enclavejs/react';
+
+function CodeRunner() {
+  const {
+    execute,      // Function to execute code
+    state,        // Current session state
+    stdout,       // Accumulated stdout output
+    result,       // Final result (when completed)
+    error,        // Error (if any)
+    sessionId,    // Current session ID
+    stats,        // Execution stats
+    cancel,       // Cancel execution
+    reset,        // Reset state
+  } = useEnclaveSession();
+
+  return (
+    <div>
+      <button onClick={() => execute('return 1 + 1')}>
+        Run
+      </button>
+    </div>
+  );
+}
+```
+
+### Session States
+
+```tsx
+import type { SessionState } from '@enclavejs/react';
+
+// Available states
+type SessionState =
+  | 'idle'        // No execution in progress
+  | 'running'     // Code is executing
+  | 'completed'   // Execution finished successfully
+  | 'error'       // Execution failed
+  | 'cancelled';  // Execution was cancelled
+
+function StatusIndicator() {
+  const { state } = useEnclaveSession();
+
+  switch (state) {
+    case 'idle':
+      return <span>Ready</span>;
+    case 'running':
+      return <span>Running...</span>;
+    case 'completed':
+      return <span>Done!</span>;
+    case 'error':
+      return <span>Failed</span>;
+    case 'cancelled':
+      return <span>Cancelled</span>;
+  }
+}
+```
+
+### Options
+
+```tsx
+import { useEnclaveSession, type UseEnclaveSessionOptions } from '@enclavejs/react';
+
+function CodeRunner() {
+  const options: UseEnclaveSessionOptions = {
+    // Default limits for all executions
+    limits: {
+      timeout: 30000,
+      memoryLimit: 128 * 1024 * 1024,
+    },
+
+    // Event handlers
+    onSessionInit: (event) => {
+      console.log('Session started:', event.sessionId);
+    },
+
+    onStdout: (chunk) => {
+      // Custom stdout handling
+    },
+
+    onLog: (level, message, data) => {
+      console.log(`[${level}]`, message);
+    },
+
+    onToolCall: (callId, name, args) => {
+      console.log('Tool called:', name);
+    },
+
+    onFinal: (result, stats) => {
+      console.log('Completed:', result);
+    },
+
+    onError: (error) => {
+      console.error('Error:', error);
+    },
+
+    // Clear stdout on new execution
+    clearOnExecute: true,
+  };
+
+  const session = useEnclaveSession(options);
+
+  return <div>{/* ... */}</div>;
+}
+```
+
+### Return Value
+
+```tsx
+import type { UseEnclaveSessionReturn } from '@enclavejs/react';
+
+const session: UseEnclaveSessionReturn = useEnclaveSession();
+
+// Execute code
+await session.execute(code);
+await session.execute(code, { timeout: 5000 });
+
+// Current state
+session.state;      // SessionState
+session.sessionId;  // SessionId | null
+
+// Output
+session.stdout;     // string (accumulated)
+session.logs;       // LogEntry[]
+session.result;     // any | null
+session.error;      // Error | null
+
+// Stats
+session.stats;      // SessionStats | null
+
+// Actions
+await session.cancel();  // Cancel current execution
+session.reset();         // Reset to idle state
+```
+
+## useEnclaveClient Hook
+
+Access the underlying EnclaveClient directly.
+
+```tsx
+import { useEnclaveClient } from '@enclavejs/react';
+
+function CustomComponent() {
+  const client = useEnclaveClient();
+
+  // Use client directly for advanced scenarios
+  const handleExecute = async () => {
+    const handle = await client.execute(code, {
+      onStdout: console.log,
+    });
+
+    const result = await handle.result;
+  };
+
+  return <button onClick={handleExecute}>Execute</button>;
+}
+```
+
+## useEnclaveContext Hook
+
+Access the full context value including client and configuration.
+
+```tsx
+import { useEnclaveContext, type EnclaveContextValue } from '@enclavejs/react';
+
+function DebugComponent() {
+  const context: EnclaveContextValue = useEnclaveContext();
+
+  return (
+    <div>
+      <p>Broker URL: {context.config.baseUrl}</p>
+      <p>Client ready: {context.client ? 'Yes' : 'No'}</p>
+    </div>
+  );
+}
+```
+
+## Examples
+
+### Code Editor with Output
+
+```tsx
+import { useState } from 'react';
+import { EnclaveProvider, useEnclaveSession } from '@enclavejs/react';
+
+function CodeEditor() {
+  const [code, setCode] = useState('console.log("Hello!");\nreturn 42;');
+  const { execute, state, stdout, result, error, reset } = useEnclaveSession();
+
+  return (
+    <div className="editor">
+      <textarea
+        value={code}
+        onChange={(e) => setCode(e.target.value)}
+        disabled={state === 'running'}
+      />
+
+      <div className="buttons">
+        <button
+          onClick={() => execute(code)}
+          disabled={state === 'running'}
+        >
+          {state === 'running' ? 'Running...' : 'Run'}
+        </button>
+        <button onClick={reset}>Reset</button>
+      </div>
+
+      <div className="output">
+        <h3>Output</h3>
+        <pre>{stdout}</pre>
+      </div>
+
+      {result !== null && (
+        <div className="result">
+          <h3>Result</h3>
+          <pre>{JSON.stringify(result, null, 2)}</pre>
+        </div>
+      )}
+
+      {error && (
+        <div className="error">
+          <h3>Error</h3>
+          <pre>{error.message}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <EnclaveProvider brokerUrl="http://localhost:3000">
+      <CodeEditor />
+    </EnclaveProvider>
+  );
+}
+```
+
+### With Tool Calls
+
+```tsx
+function ToolDemo() {
+  const { execute, state, stdout, result } = useEnclaveSession({
+    onToolCall: (callId, name, args) => {
+      console.log(`Tool ${name} called with:`, args);
+    },
+  });
+
+  const runWithTool = () => {
+    execute(`
+      const time = await tools.getCurrentTime();
+      console.log('Current time:', time);
+      return time;
+    `);
+  };
+
+  return (
+    <div>
+      <button onClick={runWithTool} disabled={state === 'running'}>
+        Get Current Time
+      </button>
+      <pre>{stdout}</pre>
+      {result && <p>Time: {result}</p>}
+    </div>
+  );
+}
+```
+
+### With Cancellation
+
+```tsx
+function CancellableExecution() {
+  const { execute, state, cancel, stdout } = useEnclaveSession();
+
+  const runLongTask = () => {
+    execute(`
+      for (let i = 0; i < 100; i++) {
+        console.log('Step', i);
+        await new Promise(r => setTimeout(r, 100));
+      }
+      return 'done';
+    `);
+  };
+
+  return (
+    <div>
+      {state === 'running' ? (
+        <button onClick={cancel}>Cancel</button>
+      ) : (
+        <button onClick={runLongTask}>Start Long Task</button>
+      )}
+      <pre>{stdout}</pre>
+    </div>
+  );
+}
+```
+
+### Multiple Sessions
+
+```tsx
+function MultiSession() {
+  const session1 = useEnclaveSession();
+  const session2 = useEnclaveSession();
+
+  return (
+    <div className="split">
+      <div>
+        <h3>Session 1</h3>
+        <button onClick={() => session1.execute('return 1')}>
+          Run
+        </button>
+        <pre>{session1.stdout}</pre>
+      </div>
+      <div>
+        <h3>Session 2</h3>
+        <button onClick={() => session2.execute('return 2')}>
+          Run
+        </button>
+        <pre>{session2.stdout}</pre>
+      </div>
+    </div>
+  );
+}
+```
+
+## TypeScript Types
+
+```tsx
+// Re-exported from @enclavejs/client
+import type {
+  EnclaveClient,
+  EnclaveClientConfig,
+  SessionResult,
+  SessionHandle,
+  StreamEvent,
+  SessionId,
+} from '@enclavejs/react';
+```
+
+## Links
+
+- [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclavejs-react)
+- [npm](https://www.npmjs.com/package/@enclavejs/react)

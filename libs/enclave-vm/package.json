@@ -36,6 +36,7 @@
     }
   },
   "dependencies": {
+    "@enclavejs/types": "0.1.0",
     "ast-guard": "2.4.0",
     "acorn": "8.15.0",
     "acorn-walk": "8.3.4",

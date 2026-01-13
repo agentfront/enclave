@@ -1,0 +1,18 @@
+name: "CodeQL config"
+
+paths-ignore:
+  # Demo applications
+  - apps/streaming-demo
+  # Test files
+  - "**/test"
+  - "**/tests"
+  - "**/__tests__"
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  # Enclave VM adapters - intentionally execute user code in sandboxed VM
+  # Security is provided by: VM sandbox isolation, AST-guard code validation,
+  # and double VM architecture. The "code injection" alerts are expected behavior.
+  - libs/enclave-vm/src/adapters/vm-adapter.ts
+  - libs/enclave-vm/src/adapters/worker-pool/worker-pool-adapter.ts

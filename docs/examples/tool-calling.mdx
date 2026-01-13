@@ -1,0 +1,468 @@
+---
+title: 'Tool Calling'
+description: 'Examples of tool calling patterns with validation and error handling'
+---
+
+Examples demonstrating various tool-calling patterns with Enclave.
+
+## Basic Tool Call
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    switch (name) {
+      case 'users:list':
+        return [
+          { id: '1', name: 'Alice' },
+          { id: '2', name: 'Bob' },
+        ];
+      case 'users:get':
+        return { id: args.id, name: 'Alice', email: 'alice@example.com' };
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  },
+});
+
+const result = await enclave.run(`
+  const users = await callTool('users:list', {});
+  return users;
+`);
+
+console.log(result.value);
+// [{ id: '1', name: 'Alice' }, { id: '2', name: 'Bob' }]
+```
+
+## Multiple Tool Calls
+
+```ts
+const result = await enclave.run(`
+  // Fetch data from multiple sources
+  const users = await callTool('users:list', { limit: 5 });
+  const orders = await callTool('orders:recent', { limit: 10 });
+
+  // Process and combine
+  const userOrders = users.map(user => {
+    const ordersForUser = orders.filter(o => o.userId === user.id);
+    return {
+      user: user.name,
+      orderCount: ordersForUser.length,
+      totalAmount: ordersForUser.reduce((sum, o) => sum + o.amount, 0),
+    };
+  });
+
+  return userOrders;
+`);
+```
+
+## Tool Call with Validation
+
+```ts
+import { z } from 'zod';
+
+// Define schemas for each tool
+const toolSchemas = {
+  'users:create': z.object({
+    name: z.string().min(1).max(100),
+    email: z.string().email(),
+    role: z.enum(['user', 'admin']).default('user'),
+  }),
+  'users:update': z.object({
+    id: z.string().uuid(),
+    name: z.string().min(1).max(100).optional(),
+    email: z.string().email().optional(),
+  }),
+};
+
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    const schema = toolSchemas[name];
+    if (schema) {
+      const validated = schema.parse(args);
+      return executeToolWithValidatedArgs(name, validated);
+    }
+    return executeTool(name, args);
+  },
+});
+```
+
+## Async Tool Operations
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    switch (name) {
+      case 'http:get':
+        const response = await fetch(args.url);
+        return response.json();
+
+      case 'db:query':
+        const rows = await db.query(args.sql, args.params);
+        return rows;
+
+      case 'email:send':
+        await emailService.send({
+          to: args.to,
+          subject: args.subject,
+          body: args.body,
+        });
+        return { sent: true };
+
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  },
+});
+
+const result = await enclave.run(`
+  // Fetch data
+  const data = await callTool('http:get', {
+    url: 'https://api.example.com/users'
+  });
+
+  // Process and send notification
+  for (const user of data.users) {
+    await callTool('email:send', {
+      to: user.email,
+      subject: 'Update',
+      body: 'Your account has been processed.',
+    });
+  }
+
+  return { processed: data.users.length };
+`);
+```
+
+## Error Handling in Tools
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    try {
+      return await executeTool(name, args);
+    } catch (error) {
+      // Return structured error instead of throwing
+      return {
+        error: true,
+        code: error.code || 'TOOL_ERROR',
+        message: error.message,
+      };
+    }
+  },
+});
+
+const result = await enclave.run(`
+  const result = await callTool('users:get', { id: 'invalid-id' });
+
+  if (result.error) {
+    console.log('Tool failed:', result.message);
+    return { success: false, error: result.message };
+  }
+
+  return { success: true, user: result };
+`);
+```
+
+## Tool Call Logging
+
+```ts
+const toolLogs: Array<{
+  tool: string;
+  args: unknown;
+  result: unknown;
+  duration: number;
+}> = [];
+
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    const start = Date.now();
+
+    try {
+      const result = await executeTool(name, args);
+
+      toolLogs.push({
+        tool: name,
+        args,
+        result,
+        duration: Date.now() - start,
+      });
+
+      return result;
+    } catch (error) {
+      toolLogs.push({
+        tool: name,
+        args,
+        result: { error: error.message },
+        duration: Date.now() - start,
+      });
+      throw error;
+    }
+  },
+});
+
+// After execution
+console.log('Tool call log:', toolLogs);
+```
+
+## Conditional Tool Calls
+
+```ts
+// Pass userId via globals
+const result = await enclave.run(`
+  const user = await callTool('users:get', { id: 'user-123' });
+
+  // Conditional tool calls based on data
+  if (user.role === 'admin') {
+    const adminData = await callTool('admin:getStats', {});
+    return { user, adminData };
+  }
+
+  if (user.preferences.notifications) {
+    await callTool('notifications:send', {
+      userId: user.id,
+      message: 'Welcome back!',
+    });
+  }
+
+  return { user };
+`);
+```
+
+## Batch Operations
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    switch (name) {
+      // Single item operations
+      case 'items:get':
+        return db.items.findOne({ id: args.id });
+
+      // Batch operations for efficiency
+      case 'items:getMany':
+        return db.items.findMany({ id: { $in: args.ids } });
+
+      case 'items:updateMany':
+        const results = await Promise.all(
+          args.updates.map(u =>
+            db.items.update({ id: u.id }, u.data)
+          )
+        );
+        return results;
+
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  },
+});
+
+const result = await enclave.run(`
+  // Batch fetch instead of individual calls
+  const items = await callTool('items:getMany', {
+    ids: ['1', '2', '3', '4', '5']
+  });
+
+  // Process
+  const updates = items.map(item => ({
+    id: item.id,
+    data: { processed: true, processedAt: Date.now() },
+  }));
+
+  // Batch update
+  await callTool('items:updateMany', { updates });
+
+  return { processed: items.length };
+`);
+```
+
+## Context-Aware Tools
+
+```ts
+interface ExecutionContext {
+  userId: string;
+  tenantId: string;
+  permissions: string[];
+}
+
+// Context is captured via closure - toolHandler only receives (name, args)
+function createContextAwareEnclave(context: ExecutionContext) {
+  return new Enclave({
+    toolHandler: async (name, args) => {
+      // Check permissions using captured context
+      const requiredPermission = `${name.split(':')[0]}:access`;
+      if (!context.permissions.includes(requiredPermission)) {
+        throw new Error(`Permission denied: ${requiredPermission}`);
+      }
+
+      // Add tenant context to all queries
+      const contextArgs = {
+        ...args,
+        tenantId: context.tenantId,
+      };
+
+      return executeTool(name, contextArgs);
+    },
+  });
+}
+
+// Create enclave with context
+const enclave = createContextAwareEnclave({
+  userId: 'user-123',
+  tenantId: 'tenant-456',
+  permissions: ['users:access', 'orders:access'],
+});
+
+const result = await enclave.run(code);
+```
+
+## Rate-Limited Tools
+
+```ts
+const rateLimits = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(tool: string, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  const record = rateLimits.get(tool);
+
+  if (!record || record.resetAt < now) {
+    rateLimits.set(tool, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+
+  if (record.count >= limit) {
+    return false;
+  }
+
+  record.count++;
+  return true;
+}
+
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    // Check rate limit (e.g., 10 calls per minute for email)
+    if (name.startsWith('email:')) {
+      if (!checkRateLimit(name, 10, 60000)) {
+        throw new Error(`Rate limit exceeded for ${name}`);
+      }
+    }
+
+    return executeTool(name, args);
+  },
+});
+```
+
+## Tool Result Caching
+
+```ts
+const cache = new Map<string, { value: unknown; expiresAt: number }>();
+
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    // Cache read operations
+    if (name.endsWith(':get') || name.endsWith(':list')) {
+      const cacheKey = `${name}:${JSON.stringify(args)}`;
+      const cached = cache.get(cacheKey);
+
+      if (cached && cached.expiresAt > Date.now()) {
+        return cached.value;
+      }
+
+      const result = await executeTool(name, args);
+      cache.set(cacheKey, {
+        value: result,
+        expiresAt: Date.now() + 60000, // 1 minute
+      });
+
+      return result;
+    }
+
+    return executeTool(name, args);
+  },
+});
+```
+
+## Complete Example
+
+```ts
+import { Enclave } from 'enclave-vm';
+import { z } from 'zod';
+
+// Tool schemas
+const schemas = {
+  'users:list': z.object({ limit: z.number().max(100).default(10) }),
+  'users:get': z.object({ id: z.string() }),
+  'email:send': z.object({
+    to: z.string().email(),
+    subject: z.string(),
+    body: z.string(),
+  }),
+};
+
+// Mock data
+const users = [
+  { id: '1', name: 'Alice', email: 'alice@example.com' },
+  { id: '2', name: 'Bob', email: 'bob@example.com' },
+];
+
+// Create enclave
+const enclave = new Enclave({
+  securityLevel: 'STRICT',
+  maxToolCalls: 50,
+
+  toolHandler: async (name, args) => {
+    // Validate
+    const schema = schemas[name];
+    if (schema) {
+      args = schema.parse(args);
+    }
+
+    // Execute
+    switch (name) {
+      case 'users:list':
+        return users.slice(0, args.limit);
+      case 'users:get':
+        return users.find(u => u.id === args.id);
+      case 'email:send':
+        console.log(`[Email] To: ${args.to}, Subject: ${args.subject}`);
+        return { sent: true, messageId: `msg-${Date.now()}` };
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  },
+});
+
+// Run code
+const result = await enclave.run(`
+  // List all users
+  const users = await callTool('users:list', {});
+  console.log('Found', users.length, 'users');
+
+  // Send email to each
+  const emailResults = [];
+  for (const user of users) {
+    const sent = await callTool('email:send', {
+      to: user.email,
+      subject: 'Hello!',
+      body: 'Welcome to our platform, ' + user.name + '!',
+    });
+    emailResults.push({ user: user.name, ...sent });
+  }
+
+  return {
+    userCount: users.length,
+    emailsSent: emailResults.length,
+    results: emailResults,
+  };
+`);
+
+console.log('Result:', result.value);
+enclave.dispose();
+```
+
+## Next Steps
+
+- [Streaming UI](/examples/streaming-ui) - Real-time output
+- [Tool System](/core-libraries/enclave-vm/tool-system) - Deep dive
+- [Tool Integration Guide](/guides/tool-integration) - Best practices

@@ -1,12 +1,12 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "name": "Enclave",
-  "description": "Secure JavaScript sandbox for AI agent code execution. Protects against code injection, prototype pollution, and sandbox escapes.",
+  "description": "Production ready JavaScript sandbox for AI agent code execution. Protects against code injection, prototype pollution, and sandbox escapes.",
   "appearance": {
     "default": "dark",
     "strict": false
   },
-  "theme": "venus",
+  "theme": "mint",
   "favicon": {
     "light": "/favicon.ico",
     "dark": "/favicon.ico"
@@ -14,11 +14,7 @@
   "colors": {
     "primary": "#e8a045",
     "light": "#f0b865",
-    "dark": "#c78935",
-    "background": {
-      "dark": "#0a0908",
-      "light": "#fdfbf7"
-    }
+    "dark": "#c78935"
   },
   "metadata": {
     "og:site_name": "Enclave Documentation",
@@ -64,23 +60,131 @@
         "icon": "book",
         "versions": [
           {
-            "version": "v1.0 (latest)",
+            "version": "v2.0 (latest)",
             "default": true,
             "groups": [
               {
                 "tag": "latest",
                 "group": "Get Started",
+                "icon": "rocket",
                 "pages": [
-                  "docs/getting-started/welcome",
-                  "docs/getting-started/installation"
+                  "getting-started/welcome",
+                  "getting-started/installation",
+                  "getting-started/quickstart"
                 ]
               },
               {
-                "group": "Libraries",
+                "group": "Concepts",
+                "icon": "lightbulb",
                 "pages": [
-                  "docs/libraries/enclave",
-                  "docs/libraries/ast-guard",
-                  "docs/libraries/vectoriadb"
+                  "concepts/architecture",
+                  "concepts/security-model",
+                  "concepts/agentscript",
+                  "concepts/streaming-protocol"
+                ]
+              },
+              {
+                "group": "enclave-vm",
+                "icon": "lock",
+                "pages": [
+                  "core-libraries/enclave-vm/overview",
+                  "core-libraries/enclave-vm/security-levels",
+                  "core-libraries/enclave-vm/tool-system",
+                  "core-libraries/enclave-vm/worker-pool",
+                  "core-libraries/enclave-vm/double-vm",
+                  "core-libraries/enclave-vm/ai-scoring",
+                  "core-libraries/enclave-vm/reference-sidecar",
+                  "core-libraries/enclave-vm/configuration"
+                ]
+              },
+              {
+                "group": "ast-guard",
+                "icon": "shield-check",
+                "pages": [
+                  "core-libraries/ast-guard/overview",
+                  "core-libraries/ast-guard/pre-scanner",
+                  "core-libraries/ast-guard/agentscript-preset",
+                  "core-libraries/ast-guard/security-rules",
+                  "core-libraries/ast-guard/code-transform",
+                  "core-libraries/ast-guard/custom-rules"
+                ]
+              },
+              {
+                "group": "vectoriadb",
+                "icon": "database",
+                "pages": [
+                  "core-libraries/vectoriadb/overview",
+                  "core-libraries/vectoriadb/indexing",
+                  "core-libraries/vectoriadb/search",
+                  "core-libraries/vectoriadb/persistence",
+                  "core-libraries/vectoriadb/hnsw",
+                  "core-libraries/vectoriadb/tfidf"
+                ]
+              },
+              {
+                "group": "EnclaveJS Streaming",
+                "icon": "wave-pulse",
+                "pages": [
+                  "enclavejs/overview",
+                  "enclavejs/types",
+                  "enclavejs/stream",
+                  "enclavejs/broker",
+                  "enclavejs/client",
+                  "enclavejs/react",
+                  "enclavejs/runtime"
+                ]
+              },
+              {
+                "group": "Guides",
+                "icon": "map",
+                "pages": [
+                  "guides/first-agent",
+                  "guides/tool-integration",
+                  "guides/react-code-editor",
+                  "guides/production-deployment",
+                  "guides/scaling",
+                  "guides/security-hardening"
+                ]
+              },
+              {
+                "group": "API Reference",
+                "icon": "code",
+                "pages": [
+                  "api-reference/enclave-vm",
+                  "api-reference/ast-guard",
+                  "api-reference/vectoriadb",
+                  "api-reference/enclavejs-types",
+                  "api-reference/enclavejs-broker",
+                  "api-reference/enclavejs-client",
+                  "api-reference/enclavejs-react",
+                  "api-reference/enclavejs-runtime"
+                ]
+              },
+              {
+                "group": "Examples",
+                "icon": "flask",
+                "pages": [
+                  "examples/hello-world",
+                  "examples/tool-calling",
+                  "examples/streaming-ui",
+                  "examples/multi-tenant",
+                  "examples/encrypted-sessions"
+                ]
+              },
+              {
+                "group": "Troubleshooting",
+                "icon": "wrench",
+                "pages": [
+                  "troubleshooting/common-errors",
+                  "troubleshooting/debugging",
+                  "troubleshooting/faq"
+                ]
+              },
+              {
+                "group": "Resources",
+                "icon": "circle-info",
+                "pages": [
+                  "changelog"
                 ]
               }
             ]

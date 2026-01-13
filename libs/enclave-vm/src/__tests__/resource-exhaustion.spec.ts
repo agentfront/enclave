@@ -66,7 +66,8 @@ describe('ATK-RSRC: Resource Exhaustion Prevention (CWE-400)', () => {
         const code = `return 2n ** 10n;`;
         const result = await enclave.run(code);
         expect(result.success).toBe(true);
-        expect(result.value).toBe(1024n);
+        // BigInt is converted to string for JSON serialization safety
+        expect(result.value).toBe('1024');
         enclave.dispose();
       });
 

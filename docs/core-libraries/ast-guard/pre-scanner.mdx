@@ -1,0 +1,189 @@
+---
+title: 'Pre-Scanner'
+description: 'Layer 0 defense that runs before parsing to catch DoS attacks'
+---
+
+The pre-scanner runs BEFORE the JavaScript parser (acorn) to catch DoS attacks that could crash or hang the parser itself. It enforces mandatory security limits that cannot be disabled.
+
+## Basic Usage
+
+```ts
+import { PreScanner, createPreScannerConfig } from 'ast-guard';
+
+// Create pre-scanner with AgentScript config (strictest)
+const scanner = new PreScanner(createPreScannerConfig('agentscript'));
+
+const result = scanner.scan(userCode);
+if (!result.valid) {
+  console.log('Pre-scan failed:', result.issues);
+  // Don't even attempt to parse - could DoS the parser
+}
+```
+
+## Why Pre-Scanning?
+
+The JavaScript parser itself can be vulnerable to:
+
+- **Memory exhaustion** - Extremely large files
+- **Stack overflow** - Deeply nested expressions
+- **CPU exhaustion** - Complex regex patterns
+- **Parsing hangs** - Malformed Unicode sequences
+
+Pre-scanning catches these before parsing begins.
+
+## Mandatory Limits
+
+These limits protect against parser crashes and cannot be overridden:
+
+| Limit                       | Maximum       | Purpose                             |
+| --------------------------- | ------------- | ----------------------------------- |
+| `ABSOLUTE_MAX_INPUT_SIZE`   | 100MB         | Prevents memory exhaustion          |
+| `ABSOLUTE_MAX_NESTING`      | 200 levels    | Prevents parser stack overflow      |
+| `ABSOLUTE_MAX_LINE_LENGTH`  | 100,000 chars | Prevents minified/obfuscated DoS    |
+| `ABSOLUTE_MAX_LINES`        | 1,000,000     | Prevents extremely long files       |
+| `ABSOLUTE_MAX_STRING`       | 5MB           | Prevents huge embedded strings      |
+| `ABSOLUTE_MAX_REGEX_LENGTH` | 1,000 chars   | Prevents ReDoS via complex patterns |
+
+## Pre-Scanner Presets
+
+| Config              | AgentScript | STRICT    | SECURE    | STANDARD  | PERMISSIVE |
+| ------------------- | ----------- | --------- | --------- | --------- | ---------- |
+| maxInputSize        | 100KB       | 500KB     | 1MB       | 5MB       | 10MB       |
+| maxLineLength       | 2,000       | 5,000     | 8,000     | 10,000    | 50,000     |
+| maxLines            | 1,000       | 2,000     | 5,000     | 10,000    | 100,000    |
+| maxNestingDepth     | 20          | 30        | 40        | 50        | 100        |
+| regexMode           | `block`     | `analyze` | `analyze` | `analyze` | `allow`    |
+| blockBidiPatterns   | YES         | YES       | YES       | NO        | NO         |
+| blockInvisibleChars | YES         | YES       | NO        | NO        | NO         |
+
+## Using Presets
+
+```ts
+import { createPreScannerConfig, PreScanner } from 'ast-guard';
+
+// AgentScript (strictest)
+const agentScript = new PreScanner(createPreScannerConfig('agentscript'));
+
+// Other presets
+const strict = new PreScanner(createPreScannerConfig('strict'));
+const secure = new PreScanner(createPreScannerConfig('secure'));
+const standard = new PreScanner(createPreScannerConfig('standard'));
+const permissive = new PreScanner(createPreScannerConfig('permissive'));
+```
+
+## Regex Handling Modes
+
+The pre-scanner supports three regex handling modes:
+
+### Block Mode
+
+Block ALL regex literals (AgentScript default, maximum security):
+
+```ts
+const scanner = new PreScanner(createPreScannerConfig('agentscript'));
+// regexMode: 'block'
+
+// This will fail:
+scanner.scan('const pattern = /foo/;');
+```
+
+### Analyze Mode
+
+Allow regex but analyze for ReDoS patterns:
+
+```ts
+const scanner = new PreScanner(createPreScannerConfig('secure'));
+// regexMode: 'analyze'
+
+// Safe patterns allowed:
+scanner.scan('const pattern = /^[a-z]+$/;'); // OK
+
+// Dangerous patterns blocked:
+scanner.scan('const evil = /(a+)+/;'); // Blocked - nested quantifier
+```
+
+### Allow Mode
+
+Allow all regex without analysis (Permissive only):
+
+```ts
+const scanner = new PreScanner(createPreScannerConfig('permissive'));
+// regexMode: 'allow'
+
+// All regex allowed (not recommended for untrusted code)
+scanner.scan('const pattern = /(a+)+/;'); // OK
+```
+
+## ReDoS Detection
+
+The pre-scanner detects dangerous regex patterns that cause exponential backtracking:
+
+| Pattern                 | Score | Example        | Risk                     |
+| ----------------------- | ----- | -------------- | ------------------------ |
+| Nested quantifier       | 90    | `(a+)+`        | Exponential backtracking |
+| Star in repetition      | 85    | `(a+){2,}`     | Exponential backtracking |
+| Repetition in star      | 85    | `(a{2,})+`     | Exponential backtracking |
+| Overlapping alternation | 80    | `(a\|ab)+`     | Exponential backtracking |
+| Greedy backtracking     | 75    | `(.*a)+`       | Polynomial backtracking  |
+| Multiple greedy         | 70    | `.*foo.*bar`   | Polynomial backtracking  |
+
+### Manual ReDoS Analysis
+
+```ts
+import { analyzeForReDoS } from 'ast-guard';
+
+// Analyze a pattern for ReDoS vulnerabilities
+const result = analyzeForReDoS('(a+)+', 'catastrophic');
+// {
+//   vulnerable: true,
+//   score: 90,
+//   vulnerabilityType: 'nested_quantifier'
+// }
+```
+
+## Unicode Security
+
+The pre-scanner detects Unicode-based attacks:
+
+### Bidirectional Text (Trojan Source)
+
+```ts
+const scanner = new PreScanner({
+  ...createPreScannerConfig('secure'),
+  blockBidiPatterns: true,
+});
+
+// Blocks code with BiDi control characters that can
+// make code appear different than it executes
+```
+
+### Invisible Characters
+
+```ts
+const scanner = new PreScanner({
+  ...createPreScannerConfig('strict'),
+  blockInvisibleChars: true,
+});
+
+// Blocks zero-width spaces, invisible formatting, etc.
+```
+
+## Custom Configuration
+
+```ts
+const scanner = new PreScanner({
+  maxInputSize: 200 * 1024,    // 200KB
+  maxLineLength: 3000,
+  maxLines: 2000,
+  maxNestingDepth: 25,
+  regexMode: 'analyze',
+  blockBidiPatterns: true,
+  blockInvisibleChars: true,
+});
+```
+
+## Related
+
+- [Overview](/core-libraries/ast-guard/overview) - Getting started with ast-guard
+- [AgentScript Preset](/core-libraries/ast-guard/agentscript-preset) - LLM code validation
+- [Security Rules](/core-libraries/ast-guard/security-rules) - AST validation rules

@@ -1,0 +1,472 @@
+---
+title: '@enclavejs/client API'
+description: 'API reference for the EnclaveJS client SDK'
+---
+
+API reference for the `@enclavejs/client` package - the client SDK for EnclaveJS.
+
+## Installation
+
+```bash
+npm install @enclavejs/client
+```
+
+## EnclaveClient Class
+
+The main client class for connecting to EnclaveJS brokers.
+
+### Constructor
+
+```ts
+new EnclaveClient(options: ClientOptions)
+```
+
+### ClientOptions
+
+```ts
+interface ClientOptions {
+  // Connection
+  serverUrl: string;
+  timeout?: number;
+
+  // Authentication
+  auth?: AuthOptions;
+
+  // Reconnection
+  reconnection?: ReconnectionOptions;
+
+  // Encryption
+  encryption?: EncryptionOptions;
+
+  // Logging
+  logger?: Logger;
+}
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `serverUrl` | `string` | Required | Broker URL |
+| `timeout` | `number` | `30000` | Request timeout in ms |
+| `auth` | `AuthOptions` | `undefined` | Authentication config |
+| `reconnection` | `ReconnectionOptions` | `undefined` | Reconnection config |
+| `encryption` | `EncryptionOptions` | `undefined` | E2E encryption config |
+
+### AuthOptions
+
+```ts
+interface AuthOptions {
+  type: 'bearer' | 'api-key';
+  token?: string;
+  apiKey?: string;
+  getToken?: () => Promise<string>;
+}
+```
+
+### ReconnectionOptions
+
+```ts
+interface ReconnectionOptions {
+  enabled: boolean;
+  maxAttempts?: number;
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+  backoffMultiplier?: number;
+}
+```
+
+### EncryptionOptions
+
+```ts
+interface EncryptionOptions {
+  enabled: boolean;
+  curve?: 'P-256' | 'P-384' | 'P-521';
+}
+```
+
+### Methods
+
+#### execute(code, options?)
+
+Execute code with streaming response.
+
+```ts
+execute(code: string, options?: ExecuteOptions): AsyncIterable<StreamEvent>
+```
+
+**Options:**
+```ts
+interface ExecuteOptions {
+  timeout?: number;
+  maxToolCalls?: number;
+  context?: Record<string, unknown>;
+  filter?: EventFilter;
+  signal?: AbortSignal;
+}
+```
+
+**Example:**
+```ts
+const client = new EnclaveClient({ serverUrl: 'http://localhost:3001' });
+
+const stream = client.execute(`
+  console.log('Hello');
+  return 42;
+`);
+
+for await (const event of stream) {
+  if (event.type === 'stdout') {
+    console.log(event.payload.data);
+  }
+  if (event.type === 'final') {
+    console.log('Result:', event.payload.result);
+  }
+}
+```
+
+#### executeWithToolHandler(code, toolHandler, options?)
+
+Execute with automatic tool handling.
+
+```ts
+async executeWithToolHandler(
+  code: string,
+  toolHandler: ToolHandler,
+  options?: ExecuteOptions
+): Promise<ExecutionResult>
+```
+
+**Example:**
+```ts
+const result = await client.executeWithToolHandler(
+  code,
+  async (name, args) => {
+    console.log(`Tool called: ${name}`, args);
+    return executeTool(name, args);
+  }
+);
+
+console.log('Final result:', result.value);
+```
+
+#### getSession(sessionId)
+
+Get session information.
+
+```ts
+async getSession(sessionId: string): Promise<Session>
+```
+
+#### submitToolResult(sessionId, callId, result)
+
+Submit a tool result.
+
+```ts
+async submitToolResult(
+  sessionId: string,
+  callId: string,
+  result: unknown
+): Promise<void>
+```
+
+#### health()
+
+Check broker health.
+
+```ts
+async health(): Promise<HealthStatus>
+```
+
+```ts
+interface HealthStatus {
+  status: 'ok' | 'degraded' | 'error';
+  uptime: number;
+  sessions: {
+    active: number;
+    total: number;
+  };
+}
+```
+
+## Event Handling
+
+### Event Types
+
+```ts
+type StreamEvent =
+  | SessionInitEvent
+  | StdoutEvent
+  | LogEvent
+  | ToolCallEvent
+  | ToolResultAppliedEvent
+  | HeartbeatEvent
+  | FinalEvent
+  | ErrorEvent;
+```
+
+### Processing Events
+
+```ts
+const stream = client.execute(code);
+
+for await (const event of stream) {
+  switch (event.type) {
+    case 'session_init':
+      console.log('Session:', event.sessionId);
+      break;
+
+    case 'stdout':
+      process.stdout.write(event.payload.data);
+      break;
+
+    case 'log':
+      console.log(`[${event.payload.level}]`, event.payload.message);
+      break;
+
+    case 'tool_call':
+      console.log('Tool:', event.payload.tool, event.payload.args);
+      // Handle tool call...
+      break;
+
+    case 'tool_result_applied':
+      console.log('Tool completed:', event.payload.callId);
+      break;
+
+    case 'heartbeat':
+      // Keep-alive
+      break;
+
+    case 'final':
+      console.log('Result:', event.payload.result);
+      console.log('Stats:', event.payload.stats);
+      break;
+
+    case 'error':
+      console.error('Error:', event.payload.message);
+      break;
+  }
+}
+```
+
+## Cancellation
+
+### Using AbortController
+
+```ts
+const controller = new AbortController();
+
+// Cancel after 5 seconds
+setTimeout(() => controller.abort(), 5000);
+
+try {
+  const stream = client.execute(code, {
+    signal: controller.signal,
+  });
+
+  for await (const event of stream) {
+    // Process events...
+  }
+} catch (error) {
+  if (error.name === 'AbortError') {
+    console.log('Execution cancelled');
+  }
+}
+```
+
+## Authentication
+
+### Bearer Token
+
+```ts
+const client = new EnclaveClient({
+  serverUrl: 'http://localhost:3001',
+  auth: {
+    type: 'bearer',
+    token: 'your-jwt-token',
+  },
+});
+```
+
+### Dynamic Token
+
+```ts
+const client = new EnclaveClient({
+  serverUrl: 'http://localhost:3001',
+  auth: {
+    type: 'bearer',
+    getToken: async () => {
+      // Refresh token if needed
+      return getAccessToken();
+    },
+  },
+});
+```
+
+### API Key
+
+```ts
+const client = new EnclaveClient({
+  serverUrl: 'http://localhost:3001',
+  auth: {
+    type: 'api-key',
+    apiKey: 'your-api-key',
+  },
+});
+```
+
+## Encryption
+
+### Enable E2E Encryption
+
+```ts
+const client = new EnclaveClient({
+  serverUrl: 'https://broker.example.com',
+  encryption: {
+    enabled: true,
+    curve: 'P-256',
+  },
+});
+
+// All communication is now encrypted
+const stream = client.execute(code);
+```
+
+## Reconnection
+
+### Automatic Reconnection
+
+```ts
+const client = new EnclaveClient({
+  serverUrl: 'http://localhost:3001',
+  reconnection: {
+    enabled: true,
+    maxAttempts: 5,
+    initialDelayMs: 1000,
+    maxDelayMs: 30000,
+    backoffMultiplier: 2,
+  },
+});
+```
+
+## Error Handling
+
+```ts
+import { EnclaveError, isEnclaveError } from '@enclavejs/client';
+
+try {
+  const stream = client.execute(code);
+
+  for await (const event of stream) {
+    if (event.type === 'error') {
+      throw new EnclaveError(event.payload.code, event.payload.message);
+    }
+  }
+} catch (error) {
+  if (isEnclaveError(error)) {
+    switch (error.code) {
+      case 'TIMEOUT':
+        console.log('Execution timed out');
+        break;
+      case 'VALIDATION_ERROR':
+        console.log('Code validation failed');
+        break;
+      case 'CONNECTION_ERROR':
+        console.log('Connection lost');
+        break;
+      default:
+        console.log('Execution error:', error.message);
+    }
+  }
+}
+```
+
+## Complete Example
+
+```ts
+import { EnclaveClient } from '@enclavejs/client';
+
+async function main() {
+  // Create client
+  const client = new EnclaveClient({
+    serverUrl: 'http://localhost:3001',
+    auth: {
+      type: 'bearer',
+      token: process.env.API_TOKEN,
+    },
+    reconnection: {
+      enabled: true,
+      maxAttempts: 3,
+    },
+    timeout: 60000,
+  });
+
+  // Check health
+  const health = await client.health();
+  console.log('Broker status:', health.status);
+
+  // Execute with tool handling
+  const code = `
+    const users = await callTool('users:list', { limit: 5 });
+    console.log('Found', users.length, 'users');
+
+    for (const user of users) {
+      console.log('Processing:', user.name);
+    }
+
+    return { count: users.length };
+  `;
+
+  const result = await client.executeWithToolHandler(
+    code,
+    async (name, args) => {
+      switch (name) {
+        case 'users:list':
+          return [
+            { id: '1', name: 'Alice' },
+            { id: '2', name: 'Bob' },
+          ].slice(0, args.limit);
+        default:
+          throw new Error(`Unknown tool: ${name}`);
+      }
+    },
+    {
+      timeout: 30000,
+      filter: {
+        blockedTypes: ['heartbeat'],
+      },
+    }
+  );
+
+  console.log('Result:', result.value);
+  console.log('Stats:', result.stats);
+}
+
+main().catch(console.error);
+```
+
+## Browser Usage
+
+```ts
+import { EnclaveClient } from '@enclavejs/client';
+
+// Works in browser
+const client = new EnclaveClient({
+  serverUrl: 'https://api.example.com',
+  auth: {
+    type: 'bearer',
+    getToken: async () => localStorage.getItem('token'),
+  },
+});
+
+// Execute code
+const stream = client.execute(code);
+
+for await (const event of stream) {
+  updateUI(event);
+}
+```
+
+## Related
+
+- [Client Overview](/enclavejs/client) - Usage guide
+- [@enclavejs/types](/api-reference/enclavejs-types) - Type definitions
+- [@enclavejs/react](/api-reference/enclavejs-react) - React hooks

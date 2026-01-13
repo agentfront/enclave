@@ -1,43 +1,141 @@
 ---
 title: 'Welcome to Enclave'
-description: 'Secure JavaScript execution and vector search libraries for AI agents'
+description: 'Production ready JavaScript sandbox for AI agent code execution'
 ---
 
-# Welcome to Enclave
+Enclave is a production-ready JavaScript sandbox for executing AI-generated code safely. It provides a defense-in-depth security model, real-time streaming execution, and comprehensive tooling for building AI agent systems.
 
-Enclave is a monorepo containing security-focused libraries for building safe AI agent systems.
+## Why Enclave?
 
-## Libraries
+When AI agents generate code, you need to execute it safely. Enclave provides:
+
+- **6-Layer Security** - Pre-scanning, AST validation, code transformation, AI scoring, runtime isolation, and output sanitization
+- **Real-time Streaming** - See execution output as it happens with tool call visualization
+- **Tool Orchestration** - Connect external APIs and services through a controlled interface
+- **React Integration** - First-class hooks and components for building code execution UIs
+
+## Get Started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/getting-started/quickstart">
+    Build your first secure code execution in 5 minutes
+  </Card>
+  <Card title="Installation" icon="download" href="/getting-started/installation">
+    Install all Enclave packages for your project
+  </Card>
+</CardGroup>
+
+## Core Libraries
 
 <CardGroup cols={3}>
-  <Card title="ast-guard" icon="shield-check" href="/docs/libraries/ast-guard">
-    AST-based JavaScript validator with 100% CVE protection
+  <Card title="enclave-vm" icon="lock" href="/core-libraries/enclave-vm/overview">
+    Secure JavaScript sandbox with AST validation, runtime isolation, and AI scoring gate
   </Card>
-  <Card title="vectoriadb" icon="database" href="/docs/libraries/vectoriadb">
-    Lightweight in-memory vector database for semantic search
+  <Card title="ast-guard" icon="shield-check" href="/core-libraries/ast-guard/overview">
+    AST-based JavaScript validator with 16 security rules and code transformation
   </Card>
-  <Card title="enclave-vm" icon="lock" href="/docs/libraries/enclave">
-    Secure AgentScript execution environment
+  <Card title="vectoriadb" icon="database" href="/core-libraries/vectoriadb/overview">
+    Lightweight in-memory vector database with HNSW indexing for semantic search
+  </Card>
+</CardGroup>
+
+## EnclaveJS Streaming Runtime
+
+Build real-time code execution UIs with streaming output, tool orchestration, and React integration.
+
+<CardGroup cols={3}>
+  <Card title="@enclavejs/broker" icon="server" href="/enclavejs/broker">
+    Tool broker with session management and HTTP API
+  </Card>
+  <Card title="@enclavejs/client" icon="plug" href="/enclavejs/client">
+    Browser and Node.js client SDK
+  </Card>
+  <Card title="@enclavejs/react" icon="react" href="/enclavejs/react">
+    React hooks and components
+  </Card>
+</CardGroup>
+
+<Card title="EnclaveJS Overview" icon="book-open" href="/enclavejs/overview">
+  Learn about the full streaming architecture including types, protocol, and runtime deployment
+</Card>
+
+## Understand the System
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    System overview and deployment patterns
+  </Card>
+  <Card title="Security Model" icon="shield" href="/concepts/security-model">
+    6-layer defense-in-depth architecture
+  </Card>
+  <Card title="AgentScript" icon="code" href="/concepts/agentscript">
+    Safe JavaScript subset for LLM-generated code
+  </Card>
+  <Card title="Streaming Protocol" icon="wave-pulse" href="/concepts/streaming-protocol">
+    NDJSON protocol with E2E encryption
+  </Card>
+</CardGroup>
+
+## Learn by Example
+
+<CardGroup cols={2}>
+  <Card title="Build Your First Agent" icon="robot" href="/guides/first-agent">
+    Step-by-step guide to building an AI agent
+  </Card>
+  <Card title="Tool Integration" icon="wrench" href="/guides/tool-integration">
+    Connect external APIs as tools
+  </Card>
+  <Card title="React Code Editor" icon="window" href="/guides/react-code-editor">
+    Build a real-time code execution UI
+  </Card>
+  <Card title="Production Deployment" icon="server" href="/guides/production-deployment">
+    Deploy Enclave to production
   </Card>
 </CardGroup>
 
 ## Key Features
 
-- **Bank-grade Security**: 500+ security tests across all libraries
-- **100% CVE Coverage**: Blocks all known vm2/isolated-vm/node-vm exploits
-- **TypeScript-first**: Full type safety and excellent DX
-- **Production-ready**: Used in production AI agent systems
+| Feature | Description |
+|---------|-------------|
+| **Production-ready Security** | 500+ security tests, 6 defense layers, comprehensive CVE coverage |
+| **Real-time Streaming** | NDJSON-based protocol for stdout, logs, and tool calls |
+| **Tool Orchestration** | Define tools with validation, handle calls during execution |
+| **React Integration** | First-class hooks for building interactive code execution UIs |
+| **End-to-end Encryption** | Optional ECDH + AES-256-GCM for sensitive workloads |
+| **TypeScript-first** | Full type safety and excellent developer experience |
+| **Multiple Isolation Modes** | VM sandbox, worker pool, and double-VM options |
+| **AI Scoring Gate** | Semantic pattern detection to block suspicious code |
 
-## Quick Start
+## Quick Install
 
 ```bash
-# Install any library
-npm install ast-guard
-npm install vectoriadb
+# Core sandbox
 npm install enclave-vm
+
+# AST validation
+npm install ast-guard
+
+# Vector database
+npm install vectoriadb
+
+# Streaming runtime
+npm install @enclavejs/broker @enclavejs/client @enclavejs/react
 ```
+
+## Explore the Docs
+
+| Section | Description |
+|---------|-------------|
+| [Concepts](/concepts/architecture) | Understand how Enclave works |
+| [Core Libraries](/core-libraries/enclave-vm/overview) | Deep dive into each package |
+| [Guides](/guides/first-agent) | Step-by-step tutorials |
+| [API Reference](/api-reference/enclave-vm) | Complete API documentation |
+| [Examples](/examples/hello-world) | Copy-paste code examples |
+| [Troubleshooting](/troubleshooting/common-errors) | Debug issues |
 
 ## Links
 
 - [GitHub Repository](https://github.com/agentfront/enclave)
-- [Installation Guide](/docs/getting-started/installation)
+- [Installation Guide](/getting-started/installation)
+- [Quickstart](/getting-started/quickstart)
+- [API Reference](/api-reference/enclave-vm)

@@ -1,0 +1,272 @@
+---
+title: 'AgentScript'
+description: 'The safe JavaScript subset for AI-generated orchestration code'
+---
+
+AgentScript is a safe subset of JavaScript designed for AI-generated orchestration code. It provides the expressiveness needed for tool orchestration while blocking dangerous constructs that could compromise security.
+
+## Design Philosophy
+
+AgentScript is designed with these principles:
+
+1. **Whitelist over blacklist** - Only allowed constructs are permitted
+2. **No user-defined functions** - Prevents recursion and complexity
+3. **Bounded iteration** - All loops have limits
+4. **Explicit tool calls** - External interactions through `callTool()`
+5. **Static targets** - Tool names must be string literals
+
+## What's Allowed
+
+### Variables
+
+```js
+const x = 1;           // ✓ const declaration
+let y = 2;             // ✓ let declaration
+y = 3;                 // ✓ reassignment
+const { a, b } = obj;  // ✓ destructuring
+const [first] = arr;   // ✓ array destructuring
+```
+
+### Tool Calls
+
+```js
+// ✓ Async tool calls with static names
+const result = await callTool('users:list', { limit: 10 });
+const user = await callTool('users:get', { id: 'user-123' });
+```
+
+### Conditionals
+
+```js
+// ✓ if/else
+if (condition) {
+  doSomething();
+} else if (other) {
+  doOther();
+} else {
+  doDefault();
+}
+
+// ✓ ternary
+const value = condition ? 'yes' : 'no';
+```
+
+### Bounded Loops
+
+```js
+// ✓ for loop (bounded)
+for (let i = 0; i < items.length; i++) {
+  process(items[i]);
+}
+
+// ✓ for-of loop (bounded by array length)
+for (const item of items) {
+  process(item);
+}
+```
+
+### Array Methods with Arrow Functions
+
+```js
+// ✓ map, filter, reduce, etc.
+const names = users.map(u => u.name);
+const active = users.filter(u => u.active);
+const total = items.reduce((sum, x) => sum + x, 0);
+const found = users.find(u => u.id === targetId);
+const all = users.every(u => u.valid);
+const any = users.some(u => u.admin);
+```
+
+### Safe Globals
+
+```js
+// ✓ Math operations
+const max = Math.max(1, 2, 3);
+const random = Math.floor(Math.random() * 100);
+
+// ✓ JSON handling
+const parsed = JSON.parse('{"key": "value"}');
+const str = JSON.stringify(obj);
+
+// ✓ Object/Array utilities
+const keys = Object.keys(obj);
+const values = Object.values(obj);
+const entries = Object.entries(obj);
+const isArray = Array.isArray(value);
+
+// ✓ String/Number methods
+const upper = str.toUpperCase();
+const num = parseInt('42');
+const fixed = num.toFixed(2);
+
+// ✓ Console (rate-limited)
+console.log('debug message');
+console.warn('warning');
+console.error('error');
+```
+
+### Return Values
+
+```js
+// ✓ Return any serializable value
+return { count: 5, items: filteredList };
+return users.length;
+return 'success';
+return null;
+```
+
+## What's Blocked
+
+### Dynamic Code Execution
+
+```js
+eval('code');                    // ✗ eval blocked
+new Function('return 1')();       // ✗ Function constructor
+setTimeout('code', 100);          // ✗ setTimeout with string
+setInterval(fn, 100);             // ✗ setInterval
+```
+
+### System Access
+
+```js
+process.env.SECRET;              // ✗ process blocked
+require('fs');                   // ✗ require blocked
+import('module');                // ✗ dynamic import
+module.exports = {};             // ✗ module blocked
+__dirname;                       // ✗ __dirname blocked
+__filename;                      // ✗ __filename blocked
+Buffer.from('data');             // ✗ Buffer blocked
+```
+
+### Global Objects
+
+```js
+window.location;                 // ✗ window blocked
+global.something;                // ✗ global blocked
+globalThis.x;                    // ✗ globalThis blocked
+self.postMessage();              // ✗ self blocked
+this.method();                   // ✗ this blocked
+```
+
+### Prototype Manipulation
+
+```js
+obj.__proto__ = {};              // ✗ __proto__ blocked
+obj.constructor;                 // ✗ constructor blocked
+Array.prototype.evil = fn;       // ✗ prototype blocked
+```
+
+### Metaprogramming
+
+```js
+new Proxy(obj, handler);         // ✗ Proxy blocked
+Reflect.get(obj, 'key');         // ✗ Reflect blocked
+```
+
+### User-Defined Functions
+
+```js
+function myFunction() {}         // ✗ function declarations
+const fn = function() {};        // ✗ function expressions
+async function asyncFn() {}      // ✗ async functions
+
+// Arrow functions only allowed in array methods
+const fn = () => {};             // ✗ standalone arrow (depends on config)
+```
+
+### Unbounded Loops
+
+```js
+while (condition) {}             // ✗ while blocked (by default)
+do {} while (condition);         // ✗ do-while blocked
+for (key in obj) {}              // ✗ for-in blocked (prototype walking)
+```
+
+### Network and Storage
+
+```js
+fetch('http://example.com');     // ✗ fetch blocked
+new XMLHttpRequest();            // ✗ XHR blocked
+new WebSocket('ws://');          // ✗ WebSocket blocked
+localStorage.setItem();          // ✗ localStorage blocked
+```
+
+### Native Code
+
+```js
+new WebAssembly.Module();        // ✗ WebAssembly blocked
+new Worker('script.js');         // ✗ Worker blocked
+new SharedArrayBuffer();         // ✗ SharedArrayBuffer blocked
+```
+
+## Configuration
+
+The AgentScript preset is configurable:
+
+```ts
+import { createAgentScriptPreset } from 'ast-guard';
+
+const preset = createAgentScriptPreset({
+  // Require tool calls
+  requireCallTool: true,
+
+  // Custom globals
+  allowedGlobals: ['callTool', 'context', 'Math', 'JSON'],
+
+  // Loop configuration
+  allowedLoops: {
+    allowFor: true,
+    allowForOf: true,
+    allowWhile: false,  // Keep blocked
+  },
+
+  // Additional blocked identifiers
+  additionalDisallowedIdentifiers: ['customDangerous'],
+});
+```
+
+## Code Transformation
+
+AgentScript code is transformed before execution:
+
+```js
+// Original
+const users = await callTool('users:list', {});
+for (const user of users) {
+  console.log(user.name);
+}
+return users.length;
+
+// Transformed
+async function __ag_main() {
+  const users = await __safe_callTool('users:list', {});
+  for (const user of __safe_forOf(users)) {
+    __safe_console.log(user.name);
+  }
+  return users.length;
+}
+```
+
+## AgentScript for LLMs
+
+When prompting an LLM to generate AgentScript, include this context:
+
+```
+Generate JavaScript code that:
+- Uses `callTool(name, args)` for external operations
+- Uses only const/let for variables
+- Uses for/for-of loops (no while/do-while)
+- Uses arrow functions only in array methods
+- Does not define functions
+- Returns a result at the end
+
+Available tools:
+- callTool('users:list', { limit: number }) -> User[]
+- callTool('users:get', { id: string }) -> User
+```
+
+## Related
+
+- [Security Model](/concepts/security-model) - How AgentScript fits in the security layers
+- [ast-guard](/core-libraries/ast-guard/overview) - AST validation library
+- [AgentScript Preset](/core-libraries/ast-guard/agentscript-preset) - Preset configuration

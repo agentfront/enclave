@@ -1,0 +1,38 @@
+{
+  "name": "@enclavejs/stream",
+  "version": "0.1.0",
+  "description": "Streaming protocol implementation for EnclaveJS runtime (NDJSON, encryption, reconnection)",
+  "author": "AgentFront <info@agentfront.dev>",
+  "homepage": "https://github.com/agentfront/enclave",
+  "license": "Apache-2.0",
+  "keywords": [
+    "enclavejs",
+    "enclave",
+    "streaming",
+    "ndjson",
+    "encryption",
+    "ecdh",
+    "aes-gcm"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentfront/enclave.git"
+  },
+  "bugs": {
+    "url": "https://github.com/agentfront/enclave/issues"
+  },
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "dependencies": {
+    "@enclavejs/types": "0.1.0"
+  }
+}
