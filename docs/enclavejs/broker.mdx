@@ -1,0 +1,431 @@
+---
+title: '@enclavejs/broker'
+description: 'Tool broker with session management and HTTP API for EnclaveJS'
+---
+
+# @enclavejs/broker
+
+Tool broker and session management for the EnclaveJS streaming runtime. Orchestrates code execution, tool handling, and session lifecycle.
+
+## Installation
+
+```bash
+npm install @enclavejs/broker
+```
+
+## Quick Start
+
+```typescript
+import { createBroker } from '@enclavejs/broker';
+import { z } from 'zod';
+
+const broker = createBroker({
+  securityLevel: 'SECURE',
+});
+
+// Register a tool
+broker.tool('fetchData', {
+  description: 'Fetch data from a URL',
+  argsSchema: z.object({
+    url: z.string().url(),
+    method: z.enum(['GET', 'POST']).default('GET'),
+  }),
+  handler: async ({ url, method }) => {
+    const response = await fetch(url, { method });
+    return response.json();
+  },
+});
+
+// Execute code
+const stream = broker.execute(`
+  const data = await tools.fetchData({ url: 'https://api.example.com/data' });
+  console.log('Fetched:', data.length, 'items');
+  return data;
+`);
+
+for await (const event of stream) {
+  if (event.type === 'stdout') {
+    process.stdout.write(event.payload.chunk);
+  }
+}
+```
+
+## Broker Configuration
+
+```typescript
+import { createBroker, type BrokerConfig } from '@enclavejs/broker';
+
+const config: BrokerConfig = {
+  // Security level for enclave-vm
+  securityLevel: 'SECURE',  // 'STRICT' | 'SECURE' | 'STANDARD' | 'PERMISSIVE'
+
+  // Default session limits
+  defaultLimits: {
+    timeout: 30000,
+    memoryLimit: 128 * 1024 * 1024,
+    maxToolCalls: 100,
+    maxConsoleBytes: 1024 * 1024,
+  },
+
+  // Heartbeat interval (ms)
+  heartbeatInterval: 30000,
+
+  // Enable debug logging
+  debug: false,
+};
+
+const broker = createBroker(config);
+```
+
+## Tool Registry
+
+### Defining Tools
+
+```typescript
+import { createToolRegistry, type ToolDefinition } from '@enclavejs/broker';
+import { z } from 'zod';
+
+const registry = createToolRegistry();
+
+// Define a tool
+const tool: ToolDefinition = {
+  name: 'sendEmail',
+  description: 'Send an email to a recipient',
+  argsSchema: z.object({
+    to: z.string().email(),
+    subject: z.string().max(100),
+    body: z.string(),
+  }),
+  handler: async (args, context) => {
+    // context provides session info
+    console.log(`Session ${context.sessionId} sending email`);
+
+    await emailService.send(args);
+    return { sent: true, timestamp: Date.now() };
+  },
+  timeout: 10000,  // Tool-specific timeout
+};
+
+registry.register(tool);
+
+// Or use the broker's shorthand
+broker.tool('sendEmail', {
+  argsSchema: z.object({ to: z.string().email() }),
+  handler: async ({ to }) => { /* ... */ },
+});
+```
+
+### Tool Context
+
+```typescript
+import type { ToolContext } from '@enclavejs/broker';
+
+// The handler receives context about the execution
+const handler = async (args: Args, context: ToolContext) => {
+  context.sessionId;   // Current session ID
+  context.callId;      // Unique call ID
+  context.timestamp;   // When the call was made
+};
+```
+
+### Tool Validation
+
+```typescript
+const registry = createToolRegistry();
+
+// Validate tool arguments
+const result = registry.validate('sendEmail', {
+  to: 'invalid-email',
+});
+
+if (!result.success) {
+  console.log('Validation errors:', result.errors);
+}
+
+// Get tool info
+const tool = registry.get('sendEmail');
+console.log(tool?.description);
+
+// List all tools
+const tools = registry.list();
+```
+
+## Session Management
+
+### Session Manager
+
+```typescript
+import { createSessionManager, type SessionManagerConfig } from '@enclavejs/broker';
+
+const manager = createSessionManager({
+  maxConcurrentSessions: 100,
+  sessionTimeout: 300000,  // 5 minutes
+  cleanupInterval: 60000,  // 1 minute
+});
+
+// Create a session
+const { sessionId, stream } = await manager.create({
+  code: 'return 1 + 1',
+  limits: { timeout: 5000 },
+});
+
+// Get session info
+const info = manager.get(sessionId);
+console.log(info?.state);  // 'running' | 'waiting_for_tool' | 'completed' | ...
+
+// List all sessions
+const sessions = manager.list();
+
+// Cancel a session
+await manager.cancel(sessionId, 'User requested cancellation');
+```
+
+### Session Info
+
+```typescript
+import type { SessionInfo } from '@enclavejs/broker';
+
+const info: SessionInfo = {
+  sessionId: 'ses_...',
+  state: 'running',
+  createdAt: Date.now(),
+  limits: {
+    timeout: 30000,
+    memoryLimit: 128 * 1024 * 1024,
+  },
+  stats: {
+    executionTime: 1234,
+    toolCalls: 3,
+    memoryUsage: 1024 * 1024,
+  },
+};
+```
+
+### Broker Session
+
+```typescript
+import { createBrokerSession, type BrokerSessionConfig } from '@enclavejs/broker';
+
+// Lower-level session wrapper
+const session = createBrokerSession({
+  enclave,          // Enclave instance
+  toolRegistry,     // Tool registry
+  sessionId,        // Session ID
+  limits,           // Session limits
+});
+
+// Execute code
+const stream = session.execute(code);
+
+// Submit tool result
+await session.submitToolResult(callId, result);
+
+// Cancel execution
+await session.cancel('Timeout exceeded');
+```
+
+## HTTP API
+
+### Express Integration
+
+```typescript
+import express from 'express';
+import { createBroker, createExpressRouter } from '@enclavejs/broker';
+
+const app = express();
+const broker = createBroker();
+
+// Mount the broker routes
+const router = createExpressRouter(broker);
+app.use('/api/enclave', router);
+
+// Routes created:
+// POST /api/enclave/sessions - Create session
+// GET  /api/enclave/sessions - List sessions
+// GET  /api/enclave/sessions/:id - Get session info
+// POST /api/enclave/sessions/:id/cancel - Cancel session
+
+app.listen(3000);
+```
+
+### Manual Route Registration
+
+```typescript
+import { registerExpressRoutes } from '@enclavejs/broker';
+
+const app = express();
+const broker = createBroker();
+
+registerExpressRoutes(app, broker, {
+  prefix: '/api/v1',
+  middleware: [authMiddleware],
+});
+```
+
+### Session Handler
+
+```typescript
+import { createSessionHandler, type SessionHandlerConfig } from '@enclavejs/broker';
+
+const handler = createSessionHandler({
+  broker,
+  onError: (error, req) => {
+    console.error('Handler error:', error);
+  },
+});
+
+// Use with any HTTP framework
+app.post('/sessions', async (req, res) => {
+  const result = await handler.createSession(req.body);
+  res.json(result);
+});
+```
+
+### API Types
+
+```typescript
+import type {
+  CreateSessionRequest,
+  SessionInfoResponse,
+  ListSessionsResponse,
+  ErrorResponse,
+  StreamOptions,
+} from '@enclavejs/broker';
+
+// Create session request
+const request: CreateSessionRequest = {
+  code: 'console.log("Hello")',
+  limits: {
+    timeout: 30000,
+  },
+  streamOptions: {
+    includeHeartbeats: false,
+  },
+};
+
+// Session info response
+const response: SessionInfoResponse = {
+  sessionId: 'ses_...',
+  state: 'completed',
+  createdAt: 1234567890,
+  stats: {
+    executionTime: 100,
+    toolCalls: 0,
+  },
+};
+```
+
+## Event Filtering
+
+Filter which events are streamed to clients.
+
+### Type-Based Filtering
+
+```typescript
+import { createEventFilter, createTypeFilter } from '@enclavejs/broker';
+import { FilterMode } from '@enclavejs/types';
+
+// Exclude heartbeats and debug logs
+const filter = createEventFilter({
+  typeFilter: createTypeFilter({
+    mode: FilterMode.EXCLUDE,
+    types: ['heartbeat'],
+  }),
+});
+
+// Filter events
+const shouldInclude = filter.matches(event);
+
+// Filter a stream
+const filteredStream = filter.filterStream(eventStream);
+```
+
+### Content-Based Filtering
+
+```typescript
+import { createContentFilter } from '@enclavejs/broker';
+import { FilterMode, PatternType } from '@enclavejs/types';
+
+// Filter out events containing sensitive data
+const filter = createEventFilter({
+  contentFilter: createContentFilter({
+    mode: FilterMode.EXCLUDE,
+    patterns: [
+      { type: PatternType.REGEX, content: 'password|secret|token' },
+      { type: PatternType.PREFIX, content: 'DEBUG:' },
+    ],
+  }),
+});
+```
+
+### Combined Filtering
+
+```typescript
+const filter = createEventFilter({
+  typeFilter: {
+    mode: FilterMode.INCLUDE,
+    types: ['stdout', 'log', 'final', 'error'],
+  },
+  contentFilter: {
+    mode: FilterMode.EXCLUDE,
+    patterns: [
+      { type: PatternType.GLOB, content: '*internal*' },
+    ],
+  },
+});
+
+// Use with streaming
+const stream = broker.execute(code);
+for await (const event of stream) {
+  if (filter.matches(event)) {
+    sendToClient(event);
+  }
+}
+```
+
+### Always-Allowed Events
+
+Some events are always included regardless of filters to ensure protocol correctness:
+
+```typescript
+import { DEFAULT_ALWAYS_ALLOW } from '@enclavejs/types';
+
+// These events bypass filters:
+// - session_init
+// - final
+// - error
+```
+
+## Execution Options
+
+```typescript
+import type { ExecuteOptions } from '@enclavejs/broker';
+
+const options: ExecuteOptions = {
+  // Override default limits
+  limits: {
+    timeout: 60000,
+    maxToolCalls: 50,
+  },
+
+  // Pre-defined globals
+  globals: {
+    config: { apiKey: 'xxx' },
+  },
+
+  // Event filter
+  filter: createEventFilter({ /* ... */ }),
+
+  // Reference sidecar for large data
+  references: new Map([
+    ['ref_data', largeDataset],
+  ]),
+};
+
+const stream = broker.execute(code, options);
+```
+
+## Links
+
+- [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclavejs-broker)
+- [npm](https://www.npmjs.com/package/@enclavejs/broker)

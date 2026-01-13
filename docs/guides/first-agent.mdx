@@ -1,0 +1,341 @@
+---
+title: 'Build Your First Agent'
+description: 'Step-by-step guide to building an AI agent with Enclave'
+---
+
+This guide walks you through building a complete AI agent that can execute LLM-generated code safely. By the end, you'll have a working agent that can process natural language requests and execute tool-based workflows.
+
+## What You'll Build
+
+An AI agent that:
+- Accepts natural language requests
+- Generates JavaScript orchestration code via LLM
+- Executes the code safely in Enclave
+- Returns structured results
+
+## Prerequisites
+
+- Node.js 18+
+- An OpenAI API key (or other LLM provider)
+- Basic TypeScript knowledge
+
+## Step 1: Project Setup
+
+```bash
+mkdir my-agent && cd my-agent
+npm init -y
+npm install enclave-vm openai typescript @types/node
+npx tsc --init
+```
+
+## Step 2: Define Your Tools
+
+Tools are the capabilities your agent exposes. Start with a simple set:
+
+```ts
+// src/tools.ts
+export interface Tool {
+  name: string;
+  description: string;
+  parameters: Record<string, { type: string; description: string }>;
+}
+
+export const tools: Tool[] = [
+  {
+    name: 'users:list',
+    description: 'Get a list of users',
+    parameters: {
+      limit: { type: 'number', description: 'Maximum users to return' },
+    },
+  },
+  {
+    name: 'users:get',
+    description: 'Get a specific user by ID',
+    parameters: {
+      id: { type: 'string', description: 'User ID' },
+    },
+  },
+  {
+    name: 'email:send',
+    description: 'Send an email to a user',
+    parameters: {
+      to: { type: 'string', description: 'Recipient email' },
+      subject: { type: 'string', description: 'Email subject' },
+      body: { type: 'string', description: 'Email body' },
+    },
+  },
+];
+
+// Tool implementations (mock for this example)
+export async function executeTool(name: string, args: Record<string, unknown>) {
+  switch (name) {
+    case 'users:list':
+      return [
+        { id: '1', name: 'Alice', email: 'alice@example.com' },
+        { id: '2', name: 'Bob', email: 'bob@example.com' },
+      ].slice(0, (args.limit as number) || 10);
+
+    case 'users:get':
+      return { id: args.id, name: 'Alice', email: 'alice@example.com' };
+
+    case 'email:send':
+      console.log(`[Mock] Sending email to ${args.to}`);
+      return { sent: true, messageId: 'msg-123' };
+
+    default:
+      throw new Error(`Unknown tool: ${name}`);
+  }
+}
+```
+
+## Step 3: Create the LLM Prompt
+
+Build a prompt that instructs the LLM to generate AgentScript-compatible code:
+
+```ts
+// src/prompt.ts
+import { tools, Tool } from './tools';
+
+export function buildPrompt(userRequest: string): string {
+  const toolDocs = tools
+    .map(t => {
+      const params = Object.entries(t.parameters)
+        .map(([k, v]) => `${k}: ${v.type}`)
+        .join(', ');
+      return `- callTool('${t.name}', { ${params} }) - ${t.description}`;
+    })
+    .join('\n');
+
+  return `You are an AI assistant that writes JavaScript code to fulfill user requests.
+
+RULES:
+- Use \`callTool(name, args)\` for all external operations
+- Use only const/let for variables
+- Use for/for-of loops (no while)
+- Do not define functions
+- Return the final result
+
+AVAILABLE TOOLS:
+${toolDocs}
+
+USER REQUEST: ${userRequest}
+
+Write JavaScript code to fulfill this request. Return ONLY the code, no explanations.`;
+}
+```
+
+## Step 4: Set Up the Enclave
+
+Configure the secure execution environment:
+
+```ts
+// src/enclave.ts
+import { Enclave } from 'enclave-vm';
+import { executeTool } from './tools';
+
+export function createEnclave() {
+  return new Enclave({
+    // Use STRICT for untrusted AI-generated code
+    securityLevel: 'STRICT',
+
+    // Tool handler bridges callTool() to your implementations
+    toolHandler: async (name, args) => {
+      console.log(`[Tool] ${name}`, args);
+      return executeTool(name, args);
+    },
+
+    // Safety limits
+    timeout: 30000,
+    maxToolCalls: 50,
+    maxIterations: 10000,
+  });
+}
+```
+
+## Step 5: Build the Agent
+
+Combine LLM code generation with Enclave execution:
+
+```ts
+// src/agent.ts
+import OpenAI from 'openai';
+import { buildPrompt } from './prompt';
+import { createEnclave } from './enclave';
+
+const openai = new OpenAI();
+
+export async function runAgent(userRequest: string) {
+  // Step 1: Generate code from LLM
+  console.log('[Agent] Generating code for:', userRequest);
+
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4',
+    messages: [
+      { role: 'system', content: buildPrompt(userRequest) },
+    ],
+    temperature: 0,
+  });
+
+  const code = completion.choices[0].message.content || '';
+  console.log('[Agent] Generated code:\n', code);
+
+  // Step 2: Execute in Enclave
+  const enclave = createEnclave();
+
+  try {
+    const result = await enclave.run(code);
+
+    if (result.success) {
+      console.log('[Agent] Result:', result.value);
+      return {
+        success: true,
+        result: result.value,
+        stats: result.stats,
+      };
+    } else {
+      console.error('[Agent] Execution failed:', result.error);
+      return {
+        success: false,
+        error: result.error,
+      };
+    }
+  } finally {
+    enclave.dispose();
+  }
+}
+```
+
+## Step 6: Test Your Agent
+
+```ts
+// src/index.ts
+import { runAgent } from './agent';
+
+async function main() {
+  // Test request
+  const result = await runAgent(
+    'List all users and send each one a welcome email'
+  );
+
+  console.log('Final result:', JSON.stringify(result, null, 2));
+}
+
+main().catch(console.error);
+```
+
+Run it:
+
+```bash
+npx ts-node src/index.ts
+```
+
+Expected output:
+
+```
+[Agent] Generating code for: List all users and send each one a welcome email
+[Agent] Generated code:
+ const users = await callTool('users:list', {});
+ const results = [];
+ for (const user of users) {
+   const sent = await callTool('email:send', {
+     to: user.email,
+     subject: 'Welcome!',
+     body: `Hello ${user.name}, welcome to our platform!`
+   });
+   results.push({ user: user.name, sent: sent.sent });
+ }
+ return results;
+[Tool] users:list {}
+[Tool] email:send { to: 'alice@example.com', ... }
+[Tool] email:send { to: 'bob@example.com', ... }
+[Agent] Result: [{ user: 'Alice', sent: true }, { user: 'Bob', sent: true }]
+```
+
+## Step 7: Add Error Handling
+
+Make your agent more robust:
+
+```ts
+// src/agent.ts (updated)
+export async function runAgent(userRequest: string) {
+  const enclave = createEnclave();
+
+  try {
+    // Generate code
+    const code = await generateCode(userRequest);
+
+    // Validate before execution (optional but recommended)
+    const validation = await enclave.validate(code);
+    if (!validation.valid) {
+      return {
+        success: false,
+        error: 'Generated code failed validation',
+        issues: validation.issues,
+      };
+    }
+
+    // Execute
+    const result = await enclave.run(code);
+
+    if (!result.success) {
+      // Retry with error context
+      const retryCode = await generateCode(
+        `${userRequest}\n\nPrevious attempt failed: ${result.error?.message}`
+      );
+      return enclave.run(retryCode);
+    }
+
+    return result;
+  } finally {
+    enclave.dispose();
+  }
+}
+```
+
+## Step 8: Add Streaming (Optional)
+
+For real-time output, use EnclaveJS:
+
+```ts
+import { EnclaveClient } from '@enclavejs/client';
+
+const client = new EnclaveClient({
+  serverUrl: 'http://localhost:3001',
+});
+
+const stream = client.execute(code);
+
+for await (const event of stream) {
+  switch (event.type) {
+    case 'stdout':
+      console.log('[Output]', event.payload.data);
+      break;
+    case 'tool_call':
+      console.log('[Tool]', event.payload.tool);
+      break;
+    case 'final':
+      console.log('[Result]', event.payload.result);
+      break;
+  }
+}
+```
+
+## Best Practices
+
+1. **Validate tools** - Check tool arguments before execution
+2. **Log everything** - Tool calls, durations, results for debugging
+3. **Set limits** - Always configure timeout, maxToolCalls, maxIterations
+4. **Handle retries** - LLM-generated code may need refinement
+5. **Sandbox per request** - Create a new Enclave for each execution
+
+## Next Steps
+
+- [Tool Integration](/guides/tool-integration) - Connect real APIs
+- [Production Deployment](/guides/production-deployment) - Deploy to production
+- [Security Hardening](/guides/security-hardening) - Secure your agent
+
+## Related
+
+- [Quickstart](/getting-started/quickstart) - Basic setup
+- [Tool System](/core-libraries/enclave-vm/tool-system) - Deep dive on tools
+- [AgentScript](/concepts/agentscript) - Language specification

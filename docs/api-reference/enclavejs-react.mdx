@@ -1,0 +1,453 @@
+---
+title: '@enclavejs/react API'
+description: 'API reference for the EnclaveJS React SDK'
+---
+
+API reference for the `@enclavejs/react` package - React hooks and components for EnclaveJS.
+
+## Installation
+
+```bash
+npm install @enclavejs/react @enclavejs/client
+```
+
+## EnclaveProvider
+
+Provider component for the EnclaveJS context.
+
+```tsx
+import { EnclaveProvider } from '@enclavejs/react';
+
+function App() {
+  return (
+    <EnclaveProvider
+      serverUrl="http://localhost:3001"
+      auth={{ type: 'bearer', token: 'your-token' }}
+    >
+      <YourApp />
+    </EnclaveProvider>
+  );
+}
+```
+
+### Props
+
+```ts
+interface EnclaveProviderProps {
+  // Required
+  serverUrl: string;
+
+  // Optional
+  auth?: AuthOptions;
+  reconnection?: ReconnectionOptions;
+  encryption?: EncryptionOptions;
+  children: ReactNode;
+}
+```
+
+## useEnclave
+
+Main hook for code execution.
+
+```tsx
+const {
+  execute,
+  stream,
+  isRunning,
+  cancel,
+} = useEnclave();
+```
+
+### Return Value
+
+```ts
+interface UseEnclaveReturn {
+  execute: (code: string, options?: ExecuteOptions) => void;
+  stream: AsyncIterable<StreamEvent> | null;
+  isRunning: boolean;
+  cancel: () => void;
+}
+```
+
+### Example
+
+```tsx
+import { useEnclave } from '@enclavejs/react';
+
+function CodeRunner() {
+  const { execute, isRunning, cancel } = useEnclave();
+
+  const runCode = () => {
+    execute(`
+      console.log('Hello');
+      return 42;
+    `);
+  };
+
+  return (
+    <div>
+      <button onClick={runCode} disabled={isRunning}>
+        Run
+      </button>
+      {isRunning && (
+        <button onClick={cancel}>Cancel</button>
+      )}
+    </div>
+  );
+}
+```
+
+## useExecutionStream
+
+Process stream events with state management.
+
+```tsx
+const {
+  status,
+  output,
+  toolCalls,
+  result,
+  error,
+  stats,
+} = useExecutionStream(stream);
+```
+
+### Return Value
+
+```ts
+interface UseExecutionStreamReturn {
+  status: 'idle' | 'running' | 'completed' | 'error';
+  output: string[];
+  toolCalls: ToolCall[];
+  result: unknown;
+  error: string | null;
+  stats: ExecutionStats | null;
+}
+
+interface ToolCall {
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  status: 'pending' | 'completed' | 'error';
+  result?: unknown;
+}
+```
+
+### Example
+
+```tsx
+import { useEnclave, useExecutionStream } from '@enclavejs/react';
+
+function CodeExecutor() {
+  const { execute, stream, isRunning } = useEnclave();
+  const { status, output, result, error } = useExecutionStream(stream);
+
+  return (
+    <div>
+      <button onClick={() => execute(code)} disabled={isRunning}>
+        Execute
+      </button>
+
+      <div>Status: {status}</div>
+
+      <div>
+        {output.map((line, i) => (
+          <div key={i}>{line}</div>
+        ))}
+      </div>
+
+      {result && <div>Result: {JSON.stringify(result)}</div>}
+      {error && <div style={{ color: 'red' }}>{error}</div>}
+    </div>
+  );
+}
+```
+
+## useToolHandler
+
+Handle tool calls with a callback.
+
+```tsx
+useToolHandler(stream, async (name, args) => {
+  return executeTool(name, args);
+});
+```
+
+### Parameters
+
+```ts
+function useToolHandler(
+  stream: AsyncIterable<StreamEvent> | null,
+  handler: (name: string, args: Record<string, unknown>) => Promise<unknown>
+): void;
+```
+
+### Example
+
+```tsx
+import { useEnclave, useExecutionStream, useToolHandler } from '@enclavejs/react';
+
+function App() {
+  const { execute, stream } = useEnclave();
+  const { result } = useExecutionStream(stream);
+
+  // Handle tool calls
+  useToolHandler(stream, async (name, args) => {
+    switch (name) {
+      case 'users:list':
+        return fetch('/api/users').then(r => r.json());
+      case 'users:get':
+        return fetch(`/api/users/${args.id}`).then(r => r.json());
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  });
+
+  return (
+    <div>
+      <button onClick={() => execute(code)}>Run</button>
+      {result && <pre>{JSON.stringify(result, null, 2)}</pre>}
+    </div>
+  );
+}
+```
+
+## useEnclaveClient
+
+Get direct access to the client instance.
+
+```tsx
+const client = useEnclaveClient();
+```
+
+### Example
+
+```tsx
+import { useEnclaveClient } from '@enclavejs/react';
+
+function HealthCheck() {
+  const client = useEnclaveClient();
+  const [health, setHealth] = useState(null);
+
+  useEffect(() => {
+    client.health().then(setHealth);
+  }, [client]);
+
+  return (
+    <div>
+      Status: {health?.status}
+    </div>
+  );
+}
+```
+
+## Components
+
+### Console
+
+Pre-built console output component.
+
+```tsx
+import { Console } from '@enclavejs/react';
+
+<Console
+  output={output}
+  maxLines={1000}
+  autoScroll={true}
+  className="my-console"
+/>
+```
+
+#### Props
+
+```ts
+interface ConsoleProps {
+  output: string[];
+  maxLines?: number;
+  autoScroll?: boolean;
+  className?: string;
+  style?: CSSProperties;
+}
+```
+
+### ToolCallList
+
+Display tool call history.
+
+```tsx
+import { ToolCallList } from '@enclavejs/react';
+
+<ToolCallList
+  toolCalls={toolCalls}
+  showArgs={true}
+  className="my-tool-list"
+/>
+```
+
+#### Props
+
+```ts
+interface ToolCallListProps {
+  toolCalls: ToolCall[];
+  showArgs?: boolean;
+  className?: string;
+  style?: CSSProperties;
+}
+```
+
+### ExecutionStatus
+
+Show execution status with stats.
+
+```tsx
+import { ExecutionStatus } from '@enclavejs/react';
+
+<ExecutionStatus
+  status={status}
+  stats={stats}
+  error={error}
+/>
+```
+
+#### Props
+
+```ts
+interface ExecutionStatusProps {
+  status: 'idle' | 'running' | 'completed' | 'error';
+  stats?: ExecutionStats | null;
+  error?: string | null;
+  className?: string;
+}
+```
+
+## Complete Example
+
+```tsx
+import React, { useState } from 'react';
+import {
+  EnclaveProvider,
+  useEnclave,
+  useExecutionStream,
+  useToolHandler,
+  Console,
+  ToolCallList,
+  ExecutionStatus,
+} from '@enclavejs/react';
+
+function CodePlayground() {
+  const [code, setCode] = useState(`
+    const users = await callTool('users:list', { limit: 5 });
+    console.log('Found', users.length, 'users');
+    return users;
+  `);
+
+  const { execute, stream, isRunning, cancel } = useEnclave();
+  const {
+    status,
+    output,
+    toolCalls,
+    result,
+    error,
+    stats,
+  } = useExecutionStream(stream);
+
+  // Handle tool calls
+  useToolHandler(stream, async (name, args) => {
+    if (name === 'users:list') {
+      return [
+        { id: '1', name: 'Alice' },
+        { id: '2', name: 'Bob' },
+      ].slice(0, args.limit);
+    }
+    throw new Error(`Unknown tool: ${name}`);
+  });
+
+  return (
+    <div style={{ padding: '20px' }}>
+      <h1>Code Playground</h1>
+
+      {/* Code Editor */}
+      <textarea
+        value={code}
+        onChange={(e) => setCode(e.target.value)}
+        style={{ width: '100%', height: '150px', fontFamily: 'monospace' }}
+        disabled={isRunning}
+      />
+
+      {/* Actions */}
+      <div style={{ margin: '10px 0' }}>
+        <button onClick={() => execute(code)} disabled={isRunning}>
+          {isRunning ? 'Running...' : 'Execute'}
+        </button>
+        {isRunning && (
+          <button onClick={cancel} style={{ marginLeft: '10px' }}>
+            Cancel
+          </button>
+        )}
+      </div>
+
+      {/* Status */}
+      <ExecutionStatus status={status} stats={stats} error={error} />
+
+      {/* Output */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+        <div>
+          <h3>Console Output</h3>
+          <Console output={output} maxLines={100} />
+        </div>
+
+        <div>
+          <h3>Tool Calls</h3>
+          <ToolCallList toolCalls={toolCalls} showArgs />
+        </div>
+      </div>
+
+      {/* Result */}
+      {result !== null && (
+        <div style={{ marginTop: '20px' }}>
+          <h3>Result</h3>
+          <pre style={{ background: '#f5f5f5', padding: '10px' }}>
+            {JSON.stringify(result, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// App with provider
+function App() {
+  return (
+    <EnclaveProvider serverUrl="http://localhost:3001">
+      <CodePlayground />
+    </EnclaveProvider>
+  );
+}
+
+export default App;
+```
+
+## TypeScript
+
+All hooks and components are fully typed.
+
+```tsx
+import type {
+  UseEnclaveReturn,
+  UseExecutionStreamReturn,
+  ToolCall,
+  ExecutionStats,
+  StreamEvent,
+} from '@enclavejs/react';
+
+// Types are exported for use
+const handleResult = (result: UseExecutionStreamReturn['result']) => {
+  console.log(result);
+};
+```
+
+## Related
+
+- [React Code Editor Guide](/guides/react-code-editor) - Full implementation
+- [@enclavejs/client](/api-reference/enclavejs-client) - Client SDK
+- [Streaming UI Example](/examples/streaming-ui) - Example code

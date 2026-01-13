@@ -1,0 +1,425 @@
+---
+title: '@enclavejs/runtime API'
+description: 'API reference for the EnclaveJS runtime package'
+---
+
+API reference for the `@enclavejs/runtime` package - the execution worker for distributed EnclaveJS deployments.
+
+## Installation
+
+```bash
+npm install @enclavejs/runtime
+```
+
+## EnclaveRuntime Class
+
+The runtime worker that connects to a broker and executes code.
+
+### Constructor
+
+```ts
+new EnclaveRuntime(options: RuntimeOptions)
+```
+
+### RuntimeOptions
+
+```ts
+interface RuntimeOptions {
+  // Broker connection
+  brokerUrl: string;
+  brokerToken?: string;
+
+  // Worker configuration
+  workerPool?: WorkerPoolOptions;
+
+  // Enclave configuration
+  enclaveOptions?: EnclaveOptions;
+
+  // Heartbeat
+  heartbeatInterval?: number;
+
+  // Labels for routing
+  labels?: Record<string, string>;
+
+  // Logging
+  logger?: Logger;
+}
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `brokerUrl` | `string` | Required | Broker WebSocket URL |
+| `brokerToken` | `string` | `undefined` | Authentication token |
+| `workerPool` | `WorkerPoolOptions` | `undefined` | Worker pool config |
+| `heartbeatInterval` | `number` | `5000` | Heartbeat interval in ms |
+| `labels` | `Record<string, string>` | `{}` | Routing labels |
+
+### WorkerPoolOptions
+
+```ts
+interface WorkerPoolOptions {
+  size: number;
+  maxMemory?: number;
+  maxExecutionsPerWorker?: number;
+  idleTimeout?: number;
+}
+```
+
+### Methods
+
+#### connect()
+
+Connect to the broker.
+
+```ts
+async connect(): Promise<void>
+```
+
+**Example:**
+```ts
+const runtime = new EnclaveRuntime({
+  brokerUrl: 'ws://broker.example.com',
+  brokerToken: process.env.BROKER_TOKEN,
+});
+
+await runtime.connect();
+console.log('Connected to broker');
+```
+
+#### disconnect()
+
+Disconnect from the broker.
+
+```ts
+async disconnect(): Promise<void>
+```
+
+#### getStatus()
+
+Get runtime status.
+
+```ts
+getStatus(): RuntimeStatus
+```
+
+```ts
+interface RuntimeStatus {
+  connected: boolean;
+  activeExecutions: number;
+  totalExecutions: number;
+  uptime: number;
+  workers: {
+    total: number;
+    active: number;
+    idle: number;
+  };
+}
+```
+
+## Events
+
+### RuntimeEvents
+
+```ts
+runtime.on('connected', () => { });
+runtime.on('disconnected', () => { });
+runtime.on('reconnecting', (attempt: number) => { });
+runtime.on('execution:started', (sessionId: string) => { });
+runtime.on('execution:completed', (sessionId: string, stats: ExecutionStats) => { });
+runtime.on('execution:error', (sessionId: string, error: Error) => { });
+runtime.on('worker:created', (workerId: string) => { });
+runtime.on('worker:terminated', (workerId: string, reason: string) => { });
+```
+
+### Example
+
+```ts
+const runtime = new EnclaveRuntime({ /* options */ });
+
+runtime.on('connected', () => {
+  console.log('Runtime connected');
+});
+
+runtime.on('disconnected', () => {
+  console.log('Runtime disconnected');
+});
+
+runtime.on('execution:started', (sessionId) => {
+  console.log('Execution started:', sessionId);
+});
+
+runtime.on('execution:completed', (sessionId, stats) => {
+  console.log('Execution completed:', sessionId, stats);
+});
+
+runtime.on('execution:error', (sessionId, error) => {
+  console.error('Execution error:', sessionId, error);
+});
+```
+
+## Configuration Examples
+
+### Basic Runtime
+
+```ts
+import { EnclaveRuntime } from '@enclavejs/runtime';
+
+const runtime = new EnclaveRuntime({
+  brokerUrl: 'ws://localhost:3001',
+});
+
+await runtime.connect();
+```
+
+### With Worker Pool
+
+```ts
+import { EnclaveRuntime } from '@enclavejs/runtime';
+
+const runtime = new EnclaveRuntime({
+  brokerUrl: 'ws://localhost:3001',
+  workerPool: {
+    size: 4,
+    maxMemory: 128 * 1024 * 1024, // 128MB per worker
+    maxExecutionsPerWorker: 1000,
+    idleTimeout: 60000,
+  },
+});
+
+await runtime.connect();
+```
+
+### With Labels for Routing
+
+```ts
+import { EnclaveRuntime } from '@enclavejs/runtime';
+
+const runtime = new EnclaveRuntime({
+  brokerUrl: 'ws://localhost:3001',
+  labels: {
+    region: 'us-east-1',
+    tier: 'premium',
+    version: '2.0.0',
+  },
+});
+
+await runtime.connect();
+```
+
+### With Custom Enclave Options
+
+```ts
+import { EnclaveRuntime } from '@enclavejs/runtime';
+
+const runtime = new EnclaveRuntime({
+  brokerUrl: 'ws://localhost:3001',
+  enclaveOptions: {
+    securityLevel: 'STRICT',
+    timeout: 30000,
+    maxToolCalls: 100,
+    maxIterations: 10000,
+    memoryLimit: 64 * 1024 * 1024,
+    scoringGate: {
+      scorer: 'rule-based',
+      blockThreshold: 70,
+    },
+  },
+});
+
+await runtime.connect();
+```
+
+## Docker Deployment
+
+### Dockerfile
+
+```dockerfile
+FROM node:20-slim
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --production
+COPY . .
+
+USER node
+CMD ["node", "dist/runtime.js"]
+```
+
+### docker-compose.yml
+
+```yaml
+version: '3.8'
+
+services:
+  runtime:
+    build: .
+    environment:
+      - BROKER_URL=ws://broker:3001
+      - BROKER_TOKEN=${BROKER_TOKEN}
+      - WORKER_POOL_SIZE=4
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+```
+
+## Kubernetes Deployment
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enclave-runtime
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: enclave-runtime
+  template:
+    metadata:
+      labels:
+        app: enclave-runtime
+    spec:
+      containers:
+        - name: runtime
+          image: enclave-runtime:latest
+          env:
+            - name: BROKER_URL
+              value: "ws://enclave-broker:3001"
+            - name: BROKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: enclave-secrets
+                  key: broker-token
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+```
+
+## Complete Example
+
+```ts
+// runtime.ts
+import { EnclaveRuntime } from '@enclavejs/runtime';
+import pino from 'pino';
+
+const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
+
+async function main() {
+  const runtime = new EnclaveRuntime({
+    brokerUrl: process.env.BROKER_URL || 'ws://localhost:3001',
+    brokerToken: process.env.BROKER_TOKEN,
+
+    workerPool: {
+      size: parseInt(process.env.WORKER_POOL_SIZE || '4'),
+      maxMemory: 128 * 1024 * 1024,
+      maxExecutionsPerWorker: 1000,
+    },
+
+    enclaveOptions: {
+      securityLevel: 'STRICT',
+      timeout: 30000,
+      maxToolCalls: 100,
+    },
+
+    labels: {
+      region: process.env.REGION || 'default',
+      tier: process.env.TIER || 'standard',
+    },
+
+    heartbeatInterval: 5000,
+    logger,
+  });
+
+  // Event handlers
+  runtime.on('connected', () => {
+    logger.info('Runtime connected to broker');
+  });
+
+  runtime.on('disconnected', () => {
+    logger.warn('Runtime disconnected from broker');
+  });
+
+  runtime.on('execution:started', (sessionId) => {
+    logger.info({ sessionId }, 'Execution started');
+  });
+
+  runtime.on('execution:completed', (sessionId, stats) => {
+    logger.info({ sessionId, stats }, 'Execution completed');
+  });
+
+  runtime.on('execution:error', (sessionId, error) => {
+    logger.error({ sessionId, error: error.message }, 'Execution error');
+  });
+
+  // Connect
+  await runtime.connect();
+
+  // Graceful shutdown
+  process.on('SIGTERM', async () => {
+    logger.info('Shutting down...');
+    await runtime.disconnect();
+    process.exit(0);
+  });
+
+  // Status logging
+  setInterval(() => {
+    const status = runtime.getStatus();
+    logger.info({
+      activeExecutions: status.activeExecutions,
+      totalExecutions: status.totalExecutions,
+      workers: status.workers,
+    }, 'Runtime status');
+  }, 60000);
+}
+
+main().catch((error) => {
+  console.error('Failed to start runtime:', error);
+  process.exit(1);
+});
+```
+
+## Health Check
+
+```ts
+import express from 'express';
+import { EnclaveRuntime } from '@enclavejs/runtime';
+
+const app = express();
+let runtime: EnclaveRuntime;
+
+app.get('/health', (req, res) => {
+  const status = runtime.getStatus();
+
+  if (status.connected) {
+    res.json({ status: 'ok', ...status });
+  } else {
+    res.status(503).json({ status: 'disconnected' });
+  }
+});
+
+app.get('/ready', (req, res) => {
+  const status = runtime.getStatus();
+
+  if (status.connected && status.workers.idle > 0) {
+    res.json({ status: 'ready' });
+  } else {
+    res.status(503).json({ status: 'not ready' });
+  }
+});
+
+app.listen(8080);
+```
+
+## Related
+
+- [Runtime Overview](/enclavejs/runtime) - Architecture guide
+- [@enclavejs/broker](/api-reference/enclavejs-broker) - Broker API
+- [Scaling Guide](/guides/scaling) - Scaling runtimes

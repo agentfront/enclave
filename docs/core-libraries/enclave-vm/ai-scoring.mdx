@@ -1,0 +1,225 @@
+---
+title: 'AI Scoring Gate'
+description: 'Semantic security analysis that detects attack patterns beyond static AST validation'
+---
+
+The Scoring Gate adds semantic security analysis that detects attack patterns beyond what static AST validation can catch. It analyzes code intent and behavior patterns to identify potential threats.
+
+## What It Detects
+
+- **Data exfiltration** - List followed by send, or query followed by export sequences
+- **Excessive access** - High limits, wildcard queries
+- **Fan-out attacks** - Tool calls inside loops
+- **Sensitive data access** - Passwords, tokens, PII fields
+
+## Basic Configuration
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+// Rule-based scorer (~1ms latency, zero dependencies)
+const enclave = new Enclave({
+  scoringGate: {
+    scorer: 'rule-based',
+    blockThreshold: 70,     // Score >= 70 blocks execution
+    warnThreshold: 40,      // Score >= 40 logs warning
+    failOpen: true,         // Allow if scoring fails (default)
+  },
+});
+```
+
+## Scorer Types
+
+| Type           | Latency | Dependencies   | Detection |
+| -------------- | ------- | -------------- | --------- |
+| `disabled`     | 0ms     | None           | None      |
+| `rule-based`   | ~1ms    | None           | Good      |
+| `local-llm`    | ~5-10ms | Model download | Better    |
+| `external-api` | ~100ms  | Network        | Best      |
+
+### Rule-Based Scorer
+
+Fast, zero-dependency scoring using predefined rules:
+
+```ts
+const enclave = new Enclave({
+  scoringGate: {
+    scorer: 'rule-based',
+    blockThreshold: 70,
+    warnThreshold: 40,
+  },
+});
+```
+
+### External API Scorer
+
+Best detection using an external scoring service:
+
+```ts
+const enclave = new Enclave({
+  scoringGate: {
+    scorer: 'external-api',
+    externalApi: {
+      endpoint: 'https://api.example.com/score',
+      apiKey: process.env.SCORING_API_KEY,
+      timeoutMs: 5000,
+      retries: 1,
+    },
+    blockThreshold: 70,
+    warnThreshold: 40,
+  },
+});
+```
+
+### Local LLM Scorer
+
+Balance between speed and detection using a local model:
+
+```ts
+const enclave = new Enclave({
+  scoringGate: {
+    scorer: 'local-llm',
+    localLlm: {
+      modelPath: './models/security-scorer.onnx',
+    },
+    blockThreshold: 70,
+    warnThreshold: 40,
+  },
+});
+```
+
+## Detection Rules
+
+The rule-based scorer evaluates these patterns:
+
+| Rule              | Score | Description                            |
+| ----------------- | ----- | -------------------------------------- |
+| `SENSITIVE_FIELD` | 35    | Queries password/token/secret fields   |
+| `EXCESSIVE_LIMIT` | 25    | limit > 10,000                         |
+| `WILDCARD_QUERY`  | 20    | query="*" or filter={}                 |
+| `LOOP_TOOL_CALL`  | 25    | callTool inside for/for-of loop        |
+| `EXFIL_PATTERN`   | 50    | list followed by send or query followed by export sequence |
+| `EXTREME_VALUE`   | 30    | Numeric arg > 1,000,000                |
+| `DYNAMIC_TOOL`    | 20    | Variable tool name (not static string) |
+| `BULK_OPERATION`  | 15    | Tool name contains bulk/batch/all      |
+
+Scores are additive - a script triggering multiple rules accumulates points.
+
+## Thresholds
+
+Configure how scores translate to actions:
+
+```ts
+const enclave = new Enclave({
+  scoringGate: {
+    scorer: 'rule-based',
+
+    // Block execution if score >= 70
+    blockThreshold: 70,
+
+    // Log warning if score >= 40
+    warnThreshold: 40,
+
+    // If scoring fails (e.g., API timeout):
+    // true = allow execution (fail open)
+    // false = block execution (fail closed)
+    failOpen: true,
+  },
+});
+```
+
+## Custom Analyzer
+
+Add custom analysis logic:
+
+```ts
+interface CustomAnalyzer {
+  name: string;
+  analyze: (code: string, ast: Node) => AnalysisResult;
+}
+
+const enclave = new Enclave({
+  scoringGate: {
+    scorer: 'rule-based',
+    customAnalyzers: [
+      {
+        name: 'company-policy',
+        analyze: (code, ast) => {
+          let score = 0;
+          const signals: string[] = [];
+
+          // Check for company-specific patterns
+          if (code.includes('internal:')) {
+            score += 30;
+            signals.push('INTERNAL_TOOL_ACCESS');
+          }
+
+          return { score, signals };
+        },
+      },
+    ],
+  },
+});
+```
+
+## Feature Extraction
+
+The scorer extracts these features for analysis:
+
+- **Tool names** - All `callTool()` targets
+- **Arguments** - Numeric values, field names, patterns
+- **Control flow** - Loops containing tool calls
+- **Data flow** - Variables passed between tool calls
+- **Sequences** - Order of operations
+
+## Handling Scoring Results
+
+```ts
+const result = await enclave.run(code);
+
+if (!result.success) {
+  if (result.error?.code === 'SCORING_BLOCKED') {
+    console.log('Blocked by scoring gate');
+    console.log('Score:', result.error.data.score);
+    console.log('Signals:', result.error.data.signals);
+  }
+}
+```
+
+## Logging and Monitoring
+
+```ts
+const enclave = new Enclave({
+  scoringGate: {
+    scorer: 'rule-based',
+    blockThreshold: 70,
+    warnThreshold: 40,
+
+    // Callback for all scoring results
+    onScore: (result) => {
+      metrics.recordScore(result.score);
+
+      if (result.score >= 40) {
+        logger.warn('Elevated risk score', {
+          score: result.score,
+          signals: result.signals,
+        });
+      }
+    },
+  },
+});
+```
+
+## Best Practices
+
+1. **Start with warnings** - Use `warnThreshold` to monitor before blocking
+2. **Tune thresholds** - Adjust based on your false positive rate
+3. **Use fail-open cautiously** - Only in non-critical paths
+4. **Monitor signals** - Track which rules trigger most often
+5. **Layer with other defenses** - Scoring complements AST validation
+
+## Related
+
+- [Security Levels](/core-libraries/enclave-vm/security-levels) - Security presets
+- [Double VM](/core-libraries/enclave-vm/double-vm) - Operation validation layer
+- [ast-guard](/core-libraries/ast-guard/overview) - AST validation

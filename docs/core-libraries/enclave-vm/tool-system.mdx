@@ -1,0 +1,205 @@
+---
+title: 'Tool System'
+description: 'Integrating tools with enclave for script-to-system communication'
+---
+
+The tool system allows scripts to interact with external systems through controlled `callTool()` invocations. Tools are the primary way for sandboxed code to perform actions and retrieve data.
+
+## Basic Tool Handler
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({
+  timeout: 10000,
+  toolHandler: async (toolName, args) => {
+    console.log(`Tool called: ${toolName}`, args);
+
+    switch (toolName) {
+      case 'users:list':
+        return { items: [{ id: 1, name: 'Alice' }] };
+      case 'users:get':
+        return { id: args.id, name: 'Alice' };
+      default:
+        throw new Error(`Unknown tool: ${toolName}`);
+    }
+  },
+});
+
+const result = await enclave.run(`
+  const users = await callTool('users:list', {});
+  return users.items.length;
+`);
+```
+
+## Tool Handler Signature
+
+```ts
+type ToolHandler = (
+  toolName: string,  // Tool identifier (e.g., 'users:list')
+  args: unknown      // Arguments passed from the script
+) => Promise<unknown>;
+```
+
+## Integrating with a Tool Registry
+
+Connect enclave to your existing tool system:
+
+```ts
+import { Enclave } from 'enclave-vm';
+import { ToolRegistry } from './tools';
+
+const enclave = new Enclave({
+  timeout: 10000,
+  toolHandler: async (toolName, args) => {
+    // Look up tool in registry
+    const tool = ToolRegistry.get(toolName);
+    if (!tool) {
+      throw new Error(`Unknown tool: ${toolName}`);
+    }
+
+    // Validate input schema
+    const validatedArgs = tool.inputSchema.parse(args);
+
+    // Execute with your pipeline (auth, logging, etc.)
+    return tool.execute(validatedArgs);
+  },
+});
+```
+
+## Tool Call Limits
+
+Prevent runaway scripts with tool call limits:
+
+```ts
+const enclave = new Enclave({
+  maxToolCalls: 50, // Maximum tool calls per execution
+  toolHandler: async (name, args) => { /* ... */ },
+});
+```
+
+When the limit is exceeded, execution fails with error code `MAX_TOOL_CALLS`.
+
+## Custom Globals
+
+Provide custom globals for scripts to access:
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (name, args) => { /* ... */ },
+  globals: {
+    // Custom read-only context
+    context: {
+      userId: 'user-123',
+      tenantId: 'tenant-456',
+    },
+    // Custom utility function
+    formatDate: (date: Date) => date.toISOString(),
+  },
+});
+
+const code = `
+  const userId = context.userId;
+  const timestamp = formatDate(new Date());
+  return { userId, timestamp };
+`;
+
+const result = await enclave.run(code);
+```
+
+## One-Shot Execution
+
+For simple cases without a persistent enclave instance:
+
+```ts
+import { runAgentScript } from 'enclave-vm';
+
+const result = await runAgentScript(`
+  return Math.max(1, 2, 3);
+`, {
+  timeout: 1000,
+});
+
+console.log(result.value); // 3
+```
+
+## Tool Error Handling
+
+Handle tool errors gracefully:
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    try {
+      return await executeToolSafely(name, args);
+    } catch (error) {
+      // Return structured error that script can handle
+      return {
+        error: true,
+        code: error.code || 'TOOL_ERROR',
+        message: error.message,
+      };
+    }
+  },
+});
+
+const code = `
+  const result = await callTool('risky:operation', {});
+  if (result.error) {
+    return { success: false, reason: result.message };
+  }
+  return { success: true, data: result };
+`;
+```
+
+## Securing Tool Access
+
+Limit which tools are available based on context:
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    // Allowlist of permitted tools
+    const allowedTools = ['users:list', 'users:get', 'data:read'];
+
+    if (!allowedTools.includes(name)) {
+      throw new Error(`Tool not allowed: ${name}`);
+    }
+
+    return ToolRegistry.execute(name, args);
+  },
+});
+```
+
+## Async Tool Calls
+
+Tools are always async, allowing for external API calls:
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    if (name === 'api:fetch') {
+      const response = await fetch(args.url);
+      return response.json();
+    }
+    // ...
+  },
+});
+```
+
+## Tool Call Statistics
+
+Track tool usage in execution stats:
+
+```ts
+const result = await enclave.run(code);
+
+console.log('Tool calls made:', result.stats.toolCallCount);
+console.log('Execution time:', result.stats.duration);
+```
+
+## Related
+
+- [Overview](/core-libraries/enclave-vm/overview) - Getting started with enclave
+- [Reference Sidecar](/core-libraries/enclave-vm/reference-sidecar) - Handling large tool responses
+- [Configuration](/core-libraries/enclave-vm/configuration) - All configuration options

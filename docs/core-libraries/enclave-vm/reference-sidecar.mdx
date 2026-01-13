@@ -1,0 +1,187 @@
+---
+title: 'Reference Sidecar'
+description: 'Handle large data in AgentScript without embedding it in the script'
+---
+
+The Reference Sidecar handles large data in AgentScript without embedding it in the script. This prevents memory issues and improves security when tools return large responses.
+
+## How It Works
+
+1. **Extraction**: When a tool returns data with large strings (> `extractionThreshold`), those strings are stored in the sidecar and replaced with reference tokens (`__ref_abc123`)
+2. **Lazy Resolution**: When script code accesses a reference token, it's resolved just-in-time to the actual data
+3. **Safe Property Access**: Only explicit property accesses trigger resolution, preventing data exfiltration
+
+## Basic Configuration
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    if (name === 'documents:get') {
+      // Returns a 2MB document - automatically stored in sidecar
+      return { content: '...2MB of text...' };
+    }
+  },
+  sidecar: {
+    enabled: true,
+    extractionThreshold: 1024,    // Extract strings > 1KB
+    allowComposites: false,        // Block: ref + "_suffix" (security)
+  },
+});
+
+const result = await enclave.run(`
+  const doc = await callTool('documents:get', { id: 'doc-123' });
+  // doc.content is a reference token, resolved on access
+  return { wordCount: doc.content.split(' ').length };
+`);
+```
+
+## Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `sidecar.enabled` | boolean | false | Enable the sidecar feature |
+| `sidecar.maxTotalSize` | number | 10MB | Maximum total size of all stored references |
+| `sidecar.maxReferenceSize` | number | 1MB | Maximum size of a single reference |
+| `sidecar.extractionThreshold` | number | 1024 | Minimum string size to extract (bytes) |
+| `sidecar.allowComposites` | boolean | false | Allow string concatenation with references |
+
+## Reference Token Format
+
+Reference tokens follow this pattern:
+
+```
+__ref_<random-id>
+```
+
+For example: `__ref_abc123def456`
+
+Scripts cannot distinguish between reference tokens and regular strings until they access the data.
+
+## Security: Composite Blocking
+
+When `allowComposites: false` (default), the sidecar blocks string concatenation with reference tokens:
+
+```ts
+// This will fail if allowComposites is false
+const code = `
+  const doc = await callTool('documents:get', { id: 'doc-123' });
+  const modified = doc.content + '_suffix';  // Blocked!
+  return modified;
+`;
+```
+
+This prevents data exfiltration via string manipulation.
+
+## Use Cases
+
+### Large API Responses
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    if (name === 'api:fetch') {
+      const response = await fetch(args.url);
+      return response.json(); // Could be large
+    }
+  },
+  sidecar: {
+    enabled: true,
+    extractionThreshold: 10000, // 10KB threshold
+  },
+});
+```
+
+### Document Processing
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    if (name === 'documents:list') {
+      // Returns array with potentially large content fields
+      return documents.map(d => ({
+        id: d.id,
+        title: d.title,
+        content: d.content, // Large strings extracted automatically
+      }));
+    }
+  },
+  sidecar: {
+    enabled: true,
+    maxTotalSize: 50 * 1024 * 1024, // 50MB total
+  },
+});
+```
+
+### Multi-Step Workflows
+
+```ts
+const result = await enclave.run(`
+  // Step 1: Fetch document (content stored in sidecar)
+  const doc = await callTool('documents:get', { id: 'doc-123' });
+
+  // Step 2: Extract metadata (doesn't resolve content)
+  const metadata = { id: doc.id, title: doc.title };
+
+  // Step 3: Process content only if needed
+  if (metadata.title.includes('important')) {
+    // Content resolved lazily here
+    const words = doc.content.split(' ').length;
+    return { ...metadata, words };
+  }
+
+  return metadata;
+`);
+```
+
+## Memory Management
+
+The sidecar helps manage memory in several ways:
+
+1. **Bounded storage** - `maxTotalSize` prevents unbounded growth
+2. **Per-reference limits** - `maxReferenceSize` caps individual entries
+3. **Lazy loading** - Data only loaded when accessed
+4. **Automatic cleanup** - References cleared after execution
+
+## Error Handling
+
+```ts
+const result = await enclave.run(code);
+
+if (!result.success) {
+  if (result.error?.code === 'SIDECAR_SIZE_EXCEEDED') {
+    console.log('Too much data stored in sidecar');
+  }
+  if (result.error?.code === 'SIDECAR_COMPOSITE_BLOCKED') {
+    console.log('String concatenation with reference blocked');
+  }
+}
+```
+
+## Monitoring Sidecar Usage
+
+```ts
+const result = await enclave.run(code);
+
+if (result.success) {
+  console.log('Sidecar stats:', {
+    referencesCreated: result.stats.sidecar?.referencesCreated,
+    totalBytesStored: result.stats.sidecar?.totalBytesStored,
+    resolutionCount: result.stats.sidecar?.resolutionCount,
+  });
+}
+```
+
+## Best Practices
+
+1. **Set appropriate thresholds** - Too low creates many references; too high defeats the purpose
+2. **Monitor total size** - Track sidecar usage to tune `maxTotalSize`
+3. **Keep composites disabled** - Unless you specifically need string concatenation
+4. **Use with large tool responses** - Most beneficial when tools return KB+ of data
+
+## Related
+
+- [Tool System](/core-libraries/enclave-vm/tool-system) - Tool integration
+- [Configuration](/core-libraries/enclave-vm/configuration) - All configuration options
+- [Security Levels](/core-libraries/enclave-vm/security-levels) - Security presets

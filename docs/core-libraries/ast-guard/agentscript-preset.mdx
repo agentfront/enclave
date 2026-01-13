@@ -1,0 +1,182 @@
+---
+title: 'AgentScript Preset'
+description: 'Purpose-built preset for validating LLM-generated orchestration code'
+---
+
+The AgentScript preset is purpose-built for validating LLM-generated orchestration code. It's the default preset used by [enclave-vm](/core-libraries/enclave-vm/overview) and provides the strictest validation for AI-generated code.
+
+## Basic Usage
+
+```ts
+import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+
+const validator = new JSAstValidator(createAgentScriptPreset());
+
+const result = await validator.validate(`
+  const users = await callTool('users:list', { limit: 10 });
+  return users.filter(u => u.active);
+`);
+```
+
+## Configuration Options
+
+```ts
+const validator = new JSAstValidator(createAgentScriptPreset({
+  // Require at least one callTool() invocation (default: false)
+  requireCallTool: true,
+
+  // Customize allowed globals
+  allowedGlobals: ['callTool', 'getTool', 'Math', 'JSON', 'Array', 'Object'],
+
+  // Allow arrow functions for array methods (default: true)
+  allowArrowFunctions: true,
+
+  // Configure allowed loop types
+  allowedLoops: {
+    allowFor: true,      // for (let i = 0; ...) - default: true
+    allowForOf: true,    // for (const x of arr) - default: true
+    allowWhile: false,   // while (cond) - default: false
+    allowDoWhile: false, // do {} while (cond) - default: false
+    allowForIn: false,   // for (key in obj) - default: false
+  },
+
+  // Additional identifiers to block
+  additionalDisallowedIdentifiers: ['customDangerous'],
+}));
+```
+
+## Option Reference
+
+| Option                            | Type       | Default               | Description                                              |
+| --------------------------------- | ---------- | --------------------- | -------------------------------------------------------- |
+| `requireCallTool`                 | `boolean`  | `false`               | Require at least one `callTool()` invocation in the code |
+| `allowedGlobals`                  | `string[]` | Standard safe globals | Identifiers that can be referenced without declaration   |
+| `allowArrowFunctions`             | `boolean`  | `true`                | Allow arrow functions for array methods                  |
+| `allowedLoops`                    | `object`   | `for` and `for-of`    | Configure which loop types are allowed                   |
+| `additionalDisallowedIdentifiers` | `string[]` | `[]`                  | Additional identifiers to block                          |
+
+<Tip>
+  Use `requireCallTool: true` to ensure AgentScript code actually interacts with tools rather than just performing local computations.
+</Tip>
+
+## What AgentScript Blocks
+
+| Category            | Blocked Constructs                                                  | Why                                           |
+| ------------------- | ------------------------------------------------------------------- | --------------------------------------------- |
+| **Code execution**  | `eval`, `Function`, `AsyncFunction`, `GeneratorFunction`            | Prevents dynamic code injection               |
+| **System access**   | `process`, `require`, `module`, `__dirname`, `__filename`, `Buffer` | Prevents Node.js API access                   |
+| **Global objects**  | `window`, `globalThis`, `global`, `self`, `this`                    | Prevents sandbox escape                       |
+| **Timers**          | `setTimeout`, `setInterval`, `setImmediate`                         | Prevents timing attacks and async escape      |
+| **Prototype**       | `__proto__`, `constructor`, `prototype`                             | Prevents prototype pollution                  |
+| **Metaprogramming** | `Proxy`, `Reflect`                                                  | Prevents interception and reflection          |
+| **Network**         | `fetch`, `XMLHttpRequest`, `WebSocket`                              | Prevents network access                       |
+| **Storage**         | `localStorage`, `sessionStorage`, `indexedDB`                       | Prevents data persistence                     |
+| **Native code**     | `WebAssembly`, `Worker`, `SharedWorker`                             | Prevents native execution                     |
+| **Weak references** | `WeakMap`, `WeakSet`, `WeakRef`                                     | Prevents reference manipulation               |
+| **User functions**  | `function foo() {}`, `const f = function() {}`                      | Prevents recursion (arrow functions allowed)  |
+| **Unbounded loops** | `while`, `do-while`, `for-in`                                       | Prevents infinite loops and prototype walking |
+
+## What AgentScript Allows
+
+```js
+// Tool calls
+const result = await callTool('users:list', { limit: 10 });
+
+// Variables
+const users = result.items;
+let count = 0;
+
+// Conditionals
+if (users.length > 0) { count = users.length; }
+
+// Bounded loops
+for (let i = 0; i < users.length; i++) { /* ... */ }
+for (const user of users) { /* ... */ }
+
+// Array methods with arrow functions
+const active = users.filter(u => u.active);
+const names = users.map(u => u.name);
+const total = users.reduce((sum, u) => sum + u.score, 0);
+
+// Safe globals
+const max = Math.max(1, 2, 3);
+const parsed = JSON.parse('{"a":1}');
+const keys = Object.keys(obj);
+
+// Return values
+return { count, active, names };
+```
+
+## Default Allowed Globals
+
+The AgentScript preset allows these globals by default:
+
+- `callTool` - Tool invocation
+- `Math` - Mathematical operations
+- `JSON` - JSON parsing/stringifying
+- `Array` - Array constructor and methods
+- `Object` - Object methods
+- `String` - String methods
+- `Number` - Number methods
+- `Boolean` - Boolean conversion
+- `Date` - Date operations (read-only)
+- `console` - Logging (rate-limited by enclave)
+- `undefined`, `null`, `NaN`, `Infinity` - Primitives
+
+## Customizing Allowed Globals
+
+```ts
+const validator = new JSAstValidator(createAgentScriptPreset({
+  allowedGlobals: [
+    // Standard
+    'callTool', 'Math', 'JSON', 'Array', 'Object',
+
+    // Custom additions
+    'context',      // Your context object
+    'formatDate',   // Custom utility
+  ],
+}));
+```
+
+## Loop Configuration
+
+Control which loop types are allowed:
+
+```ts
+const validator = new JSAstValidator(createAgentScriptPreset({
+  allowedLoops: {
+    allowFor: true,      // for (let i = 0; i < n; i++)
+    allowForOf: true,    // for (const item of array)
+    allowWhile: false,   // while (condition)
+    allowDoWhile: false, // do {} while (condition)
+    allowForIn: false,   // for (key in object)
+  },
+}));
+```
+
+<Warning>
+  `for-in` loops are blocked by default because they iterate over prototype properties, which can lead to unexpected behavior and security issues.
+</Warning>
+
+## Requiring Tool Calls
+
+Ensure scripts actually use tools:
+
+```ts
+const validator = new JSAstValidator(createAgentScriptPreset({
+  requireCallTool: true,
+}));
+
+// This passes:
+validator.validate('const x = await callTool("test", {}); return x;');
+
+// This fails:
+validator.validate('return 1 + 2;'); // No callTool
+```
+
+## Related
+
+- [Overview](/core-libraries/ast-guard/overview) - Getting started
+- [Pre-Scanner](/core-libraries/ast-guard/pre-scanner) - Layer 0 defense
+- [Security Rules](/core-libraries/ast-guard/security-rules) - Rule reference
+- [Code Transform](/core-libraries/ast-guard/code-transform) - AST transformations

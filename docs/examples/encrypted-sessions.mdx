@@ -1,0 +1,553 @@
+---
+title: 'Encrypted Sessions'
+description: 'Implement end-to-end encryption for secure code execution'
+---
+
+Implement end-to-end encryption (E2E) for sensitive code execution where even the server cannot read the data.
+
+## Overview
+
+```
+┌──────────────────┐                      ┌──────────────────┐
+│      Client      │                      │      Server      │
+│  ┌────────────┐  │                      │  ┌────────────┐  │
+│  │ Public Key │──┼──────────────────────┼─▶│ Public Key │  │
+│  │Private Key │  │   Key Exchange       │  │Private Key │  │
+│  └────────────┘  │                      │  └────────────┘  │
+│        │         │                      │        │         │
+│        ▼         │                      │        ▼         │
+│  ┌────────────┐  │                      │  ┌────────────┐  │
+│  │Shared Sec. │  │  ══════════════════  │  │Shared Sec. │  │
+│  └────────────┘  │                      │  └────────────┘  │
+│        │         │                      │        │         │
+│        ▼         │                      │        ▼         │
+│  ┌────────────┐  │   Encrypted Data    │  ┌────────────┐  │
+│  │  Encrypt   │──┼─────────────────────┼─▶│  Decrypt   │  │
+│  └────────────┘  │                      │  └────────────┘  │
+└──────────────────┘                      └──────────────────┘
+```
+
+## Client Setup
+
+```ts
+import { EnclaveClient } from '@enclavejs/client';
+
+const client = new EnclaveClient({
+  serverUrl: 'https://broker.example.com',
+
+  // Enable encryption
+  encryption: {
+    enabled: true,
+    curve: 'P-256', // ECDH curve
+  },
+
+  // Optional: Custom key management
+  keyProvider: {
+    getPublicKey: async () => myKeyPair.publicKey,
+    sign: async (data) => sign(myKeyPair.privateKey, data),
+  },
+});
+```
+
+## ECDH Key Exchange Implementation
+
+```ts
+// crypto.ts
+export async function generateKeyPair(): Promise<CryptoKeyPair> {
+  return crypto.subtle.generateKey(
+    {
+      name: 'ECDH',
+      namedCurve: 'P-256',
+    },
+    true,
+    ['deriveKey', 'deriveBits']
+  );
+}
+
+export async function deriveSharedSecret(
+  privateKey: CryptoKey,
+  publicKey: CryptoKey
+): Promise<CryptoKey> {
+  return crypto.subtle.deriveKey(
+    {
+      name: 'ECDH',
+      public: publicKey,
+    },
+    privateKey,
+    {
+      name: 'AES-GCM',
+      length: 256,
+    },
+    true,
+    ['encrypt', 'decrypt']
+  );
+}
+
+export async function exportPublicKey(key: CryptoKey): Promise<string> {
+  const exported = await crypto.subtle.exportKey('spki', key);
+  return Buffer.from(exported).toString('base64');
+}
+
+export async function importPublicKey(base64: string): Promise<CryptoKey> {
+  const keyData = Buffer.from(base64, 'base64');
+  return crypto.subtle.importKey(
+    'spki',
+    keyData,
+    {
+      name: 'ECDH',
+      namedCurve: 'P-256',
+    },
+    true,
+    []
+  );
+}
+```
+
+## Encryption/Decryption
+
+```ts
+// encryption.ts
+export async function encrypt(
+  key: CryptoKey,
+  data: string
+): Promise<EncryptedPayload> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(data);
+
+  const ciphertext = await crypto.subtle.encrypt(
+    {
+      name: 'AES-GCM',
+      iv,
+    },
+    key,
+    encoded
+  );
+
+  return {
+    iv: Buffer.from(iv).toString('base64'),
+    ciphertext: Buffer.from(ciphertext).toString('base64'),
+  };
+}
+
+export async function decrypt(
+  key: CryptoKey,
+  payload: EncryptedPayload
+): Promise<string> {
+  const iv = Buffer.from(payload.iv, 'base64');
+  const ciphertext = Buffer.from(payload.ciphertext, 'base64');
+
+  const decrypted = await crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv,
+    },
+    key,
+    ciphertext
+  );
+
+  return new TextDecoder().decode(decrypted);
+}
+
+interface EncryptedPayload {
+  iv: string;
+  ciphertext: string;
+}
+```
+
+## Encrypted Client
+
+```ts
+import {
+  generateKeyPair,
+  deriveSharedSecret,
+  exportPublicKey,
+  importPublicKey,
+  encrypt,
+  decrypt,
+} from './crypto';
+
+class EncryptedEnclaveClient {
+  private keyPair: CryptoKeyPair | null = null;
+  private sharedSecret: CryptoKey | null = null;
+  private sessionId: string | null = null;
+
+  constructor(private serverUrl: string) {}
+
+  async connect(): Promise<void> {
+    // Generate client key pair
+    this.keyPair = await generateKeyPair();
+    const clientPublicKey = await exportPublicKey(this.keyPair.publicKey);
+
+    // Send ClientHello
+    const response = await fetch(`${this.serverUrl}/handshake`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'ClientHello',
+        publicKey: clientPublicKey,
+      }),
+    });
+
+    const serverHello = await response.json();
+
+    // Import server public key
+    const serverPublicKey = await importPublicKey(serverHello.publicKey);
+
+    // Derive shared secret
+    this.sharedSecret = await deriveSharedSecret(
+      this.keyPair.privateKey,
+      serverPublicKey
+    );
+
+    this.sessionId = serverHello.sessionId;
+  }
+
+  async execute(code: string): Promise<ExecutionResult> {
+    if (!this.sharedSecret || !this.sessionId) {
+      throw new Error('Not connected. Call connect() first.');
+    }
+
+    // Encrypt code
+    const encryptedCode = await encrypt(this.sharedSecret, code);
+
+    // Send encrypted request
+    const response = await fetch(`${this.serverUrl}/execute`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': this.sessionId,
+      },
+      body: JSON.stringify({
+        encrypted: true,
+        ...encryptedCode,
+      }),
+    });
+
+    // Decrypt response
+    const encryptedResult = await response.json();
+    const decryptedResult = await decrypt(this.sharedSecret, encryptedResult);
+
+    return JSON.parse(decryptedResult);
+  }
+
+  async executeStreaming(
+    code: string
+  ): AsyncGenerator<StreamEvent> {
+    if (!this.sharedSecret || !this.sessionId) {
+      throw new Error('Not connected. Call connect() first.');
+    }
+
+    // Encrypt code
+    const encryptedCode = await encrypt(this.sharedSecret, code);
+
+    // Open streaming connection
+    const response = await fetch(`${this.serverUrl}/execute/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': this.sessionId,
+      },
+      body: JSON.stringify({
+        encrypted: true,
+        ...encryptedCode,
+      }),
+    });
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+
+        const encryptedEvent = JSON.parse(line);
+        const decryptedEvent = await decrypt(
+          this.sharedSecret!,
+          encryptedEvent
+        );
+
+        yield JSON.parse(decryptedEvent);
+      }
+    }
+  }
+}
+```
+
+## Server-Side Implementation
+
+```ts
+import {
+  generateKeyPair,
+  deriveSharedSecret,
+  exportPublicKey,
+  importPublicKey,
+  encrypt,
+  decrypt,
+} from './crypto';
+import { Enclave } from 'enclave-vm';
+
+interface Session {
+  id: string;
+  sharedSecret: CryptoKey;
+  createdAt: Date;
+}
+
+const sessions = new Map<string, Session>();
+
+// Handshake endpoint
+app.post('/handshake', async (req, res) => {
+  const { publicKey: clientPublicKey } = req.body;
+
+  // Generate server key pair
+  const serverKeyPair = await generateKeyPair();
+  const serverPublicKey = await exportPublicKey(serverKeyPair.publicKey);
+
+  // Import client public key
+  const clientKey = await importPublicKey(clientPublicKey);
+
+  // Derive shared secret
+  const sharedSecret = await deriveSharedSecret(
+    serverKeyPair.privateKey,
+    clientKey
+  );
+
+  // Create session
+  const sessionId = crypto.randomUUID();
+  sessions.set(sessionId, {
+    id: sessionId,
+    sharedSecret,
+    createdAt: new Date(),
+  });
+
+  res.json({
+    type: 'ServerHello',
+    publicKey: serverPublicKey,
+    sessionId,
+  });
+});
+
+// Encrypted execute endpoint
+app.post('/execute', async (req, res) => {
+  const sessionId = req.headers['x-session-id'] as string;
+  const session = sessions.get(sessionId);
+
+  if (!session) {
+    return res.status(401).json({ error: 'Invalid session' });
+  }
+
+  // Decrypt request
+  const code = await decrypt(session.sharedSecret, req.body);
+
+  // Execute
+  const enclave = new Enclave({
+    securityLevel: 'STRICT',
+    toolHandler: async (name, args) => {
+      return executeTool(name, args);
+    },
+  });
+
+  try {
+    const result = await enclave.run(code);
+
+    // Encrypt response
+    const encryptedResult = await encrypt(
+      session.sharedSecret,
+      JSON.stringify(result)
+    );
+
+    res.json(encryptedResult);
+  } finally {
+    enclave.dispose();
+  }
+});
+
+// Encrypted streaming endpoint
+app.post('/execute/stream', async (req, res) => {
+  const sessionId = req.headers['x-session-id'] as string;
+  const session = sessions.get(sessionId);
+
+  if (!session) {
+    return res.status(401).json({ error: 'Invalid session' });
+  }
+
+  // Decrypt request
+  const code = await decrypt(session.sharedSecret, req.body);
+
+  // Set streaming headers
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Transfer-Encoding', 'chunked');
+
+  const enclave = new Enclave({
+    securityLevel: 'STRICT',
+    toolHandler: async (name, args) => {
+      // Emit encrypted tool call event
+      const event = { type: 'tool_call', tool: name, args };
+      const encrypted = await encrypt(
+        session.sharedSecret,
+        JSON.stringify(event)
+      );
+      res.write(JSON.stringify(encrypted) + '\n');
+
+      const result = await executeTool(name, args);
+
+      // Emit encrypted tool result event
+      const resultEvent = { type: 'tool_result', tool: name };
+      const encryptedResult = await encrypt(
+        session.sharedSecret,
+        JSON.stringify(resultEvent)
+      );
+      res.write(JSON.stringify(encryptedResult) + '\n');
+
+      return result;
+    },
+    onConsole: async (level, ...args) => {
+      const event = { type: 'stdout', data: args.join(' ') };
+      const encrypted = await encrypt(
+        session.sharedSecret,
+        JSON.stringify(event)
+      );
+      res.write(JSON.stringify(encrypted) + '\n');
+    },
+  });
+
+  try {
+    const result = await enclave.run(code);
+
+    // Final encrypted event
+    const finalEvent = { type: 'final', result };
+    const encrypted = await encrypt(
+      session.sharedSecret,
+      JSON.stringify(finalEvent)
+    );
+    res.write(JSON.stringify(encrypted) + '\n');
+  } catch (error) {
+    const errorEvent = { type: 'error', message: error.message };
+    const encrypted = await encrypt(
+      session.sharedSecret,
+      JSON.stringify(errorEvent)
+    );
+    res.write(JSON.stringify(encrypted) + '\n');
+  } finally {
+    res.end();
+    enclave.dispose();
+  }
+});
+```
+
+## Usage Example
+
+```ts
+async function main() {
+  // Create encrypted client
+  const client = new EncryptedEnclaveClient('https://api.example.com');
+
+  // Establish encrypted connection
+  await client.connect();
+
+  // Execute code - all data is encrypted end-to-end
+  const result = await client.execute(`
+    const secret = await callTool('secrets:get', { key: 'api_key' });
+    const response = await callTool('http:post', {
+      url: 'https://api.service.com/data',
+      headers: { 'Authorization': 'Bearer ' + secret },
+      body: { sensitive: 'data' },
+    });
+    return response;
+  `);
+
+  console.log('Result:', result);
+}
+```
+
+## React Integration
+
+```tsx
+import React, { useState, useEffect } from 'react';
+import { EncryptedEnclaveClient } from './encrypted-client';
+
+export function SecureCodeEditor() {
+  const [client, setClient] = useState<EncryptedEnclaveClient | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [code, setCode] = useState('');
+  const [result, setResult] = useState<unknown>(null);
+
+  useEffect(() => {
+    const newClient = new EncryptedEnclaveClient('https://api.example.com');
+    setClient(newClient);
+
+    newClient.connect().then(() => {
+      setConnected(true);
+    });
+  }, []);
+
+  const execute = async () => {
+    if (!client || !connected) return;
+
+    const result = await client.execute(code);
+    setResult(result);
+  };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <span
+          style={{
+            width: '10px',
+            height: '10px',
+            borderRadius: '50%',
+            backgroundColor: connected ? '#22c55e' : '#ef4444',
+          }}
+        />
+        <span>{connected ? 'Encrypted Connection' : 'Connecting...'}</span>
+      </div>
+
+      <textarea
+        value={code}
+        onChange={(e) => setCode(e.target.value)}
+        placeholder="Enter code..."
+      />
+
+      <button onClick={execute} disabled={!connected}>
+        Execute Securely
+      </button>
+
+      {result && <pre>{JSON.stringify(result, null, 2)}</pre>}
+    </div>
+  );
+}
+```
+
+## Security Considerations
+
+1. **Key Rotation** - Rotate session keys periodically
+2. **Perfect Forward Secrecy** - Use ephemeral keys for each session
+3. **Certificate Pinning** - Pin server certificates in production
+4. **Secure Key Storage** - Use secure storage for private keys
+5. **Session Expiry** - Expire sessions after inactivity
+
+```ts
+// Session cleanup
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of sessions) {
+    // Expire sessions after 1 hour
+    if (now - session.createdAt.getTime() > 3600000) {
+      sessions.delete(id);
+    }
+  }
+}, 60000);
+```
+
+## Next Steps
+
+- [Security Hardening](/guides/security-hardening) - More security practices
+- [Streaming Protocol](/concepts/streaming-protocol) - Protocol details
+- [Production Deployment](/guides/production-deployment) - Deploy securely

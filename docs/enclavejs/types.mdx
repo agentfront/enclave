@@ -1,0 +1,371 @@
+---
+title: '@enclavejs/types'
+description: 'Protocol types and Zod schemas for the EnclaveJS streaming runtime'
+---
+
+# @enclavejs/types
+
+Type definitions and Zod schemas for the EnclaveJS streaming runtime protocol. This package provides the foundation for type-safe communication between all EnclaveJS components.
+
+## Installation
+
+```bash
+npm install @enclavejs/types
+```
+
+## Protocol Identifiers
+
+### Session and Call IDs
+
+```typescript
+import {
+  generateSessionId,
+  generateCallId,
+  generateRefId,
+  isSessionId,
+  isCallId,
+  isRefId,
+  SESSION_ID_PREFIX,  // 'ses_'
+  CALL_ID_PREFIX,     // 'call_'
+  REF_ID_PREFIX,      // 'ref_'
+  PROTOCOL_VERSION,   // 1
+} from '@enclavejs/types';
+
+// Generate unique IDs
+const sessionId = generateSessionId();  // 'ses_a1b2c3d4-...'
+const callId = generateCallId();        // 'call_e5f6g7h8-...'
+const refId = generateRefId();          // 'ref_i9j0k1l2-...'
+
+// Type guards
+if (isSessionId(id)) {
+  // id is SessionId
+}
+```
+
+### Session State Machine
+
+```typescript
+import { SessionState } from '@enclavejs/types';
+
+// Possible states
+type SessionState =
+  | 'running'
+  | 'waiting_for_tool'
+  | 'completed'
+  | 'error'
+  | 'cancelled';
+```
+
+### Session Limits
+
+```typescript
+import { DEFAULT_SESSION_LIMITS, type SessionLimits } from '@enclavejs/types';
+
+const limits: SessionLimits = {
+  timeout: 30000,           // Max execution time (ms)
+  memoryLimit: 128 * 1024 * 1024,  // Max memory (bytes)
+  maxToolCalls: 100,        // Max tool invocations
+  maxConsoleBytes: 1024 * 1024,    // Max console output
+};
+
+// Defaults
+console.log(DEFAULT_SESSION_LIMITS);
+```
+
+## Stream Events
+
+### Event Types
+
+```typescript
+import {
+  EventType,
+  isSessionInitEvent,
+  isStdoutEvent,
+  isLogEvent,
+  isToolCallEvent,
+  isToolResultAppliedEvent,
+  isFinalEvent,
+  isHeartbeatEvent,
+  isErrorEvent,
+} from '@enclavejs/types';
+
+// Event type enum values
+EventType.SESSION_INIT         // 'session_init'
+EventType.STDOUT               // 'stdout'
+EventType.LOG                  // 'log'
+EventType.TOOL_CALL            // 'tool_call'
+EventType.TOOL_RESULT_APPLIED  // 'tool_result_applied'
+EventType.FINAL                // 'final'
+EventType.HEARTBEAT            // 'heartbeat'
+EventType.ERROR                // 'error'
+```
+
+### Event Structures
+
+```typescript
+import type {
+  StreamEvent,
+  SessionInitEvent,
+  StdoutEvent,
+  LogEvent,
+  ToolCallEvent,
+  FinalEvent,
+  ErrorEvent,
+} from '@enclavejs/types';
+
+// Session Init
+const initEvent: SessionInitEvent = {
+  type: 'session_init',
+  sessionId: 'ses_...',
+  seq: 0,
+  timestamp: Date.now(),
+  payload: {
+    limits: { timeout: 30000 },
+    encryption: null,
+  },
+};
+
+// Stdout
+const stdoutEvent: StdoutEvent = {
+  type: 'stdout',
+  sessionId: 'ses_...',
+  seq: 1,
+  timestamp: Date.now(),
+  payload: { chunk: 'Hello, world!\n' },
+};
+
+// Log
+const logEvent: LogEvent = {
+  type: 'log',
+  sessionId: 'ses_...',
+  seq: 2,
+  timestamp: Date.now(),
+  payload: {
+    level: 'info',  // 'debug' | 'info' | 'warn' | 'error'
+    message: 'Processing started',
+    data: { step: 1 },
+  },
+};
+
+// Tool Call
+const toolCallEvent: ToolCallEvent = {
+  type: 'tool_call',
+  sessionId: 'ses_...',
+  seq: 3,
+  timestamp: Date.now(),
+  payload: {
+    callId: 'call_...',
+    name: 'fetchData',
+    args: { url: 'https://api.example.com' },
+    timeout: 5000,
+  },
+};
+
+// Final
+const finalEvent: FinalEvent = {
+  type: 'final',
+  sessionId: 'ses_...',
+  seq: 10,
+  timestamp: Date.now(),
+  payload: {
+    result: { value: 42, success: true },
+    stats: {
+      executionTime: 1234,
+      toolCalls: 3,
+      memoryUsage: 1024 * 1024,
+    },
+  },
+};
+```
+
+## Zod Schemas
+
+All types have corresponding Zod schemas for runtime validation:
+
+```typescript
+import {
+  SessionIdSchema,
+  StreamEventSchema,
+  SessionInitEventSchema,
+  ToolCallEventSchema,
+  parseStreamEvent,
+} from '@enclavejs/types';
+
+// Validate a session ID
+const result = SessionIdSchema.safeParse('ses_abc123');
+if (result.success) {
+  console.log('Valid session ID:', result.data);
+}
+
+// Parse and validate stream events
+const parsed = parseStreamEvent(jsonData);
+if (parsed.success) {
+  const event = parsed.data;
+  // event is typed as StreamEvent
+}
+```
+
+### Available Schemas
+
+| Schema | Description |
+|--------|-------------|
+| `SessionIdSchema` | Session ID format validation |
+| `CallIdSchema` | Call ID format validation |
+| `RefIdSchema` | Reference ID format validation |
+| `SessionLimitsSchema` | Session limits configuration |
+| `StreamEventSchema` | Union of all event types |
+| `SessionInitEventSchema` | Session init event |
+| `StdoutEventSchema` | Stdout event |
+| `LogEventSchema` | Log event |
+| `ToolCallEventSchema` | Tool call event |
+| `FinalEventSchema` | Final event |
+| `ErrorEventSchema` | Error event |
+
+## Encryption Types
+
+```typescript
+import {
+  SupportedCurve,      // 'P-256' | 'P-384' | 'P-521'
+  EncryptionAlgorithm, // 'AES-GCM'
+  KeyDerivation,       // 'HKDF'
+  EncryptionMode,      // 'none' | 'required' | 'optional'
+  AES_GCM_NONCE_SIZE,  // 12
+  AES_GCM_TAG_SIZE,    // 16
+  AES_256_KEY_SIZE,    // 32
+  isEncryptedEnvelope,
+} from '@enclavejs/types';
+
+import type {
+  EncryptedEnvelope,
+  ClientHello,
+  ServerHello,
+} from '@enclavejs/types';
+
+// Client hello for key exchange
+const clientHello: ClientHello = {
+  type: 'client_hello',
+  publicKey: 'base64-encoded-public-key',
+  curve: 'P-256',
+};
+
+// Server hello response
+const serverHello: ServerHello = {
+  type: 'server_hello',
+  publicKey: 'base64-encoded-server-public-key',
+  sessionId: 'ses_...',
+};
+
+// Encrypted envelope
+const envelope: EncryptedEnvelope = {
+  type: 'encrypted',
+  payload: {
+    ciphertext: 'base64-encrypted-data',
+    nonce: 'base64-nonce',
+    tag: 'base64-auth-tag',
+  },
+};
+```
+
+## Event Filtering Types
+
+```typescript
+import {
+  FilterMode,
+  PatternType,
+  DEFAULT_ALWAYS_ALLOW,
+} from '@enclavejs/types';
+
+import type {
+  ContentPattern,
+  TypeFilter,
+  ContentFilter,
+  EventFilterConfig,
+} from '@enclavejs/types';
+
+// Filter modes
+FilterMode.INCLUDE  // Only include matching events
+FilterMode.EXCLUDE  // Exclude matching events
+
+// Pattern types
+PatternType.EXACT   // Exact string match
+PatternType.PREFIX  // Prefix match
+PatternType.REGEX   // Regular expression
+PatternType.GLOB    // Glob pattern (*, ?)
+
+// Filter configuration
+const filterConfig: EventFilterConfig = {
+  typeFilter: {
+    mode: FilterMode.EXCLUDE,
+    types: ['heartbeat'],  // Exclude heartbeats
+  },
+  contentFilter: {
+    patterns: [
+      {
+        type: PatternType.PREFIX,
+        content: 'DEBUG:',
+      },
+    ],
+    mode: FilterMode.EXCLUDE,
+  },
+};
+```
+
+## Runtime Channel Messages
+
+```typescript
+import {
+  RuntimeChannelMessageType,
+  parseRuntimeChannelMessage,
+} from '@enclavejs/types';
+
+import type {
+  ToolResultSubmitMessage,
+  CancelMessage,
+  RuntimeChannelMessage,
+} from '@enclavejs/types';
+
+// Submit tool result
+const toolResult: ToolResultSubmitMessage = {
+  type: 'tool_result',
+  payload: {
+    callId: 'call_...',
+    result: { data: 'fetched data' },
+    error: null,
+  },
+};
+
+// Cancel execution
+const cancel: CancelMessage = {
+  type: 'cancel',
+  payload: {
+    sessionId: 'ses_...',
+    reason: 'User requested cancellation',
+  },
+};
+```
+
+## Reference Tokens
+
+```typescript
+import {
+  isRefToken,
+  createRefToken,
+} from '@enclavejs/types';
+
+import type { RefToken } from '@enclavejs/types';
+
+// Create a reference token for large data
+const token = createRefToken();
+// { __ref: 'ref_uuid-here' }
+
+// Check if value is a reference token
+if (isRefToken(value)) {
+  // value has type RefToken
+  console.log(value.__ref);
+}
+```
+
+## Links
+
+- [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclavejs-types)
+- [npm](https://www.npmjs.com/package/@enclavejs/types)

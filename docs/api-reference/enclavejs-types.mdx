@@ -1,0 +1,454 @@
+---
+title: '@enclavejs/types API'
+description: 'Type definitions and Zod schemas for EnclaveJS'
+---
+
+Type definitions and Zod schemas for the EnclaveJS streaming protocol.
+
+## Installation
+
+```bash
+npm install @enclavejs/types
+```
+
+## Stream Events
+
+### StreamEvent
+
+Union type of all possible stream events.
+
+```ts
+type StreamEvent =
+  | SessionInitEvent
+  | StdoutEvent
+  | LogEvent
+  | ToolCallEvent
+  | ToolResultAppliedEvent
+  | HeartbeatEvent
+  | FinalEvent
+  | ErrorEvent;
+```
+
+### SessionInitEvent
+
+Session initialization event.
+
+```ts
+interface SessionInitEvent {
+  type: 'session_init';
+  sessionId: string;
+  timestamp: number;
+  payload: {
+    limits: {
+      maxDurationMs: number;
+      maxToolCalls: number;
+    };
+  };
+}
+```
+
+### StdoutEvent
+
+Console output event.
+
+```ts
+interface StdoutEvent {
+  type: 'stdout';
+  sessionId: string;
+  timestamp: number;
+  payload: {
+    data: string;
+  };
+}
+```
+
+### LogEvent
+
+Structured log event.
+
+```ts
+interface LogEvent {
+  type: 'log';
+  sessionId: string;
+  timestamp: number;
+  payload: {
+    level: 'debug' | 'info' | 'warn' | 'error';
+    message: string;
+    data?: Record<string, unknown>;
+  };
+}
+```
+
+### ToolCallEvent
+
+Tool execution request event.
+
+```ts
+interface ToolCallEvent {
+  type: 'tool_call';
+  sessionId: string;
+  timestamp: number;
+  payload: {
+    callId: string;
+    tool: string;
+    args: Record<string, unknown>;
+  };
+}
+```
+
+### ToolResultAppliedEvent
+
+Tool result confirmation event.
+
+```ts
+interface ToolResultAppliedEvent {
+  type: 'tool_result_applied';
+  sessionId: string;
+  timestamp: number;
+  payload: {
+    callId: string;
+  };
+}
+```
+
+### HeartbeatEvent
+
+Keep-alive event.
+
+```ts
+interface HeartbeatEvent {
+  type: 'heartbeat';
+  sessionId: string;
+  timestamp: number;
+  payload: Record<string, never>;
+}
+```
+
+### FinalEvent
+
+Execution completion event.
+
+```ts
+interface FinalEvent {
+  type: 'final';
+  sessionId: string;
+  timestamp: number;
+  payload: {
+    result: unknown;
+    stats: ExecutionStats;
+  };
+}
+```
+
+### ErrorEvent
+
+Execution error event.
+
+```ts
+interface ErrorEvent {
+  type: 'error';
+  sessionId: string;
+  timestamp: number;
+  payload: {
+    code: ErrorCode;
+    message: string;
+    data?: Record<string, unknown>;
+  };
+}
+```
+
+## Execution Types
+
+### ExecutionStats
+
+```ts
+interface ExecutionStats {
+  duration: number;
+  toolCallCount: number;
+  iterationCount: number;
+  memoryUsage?: number;
+}
+```
+
+### ErrorCode
+
+```ts
+type ErrorCode =
+  | 'VALIDATION_ERROR'
+  | 'TIMEOUT'
+  | 'MAX_TOOL_CALLS'
+  | 'MAX_ITERATIONS'
+  | 'TOOL_ERROR'
+  | 'MEMORY_LIMIT_EXCEEDED'
+  | 'SCORING_BLOCKED'
+  | 'RUNTIME_ERROR'
+  | 'CONNECTION_ERROR'
+  | 'SESSION_NOT_FOUND';
+```
+
+## Request Types
+
+### ExecuteRequest
+
+```ts
+interface ExecuteRequest {
+  code: string;
+  timeout?: number;
+  maxToolCalls?: number;
+  context?: Record<string, unknown>;
+  filter?: EventFilter;
+}
+```
+
+### ToolResultRequest
+
+```ts
+interface ToolResultRequest {
+  callId: string;
+  result: unknown;
+  error?: {
+    message: string;
+    code?: string;
+  };
+}
+```
+
+### EventFilter
+
+```ts
+interface EventFilter {
+  types?: EventType[];
+  blockedTypes?: EventType[];
+}
+
+type EventType =
+  | 'session_init'
+  | 'stdout'
+  | 'log'
+  | 'tool_call'
+  | 'tool_result_applied'
+  | 'heartbeat'
+  | 'final'
+  | 'error';
+```
+
+## Session Types
+
+### Session
+
+```ts
+interface Session {
+  id: string;
+  status: SessionStatus;
+  createdAt: number;
+  expiresAt: number;
+  lastActivity: number;
+  metadata?: Record<string, unknown>;
+}
+
+type SessionStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'error'
+  | 'timeout';
+```
+
+## Encryption Types
+
+### EncryptedPayload
+
+```ts
+interface EncryptedPayload {
+  encrypted: true;
+  iv: string;
+  ciphertext: string;
+  tag?: string;
+}
+```
+
+### KeyExchange
+
+```ts
+interface ClientHello {
+  type: 'ClientHello';
+  publicKey: string;
+  nonce?: string;
+}
+
+interface ServerHello {
+  type: 'ServerHello';
+  publicKey: string;
+  sessionId: string;
+  nonce?: string;
+}
+```
+
+## Zod Schemas
+
+All types have corresponding Zod schemas for runtime validation.
+
+```ts
+import {
+  StreamEventSchema,
+  ExecuteRequestSchema,
+  ToolResultRequestSchema,
+  SessionSchema,
+} from '@enclavejs/types';
+
+// Validate incoming event
+const event = StreamEventSchema.parse(rawData);
+
+// Validate request body
+const request = ExecuteRequestSchema.parse(req.body);
+```
+
+### Schema Examples
+
+```ts
+import { z } from 'zod';
+import {
+  StreamEventSchema,
+  StdoutEventSchema,
+  ToolCallEventSchema,
+  FinalEventSchema,
+  ErrorEventSchema,
+} from '@enclavejs/types';
+
+// Parse and type-narrow
+function handleEvent(raw: unknown) {
+  const event = StreamEventSchema.parse(raw);
+
+  switch (event.type) {
+    case 'stdout':
+      // event is StdoutEvent
+      console.log(event.payload.data);
+      break;
+    case 'tool_call':
+      // event is ToolCallEvent
+      handleToolCall(event.payload.callId, event.payload.tool);
+      break;
+    case 'final':
+      // event is FinalEvent
+      console.log('Result:', event.payload.result);
+      break;
+    case 'error':
+      // event is ErrorEvent
+      console.error(event.payload.message);
+      break;
+  }
+}
+```
+
+## Type Guards
+
+```ts
+import {
+  isStdoutEvent,
+  isToolCallEvent,
+  isFinalEvent,
+  isErrorEvent,
+} from '@enclavejs/types';
+
+function processEvent(event: StreamEvent) {
+  if (isStdoutEvent(event)) {
+    // event is StdoutEvent
+    console.log(event.payload.data);
+  }
+
+  if (isToolCallEvent(event)) {
+    // event is ToolCallEvent
+    return executeToolCall(event.payload);
+  }
+
+  if (isFinalEvent(event)) {
+    // event is FinalEvent
+    return event.payload.result;
+  }
+
+  if (isErrorEvent(event)) {
+    // event is ErrorEvent
+    throw new Error(event.payload.message);
+  }
+}
+```
+
+## Constants
+
+```ts
+import {
+  PROTOCOL_VERSION,
+  HEARTBEAT_INTERVAL,
+  DEFAULT_TIMEOUT,
+  MAX_CODE_SIZE,
+  EVENT_TYPES,
+  ERROR_CODES,
+} from '@enclavejs/types';
+
+console.log(PROTOCOL_VERSION); // "1.0"
+console.log(HEARTBEAT_INTERVAL); // 5000
+console.log(DEFAULT_TIMEOUT); // 30000
+console.log(MAX_CODE_SIZE); // 100000
+```
+
+## Complete Example
+
+```ts
+import {
+  StreamEvent,
+  StdoutEvent,
+  ToolCallEvent,
+  FinalEvent,
+  ErrorEvent,
+  ExecuteRequest,
+  ToolResultRequest,
+  StreamEventSchema,
+  ExecuteRequestSchema,
+  isToolCallEvent,
+  isFinalEvent,
+  isErrorEvent,
+} from '@enclavejs/types';
+
+// Validate request
+function validateExecuteRequest(body: unknown): ExecuteRequest {
+  return ExecuteRequestSchema.parse(body);
+}
+
+// Process stream events
+async function processStream(
+  stream: AsyncIterable<unknown>,
+  onToolCall: (call: ToolCallEvent['payload']) => Promise<unknown>
+): Promise<unknown> {
+  for await (const raw of stream) {
+    const event = StreamEventSchema.parse(raw);
+
+    if (isToolCallEvent(event)) {
+      const result = await onToolCall(event.payload);
+      // Send result back...
+    }
+
+    if (isFinalEvent(event)) {
+      return event.payload.result;
+    }
+
+    if (isErrorEvent(event)) {
+      throw new Error(`${event.payload.code}: ${event.payload.message}`);
+    }
+  }
+}
+
+// Create typed request
+const request: ExecuteRequest = {
+  code: `return await callTool('test', {});`,
+  timeout: 30000,
+  filter: {
+    blockedTypes: ['heartbeat'],
+  },
+};
+```
+
+## Related
+
+- [Streaming Protocol](/concepts/streaming-protocol) - Protocol overview
+- [@enclavejs/stream](/api-reference/enclavejs-stream) - Stream utilities
+- [@enclavejs/client](/api-reference/enclavejs-client) - Client SDK

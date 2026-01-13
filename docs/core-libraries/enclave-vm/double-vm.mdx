@@ -1,0 +1,225 @@
+---
+title: 'Double VM Layer'
+description: 'Enhanced security through nested VM isolation with operation validation'
+---
+
+The Double VM layer provides enhanced security through nested VM isolation. A parent VM acts as a security barrier that validates all operations before they reach the host system.
+
+## Architecture
+
+```
+┌─────────────────────────────────┐
+│         Host Process            │
+├─────────────────────────────────┤
+│  ┌────────────────────────────┐ │
+│  │        Parent VM           │ │
+│  │   (Security Validation)    │ │
+│  │  ┌──────────────────────┐  │ │
+│  │  │      Inner VM        │  │ │
+│  │  │  (Code Execution)    │  │ │
+│  │  └──────────────────────┘  │ │
+│  └────────────────────────────┘ │
+└─────────────────────────────────┘
+```
+
+- **Parent VM**: Security barrier with operation validation
+- **Inner VM**: Isolated execution environment for user code
+- **Tool call flow**: Inner VM → Parent VM validation → Host handler
+
+## Basic Configuration
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({
+  securityLevel: 'SECURE',
+  doubleVm: {
+    enabled: true, // Default: true
+    parentTimeoutBuffer: 1000, // Extra timeout for parent VM (ms)
+    parentValidation: {
+      validateOperationNames: true,
+      maxOperationsPerSecond: 100, // Rate limiting
+      blockSuspiciousSequences: true, // Detect attack patterns
+    },
+  },
+});
+```
+
+## Parent Validation Options
+
+```ts
+interface ParentValidationOptions {
+  // Name validation
+  validateOperationNames: boolean;
+  allowedOperationPattern?: RegExp;    // Whitelist pattern
+  blockedOperationPatterns?: RegExp[]; // Blacklist patterns
+
+  // Rate limiting
+  maxOperationsPerSecond: number;
+
+  // Pattern detection
+  blockSuspiciousSequences: boolean;
+  suspiciousPatterns?: SuspiciousPattern[];
+}
+```
+
+## Operation Name Filtering
+
+Control which tool names are allowed:
+
+```ts
+const enclave = new Enclave({
+  doubleVm: {
+    parentValidation: {
+      validateOperationNames: true,
+
+      // Only allow specific patterns
+      allowedOperationPattern: /^[a-z]+:[a-z]+$/i,
+
+      // Block admin operations
+      blockedOperationPatterns: [
+        /^admin:/i,
+        /^system:/i,
+        /delete/i,
+      ],
+    },
+  },
+});
+```
+
+## Built-in Suspicious Pattern Detection
+
+The Double VM detects these attack patterns automatically:
+
+| Pattern | Description |
+|---------|-------------|
+| `EXFIL_LIST_SEND` | List/query followed by send/export |
+| `RAPID_ENUMERATION` | Same operation called >10 times in 5s |
+| `CREDENTIAL_EXFIL` | Credential access + external operation |
+| `BULK_OPERATION` | Bulk/batch/mass operation names |
+| `DELETE_AFTER_ACCESS` | Delete operation after data access |
+
+```ts
+const enclave = new Enclave({
+  doubleVm: {
+    parentValidation: {
+      blockSuspiciousSequences: true,
+      // All built-in patterns are enabled by default
+    },
+  },
+});
+```
+
+## Custom Suspicious Patterns
+
+Define your own detection logic:
+
+```ts
+const enclave = new Enclave({
+  doubleVm: {
+    parentValidation: {
+      suspiciousPatterns: [
+        {
+          id: 'CUSTOM_PATTERN',
+          description: 'Custom detection logic',
+          detect: (operationName, args, history) => {
+            // Check if operation is suspicious based on context
+            if (operationName.includes('dangerous')) {
+              return true;
+            }
+
+            // Check operation history
+            const recentOps = history.slice(-5);
+            if (recentOps.some(op => op.name === 'sensitive:read')) {
+              return operationName.includes('send');
+            }
+
+            return false;
+          },
+        },
+        {
+          id: 'RATE_SPIKE',
+          description: 'Sudden increase in operation rate',
+          detect: (operationName, args, history) => {
+            const last10 = history.slice(-10);
+            const timeSpan = Date.now() - (last10[0]?.timestamp || 0);
+            return timeSpan < 1000; // 10 ops in <1s
+          },
+        },
+      ],
+    },
+  },
+});
+```
+
+## Detection Pattern Interface
+
+```ts
+interface SuspiciousPattern {
+  id: string;              // Unique identifier
+  description: string;     // Human-readable description
+  detect: (
+    operationName: string,
+    args: unknown,
+    history: OperationHistoryEntry[]
+  ) => boolean;
+}
+
+interface OperationHistoryEntry {
+  name: string;
+  args: unknown;
+  timestamp: number;
+}
+```
+
+## Rate Limiting
+
+Prevent rapid-fire tool calls:
+
+```ts
+const enclave = new Enclave({
+  doubleVm: {
+    parentValidation: {
+      maxOperationsPerSecond: 50, // Allow max 50 ops/sec
+    },
+  },
+});
+```
+
+When the rate limit is exceeded, subsequent calls are blocked until the rate drops.
+
+## Security Benefits
+
+1. **Operation Isolation** - Tool calls pass through validation layer
+2. **Pattern Detection** - Detect multi-step attack sequences
+3. **Rate Limiting** - Prevent denial-of-service via tool flooding
+4. **Audit Trail** - Operation history for forensics
+5. **Defense in Depth** - Additional layer beyond AST validation
+
+## Performance Considerations
+
+The Double VM adds minimal overhead:
+
+- **Latency**: ~1-2ms per tool call for validation
+- **Memory**: ~10MB additional for parent VM context
+- **CPU**: Negligible for pattern matching
+
+For performance-critical applications, you can disable specific features:
+
+```ts
+const enclave = new Enclave({
+  doubleVm: {
+    enabled: true,
+    parentValidation: {
+      validateOperationNames: true,
+      blockSuspiciousSequences: false, // Disable pattern detection
+    },
+  },
+});
+```
+
+## Related
+
+- [Security Levels](/core-libraries/enclave-vm/security-levels) - Security presets
+- [AI Scoring Gate](/core-libraries/enclave-vm/ai-scoring) - Semantic security analysis
+- [Worker Pool](/core-libraries/enclave-vm/worker-pool) - OS-level isolation

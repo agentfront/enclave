@@ -1,0 +1,445 @@
+---
+title: '@enclavejs/broker API'
+description: 'API reference for the EnclaveJS broker package'
+---
+
+API reference for the `@enclavejs/broker` package - the orchestration layer for EnclaveJS.
+
+## Installation
+
+```bash
+npm install @enclavejs/broker
+```
+
+## EnclaveBroker Class
+
+The main broker class for session management and tool orchestration.
+
+### Constructor
+
+```ts
+new EnclaveBroker(options: BrokerOptions)
+```
+
+### BrokerOptions
+
+```ts
+interface BrokerOptions {
+  // Session management
+  redis?: Redis;
+  sessionTimeout?: number;
+  maxConcurrentSessions?: number;
+
+  // Tool registry
+  tools?: ToolRegistry;
+  toolHandler?: ToolHandler;
+
+  // Runtime pool
+  runtimePool?: RuntimePoolOptions;
+
+  // Security
+  authentication?: AuthConfig;
+  rateLimiting?: RateLimitConfig;
+
+  // Logging
+  logger?: Logger;
+}
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `redis` | `Redis` | In-memory | Redis client for distributed state |
+| `sessionTimeout` | `number` | `300000` | Session timeout in ms (5 min) |
+| `maxConcurrentSessions` | `number` | `1000` | Max concurrent sessions |
+| `tools` | `ToolRegistry` | `undefined` | Tool registry |
+| `toolHandler` | `ToolHandler` | `undefined` | Tool execution handler |
+
+### Methods
+
+#### listen(port)
+
+Start the HTTP server.
+
+```ts
+async listen(port: number): Promise<void>
+```
+
+**Example:**
+```ts
+const broker = new EnclaveBroker({ /* options */ });
+await broker.listen(3001);
+console.log('Broker listening on port 3001');
+```
+
+#### close()
+
+Stop the server and clean up.
+
+```ts
+async close(): Promise<void>
+```
+
+#### execute(code, options?)
+
+Execute code and return a stream.
+
+```ts
+execute(code: string, options?: ExecuteOptions): AsyncIterable<StreamEvent>
+```
+
+**Options:**
+```ts
+interface ExecuteOptions {
+  timeout?: number;
+  maxToolCalls?: number;
+  context?: Record<string, unknown>;
+  filter?: EventFilter;
+}
+```
+
+**Example:**
+```ts
+const stream = broker.execute(code, { timeout: 30000 });
+
+for await (const event of stream) {
+  console.log(event.type, event.payload);
+}
+```
+
+#### getSession(sessionId)
+
+Get session information.
+
+```ts
+async getSession(sessionId: string): Promise<Session | null>
+```
+
+#### submitToolResult(sessionId, callId, result)
+
+Submit a tool call result.
+
+```ts
+async submitToolResult(
+  sessionId: string,
+  callId: string,
+  result: unknown
+): Promise<void>
+```
+
+## HTTP API Endpoints
+
+### POST /execute
+
+Execute code with streaming response.
+
+**Request:**
+```ts
+{
+  code: string;
+  timeout?: number;
+  maxToolCalls?: number;
+  context?: Record<string, unknown>;
+  filter?: {
+    types?: string[];
+    blockedTypes?: string[];
+  };
+}
+```
+
+**Response:** NDJSON stream of events
+
+**Example:**
+```bash
+curl -X POST http://localhost:3001/execute \
+  -H "Content-Type: application/json" \
+  -d '{"code": "return 1 + 2"}' \
+  --no-buffer
+```
+
+### GET /sessions/:sessionId
+
+Get session status.
+
+**Response:**
+```ts
+{
+  id: string;
+  status: 'pending' | 'running' | 'completed' | 'error';
+  createdAt: number;
+  expiresAt: number;
+}
+```
+
+### POST /sessions/:sessionId/tool-result
+
+Submit tool execution result.
+
+**Request:**
+```ts
+{
+  callId: string;
+  result: unknown;
+  error?: {
+    message: string;
+    code?: string;
+  };
+}
+```
+
+**Response:**
+```ts
+{
+  success: true;
+}
+```
+
+### GET /health
+
+Health check endpoint.
+
+**Response:**
+```ts
+{
+  status: 'ok';
+  uptime: number;
+  sessions: {
+    active: number;
+    total: number;
+  };
+}
+```
+
+## ToolRegistry Class
+
+Registry for managing tools.
+
+### Constructor
+
+```ts
+new ToolRegistry()
+```
+
+### Methods
+
+#### register(tool)
+
+Register a tool.
+
+```ts
+register(tool: ToolDefinition): void
+```
+
+```ts
+interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, ParameterDef>;
+  handler: ToolHandler;
+}
+
+interface ParameterDef {
+  type: 'string' | 'number' | 'boolean' | 'object' | 'array';
+  description: string;
+  required?: boolean;
+  default?: unknown;
+}
+
+type ToolHandler = (
+  args: Record<string, unknown>,
+  context?: ExecutionContext
+) => Promise<unknown>;
+```
+
+**Example:**
+```ts
+const registry = new ToolRegistry();
+
+registry.register({
+  name: 'users:list',
+  description: 'List all users',
+  parameters: {
+    limit: {
+      type: 'number',
+      description: 'Max users to return',
+      default: 10,
+    },
+  },
+  handler: async (args) => {
+    return db.users.findAll({ limit: args.limit });
+  },
+});
+```
+
+#### get(name)
+
+Get a tool by name.
+
+```ts
+get(name: string): ToolDefinition | undefined
+```
+
+#### list()
+
+List all registered tools.
+
+```ts
+list(): ToolDefinition[]
+```
+
+#### getDocumentation()
+
+Get tool documentation for LLM prompts.
+
+```ts
+getDocumentation(): string
+```
+
+## RuntimePoolOptions
+
+```ts
+interface RuntimePoolOptions {
+  minSize: number;
+  maxSize: number;
+  scaleUpThreshold: number;
+  scaleDownThreshold: number;
+  scaleInterval: number;
+}
+```
+
+## Authentication
+
+```ts
+interface AuthConfig {
+  type: 'bearer' | 'api-key' | 'custom';
+  validate: (token: string) => Promise<AuthResult>;
+}
+
+interface AuthResult {
+  valid: boolean;
+  userId?: string;
+  tenantId?: string;
+  permissions?: string[];
+}
+```
+
+**Example:**
+```ts
+const broker = new EnclaveBroker({
+  authentication: {
+    type: 'bearer',
+    validate: async (token) => {
+      const decoded = verifyJWT(token);
+      return {
+        valid: true,
+        userId: decoded.sub,
+        permissions: decoded.permissions,
+      };
+    },
+  },
+});
+```
+
+## Rate Limiting
+
+```ts
+interface RateLimitConfig {
+  windowMs: number;
+  maxRequests: number;
+  keyGenerator?: (req: Request) => string;
+}
+```
+
+**Example:**
+```ts
+const broker = new EnclaveBroker({
+  rateLimiting: {
+    windowMs: 60000,
+    maxRequests: 100,
+    keyGenerator: (req) => req.headers['x-api-key'] || req.ip,
+  },
+});
+```
+
+## Events
+
+### BrokerEvents
+
+```ts
+broker.on('session:created', (session) => { });
+broker.on('session:completed', (session, result) => { });
+broker.on('session:error', (session, error) => { });
+broker.on('tool:called', (session, tool, args) => { });
+broker.on('tool:completed', (session, tool, result) => { });
+```
+
+## Complete Example
+
+```ts
+import { EnclaveBroker, ToolRegistry } from '@enclavejs/broker';
+import Redis from 'ioredis';
+
+// Create tool registry
+const tools = new ToolRegistry();
+
+tools.register({
+  name: 'users:list',
+  description: 'List users',
+  parameters: {
+    limit: { type: 'number', description: 'Max results' },
+  },
+  handler: async (args) => {
+    return [
+      { id: '1', name: 'Alice' },
+      { id: '2', name: 'Bob' },
+    ].slice(0, args.limit || 10);
+  },
+});
+
+tools.register({
+  name: 'users:get',
+  description: 'Get user by ID',
+  parameters: {
+    id: { type: 'string', description: 'User ID', required: true },
+  },
+  handler: async (args) => {
+    return { id: args.id, name: 'Alice' };
+  },
+});
+
+// Create broker
+const broker = new EnclaveBroker({
+  redis: new Redis(process.env.REDIS_URL),
+  tools,
+  sessionTimeout: 300000,
+  maxConcurrentSessions: 1000,
+  rateLimiting: {
+    windowMs: 60000,
+    maxRequests: 100,
+  },
+});
+
+// Event handlers
+broker.on('session:created', (session) => {
+  console.log('Session created:', session.id);
+});
+
+broker.on('tool:called', (session, tool, args) => {
+  console.log(`Tool called: ${tool}`, args);
+});
+
+// Start server
+await broker.listen(3001);
+console.log('Broker running on port 3001');
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  await broker.close();
+  process.exit(0);
+});
+```
+
+## Related
+
+- [Broker Overview](/enclavejs/broker) - Architecture guide
+- [@enclavejs/types](/api-reference/enclavejs-types) - Type definitions
+- [@enclavejs/client](/api-reference/enclavejs-client) - Client SDK

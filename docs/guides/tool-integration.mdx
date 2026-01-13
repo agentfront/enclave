@@ -1,0 +1,495 @@
+---
+title: 'Tool Integration'
+description: 'Connect external APIs and services as tools for your agents'
+---
+
+Tools are the bridge between your AI agent and the outside world. This guide covers patterns for integrating external APIs, databases, and services as tools.
+
+## Tool Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│                    Enclave                       │
+│  ┌───────────────────────────────────────────┐  │
+│  │    const result = await callTool(         │  │
+│  │      'github:issues',                     │  │
+│  │      { repo: 'owner/repo', state: 'open' }│  │
+│  │    );                                     │  │
+│  └───────────────────┬───────────────────────┘  │
+└──────────────────────┼──────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────────┐
+│                 Tool Handler                      │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐ │
+│  │  Validate  │──│  Execute   │──│  Sanitize  │ │
+│  │  Input     │  │  API Call  │  │  Output    │ │
+│  └────────────┘  └────────────┘  └────────────┘ │
+└──────────────────────────────────────────────────┘
+                       │
+                       ▼
+              External APIs/Services
+```
+
+## Basic Tool Handler
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({
+  toolHandler: async (name, args) => {
+    switch (name) {
+      case 'weather:current':
+        return getWeather(args.city as string);
+      case 'github:issues':
+        return getGitHubIssues(args as GitHubArgs);
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  },
+});
+```
+
+## Tool Registry Pattern
+
+For larger applications, use a registry:
+
+```ts
+// src/tools/registry.ts
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, ParameterDef>;
+  handler: (args: Record<string, unknown>) => Promise<unknown>;
+}
+
+interface ParameterDef {
+  type: 'string' | 'number' | 'boolean' | 'object' | 'array';
+  description: string;
+  required?: boolean;
+}
+
+class ToolRegistry {
+  private tools = new Map<string, ToolDefinition>();
+
+  register(tool: ToolDefinition) {
+    this.tools.set(tool.name, tool);
+  }
+
+  async execute(name: string, args: Record<string, unknown>) {
+    const tool = this.tools.get(name);
+    if (!tool) {
+      throw new Error(`Unknown tool: ${name}`);
+    }
+
+    // Validate arguments
+    this.validateArgs(tool, args);
+
+    // Execute handler
+    return tool.handler(args);
+  }
+
+  private validateArgs(tool: ToolDefinition, args: Record<string, unknown>) {
+    for (const [name, def] of Object.entries(tool.parameters)) {
+      if (def.required && !(name in args)) {
+        throw new Error(`Missing required parameter: ${name}`);
+      }
+      if (name in args && !this.checkType(args[name], def.type)) {
+        throw new Error(`Invalid type for ${name}: expected ${def.type}`);
+      }
+    }
+  }
+
+  private checkType(value: unknown, type: string): boolean {
+    switch (type) {
+      case 'string': return typeof value === 'string';
+      case 'number': return typeof value === 'number';
+      case 'boolean': return typeof value === 'boolean';
+      case 'object': return typeof value === 'object' && value !== null;
+      case 'array': return Array.isArray(value);
+      default: return true;
+    }
+  }
+
+  getToolDocs(): string {
+    return Array.from(this.tools.values())
+      .map(t => `- ${t.name}: ${t.description}`)
+      .join('\n');
+  }
+}
+
+export const registry = new ToolRegistry();
+```
+
+## Integrating REST APIs
+
+### HTTP Client Tool
+
+```ts
+// src/tools/http.ts
+import { registry } from './registry';
+
+registry.register({
+  name: 'http:get',
+  description: 'Make an HTTP GET request',
+  parameters: {
+    url: { type: 'string', description: 'URL to fetch', required: true },
+    headers: { type: 'object', description: 'Request headers' },
+  },
+  handler: async (args) => {
+    const response = await fetch(args.url as string, {
+      headers: args.headers as Record<string, string>,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    return response.json();
+  },
+});
+```
+
+### GitHub API Integration
+
+```ts
+// src/tools/github.ts
+import { Octokit } from '@octokit/rest';
+import { registry } from './registry';
+
+const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+
+registry.register({
+  name: 'github:issues',
+  description: 'List issues from a GitHub repository',
+  parameters: {
+    owner: { type: 'string', description: 'Repository owner', required: true },
+    repo: { type: 'string', description: 'Repository name', required: true },
+    state: { type: 'string', description: 'Issue state (open/closed/all)' },
+    labels: { type: 'array', description: 'Filter by labels' },
+  },
+  handler: async (args) => {
+    const { data } = await octokit.issues.listForRepo({
+      owner: args.owner as string,
+      repo: args.repo as string,
+      state: (args.state as 'open' | 'closed' | 'all') || 'open',
+      labels: (args.labels as string[])?.join(','),
+      per_page: 100,
+    });
+
+    // Return simplified data
+    return data.map(issue => ({
+      number: issue.number,
+      title: issue.title,
+      state: issue.state,
+      labels: issue.labels.map(l => typeof l === 'string' ? l : l.name),
+      assignee: issue.assignee?.login,
+      created_at: issue.created_at,
+    }));
+  },
+});
+
+registry.register({
+  name: 'github:createIssue',
+  description: 'Create a new GitHub issue',
+  parameters: {
+    owner: { type: 'string', required: true },
+    repo: { type: 'string', required: true },
+    title: { type: 'string', required: true },
+    body: { type: 'string' },
+    labels: { type: 'array' },
+  },
+  handler: async (args) => {
+    const { data } = await octokit.issues.create({
+      owner: args.owner as string,
+      repo: args.repo as string,
+      title: args.title as string,
+      body: args.body as string,
+      labels: args.labels as string[],
+    });
+
+    return {
+      number: data.number,
+      url: data.html_url,
+    };
+  },
+});
+```
+
+## Integrating Databases
+
+### PostgreSQL Integration
+
+```ts
+// src/tools/database.ts
+import { Pool } from 'pg';
+import { registry } from './registry';
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+registry.register({
+  name: 'db:query',
+  description: 'Execute a read-only SQL query',
+  parameters: {
+    query: { type: 'string', description: 'SQL SELECT query', required: true },
+    params: { type: 'array', description: 'Query parameters' },
+  },
+  handler: async (args) => {
+    const query = args.query as string;
+
+    // Security: Only allow SELECT queries
+    if (!query.trim().toLowerCase().startsWith('select')) {
+      throw new Error('Only SELECT queries are allowed');
+    }
+
+    const result = await pool.query(query, args.params as unknown[]);
+    return result.rows;
+  },
+});
+
+registry.register({
+  name: 'db:users:list',
+  description: 'List users with optional filtering',
+  parameters: {
+    limit: { type: 'number', description: 'Max results (default 100)' },
+    offset: { type: 'number', description: 'Skip results' },
+    active: { type: 'boolean', description: 'Filter by active status' },
+  },
+  handler: async (args) => {
+    const limit = Math.min((args.limit as number) || 100, 1000);
+    const offset = (args.offset as number) || 0;
+
+    let query = 'SELECT id, name, email, created_at FROM users';
+    const params: unknown[] = [];
+
+    if (args.active !== undefined) {
+      query += ' WHERE active = $1';
+      params.push(args.active);
+    }
+
+    query += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    params.push(limit, offset);
+
+    const result = await pool.query(query, params);
+    return result.rows;
+  },
+});
+```
+
+## Rate Limiting
+
+Protect external services from abuse:
+
+```ts
+// src/tools/rate-limiter.ts
+class RateLimiter {
+  private counts = new Map<string, { count: number; resetAt: number }>();
+
+  constructor(
+    private limit: number,
+    private windowMs: number
+  ) {}
+
+  check(key: string): boolean {
+    const now = Date.now();
+    const record = this.counts.get(key);
+
+    if (!record || record.resetAt < now) {
+      this.counts.set(key, { count: 1, resetAt: now + this.windowMs });
+      return true;
+    }
+
+    if (record.count >= this.limit) {
+      return false;
+    }
+
+    record.count++;
+    return true;
+  }
+}
+
+// Apply rate limiting to tool handler
+const apiLimiter = new RateLimiter(100, 60000); // 100 calls per minute
+
+function createRateLimitedHandler(registry: ToolRegistry) {
+  return async (name: string, args: Record<string, unknown>) => {
+    if (!apiLimiter.check(name)) {
+      throw new Error(`Rate limit exceeded for tool: ${name}`);
+    }
+    return registry.execute(name, args);
+  };
+}
+```
+
+## Error Handling
+
+Return structured errors for better LLM understanding:
+
+```ts
+// src/tools/errors.ts
+interface ToolError {
+  error: true;
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+function handleToolError(error: unknown): ToolError {
+  if (error instanceof Error) {
+    // Network errors
+    if (error.message.includes('ECONNREFUSED')) {
+      return {
+        error: true,
+        code: 'CONNECTION_ERROR',
+        message: 'Service unavailable',
+        retryable: true,
+      };
+    }
+
+    // Rate limits
+    if (error.message.includes('rate limit')) {
+      return {
+        error: true,
+        code: 'RATE_LIMIT',
+        message: 'Too many requests, try again later',
+        retryable: true,
+      };
+    }
+
+    // Auth errors
+    if (error.message.includes('unauthorized')) {
+      return {
+        error: true,
+        code: 'UNAUTHORIZED',
+        message: 'Authentication failed',
+        retryable: false,
+      };
+    }
+  }
+
+  return {
+    error: true,
+    code: 'UNKNOWN_ERROR',
+    message: String(error),
+    retryable: false,
+  };
+}
+
+// Wrap tool execution
+async function safeToolExecute(
+  registry: ToolRegistry,
+  name: string,
+  args: Record<string, unknown>
+) {
+  try {
+    return await registry.execute(name, args);
+  } catch (error) {
+    return handleToolError(error);
+  }
+}
+```
+
+## Context-Aware Tools
+
+Pass execution context to tools:
+
+```ts
+interface ExecutionContext {
+  userId: string;
+  tenantId: string;
+  permissions: string[];
+}
+
+const enclave = new Enclave({
+  toolHandler: async (name, args, context: ExecutionContext) => {
+    // Check permissions
+    const requiredPermission = getRequiredPermission(name);
+    if (!context.permissions.includes(requiredPermission)) {
+      throw new Error(`Permission denied: ${requiredPermission}`);
+    }
+
+    // Pass context to tool
+    return registry.execute(name, { ...args, _context: context });
+  },
+});
+
+// Execute with context
+await enclave.run(code, {
+  context: {
+    userId: 'user-123',
+    tenantId: 'tenant-456',
+    permissions: ['read:users', 'write:issues'],
+  },
+});
+```
+
+## Tool Documentation for LLMs
+
+Generate tool documentation for LLM prompts:
+
+```ts
+function generateToolDocs(registry: ToolRegistry): string {
+  const tools = registry.getAllTools();
+
+  return tools.map(tool => {
+    const params = Object.entries(tool.parameters)
+      .map(([name, def]) => {
+        const required = def.required ? '' : '?';
+        return `    ${name}${required}: ${def.type} - ${def.description}`;
+      })
+      .join('\n');
+
+    return `### ${tool.name}
+${tool.description}
+
+Parameters:
+${params}`;
+  }).join('\n\n');
+}
+```
+
+## Testing Tools
+
+```ts
+import { describe, it, expect } from 'vitest';
+import { registry } from './registry';
+
+describe('GitHub Tools', () => {
+  it('lists issues', async () => {
+    const result = await registry.execute('github:issues', {
+      owner: 'test-org',
+      repo: 'test-repo',
+      state: 'open',
+    });
+
+    expect(Array.isArray(result)).toBe(true);
+    expect(result[0]).toHaveProperty('number');
+    expect(result[0]).toHaveProperty('title');
+  });
+
+  it('validates required parameters', async () => {
+    await expect(
+      registry.execute('github:issues', { owner: 'test-org' })
+    ).rejects.toThrow('Missing required parameter: repo');
+  });
+});
+```
+
+## Best Practices
+
+1. **Validate all inputs** - Never trust data from the sandbox
+2. **Use typed parameters** - Define clear parameter schemas
+3. **Return structured data** - JSON-serializable results only
+4. **Limit data size** - Cap array lengths and string sizes
+5. **Log all calls** - Audit trail for debugging
+6. **Handle errors gracefully** - Return structured error objects
+7. **Rate limit external calls** - Protect APIs from abuse
+8. **Timeout long operations** - Don't block indefinitely
+
+## Related
+
+- [Tool System](/core-libraries/enclave-vm/tool-system) - Core tool API
+- [First Agent](/guides/first-agent) - Complete agent example
+- [Security Hardening](/guides/security-hardening) - Secure your tools

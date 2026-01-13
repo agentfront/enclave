@@ -1,0 +1,219 @@
+---
+title: 'Configuration'
+description: 'Complete configuration reference for enclave-vm'
+---
+
+This page documents all configuration options for enclave-vm.
+
+## Quick Example
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({
+  // Security level preset
+  securityLevel: 'SECURE',
+
+  // Core limits
+  timeout: 10000,
+  maxToolCalls: 50,
+  maxIterations: 5000,
+
+  // Tool handler
+  toolHandler: async (name, args) => {
+    return executeToolSafely(name, args);
+  },
+
+  // Additional options
+  globals: { context: { userId: 'user-123' } },
+  validate: true,
+  transform: true,
+});
+```
+
+## Core Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `securityLevel` | string | `'STANDARD'` | Preset: `STRICT`, `SECURE`, `STANDARD`, `PERMISSIVE` |
+| `timeout` | number | 30000 | Maximum execution time in milliseconds |
+| `maxToolCalls` | number | 100 | Maximum tool calls per execution |
+| `maxIterations` | number | 10000 | Maximum loop iterations (prevents infinite loops) |
+| `toolHandler` | function | - | Async function that handles `callTool()` invocations |
+| `globals` | object | - | Additional globals available in script context |
+| `validate` | boolean | true | Validate code with ast-guard before execution |
+| `transform` | boolean | true | Transform code before execution |
+
+## Console Limits
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxConsoleOutputBytes` | number | 1MB | Maximum total console output in bytes |
+| `maxConsoleCalls` | number | 1000 | Maximum number of console calls |
+
+## Memory Tracking
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `memoryLimit` | number | - | Memory limit in bytes (enables tracking) |
+
+```ts
+const enclave = new Enclave({
+  memoryLimit: 32 * 1024 * 1024, // 32MB
+});
+
+const result = await enclave.run(code);
+console.log('Peak memory:', result.stats.memoryUsage);
+```
+
+## Reference Sidecar
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `sidecar.enabled` | boolean | false | Enable sidecar for large data handling |
+| `sidecar.maxTotalSize` | number | 10MB | Maximum total size of stored references |
+| `sidecar.maxReferenceSize` | number | 1MB | Maximum size of a single reference |
+| `sidecar.extractionThreshold` | number | 1024 | Minimum string size to extract |
+| `sidecar.allowComposites` | boolean | false | Allow string concatenation with references |
+
+```ts
+const enclave = new Enclave({
+  sidecar: {
+    enabled: true,
+    extractionThreshold: 1024,
+    maxTotalSize: 50 * 1024 * 1024,
+    allowComposites: false,
+  },
+});
+```
+
+## Double VM Layer
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `doubleVm.enabled` | boolean | true | Enable nested VM isolation |
+| `doubleVm.parentTimeoutBuffer` | number | 1000 | Extra timeout for parent VM (ms) |
+| `doubleVm.parentValidation.validateOperationNames` | boolean | true | Validate tool names |
+| `doubleVm.parentValidation.allowedOperationPattern` | RegExp | - | Whitelist pattern for tool names |
+| `doubleVm.parentValidation.blockedOperationPatterns` | RegExp[] | - | Blacklist patterns |
+| `doubleVm.parentValidation.maxOperationsPerSecond` | number | 100 | Rate limiting |
+| `doubleVm.parentValidation.blockSuspiciousSequences` | boolean | true | Detect attack patterns |
+| `doubleVm.parentValidation.suspiciousPatterns` | array | - | Custom detection patterns |
+
+```ts
+const enclave = new Enclave({
+  doubleVm: {
+    enabled: true,
+    parentValidation: {
+      validateOperationNames: true,
+      blockedOperationPatterns: [/^admin:/i],
+      maxOperationsPerSecond: 50,
+    },
+  },
+});
+```
+
+## AI Scoring Gate
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `scoringGate.scorer` | string | `'disabled'` | Scorer type: `disabled`, `rule-based`, `local-llm`, `external-api` |
+| `scoringGate.blockThreshold` | number | 70 | Score to block execution |
+| `scoringGate.warnThreshold` | number | 40 | Score to log warning |
+| `scoringGate.failOpen` | boolean | true | Allow execution if scoring fails |
+| `scoringGate.externalApi.endpoint` | string | - | External API endpoint |
+| `scoringGate.externalApi.apiKey` | string | - | API key for external service |
+| `scoringGate.externalApi.timeoutMs` | number | 5000 | API timeout |
+| `scoringGate.customAnalyzers` | array | - | Custom analysis functions |
+
+```ts
+const enclave = new Enclave({
+  scoringGate: {
+    scorer: 'rule-based',
+    blockThreshold: 70,
+    warnThreshold: 40,
+  },
+});
+```
+
+## Worker Pool Adapter
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `adapter` | string | `'vm'` | Adapter: `vm` or `worker_threads` |
+| `workerPoolConfig.minWorkers` | number | 2 | Minimum workers to keep warm |
+| `workerPoolConfig.maxWorkers` | number | 8 | Maximum concurrent workers |
+| `workerPoolConfig.memoryLimitPerWorker` | number | 256MB | Memory limit per worker |
+| `workerPoolConfig.maxExecutionsPerWorker` | number | 1000 | Executions before worker recycle |
+| `workerPoolConfig.maxQueueSize` | number | 100 | Maximum pending executions |
+| `workerPoolConfig.maxMessagesPerSecond` | number | 1000 | Message flood protection |
+
+```ts
+const enclave = new Enclave({
+  adapter: 'worker_threads',
+  workerPoolConfig: {
+    minWorkers: 2,
+    maxWorkers: 16,
+    memoryLimitPerWorker: 256 * 1024 * 1024,
+  },
+});
+```
+
+## Security Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `sanitizeStackTraces` | boolean | varies | Remove internal paths from stack traces |
+| `blockTimingAPIs` | boolean | varies | Block Date, performance timing |
+| `allowUnboundedLoops` | boolean | varies | Allow while/do-while loops |
+| `unicodeSecurityCheck` | boolean | varies | Check for Unicode attacks |
+
+## Execution Result
+
+The `run()` method returns:
+
+```ts
+interface ExecutionResult<T> {
+  success: boolean;
+  value?: T;              // Result value (if success)
+  error?: {
+    name: string;
+    message: string;
+    code: string;         // Error code (see below)
+    stack?: string;
+    data?: unknown;       // Additional error context
+  };
+  stats: {
+    duration: number;      // Execution time (ms)
+    toolCallCount: number; // Tool calls made
+    iterationCount: number; // Loop iterations
+    memoryUsage?: number;  // Peak memory (if tracked)
+    sidecar?: {
+      referencesCreated: number;
+      totalBytesStored: number;
+      resolutionCount: number;
+    };
+  };
+}
+```
+
+## Error Codes
+
+| Code | Description |
+|------|-------------|
+| `VALIDATION_ERROR` | AST validation failed |
+| `EXECUTION_ERROR` | Runtime error in script |
+| `TIMEOUT` | Execution exceeded timeout |
+| `TOOL_ERROR` | Tool call failed |
+| `MAX_TOOL_CALLS` | Tool call limit exceeded |
+| `MAX_ITERATIONS` | Loop iteration limit exceeded |
+| `MEMORY_LIMIT_EXCEEDED` | Memory limit exceeded |
+| `SCORING_BLOCKED` | Blocked by scoring gate |
+| `SIDECAR_SIZE_EXCEEDED` | Sidecar storage limit exceeded |
+| `SIDECAR_COMPOSITE_BLOCKED` | String concatenation blocked |
+
+## Related
+
+- [Overview](/core-libraries/enclave-vm/overview) - Getting started
+- [Security Levels](/core-libraries/enclave-vm/security-levels) - Preset comparison
+- [Tool System](/core-libraries/enclave-vm/tool-system) - Tool integration

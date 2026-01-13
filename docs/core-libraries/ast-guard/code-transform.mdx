@@ -1,0 +1,219 @@
+---
+title: 'Code Transformation'
+description: 'Transform validated code for safe execution with runtime proxies'
+---
+
+ast-guard can transform validated code for safe execution. Transformations wrap dangerous operations with safe runtime proxies that enforce limits and provide isolation.
+
+## Basic Usage
+
+```ts
+import { transformAgentScript } from 'ast-guard';
+
+const code = `
+  const users = await callTool('users:list', {});
+  for (const user of users) {
+    console.log(user.name);
+  }
+  return users.length;
+`;
+
+const transformed = transformAgentScript(code, {
+  wrapInMain: true,       // Wrap in async function __ag_main()
+  transformCallTool: true, // callTool -> __safe_callTool
+  transformLoops: true,    // for/for-of -> __safe_for/__safe_forOf
+  prefix: '__safe_',      // Prefix for safe runtime functions
+});
+```
+
+## Transformation Output
+
+```ts
+// Original:
+const users = await callTool('users:list', {});
+for (const user of users) {
+  console.log(user.name);
+}
+return users.length;
+
+// Transformed:
+async function __ag_main() {
+  const users = await __safe_callTool('users:list', {});
+  for (const user of __safe_forOf(users)) {
+    console.log(user.name);
+  }
+  return users.length;
+}
+```
+
+## Transformation Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `wrapInMain` | boolean | true | Wrap code in `async function __ag_main()` |
+| `transformCallTool` | boolean | true | Transform `callTool` to safe proxy |
+| `transformLoops` | boolean | true | Transform loops with iteration limits |
+| `transformConsole` | boolean | true | Transform `console` to rate-limited proxy |
+| `prefix` | string | `'__safe_'` | Prefix for safe runtime functions |
+
+## Main Wrapper
+
+The main wrapper enables top-level await and provides an entry point:
+
+```ts
+// Before transformation
+const data = await callTool('fetch', {});
+return data;
+
+// After transformation
+async function __ag_main() {
+  const data = await __safe_callTool('fetch', {});
+  return data;
+}
+```
+
+The runtime calls `__ag_main()` to execute the script.
+
+## Safe callTool
+
+The `callTool` transformation proxies all tool calls through the runtime:
+
+```ts
+// Before
+await callTool('users:list', { limit: 10 });
+
+// After
+await __safe_callTool('users:list', { limit: 10 });
+```
+
+The `__safe_callTool` proxy:
+- Counts tool calls against `maxToolCalls` limit
+- Routes calls through the configured `toolHandler`
+- Sanitizes arguments and return values
+
+## Safe Loops
+
+Loop transformations enforce iteration limits:
+
+```ts
+// for-of before
+for (const user of users) {
+  process(user);
+}
+
+// for-of after
+for (const user of __safe_forOf(users)) {
+  process(user);
+}
+
+// for loop before
+for (let i = 0; i < 100; i++) {
+  process(i);
+}
+
+// for loop after (iteration counting injected)
+for (let i = 0, __iter = 0; i < 100 && __iter++ < __maxIterations; i++) {
+  process(i);
+}
+```
+
+## Safe Console
+
+Console methods are proxied for rate limiting:
+
+```ts
+// Before
+console.log('Hello');
+
+// After
+__safe_console.log('Hello');
+```
+
+The `__safe_console` proxy:
+- Counts calls against `maxConsoleCalls`
+- Tracks output bytes against `maxConsoleOutputBytes`
+- Captures output for streaming to clients
+
+## Reserved Prefixes
+
+The transformation reserves these prefixes that user code cannot use:
+
+- `__ag_` - AgentScript internal identifiers
+- `__safe_` - Safe runtime proxies
+
+Any attempt to declare identifiers with these prefixes is blocked by the `ReservedPrefixRule`.
+
+## Custom Transformation
+
+For advanced use cases, you can customize transformations:
+
+```ts
+import { transformAgentScript } from 'ast-guard';
+
+const transformed = transformAgentScript(code, {
+  wrapInMain: true,
+  transformCallTool: true,
+  transformLoops: true,
+  transformConsole: true,
+  prefix: '__custom_', // Custom prefix
+
+  // Additional custom transforms (advanced)
+  additionalTransforms: [
+    {
+      name: 'customTransform',
+      visitor: {
+        CallExpression(path) {
+          // Custom AST transformation logic
+        },
+      },
+    },
+  ],
+});
+```
+
+## Integration with enclave-vm
+
+enclave-vm automatically applies transformations when `transform: true` (default):
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({
+  transform: true, // Default - apply transformations
+  toolHandler: async (name, args) => { /* ... */ },
+});
+
+// Code is automatically transformed before execution
+await enclave.run(`
+  const data = await callTool('fetch', {});
+  return data;
+`);
+```
+
+## Transformation Without Validation
+
+You can transform code independently of validation:
+
+```ts
+import { transformAgentScript, JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+
+const validator = new JSAstValidator(createAgentScriptPreset());
+
+// Step 1: Validate
+const validation = await validator.validate(code);
+if (!validation.valid) {
+  throw new Error('Validation failed');
+}
+
+// Step 2: Transform
+const transformed = transformAgentScript(code);
+
+// Step 3: Execute transformed code with your runtime
+executeInSandbox(transformed);
+```
+
+## Related
+
+- [Overview](/core-libraries/ast-guard/overview) - Getting started
+- [AgentScript Preset](/core-libraries/ast-guard/agentscript-preset) - Preset configuration
+- [enclave-vm](/core-libraries/enclave-vm/overview) - Runtime sandbox

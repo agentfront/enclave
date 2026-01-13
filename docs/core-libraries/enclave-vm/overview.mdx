@@ -1,0 +1,109 @@
+---
+title: 'Overview'
+description: 'Secure JavaScript execution environment with defense-in-depth architecture for running untrusted and LLM-generated code safely'
+---
+
+Enclave is a secure execution environment for running untrusted JavaScript code. It provides a defense-in-depth security model that combines AST validation (via ast-guard), code transformation, and runtime sandboxing to safely execute model-generated code.
+
+<CardGroup cols={3}>
+  <Card title="AST Validation" icon="shield-check">
+    Block dangerous constructs before execution using ast-guard's AgentScript preset
+  </Card>
+  <Card title="Code Transformation" icon="arrows-rotate">
+    Automatically transform code for safe execution with proxied functions and loop limits
+  </Card>
+  <Card title="Runtime Sandboxing" icon="lock">
+    Execute in isolated Node.js vm context with controlled globals and resource limits
+  </Card>
+</CardGroup>
+
+## When to Use Enclave
+
+Enclave is designed for scenarios where you need to execute JavaScript code from untrusted sources:
+
+- **LLM-generated code** - Execute code written by AI models safely
+- **User-provided scripts** - Run user scripts in a controlled environment
+- **Plugin/extension systems** - Allow third-party code to run securely
+- **Workflow automation** - Execute orchestration logic with tool access
+
+## Installation
+
+```bash
+npm install enclave-vm
+```
+
+## Quick Start
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+// Create an enclave with a tool handler
+const enclave = new Enclave({
+  timeout: 5000, // 5 second timeout
+  maxToolCalls: 50, // Max 50 tool calls
+  maxIterations: 10000, // Max 10K loop iterations
+  toolHandler: async (toolName, args) => {
+    // Handle tool calls from the script
+    console.log(`Tool called: ${toolName}`, args);
+    return { result: 'data' };
+  },
+});
+
+// Execute AgentScript code
+const code = `
+  const users = await callTool('users:list', { limit: 10 });
+  const filtered = users.filter(u => u.active);
+  return filtered.length;
+`;
+
+const result = await enclave.run(code);
+
+if (result.success) {
+  console.log('Result:', result.value);
+  console.log('Stats:', result.stats);
+} else {
+  console.error('Error:', result.error);
+}
+
+// Clean up
+enclave.dispose();
+```
+
+## Execution Results
+
+Enclave returns a structured result with success/error status and execution stats:
+
+```ts
+interface ExecutionResult<T> {
+  success: boolean;
+  value?: T;              // Result value (if success)
+  error?: {               // Error details (if failed)
+    name: string;
+    message: string;
+    code: string;
+    stack?: string;
+  };
+  stats: {
+    duration: number;      // Execution time in ms
+    toolCallCount: number; // Number of tool calls made
+    iterationCount: number; // Number of loop iterations
+  };
+}
+```
+
+### Error Codes
+
+| Code               | Meaning                    | Action                                |
+| ------------------ | -------------------------- | ------------------------------------- |
+| `VALIDATION_ERROR` | AST validation failed      | Fix the code - blocked construct used |
+| `EXECUTION_ERROR`  | Runtime error in script    | Fix script logic                      |
+| `TIMEOUT`          | Execution exceeded timeout | Optimize or increase timeout          |
+| `TOOL_ERROR`       | Tool call failed           | Check tool input/availability         |
+| `MEMORY_LIMIT_EXCEEDED` | Memory limit exceeded | Reduce memory usage or increase limit |
+
+## Related
+
+- [Security Levels](/core-libraries/enclave-vm/security-levels) - Pre-configured security profiles
+- [Tool System](/core-libraries/enclave-vm/tool-system) - Integrating tools with enclave
+- [Configuration](/core-libraries/enclave-vm/configuration) - All configuration options
+- [ast-guard](/core-libraries/ast-guard/overview) - AST validation library

@@ -1,0 +1,603 @@
+---
+title: 'React Code Editor'
+description: 'Build a real-time code execution UI with React and EnclaveJS'
+---
+
+This guide shows how to build a real-time code execution interface using React and the EnclaveJS streaming SDK.
+
+## What You'll Build
+
+A code editor with:
+- Real-time syntax highlighting
+- Live execution with streaming output
+- Tool call visualization
+- Error display
+- Execution statistics
+
+## Prerequisites
+
+- React 18+
+- Node.js server running EnclaveJS broker
+- Basic React/TypeScript knowledge
+
+## Project Setup
+
+```bash
+npx create-react-app code-editor --template typescript
+cd code-editor
+npm install @enclavejs/react @enclavejs/client @monaco-editor/react
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│              React Frontend                  │
+│  ┌─────────────────────────────────────┐    │
+│  │         Code Editor Component       │    │
+│  │  ┌─────────────┐ ┌───────────────┐  │    │
+│  │  │   Monaco    │ │    Output     │  │    │
+│  │  │   Editor    │ │    Panel      │  │    │
+│  │  └─────────────┘ └───────────────┘  │    │
+│  └─────────────────────────────────────┘    │
+│                    │                         │
+│     useEnclave()   ▼   EnclaveClient        │
+└────────────────────┼────────────────────────┘
+                     │ WebSocket/HTTP
+                     ▼
+          ┌─────────────────────┐
+          │   EnclaveJS Broker  │
+          └─────────────────────┘
+```
+
+## Step 1: Configure EnclaveJS Client
+
+```tsx
+// src/enclave/config.ts
+import { EnclaveClient } from '@enclavejs/client';
+
+export const enclaveClient = new EnclaveClient({
+  serverUrl: process.env.REACT_APP_ENCLAVE_URL || 'http://localhost:3001',
+  reconnection: {
+    enabled: true,
+    maxAttempts: 5,
+  },
+});
+```
+
+## Step 2: Create the Provider
+
+```tsx
+// src/enclave/EnclaveProvider.tsx
+import React, { createContext, useContext, ReactNode } from 'react';
+import { EnclaveClient } from '@enclavejs/client';
+import { enclaveClient } from './config';
+
+const EnclaveContext = createContext<EnclaveClient | null>(null);
+
+export function EnclaveProvider({ children }: { children: ReactNode }) {
+  return (
+    <EnclaveContext.Provider value={enclaveClient}>
+      {children}
+    </EnclaveContext.Provider>
+  );
+}
+
+export function useEnclaveClient() {
+  const client = useContext(EnclaveContext);
+  if (!client) {
+    throw new Error('useEnclaveClient must be used within EnclaveProvider');
+  }
+  return client;
+}
+```
+
+## Step 3: Create Execution Hook
+
+```tsx
+// src/hooks/useCodeExecution.ts
+import { useState, useCallback, useRef } from 'react';
+import { useEnclaveClient } from '../enclave/EnclaveProvider';
+import type { StreamEvent } from '@enclavejs/types';
+
+interface ExecutionState {
+  status: 'idle' | 'running' | 'completed' | 'error';
+  output: string[];
+  toolCalls: ToolCall[];
+  result: unknown;
+  error: string | null;
+  stats: ExecutionStats | null;
+}
+
+interface ToolCall {
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  status: 'pending' | 'completed' | 'error';
+  result?: unknown;
+}
+
+interface ExecutionStats {
+  duration: number;
+  toolCallCount: number;
+  iterationCount: number;
+}
+
+export function useCodeExecution() {
+  const client = useEnclaveClient();
+  const abortRef = useRef<AbortController | null>(null);
+
+  const [state, setState] = useState<ExecutionState>({
+    status: 'idle',
+    output: [],
+    toolCalls: [],
+    result: null,
+    error: null,
+    stats: null,
+  });
+
+  const execute = useCallback(async (code: string) => {
+    // Reset state
+    setState({
+      status: 'running',
+      output: [],
+      toolCalls: [],
+      result: null,
+      error: null,
+      stats: null,
+    });
+
+    // Create abort controller
+    abortRef.current = new AbortController();
+
+    try {
+      const stream = client.execute(code, {
+        signal: abortRef.current.signal,
+      });
+
+      for await (const event of stream) {
+        handleEvent(event, setState);
+      }
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError') {
+        setState(prev => ({
+          ...prev,
+          status: 'error',
+          error: (error as Error).message,
+        }));
+      }
+    }
+  }, [client]);
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
+    setState(prev => ({ ...prev, status: 'idle' }));
+  }, []);
+
+  return {
+    ...state,
+    execute,
+    stop,
+    isRunning: state.status === 'running',
+  };
+}
+
+function handleEvent(
+  event: StreamEvent,
+  setState: React.Dispatch<React.SetStateAction<ExecutionState>>
+) {
+  switch (event.type) {
+    case 'stdout':
+      setState(prev => ({
+        ...prev,
+        output: [...prev.output, event.payload.data],
+      }));
+      break;
+
+    case 'tool_call':
+      setState(prev => ({
+        ...prev,
+        toolCalls: [
+          ...prev.toolCalls,
+          {
+            id: event.payload.callId,
+            tool: event.payload.tool,
+            args: event.payload.args,
+            status: 'pending',
+          },
+        ],
+      }));
+      break;
+
+    case 'tool_result_applied':
+      setState(prev => ({
+        ...prev,
+        toolCalls: prev.toolCalls.map(tc =>
+          tc.id === event.payload.callId
+            ? { ...tc, status: 'completed' }
+            : tc
+        ),
+      }));
+      break;
+
+    case 'final':
+      setState(prev => ({
+        ...prev,
+        status: 'completed',
+        result: event.payload.result,
+        stats: event.payload.stats,
+      }));
+      break;
+
+    case 'error':
+      setState(prev => ({
+        ...prev,
+        status: 'error',
+        error: event.payload.message,
+      }));
+      break;
+  }
+}
+```
+
+## Step 4: Build the Editor Component
+
+```tsx
+// src/components/CodeEditor.tsx
+import React, { useState } from 'react';
+import Editor from '@monaco-editor/react';
+
+interface CodeEditorProps {
+  value: string;
+  onChange: (value: string) => void;
+  readOnly?: boolean;
+}
+
+export function CodeEditor({ value, onChange, readOnly }: CodeEditorProps) {
+  return (
+    <Editor
+      height="400px"
+      language="javascript"
+      theme="vs-dark"
+      value={value}
+      onChange={(v) => onChange(v || '')}
+      options={{
+        minimap: { enabled: false },
+        fontSize: 14,
+        lineNumbers: 'on',
+        readOnly,
+        automaticLayout: true,
+      }}
+    />
+  );
+}
+```
+
+## Step 5: Build Output Panel
+
+```tsx
+// src/components/OutputPanel.tsx
+import React from 'react';
+import styles from './OutputPanel.module.css';
+
+interface OutputPanelProps {
+  output: string[];
+  error: string | null;
+  result: unknown;
+}
+
+export function OutputPanel({ output, error, result }: OutputPanelProps) {
+  return (
+    <div className={styles.panel}>
+      <h3>Output</h3>
+
+      <div className={styles.console}>
+        {output.map((line, i) => (
+          <div key={i} className={styles.line}>
+            {line}
+          </div>
+        ))}
+      </div>
+
+      {error && (
+        <div className={styles.error}>
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+
+      {result !== null && (
+        <div className={styles.result}>
+          <strong>Result:</strong>
+          <pre>{JSON.stringify(result, null, 2)}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+## Step 6: Build Tool Calls Panel
+
+```tsx
+// src/components/ToolCallsPanel.tsx
+import React from 'react';
+import styles from './ToolCallsPanel.module.css';
+
+interface ToolCall {
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  status: 'pending' | 'completed' | 'error';
+}
+
+interface ToolCallsPanelProps {
+  toolCalls: ToolCall[];
+}
+
+export function ToolCallsPanel({ toolCalls }: ToolCallsPanelProps) {
+  if (toolCalls.length === 0) return null;
+
+  return (
+    <div className={styles.panel}>
+      <h3>Tool Calls</h3>
+      <div className={styles.list}>
+        {toolCalls.map((call) => (
+          <div key={call.id} className={styles.call}>
+            <span className={styles.status} data-status={call.status}>
+              {call.status === 'pending' ? '...' : call.status === 'completed' ? '✓' : '✗'}
+            </span>
+            <span className={styles.tool}>{call.tool}</span>
+            <span className={styles.args}>
+              {JSON.stringify(call.args)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+```
+
+## Step 7: Build Stats Panel
+
+```tsx
+// src/components/StatsPanel.tsx
+import React from 'react';
+import styles from './StatsPanel.module.css';
+
+interface StatsPanelProps {
+  stats: {
+    duration: number;
+    toolCallCount: number;
+    iterationCount: number;
+  } | null;
+}
+
+export function StatsPanel({ stats }: StatsPanelProps) {
+  if (!stats) return null;
+
+  return (
+    <div className={styles.panel}>
+      <div className={styles.stat}>
+        <span className={styles.label}>Duration</span>
+        <span className={styles.value}>{stats.duration}ms</span>
+      </div>
+      <div className={styles.stat}>
+        <span className={styles.label}>Tool Calls</span>
+        <span className={styles.value}>{stats.toolCallCount}</span>
+      </div>
+      <div className={styles.stat}>
+        <span className={styles.label}>Iterations</span>
+        <span className={styles.value}>{stats.iterationCount}</span>
+      </div>
+    </div>
+  );
+}
+```
+
+## Step 8: Assemble the Main Component
+
+```tsx
+// src/components/CodePlayground.tsx
+import React, { useState } from 'react';
+import { CodeEditor } from './CodeEditor';
+import { OutputPanel } from './OutputPanel';
+import { ToolCallsPanel } from './ToolCallsPanel';
+import { StatsPanel } from './StatsPanel';
+import { useCodeExecution } from '../hooks/useCodeExecution';
+import styles from './CodePlayground.module.css';
+
+const DEFAULT_CODE = `// List users and filter by name
+const users = await callTool('users:list', { limit: 10 });
+console.log('Found', users.length, 'users');
+
+const filtered = users.filter(u => u.name.startsWith('A'));
+console.log('Filtered to', filtered.length, 'users');
+
+return filtered;`;
+
+export function CodePlayground() {
+  const [code, setCode] = useState(DEFAULT_CODE);
+  const {
+    status,
+    output,
+    toolCalls,
+    result,
+    error,
+    stats,
+    execute,
+    stop,
+    isRunning,
+  } = useCodeExecution();
+
+  return (
+    <div className={styles.playground}>
+      <div className={styles.header}>
+        <h1>Code Playground</h1>
+        <div className={styles.actions}>
+          {isRunning ? (
+            <button onClick={stop} className={styles.stopButton}>
+              Stop
+            </button>
+          ) : (
+            <button onClick={() => execute(code)} className={styles.runButton}>
+              Run
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className={styles.content}>
+        <div className={styles.editorPane}>
+          <CodeEditor
+            value={code}
+            onChange={setCode}
+            readOnly={isRunning}
+          />
+        </div>
+
+        <div className={styles.outputPane}>
+          <OutputPanel
+            output={output}
+            error={error}
+            result={result}
+          />
+          <ToolCallsPanel toolCalls={toolCalls} />
+          <StatsPanel stats={stats} />
+        </div>
+      </div>
+
+      <div className={styles.statusBar}>
+        Status: {status}
+      </div>
+    </div>
+  );
+}
+```
+
+## Step 9: Add Styles
+
+```css
+/* src/components/CodePlayground.module.css */
+.playground {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #1e1e1e;
+  color: #fff;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  border-bottom: 1px solid #333;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.runButton {
+  background: #0e639c;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.runButton:hover {
+  background: #1177bb;
+}
+
+.stopButton {
+  background: #c42b1c;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.editorPane {
+  flex: 1;
+  border-right: 1px solid #333;
+}
+
+.outputPane {
+  flex: 1;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.statusBar {
+  padding: 0.5rem 1rem;
+  background: #007acc;
+  font-size: 0.875rem;
+}
+```
+
+## Step 10: Wire It Up
+
+```tsx
+// src/App.tsx
+import React from 'react';
+import { EnclaveProvider } from './enclave/EnclaveProvider';
+import { CodePlayground } from './components/CodePlayground';
+
+function App() {
+  return (
+    <EnclaveProvider>
+      <CodePlayground />
+    </EnclaveProvider>
+  );
+}
+
+export default App;
+```
+
+## Using the Official React Package
+
+The `@enclavejs/react` package provides pre-built hooks:
+
+```tsx
+import { useEnclave, useExecutionStream } from '@enclavejs/react';
+
+function MyComponent() {
+  const { execute, stream } = useEnclave();
+
+  // Stream provides real-time updates
+  const { output, toolCalls, result, error, isRunning } = useExecutionStream(stream);
+
+  return (
+    <div>
+      <button onClick={() => execute(code)}>Run</button>
+      {output.map((line, i) => <div key={i}>{line}</div>)}
+    </div>
+  );
+}
+```
+
+## Best Practices
+
+1. **Debounce execution** - Don't run on every keystroke
+2. **Show loading states** - Indicate when code is running
+3. **Handle disconnections** - Reconnect automatically
+4. **Limit output** - Cap console output to prevent memory issues
+5. **Sanitize display** - Escape HTML in output
+6. **Mobile support** - Handle touch events for mobile editors
+
+## Related
+
+- [@enclavejs/react](/enclavejs/react) - React SDK reference
+- [@enclavejs/client](/enclavejs/client) - Client SDK reference
+- [Streaming UI Example](/examples/streaming-ui) - Complete example

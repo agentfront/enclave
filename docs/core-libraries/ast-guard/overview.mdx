@@ -1,0 +1,102 @@
+---
+title: 'Overview'
+description: 'Production ready JavaScript AST validation with extensible rules and presets for safe code execution'
+---
+
+ast-guard is a production-ready AST validation library for JavaScript. It inspects user-provided or LLM-generated code before execution, blocking dangerous constructs and enforcing API usage policies. ast-guard powers Enclave's first security layer and can be used standalone for any JavaScript validation needs.
+
+<CardGroup cols={3}>
+  <Card title="16 Built-in Rules" icon="shield">
+    Block eval, dangerous globals, prototype manipulation, unbounded loops, ReDoS, and more with battle-tested validation rules.
+  </Card>
+  <Card title="Pre-Scanner Defense" icon="radar">
+    Layer 0 security that runs BEFORE parsing - catches DoS attacks that could crash the parser itself.
+  </Card>
+  <Card title="AgentScript Preset" icon="robot">
+    Purpose-built preset for LLM-generated orchestration code with whitelist-only globals and strict control flow.
+  </Card>
+</CardGroup>
+
+## When to Use ast-guard
+
+- **LLM-generated code** - Validate AI-written JavaScript before execution
+- **User scripts** - Accept arbitrary JavaScript with deterministic guardrails
+- **Workflow builders** - Enforce API usage and block dangerous constructs
+- **Compliance requirements** - Audit trails showing exactly which rule blocked a script
+
+<Note>
+  ast-guard is a pure TypeScript package with zero native dependencies. It works in Node.js 22+ and can be used standalone or as part of the Enclave execution environment.
+</Note>
+
+## Installation
+
+```bash
+npm install ast-guard
+```
+
+## Quick Start
+
+```ts
+import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+
+// Create validator with AgentScript preset (recommended for LLM code)
+const validator = new JSAstValidator(createAgentScriptPreset());
+
+// Validate code
+const result = await validator.validate(`
+  const users = await callTool('users:list', { limit: 10 });
+  return users.filter(u => u.active);
+`);
+
+if (result.valid) {
+  console.log('Code is safe to execute');
+} else {
+  console.log('Blocked:', result.issues);
+}
+```
+
+<Tip>
+  Instantiate `JSAstValidator` once and reuse it. This keeps presets, custom rules, and caches consistent across requests.
+</Tip>
+
+## Validation Result
+
+```ts
+interface ValidationResult {
+  valid: boolean;
+  issues: ValidationIssue[];
+}
+
+interface ValidationIssue {
+  rule: string;        // Rule that triggered
+  message: string;     // Human-readable message
+  severity: 'error' | 'warning';
+  location?: {
+    line: number;
+    column: number;
+  };
+}
+```
+
+## Validation Options
+
+```ts
+const result = await validator.validate(source, {
+  maxIssues: 10,           // Cap findings returned
+  stopOnFirstError: true,  // Halt on first error (faster)
+});
+
+// Get stats for monitoring
+const stats = validator.getStats(result, durationMs);
+```
+
+<Warning>
+  AST Guard prevents unsafe syntax from entering your sandbox, but it does not execute or sandbox code itself. Pair it with enclave-vm for complete defense-in-depth.
+</Warning>
+
+## Related
+
+- [Pre-Scanner](/core-libraries/ast-guard/pre-scanner) - Layer 0 defense before parsing
+- [AgentScript Preset](/core-libraries/ast-guard/agentscript-preset) - Preset for LLM code
+- [Security Rules](/core-libraries/ast-guard/security-rules) - Built-in rules reference
+- [enclave-vm](/core-libraries/enclave-vm/overview) - Runtime sandbox

@@ -1,0 +1,292 @@
+---
+title: 'Common Errors'
+description: 'Error codes, causes, and solutions for Enclave'
+---
+
+This page documents error codes you may encounter when using Enclave, along with their causes and solutions.
+
+## Execution Errors
+
+### VALIDATION_ERROR
+
+**Cause:** Code failed AST validation. A blocked construct was used.
+
+**Example:**
+```
+Error: VALIDATION_ERROR - Identifier 'eval' is not allowed
+```
+
+**Solution:**
+- Review the [AgentScript](/concepts/agentscript) language definition
+- Remove blocked constructs from your code
+- Check the validation issues for specific lines
+
+```ts
+if (!result.success && result.error?.code === 'VALIDATION_ERROR') {
+  console.log('Validation failed:', result.error.message);
+  // Review and fix the code
+}
+```
+
+### TIMEOUT
+
+**Cause:** Execution exceeded the configured timeout.
+
+**Example:**
+```
+Error: TIMEOUT - Execution exceeded 5000ms timeout
+```
+
+**Solutions:**
+1. Optimize slow tool calls
+2. Reduce iteration count
+3. Increase timeout (if appropriate)
+
+```ts
+const enclave = new Enclave({
+  timeout: 30000, // Increase to 30s
+});
+```
+
+### MAX_TOOL_CALLS
+
+**Cause:** Script made too many tool calls.
+
+**Example:**
+```
+Error: MAX_TOOL_CALLS - Exceeded limit of 50 tool calls
+```
+
+**Solutions:**
+1. Batch operations in tools instead of individual calls
+2. Increase maxToolCalls limit
+3. Review script logic for unnecessary calls
+
+```ts
+// Bad: Many individual calls
+for (const id of ids) {
+  await callTool('users:get', { id });
+}
+
+// Better: Batch call
+await callTool('users:getMany', { ids });
+```
+
+### MAX_ITERATIONS
+
+**Cause:** Loop iterations exceeded the limit.
+
+**Example:**
+```
+Error: MAX_ITERATIONS - Exceeded limit of 10000 iterations
+```
+
+**Solutions:**
+1. Use pagination or limits in data fetching
+2. Process data in chunks
+3. Increase maxIterations (carefully)
+
+### TOOL_ERROR
+
+**Cause:** A tool handler threw an error.
+
+**Example:**
+```
+Error: TOOL_ERROR - Tool 'users:get' failed: User not found
+```
+
+**Solutions:**
+1. Check tool inputs are valid
+2. Handle errors in tool handlers gracefully
+3. Provide meaningful error messages
+
+```ts
+toolHandler: async (name, args) => {
+  try {
+    return await executeToolSafely(name, args);
+  } catch (error) {
+    // Return structured error instead of throwing
+    return { error: true, message: error.message };
+  }
+}
+```
+
+### MEMORY_LIMIT_EXCEEDED
+
+**Cause:** Script used more memory than allowed.
+
+**Example:**
+```
+Error: MEMORY_LIMIT_EXCEEDED - Used 64MB (limit: 32MB)
+```
+
+**Solutions:**
+1. Process large data in chunks
+2. Use Reference Sidecar for large tool responses
+3. Increase memory limit
+
+```ts
+const enclave = new Enclave({
+  memoryLimit: 64 * 1024 * 1024, // 64MB
+  sidecar: { enabled: true }, // For large data
+});
+```
+
+### SCORING_BLOCKED
+
+**Cause:** AI Scoring Gate detected suspicious patterns.
+
+**Example:**
+```
+Error: SCORING_BLOCKED - Score 75 exceeds threshold 70
+```
+
+**Solutions:**
+1. Review code for exfiltration patterns
+2. Avoid list→send sequences
+3. Use specific queries instead of wildcards
+4. Adjust scoring thresholds if false positive
+
+## Validation Issues
+
+### Unknown global
+
+**Message:** `Unknown global 'xyz' - not in allowed list`
+
+**Cause:** Code references an identifier not in the allowed globals list.
+
+**Solution:** Add to allowedGlobals or use a tool instead:
+
+```ts
+const preset = createAgentScriptPreset({
+  allowedGlobals: ['callTool', 'Math', 'JSON', 'context'],
+});
+```
+
+### Blocked identifier
+
+**Message:** `Identifier 'process' is not allowed`
+
+**Cause:** Code uses a blocked identifier like `process`, `eval`, etc.
+
+**Solution:** Remove the blocked identifier or use an allowed alternative.
+
+### Invalid loop type
+
+**Message:** `'while' loops are not allowed`
+
+**Cause:** Code uses a blocked loop type.
+
+**Solution:** Use `for` or `for-of` instead:
+
+```ts
+// Bad: while loop
+while (hasMore) { /* ... */ }
+
+// Good: for loop
+for (let i = 0; i < maxIterations && hasMore; i++) { /* ... */ }
+```
+
+### User-defined function
+
+**Message:** `User-defined functions are not allowed`
+
+**Cause:** Code declares a function.
+
+**Solution:** Use arrow functions in array methods or inline logic:
+
+```ts
+// Bad: function declaration
+function process(item) { return item.value; }
+
+// Good: arrow in array method
+items.map(item => item.value);
+```
+
+## Pre-Scanner Errors
+
+### Input size exceeded
+
+**Message:** `Input size 150KB exceeds limit 100KB`
+
+**Solution:** Reduce code size or adjust pre-scanner limits.
+
+### Nesting depth exceeded
+
+**Message:** `Nesting depth 25 exceeds limit 20`
+
+**Solution:** Simplify nested expressions.
+
+### Potential ReDoS pattern
+
+**Message:** `Regex pattern '(a+)+' may cause ReDoS`
+
+**Solution:** Remove or simplify the regex pattern.
+
+## Connection Errors
+
+### Connection refused
+
+**Cause:** Cannot connect to broker or runtime.
+
+**Solutions:**
+1. Check the server is running
+2. Verify the URL is correct
+3. Check network/firewall settings
+
+### Session not found
+
+**Cause:** Referencing an expired or invalid session.
+
+**Solutions:**
+1. Sessions expire after completion
+2. Create a new session
+3. Check session ID is correct
+
+## Debugging Tips
+
+### Enable verbose errors
+
+```ts
+const enclave = new Enclave({
+  verboseErrors: true,
+});
+```
+
+### Log validation results
+
+```ts
+import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+
+const validator = new JSAstValidator(createAgentScriptPreset());
+const result = await validator.validate(code);
+
+if (!result.valid) {
+  console.log('Validation issues:');
+  for (const issue of result.issues) {
+    console.log(`  ${issue.rule}: ${issue.message}`);
+    if (issue.location) {
+      console.log(`    at line ${issue.location.line}, column ${issue.location.column}`);
+    }
+  }
+}
+```
+
+### Track execution stats
+
+```ts
+const result = await enclave.run(code);
+
+console.log('Execution stats:', {
+  duration: result.stats.duration,
+  toolCalls: result.stats.toolCallCount,
+  iterations: result.stats.iterationCount,
+  memory: result.stats.memoryUsage,
+});
+```
+
+## Related
+
+- [Debugging](/troubleshooting/debugging) - Debug techniques
+- [FAQ](/troubleshooting/faq) - Frequently asked questions
+- [Security Model](/concepts/security-model) - Understanding restrictions
