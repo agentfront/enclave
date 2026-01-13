@@ -11,6 +11,7 @@ import {
 import { ParseError, InvalidSourceError, ConfigurationError } from './errors';
 import { transformAst, generateCode } from './transformer';
 import { PreScanner, PreScannerError, type PreScannerPresetLevel, type PartialPreScannerConfig } from './pre-scanner';
+import { TypeScriptStripper } from './ts-stripper';
 
 /**
  * Main AST validator class
@@ -85,6 +86,38 @@ export class JSAstValidator {
     let preScanError: Error | undefined;
     let preScanStats: ValidationResult['preScanStats'] | undefined;
 
+    // Strip TypeScript (Layer -1) if enabled or auto-detected
+    let processedSource = source;
+    const tsConfig = config.typescript;
+    const tsEnabled = tsConfig?.enabled !== false;
+
+    if (tsEnabled && TypeScriptStripper.looksLikeTypeScript(source)) {
+      const stripper = new TypeScriptStripper({
+        enabled: true,
+        enumHandling: tsConfig?.enumHandling ?? 'transpile',
+        preservePositions: tsConfig?.preservePositions ?? true,
+      });
+
+      const stripResult = stripper.strip(source);
+
+      if (!stripResult.success) {
+        issues.push({
+          code: 'TYPESCRIPT_STRIP_ERROR',
+          severity: ValidationSeverity.ERROR,
+          message: stripResult.error?.message ?? 'Failed to strip TypeScript syntax',
+          location: stripResult.error?.location,
+        });
+
+        return {
+          valid: false,
+          issues,
+          rulesExecuted: 0,
+        };
+      }
+
+      processedSource = stripResult.output;
+    }
+
     // Run pre-scanner (Layer 0) if enabled
     const preScanEnabled = config.preScan?.enabled !== false;
     if (preScanEnabled) {
@@ -96,7 +129,7 @@ export class JSAstValidator {
         config: preScanConfig,
       });
 
-      const preScanResult = preScanner.scan(source);
+      const preScanResult = preScanner.scan(processedSource);
 
       // Store stats
       preScanStats = {
@@ -150,7 +183,7 @@ export class JSAstValidator {
         ...config.parseOptions,
       };
 
-      ast = acorn.parse(source, parseOptions) as unknown as acorn.Node;
+      ast = acorn.parse(processedSource, parseOptions) as unknown as acorn.Node;
     } catch (err: unknown) {
       const error = err as Error & { loc?: { line: number; column: number } };
       parseError = new ParseError(error.message || 'Failed to parse source code', error.loc?.line, error.loc?.column);
@@ -184,7 +217,7 @@ export class JSAstValidator {
         // Create per-rule validation context with proper severity resolution
         const context: ValidationContext = {
           ast,
-          source,
+          source: processedSource,
           config,
           visited: new Set(),
           metadata: new Map(),

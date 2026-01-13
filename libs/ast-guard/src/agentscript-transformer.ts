@@ -2,9 +2,10 @@
  * AgentScript Transformer
  *
  * Transforms user-written AgentScript code into safe, executable format:
- * 1. Wraps code in `async function __ag_main() { ... }`
- * 2. Transforms `callTool` → `__safe_callTool`
- * 3. Transforms loops → `__safe_for` / `__safe_forOf` / `__safe_while`
+ * 1. Strips TypeScript syntax (if present)
+ * 2. Wraps code in `async function __ag_main() { ... }`
+ * 3. Transforms `callTool` → `__safe_callTool`
+ * 4. Transforms loops → `__safe_for` / `__safe_forOf` / `__safe_while`
  *
  * @packageDocumentation
  */
@@ -14,11 +15,18 @@ import * as walk from 'acorn-walk';
 import { generate } from 'astring';
 import { transformAst } from './transformer';
 import type { TransformConfig } from './interfaces';
+import { TypeScriptStripper } from './ts-stripper';
 
 /**
  * Configuration for AgentScript transformation
  */
 export interface AgentScriptTransformConfig {
+  /**
+   * Whether to strip TypeScript syntax before transformation
+   * Default: true (auto-detects TypeScript syntax)
+   */
+  stripTypeScript?: boolean;
+
   /**
    * Whether to wrap code in async function __ag_main()
    * Default: true
@@ -88,6 +96,7 @@ export interface AgentScriptTransformConfig {
  */
 export function transformAgentScript(code: string, config: AgentScriptTransformConfig = {}): string {
   const {
+    stripTypeScript = true,
     wrapInMain = true,
     transformCallTool = true,
     transformLoops = true,
@@ -95,6 +104,22 @@ export function transformAgentScript(code: string, config: AgentScriptTransformC
     additionalIdentifiers = [],
     parseOptions = {},
   } = config;
+
+  // Step 0: Strip TypeScript syntax if enabled and detected
+  let processedCode = code;
+  if (stripTypeScript && TypeScriptStripper.looksLikeTypeScript(code)) {
+    const stripper = new TypeScriptStripper({
+      enabled: true,
+      enumHandling: 'transpile',
+      preservePositions: false, // Don't need position preservation for transformer
+    });
+
+    const stripResult = stripper.strip(code);
+    if (!stripResult.success) {
+      throw new Error(`Failed to strip TypeScript: ${stripResult.error?.message ?? 'Unknown error'}`);
+    }
+    processedCode = stripResult.output;
+  }
 
   // Parse the code
   // AgentScript allows top-level return/await, so we wrap it in an async function for parsing
@@ -110,15 +135,15 @@ export function transformAgentScript(code: string, config: AgentScriptTransformC
 
   try {
     // Try parsing as-is first
-    ast = acorn.parse(code, defaultParseOptions) as unknown as acorn.Node;
+    ast = acorn.parse(processedCode, defaultParseOptions) as unknown as acorn.Node;
   } catch (scriptErr) {
     // If parsing fails, try as module (for top-level await)
     try {
-      ast = acorn.parse(code, { ...defaultParseOptions, sourceType: 'module' }) as unknown as acorn.Node;
+      ast = acorn.parse(processedCode, { ...defaultParseOptions, sourceType: 'module' }) as unknown as acorn.Node;
     } catch (moduleErr) {
       // If still fails, wrap in async function to allow top-level return/await
       try {
-        const wrappedCode = `async function __temp__() {\n${code}\n}`;
+        const wrappedCode = `async function __temp__() {\n${processedCode}\n}`;
         ast = acorn.parse(wrappedCode, defaultParseOptions) as unknown as acorn.Node;
         needsUnwrapping = true;
       } catch (wrappedErr: unknown) {

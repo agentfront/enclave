@@ -28,9 +28,27 @@ export type {
   TransformMode,
   WhitelistedGlobals,
   PreScanConfig,
+  TypeScriptStripConfig,
 } from './interfaces';
 
 export { ValidationSeverity } from './interfaces';
+
+// TypeScript Stripper (Layer -1 Defense)
+export {
+  TypeScriptStripper,
+  stripTypeScript,
+  isTypeScriptLike,
+  StripperContext,
+  createStripperState,
+  DEFAULT_TYPESCRIPT_CONFIG,
+} from './ts-stripper';
+
+export type {
+  TypeScriptConfig,
+  TypeScriptStripResult,
+  StripperState,
+  DepthTracker,
+} from './ts-stripper';
 
 // Error classes
 export {

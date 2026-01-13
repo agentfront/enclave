@@ -158,6 +158,34 @@ export interface TransformConfig {
 }
 
 /**
+ * Configuration for TypeScript stripping (Layer -1)
+ */
+export interface TypeScriptStripConfig {
+  /**
+   * Whether TypeScript stripping is enabled.
+   * When true, TypeScript syntax will be removed before parsing.
+   * @default true (when source looks like TypeScript)
+   */
+  enabled?: boolean;
+
+  /**
+   * How to handle enum declarations.
+   * - 'transpile': Convert to JavaScript object (recommended)
+   * - 'strip': Remove entirely (will break code using enums)
+   * - 'error': Throw error when enum is encountered
+   * @default 'transpile'
+   */
+  enumHandling?: 'transpile' | 'strip' | 'error';
+
+  /**
+   * Whether to preserve line/column positions by replacing
+   * TypeScript syntax with whitespace instead of removing it.
+   * @default true
+   */
+  preservePositions?: boolean;
+}
+
+/**
  * Configuration for the pre-scanner (Layer 0)
  */
 export interface PreScanConfig {
@@ -195,6 +223,12 @@ export interface ValidationConfig {
   stopOnFirstError?: boolean;
   /** Transformation configuration */
   transform?: TransformConfig;
+  /**
+   * TypeScript stripping configuration (Layer -1 defense).
+   * Runs BEFORE pre-scanner to strip TypeScript syntax.
+   * Default: auto-enabled when source looks like TypeScript
+   */
+  typescript?: TypeScriptStripConfig;
   /**
    * Pre-scanner configuration (Layer 0 defense).
    * Runs BEFORE AST parsing to catch attacks that could DOS the parser.
