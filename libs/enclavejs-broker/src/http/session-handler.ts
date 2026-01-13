@@ -90,13 +90,17 @@ export class SessionHandler {
     if (!this.cors) return;
 
     const origin = req.headers['origin'] as string | undefined;
-    const allowedOrigin = this.allowedOrigins.includes('*')
-      ? '*'
-      : this.allowedOrigins.includes(origin ?? '')
-        ? origin
-        : this.allowedOrigins[0];
 
-    res.setHeader('Access-Control-Allow-Origin', allowedOrigin ?? '*');
+    if (this.allowedOrigins.includes('*')) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    } else if (origin && this.allowedOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    } else {
+      // Origin not allowed - don't set CORS headers
+      return;
+    }
+
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Last-Event-ID');
     res.setHeader('Access-Control-Max-Age', '86400');
@@ -195,8 +199,11 @@ export class SessionHandler {
         this.writeEvent(res, event);
       });
 
-      // Handle client disconnect
+      // Handle client disconnect - use flag to prevent double cleanup
+      let cleanedUp = false;
       const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
         unsubscribe();
         if (!session.isTerminal()) {
           session.cancel('Client disconnected').catch(() => {
@@ -215,7 +222,7 @@ export class SessionHandler {
       } catch {
         // Error already emitted through events
       } finally {
-        unsubscribe();
+        cleanup();
         res.end();
       }
     } catch (error) {
@@ -267,8 +274,9 @@ export class SessionHandler {
       return;
     }
 
-    // Parse stream options
-    const fromSeq = parseInt(req.query['fromSeq'] ?? '0', 10);
+    // Parse stream options - validate fromSeq to handle NaN
+    const parsedFromSeq = parseInt(req.query['fromSeq'] ?? '0', 10);
+    const fromSeq = Number.isFinite(parsedFromSeq) && parsedFromSeq >= 0 ? parsedFromSeq : 0;
 
     // Parse filter config if provided (JSON-encoded query parameter)
     let eventFilter: EventFilter | undefined;

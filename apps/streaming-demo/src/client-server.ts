@@ -39,7 +39,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ============================================================================
 // MODE 1: EMBEDDED - Client → Broker (embedded runtime)
 // ============================================================================
-app.post('/api/execute/embedded', async (req: Request, res: Response) => {
+// Handler for embedded mode execution
+async function handleEmbeddedExecute(req: Request, res: Response): Promise<void> {
   const { code } = req.body;
   if (!code || typeof code !== 'string') {
     res.status(400).json({ error: 'Code is required' });
@@ -105,7 +106,9 @@ app.post('/api/execute/embedded', async (req: Request, res: Response) => {
     res.write(JSON.stringify({ type: 'client_error', error: String(error) }) + '\n');
     res.end();
   }
-});
+}
+
+app.post('/api/execute/embedded', handleEmbeddedExecute);
 
 // ============================================================================
 // MODE 2: LAMBDA - Client → Broker → Lambda (3-tier via WebSocket)
@@ -322,11 +325,7 @@ async function handleToolLocally(toolName: string, args: Record<string, unknown>
 }
 
 // Default execute endpoint (uses embedded mode)
-app.post('/api/execute', async (req: Request, res: Response) => {
-  // Redirect to embedded mode by default
-  req.url = '/api/execute/embedded';
-  app.handle(req, res);
-});
+app.post('/api/execute', handleEmbeddedExecute);
 
 // Health check
 app.get('/api/health', (_req: Request, res: Response) => {

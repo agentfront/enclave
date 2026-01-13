@@ -1,0 +1,13 @@
+name: "CodeQL config"
+
+paths-ignore:
+  # Demo applications
+  - apps/streaming-demo
+  # Test files
+  - "**/test"
+  - "**/tests"
+  - "**/__tests__"
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"

@@ -411,6 +411,9 @@ console.log(results);
 
 // Get document
 const doc = await db.get(results[0].id);
+if (!doc) {
+  throw new Error('Document not found');
+}
 
 // Update document
 await db.update(results[0].id, {

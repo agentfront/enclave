@@ -230,9 +230,9 @@ class EncryptedEnclaveClient {
     return JSON.parse(decryptedResult);
   }
 
-  async executeStreaming(
+  async *executeStreaming(
     code: string
-  ): AsyncGenerator<StreamEvent> {
+  ): AsyncGenerator<StreamEvent, void, unknown> {
     if (!this.sharedSecret || !this.sessionId) {
       throw new Error('Not connected. Call connect() first.');
     }
@@ -253,7 +253,10 @@ class EncryptedEnclaveClient {
       }),
     });
 
-    const reader = response.body!.getReader();
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+    const reader = response.body.getReader();
     const decoder = new TextDecoder();
 
     let buffer = '';

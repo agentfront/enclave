@@ -45,11 +45,11 @@ const result = await enclave.run(`
 
   // Process and combine
   const userOrders = users.map(user => {
-    const userOrders = orders.filter(o => o.userId === user.id);
+    const ordersForUser = orders.filter(o => o.userId === user.id);
     return {
       user: user.name,
-      orderCount: userOrders.length,
-      totalAmount: userOrders.reduce((sum, o) => sum + o.amount, 0),
+      orderCount: ordersForUser.length,
+      totalAmount: ordersForUser.reduce((sum, o) => sum + o.amount, 0),
     };
   });
 

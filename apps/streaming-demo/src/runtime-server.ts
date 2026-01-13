@@ -83,18 +83,78 @@ function sendEvent(ws: WebSocket, event: StreamEvent) {
   }
 }
 
+// Validation helpers
+function validateExecuteRequest(msg: Record<string, unknown>): ExecuteRequest | null {
+  if (msg.type === 'execute' && typeof msg.code === 'string') {
+    return {
+      type: 'execute',
+      sessionId: typeof msg.sessionId === 'string' ? (msg.sessionId as SessionId) : undefined,
+      code: msg.code,
+    };
+  }
+  return null;
+}
+
+function validateToolResultRequest(msg: Record<string, unknown>): ToolResultRequest | null {
+  if (
+    msg.type === 'tool_result' &&
+    typeof msg.sessionId === 'string' &&
+    typeof msg.callId === 'string' &&
+    typeof msg.success === 'boolean'
+  ) {
+    return {
+      type: 'tool_result',
+      sessionId: msg.sessionId as SessionId,
+      callId: msg.callId as CallId,
+      success: msg.success,
+      value: msg.value,
+      error: msg.error as { code?: string; message: string } | undefined,
+    };
+  }
+  return null;
+}
+
+function validateCancelRequest(msg: Record<string, unknown>): CancelRequest | null {
+  if (msg.type === 'cancel' && typeof msg.sessionId === 'string') {
+    return {
+      type: 'cancel',
+      sessionId: msg.sessionId as SessionId,
+      reason: typeof msg.reason === 'string' ? msg.reason : undefined,
+    };
+  }
+  return null;
+}
+
 // Handle incoming messages from broker
-async function handleMessage(ws: WebSocket, message: { type: string; [key: string]: unknown }) {
+async function handleMessage(ws: WebSocket, message: Record<string, unknown>) {
   switch (message.type) {
-    case 'execute':
-      await handleExecute(ws, message as ExecuteRequest);
+    case 'execute': {
+      const req = validateExecuteRequest(message);
+      if (!req) {
+        console.warn('\x1b[33m[Runtime]\x1b[0m Invalid execute message: missing or invalid code');
+        return;
+      }
+      await handleExecute(ws, req);
       break;
-    case 'tool_result':
-      handleToolResult(message as ToolResultRequest);
+    }
+    case 'tool_result': {
+      const req = validateToolResultRequest(message);
+      if (!req) {
+        console.warn('\x1b[33m[Runtime]\x1b[0m Invalid tool_result message: missing required fields');
+        return;
+      }
+      handleToolResult(req);
       break;
-    case 'cancel':
-      handleCancel(message as CancelRequest);
+    }
+    case 'cancel': {
+      const req = validateCancelRequest(message);
+      if (!req) {
+        console.warn('\x1b[33m[Runtime]\x1b[0m Invalid cancel message: missing sessionId');
+        return;
+      }
+      handleCancel(req);
       break;
+    }
     case 'ping':
       ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
       break;
@@ -138,6 +198,7 @@ async function handleExecute(ws: WebSocket, request: ExecuteRequest) {
     seq: ++seq,
     type: 'session_init',
     payload: {
+      cancelUrl: `/sessions/${sessionId}/cancel`, // Placeholder URL for demo
       expiresAt: new Date(Date.now() + 60000).toISOString(),
       encryption: { enabled: false },
     },

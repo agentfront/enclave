@@ -2,6 +2,7 @@
  * Event Filter
  *
  * Filters stream events based on configurable rules.
+ * Includes ReDoS (Regular Expression Denial of Service) protection.
  *
  * @packageDocumentation
  */
@@ -16,6 +17,52 @@ import type {
 } from '@enclavejs/types';
 import { FilterMode, PatternType, DEFAULT_ALWAYS_ALLOW } from '@enclavejs/types';
 import { minimatch } from 'minimatch';
+
+/**
+ * Maximum input length for regex matching (ReDoS protection).
+ * Inputs longer than this are rejected before regex evaluation.
+ */
+const MAX_REGEX_INPUT_LENGTH = 10000;
+
+/**
+ * Maximum pattern length to analyze for ReDoS detection.
+ */
+const MAX_PATTERN_LENGTH_FOR_REDOS_CHECK = 500;
+
+/**
+ * Pre-compiled patterns for ReDoS detection.
+ * Uses bounded quantifiers to prevent catastrophic backtracking in detection.
+ */
+const REDOS_DETECTION_PATTERNS = {
+  /** Check for nested quantifiers: (a+)+ or (a*)* */
+  nestedQuantifiers: /\([^)]{0,100}[*+{][^)]{0,100}\)[*+{]/,
+  /** Check for alternation with overlapping patterns: (a|ab)* */
+  alternationOverlap: /\([^|]{0,100}\|[^)]{0,100}\)[*+{]/,
+  /** Check for repeated groups with quantifiers: (a+)+ */
+  repeatedGroups: /\([^)]{0,100}[*+][^)]{0,100}\)[*+]/,
+} as const;
+
+/**
+ * Detects potentially vulnerable regex patterns.
+ * @param pattern - The regex pattern to check
+ * @returns true if the pattern is potentially vulnerable to ReDoS
+ */
+function isPotentiallyVulnerableRegex(pattern: string): boolean {
+  // Limit pattern length for safe detection
+  const safePattern =
+    pattern.length > MAX_PATTERN_LENGTH_FOR_REDOS_CHECK
+      ? pattern.slice(0, MAX_PATTERN_LENGTH_FOR_REDOS_CHECK)
+      : pattern;
+
+  try {
+    if (REDOS_DETECTION_PATTERNS.nestedQuantifiers.test(safePattern)) return true;
+    if (REDOS_DETECTION_PATTERNS.alternationOverlap.test(safePattern)) return true;
+    if (REDOS_DETECTION_PATTERNS.repeatedGroups.test(safePattern)) return true;
+  } catch {
+    return false;
+  }
+  return false;
+}
 
 /**
  * Event filter options.
@@ -215,23 +262,39 @@ export class EventFilter {
   }
 
   /**
-   * Match against a compiled regex.
+   * Match against a compiled regex with ReDoS protection.
+   * Enforces input length limits to prevent catastrophic backtracking.
    */
   private matchRegex(pattern: string, value: string, caseInsensitive?: boolean): boolean {
+    // ReDoS protection: reject oversized inputs before regex evaluation
+    if (value.length > MAX_REGEX_INPUT_LENGTH) {
+      return false;
+    }
+
     const cacheKey = `${pattern}:${caseInsensitive ? 'i' : ''}`;
     const compiled = this.compiledRegexes.get(cacheKey);
 
     if (!compiled) {
       // Pattern wasn't pre-compiled (shouldn't happen, but handle gracefully)
-      const flags = caseInsensitive ? 'i' : '';
-      return new RegExp(pattern, flags).test(value);
+      // Still apply length limit for safety
+      try {
+        const flags = caseInsensitive ? 'i' : '';
+        return new RegExp(pattern, flags).test(value);
+      } catch {
+        return false;
+      }
     }
 
-    return compiled.regex.test(value);
+    try {
+      return compiled.regex.test(value);
+    } catch {
+      return false;
+    }
   }
 
   /**
    * Pre-compile all regex patterns for efficiency.
+   * Includes ReDoS vulnerability detection and logging.
    */
   private compilePatterns(): void {
     for (const rule of this.config.rules) {
@@ -242,6 +305,14 @@ export class EventFilter {
 
         const cacheKey = `${pattern.pattern}:${pattern.caseInsensitive ? 'i' : ''}`;
         if (this.compiledRegexes.has(cacheKey)) continue;
+
+        // Check for potentially vulnerable patterns
+        if (isPotentiallyVulnerableRegex(pattern.pattern)) {
+          console.warn(
+            `[EventFilter] Potentially vulnerable regex pattern detected: ${pattern.pattern}. ` +
+              `Input length will be limited to ${MAX_REGEX_INPUT_LENGTH} characters for protection.`,
+          );
+        }
 
         try {
           const flags = pattern.caseInsensitive ? 'i' : '';

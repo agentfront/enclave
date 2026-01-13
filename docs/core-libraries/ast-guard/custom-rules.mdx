@@ -232,7 +232,7 @@ const validator = new JSAstValidator([
   new RequiredFunctionCallRule({ required: ['callTool'] }),
 
   // Slower: Full AST traversal
-  new UnknownGlobalRule({ allowedGlobals: [...] }),
+  new UnknownGlobalRule({ allowedGlobals: ['Math', 'JSON', 'console', 'callTool'] }),
 ]);
 ```
 

@@ -404,7 +404,7 @@ app.post('/execute', async (req, res) => {
     const result = await enclave.run(req.body.code);
     res.write(`event: final\ndata: ${JSON.stringify(result)}\n\n`);
   } catch (error) {
-    res.write(`event: error\ndata: ${JSON.stringify({ message: error.message })}\n\n`);
+    res.write(`event: error\ndata: ${JSON.stringify({ message: (error as Error).message })}\n\n`);
   } finally {
     res.end();
     enclave.dispose();
@@ -421,7 +421,10 @@ async function executeWithSSE(code: string) {
     body: JSON.stringify({ code }),
   });
 
-  const reader = response.body!.getReader();
+  if (!response.body) {
+    throw new Error('Response body is null');
+  }
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
 
   let buffer = '';
