@@ -349,12 +349,13 @@ function handleCancel(request: CancelRequest) {
   // Reject any pending tool calls
   for (const [callId, resolver] of session.pendingToolCalls) {
     console.log(`\x1b[35m[Runtime]\x1b[0m Rejecting pending tool call: ${callId}`);
+    resolver({ __error: true, code: 'CANCELLED', message: 'Session cancelled' });
   }
   session.pendingToolCalls.clear();
 }
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
+function gracefulShutdown() {
   console.log('\x1b[35m[Runtime]\x1b[0m Shutting down...');
   wss.close();
   for (const session of sessions.values()) {
@@ -362,4 +363,7 @@ process.on('SIGTERM', () => {
   }
   sessions.clear();
   process.exit(0);
-});
+}
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);

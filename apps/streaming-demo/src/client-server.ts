@@ -204,12 +204,16 @@ app.post('/api/execute/direct', async (req: Request, res: Response) => {
     const ws = new WebSocket(LAMBDA_WS_URL);
 
     await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Connection timeout')), 5000);
       ws.on('open', () => {
+        clearTimeout(timeout);
         console.log(`\x1b[34m[Client → Lambda Direct]\x1b[0m Connected to Lambda`);
         resolve();
       });
-      ws.on('error', reject);
-      setTimeout(() => reject(new Error('Connection timeout')), 5000);
+      ws.on('error', (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
     });
 
     // Send execute request
@@ -337,10 +341,6 @@ app.get('/api/health', (_req: Request, res: Response) => {
     lambdaWsUrl: LAMBDA_WS_URL,
     modes: ['embedded', 'lambda', 'direct'],
   });
-});
-
-app.get('/', (_req: Request, res: Response) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.listen(PORT, () => {
