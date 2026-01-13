@@ -295,11 +295,20 @@ app.post('/api/execute/direct', async (req: Request, res: Response) => {
       });
     });
 
+    // Handle client disconnect
+    const onClientClose = () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'cancel', sessionId, reason: 'Client disconnected' }));
+        ws.close();
+      }
+    };
+    req.on('close', onClientClose);
+
     // Send execute request
     ws.send(JSON.stringify({ type: 'execute', sessionId, code }));
 
     // Handle messages from Lambda
-    ws.on('message', async (data: Buffer) => {
+    ws.on('message', (data: Buffer) => {
       try {
         const event = JSON.parse(data.toString());
 
@@ -314,7 +323,7 @@ app.post('/api/execute/direct', async (req: Request, res: Response) => {
 
           // In direct mode, we need to handle tools ourselves (simulating what broker does)
           // This demonstrates why broker is needed - direct mode must implement tools locally
-          const result = await handleToolLocally(event.payload.toolName, event.payload.args);
+          const result = handleToolLocally(event.payload.toolName, event.payload.args);
 
           ws.send(
             JSON.stringify({
@@ -336,6 +345,7 @@ app.post('/api/execute/direct', async (req: Request, res: Response) => {
               }) + '\n',
             );
           }
+          req.off('close', onClientClose);
           ws.close();
           res.end();
           console.log(`\x1b[34m[Client → Lambda Direct]\x1b[0m Complete`);
@@ -346,6 +356,7 @@ app.post('/api/execute/direct', async (req: Request, res: Response) => {
     });
 
     ws.on('close', () => {
+      req.off('close', onClientClose);
       if (res.writable) {
         res.end();
       }
@@ -353,17 +364,10 @@ app.post('/api/execute/direct', async (req: Request, res: Response) => {
 
     ws.on('error', (error) => {
       console.error(`\x1b[31m[Client → Lambda Direct]\x1b[0m WebSocket error:`, error);
+      req.off('close', onClientClose);
       if (res.writable) {
         res.write(JSON.stringify({ type: 'client_error', error: String(error) }) + '\n');
         res.end();
-      }
-    });
-
-    // Handle client disconnect
-    req.on('close', () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'cancel', sessionId, reason: 'Client disconnected' }));
-        ws.close();
       }
     });
   } catch (error) {
@@ -374,7 +378,7 @@ app.post('/api/execute/direct', async (req: Request, res: Response) => {
 });
 
 // Simple local tool handlers for direct mode (demonstrates why broker is needed)
-async function handleToolLocally(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+function handleToolLocally(toolName: string, args: Record<string, unknown>): unknown {
   console.log(`\x1b[33m[Local Tool]\x1b[0m ${toolName}() - Running on CLIENT (not broker)`);
 
   switch (toolName) {
