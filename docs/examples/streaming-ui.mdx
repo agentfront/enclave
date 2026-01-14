@@ -380,6 +380,7 @@ import express from 'express';
 import { Enclave } from 'enclave-vm';
 
 const app = express();
+app.use(express.json());
 
 app.post('/execute', async (req, res) => {
   // Set SSE headers

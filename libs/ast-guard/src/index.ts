@@ -43,12 +43,7 @@ export {
   DEFAULT_TYPESCRIPT_CONFIG,
 } from './ts-stripper';
 
-export type {
-  TypeScriptConfig,
-  TypeScriptStripResult,
-  StripperState,
-  DepthTracker,
-} from './ts-stripper';
+export type { TypeScriptConfig, TypeScriptStripResult, StripperState, DepthTracker } from './ts-stripper';
 
 // Error classes
 export {

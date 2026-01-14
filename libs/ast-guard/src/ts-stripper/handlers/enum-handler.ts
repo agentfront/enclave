@@ -25,10 +25,7 @@ interface EnumMember {
  * Check if position starts an enum declaration.
  * Returns info needed to transpile it, or null if not an enum.
  */
-export function checkEnumDeclaration(
-  source: string,
-  position: number,
-): { length: number; replacement: string } | null {
+export function checkEnumDeclaration(source: string, position: number): { length: number; replacement: string } | null {
   // Check for optional `const` before enum
   let pos = position;
   let isConst = false;
@@ -148,10 +145,7 @@ export function checkEnumDeclaration(
 /**
  * Parse an enum value (number or string literal).
  */
-function parseEnumValue(
-  source: string,
-  position: number,
-): { value: string | number; end: number } | null {
+function parseEnumValue(source: string, position: number): { value: string | number; end: number } | null {
   const char = source[position];
 
   // String literal
@@ -249,18 +243,12 @@ function parseEnumValue(
 /**
  * Generate JavaScript object replacement for enum.
  */
-function generateEnumReplacement(
-  name: string,
-  members: EnumMember[],
-  _isConst: boolean,
-): string {
+function generateEnumReplacement(name: string, members: EnumMember[], _isConst: boolean): string {
   // For const enums, we still generate the object (inlining would require more context)
   // In a full TypeScript compiler, const enum values would be inlined at usage sites
 
   const memberStrings = members.map((member) => {
-    const value = typeof member.value === 'string'
-      ? member.value
-      : String(member.value);
+    const value = typeof member.value === 'string' ? member.value : String(member.value);
     return `${member.name}: ${value}`;
   });
 

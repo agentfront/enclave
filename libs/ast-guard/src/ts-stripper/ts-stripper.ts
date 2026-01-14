@@ -5,17 +5,8 @@
  * @module ts-stripper/ts-stripper
  */
 
-import {
-  type TypeScriptConfig,
-  type TypeScriptStripResult,
-  DEFAULT_TYPESCRIPT_CONFIG,
-} from './config';
-import {
-  createStripperState,
-  StripperContext,
-  isInStringOrComment,
-  type StripperState,
-} from './stripper-state';
+import { type TypeScriptConfig, type TypeScriptStripResult, DEFAULT_TYPESCRIPT_CONFIG } from './config';
+import { createStripperState, StripperContext, isInStringOrComment, type StripperState } from './stripper-state';
 import {
   isIdentifierStart,
   readIdentifier,
@@ -304,9 +295,7 @@ export class TypeScriptStripper {
    */
   private stripRange(source: string, state: StripperState, length: number): void {
     const stripped = source.slice(state.position, state.position + length);
-    const replacement = this.config.preservePositions
-      ? replaceWithSpaces(stripped)
-      : '';
+    const replacement = this.config.preservePositions ? replaceWithSpaces(stripped) : '';
 
     for (const char of replacement) {
       state.output.push(char);
@@ -326,18 +315,11 @@ export class TypeScriptStripper {
   /**
    * Replace a range with custom content (for enums).
    */
-  private replaceRange(
-    source: string,
-    state: StripperState,
-    length: number,
-    replacement: string,
-  ): void {
+  private replaceRange(source: string, state: StripperState, length: number, replacement: string): void {
     const original = source.slice(state.position, state.position + length);
 
     // Add padding to preserve line count if needed
-    const paddedReplacement = this.config.preservePositions
-      ? calculateEnumPadding(original, replacement)
-      : replacement;
+    const paddedReplacement = this.config.preservePositions ? calculateEnumPadding(original, replacement) : replacement;
 
     for (const char of paddedReplacement) {
       state.output.push(char);
@@ -358,23 +340,23 @@ export class TypeScriptStripper {
   static looksLikeTypeScript(source: string): boolean {
     // Fast regex checks for common TypeScript patterns
     const patterns = [
-      /\binterface\s+\w+/,           // interface Foo
-      /\btype\s+\w+\s*=/,            // type Foo =
-      /:\s*\w+[\[\]<>|&]/,           // : string[] or : Foo<T>
-      /:\s*\w+\s*[=;,)]/,            // : number = or : number; or (x: number)
-      /\bimport\s+type\b/,           // import type
-      /\bexport\s+type\b/,           // export type
-      /\benum\s+\w+/,                // enum Foo
-      /\bdeclare\s+/,                // declare const
-      /\babstract\s+class\b/,        // abstract class
-      /\bas\s+\w+/,                  // as string
-      /\bpublic\s+\w+/,              // public prop
-      /\bprivate\s+\w+/,             // private prop
-      /\bprotected\s+\w+/,           // protected prop
-      /\breadonly\s+\w+/,            // readonly prop
-      /!\s*[;,)\]}]/,                // non-null assertion x!;
-      /\)\s*:\s*\w+\s*[{=]/,         // return type ): Type {
-      /<\w+>/,                       // generic <T>
+      /\binterface\s+\w+/, // interface Foo
+      /\btype\s+\w+\s*=/, // type Foo =
+      /:\s*\w+[[\]<>|&]/, // : string[] or : Foo<T>
+      /:\s*\w+\s*[=;,)]/, // : number = or : number; or (x: number)
+      /\bimport\s+type\b/, // import type
+      /\bexport\s+type\b/, // export type
+      /\benum\s+\w+/, // enum Foo
+      /\bdeclare\s+/, // declare const
+      /\babstract\s+class\b/, // abstract class
+      /\bas\s+\w+/, // as string
+      /\bpublic\s+\w+/, // public prop
+      /\bprivate\s+\w+/, // private prop
+      /\bprotected\s+\w+/, // protected prop
+      /\breadonly\s+\w+/, // readonly prop
+      /!\s*[;,)\]}]/, // non-null assertion x!;
+      /\)\s*:\s*\w+\s*[{=]/, // return type ): Type {
+      /<\w+>/, // generic <T>
     ];
 
     return patterns.some((p) => p.test(source));

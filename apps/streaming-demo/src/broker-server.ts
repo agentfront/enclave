@@ -256,7 +256,7 @@ async function executeEmbedded(req: Request, res: Response) {
 // LAMBDA MODE - Execute code on Lambda via WebSocket
 // ============================================================================
 
-function createRuntimeConnection(sessionId: SessionId, clientRes: Response): Promise<WebSocket> {
+function createRuntimeConnection(sessionId: SessionId, _clientRes: Response): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     console.log(`\x1b[32m[Broker Lambda]\x1b[0m Connecting to runtime for session ${sessionId}`);
 
@@ -308,7 +308,7 @@ async function handleRuntimeMessage(sessionId: SessionId, event: StreamEvent) {
       args: Record<string, unknown>;
     };
 
-    console.log(`\x1b[32m[Broker Lambda]\x1b[0m Tool call from Lambda: ${toolName}(${JSON.stringify(args)})`);
+    console.log('\x1b[32m[Broker Lambda]\x1b[0m Tool call from Lambda: %s(%s)', String(toolName), JSON.stringify(args));
 
     const handler = toolHandlers[toolName];
     if (!handler) {
@@ -317,14 +317,14 @@ async function handleRuntimeMessage(sessionId: SessionId, event: StreamEvent) {
         sessionId,
         callId,
         success: false,
-        error: { code: 'UNKNOWN_TOOL', message: `Unknown tool: ${toolName}` },
+        error: { code: 'UNKNOWN_TOOL', message: `Unknown tool: ${String(toolName)}` },
       });
       return;
     }
 
     try {
       const result = await handler(args);
-      console.log(`\x1b[32m[Broker Lambda]\x1b[0m Tool ${toolName} completed, sending result to Lambda`);
+      console.log('\x1b[32m[Broker Lambda]\x1b[0m Tool %s completed, sending result to Lambda', String(toolName));
 
       sendToRuntime(session.ws, {
         type: 'tool_result',
@@ -334,7 +334,7 @@ async function handleRuntimeMessage(sessionId: SessionId, event: StreamEvent) {
         value: result,
       });
     } catch (error) {
-      console.error(`\x1b[31m[Broker Lambda]\x1b[0m Tool ${toolName} failed:`, error);
+      console.error('\x1b[31m[Broker Lambda]\x1b[0m Tool %s failed:', String(toolName), error);
       sendToRuntime(session.ws, {
         type: 'tool_result',
         sessionId,

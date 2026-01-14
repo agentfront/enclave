@@ -5,12 +5,7 @@
  * @module ts-stripper/handlers/type-declaration
  */
 
-import {
-  readIdentifier,
-  skipWhitespace,
-  replaceWithSpaces,
-  isIdentifierStart,
-} from '../utils/token-utils';
+import { readIdentifier, skipWhitespace, replaceWithSpaces, isIdentifierStart } from '../utils/token-utils';
 
 /**
  * Check if position starts an `interface` declaration.
@@ -199,25 +194,13 @@ export function checkTypeAliasDeclaration(source: string, position: number): num
     }
 
     // End of type alias
-    if (
-      char === ';' &&
-      braceDepth === 0 &&
-      angleDepth === 0 &&
-      parenDepth === 0 &&
-      bracketDepth === 0
-    ) {
+    if (char === ';' && braceDepth === 0 && angleDepth === 0 && parenDepth === 0 && bracketDepth === 0) {
       pos++; // Include semicolon
       break;
     }
 
     // Newline could end type alias (ASI)
-    if (
-      char === '\n' &&
-      braceDepth === 0 &&
-      angleDepth === 0 &&
-      parenDepth === 0 &&
-      bracketDepth === 0
-    ) {
+    if (char === '\n' && braceDepth === 0 && angleDepth === 0 && parenDepth === 0 && bracketDepth === 0) {
       // Peek ahead to see if next line continues the type
       const nextNonWhitespace = skipWhitespace(source, pos + 1);
       const nextChar = source[nextNonWhitespace];

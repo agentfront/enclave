@@ -5,13 +5,7 @@
  * @module ts-stripper/handlers/type-annotation
  */
 
-import {
-  isIdentifierChar,
-  isWhitespace,
-  replaceWithSpaces,
-  getPreviousToken,
-  JS_KEYWORDS,
-} from '../utils/token-utils';
+import { isIdentifierChar, isWhitespace, replaceWithSpaces, getPreviousToken, JS_KEYWORDS } from '../utils/token-utils';
 import type { DepthTracker } from '../stripper-state';
 
 /**
@@ -45,11 +39,7 @@ export interface TypeAnnotationContext {
  * - Case labels: `case 'foo':`
  * - Labels: `loop:`
  */
-export function checkTypeAnnotation(
-  source: string,
-  position: number,
-  context: TypeAnnotationContext,
-): number {
+export function checkTypeAnnotation(source: string, position: number, context: TypeAnnotationContext): number {
   if (source[position] !== ':') {
     return 0;
   }
@@ -110,7 +100,7 @@ function isInTernaryElse(source: string, colonPos: number): boolean {
     }
 
     // Stop at statement boundaries
-    if (char === ';' || char === '{' && depth === 0) {
+    if (char === ';' || (char === '{' && depth === 0)) {
       break;
     }
 
@@ -205,11 +195,7 @@ function isObjectLiteralValue(source: string, colonPos: number, prevTokenStart: 
 /**
  * Check if context is valid for a type annotation.
  */
-function isValidTypeAnnotationContext(
-  source: string,
-  colonPos: number,
-  prevToken: string,
-): boolean {
+function isValidTypeAnnotationContext(source: string, colonPos: number, prevToken: string): boolean {
   // After identifier (parameter, variable, property)
   if (prevToken && /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(prevToken)) {
     // Not after certain keywords

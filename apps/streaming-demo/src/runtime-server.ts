@@ -15,15 +15,24 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { SessionId, CallId, StreamEvent } from '@enclavejs/types';
 import { generateSessionId, PROTOCOL_VERSION } from '@enclavejs/types';
 import { Enclave } from 'enclave-vm';
+import crypto from 'crypto';
 
 const PORT = 4102;
+
+// Pending tool call structure with proper cleanup
+interface PendingToolCall {
+  resolve: (result: unknown) => void;
+  reject: (error: Error) => void;
+  timeout: NodeJS.Timeout;
+}
 
 // Active sessions
 interface ActiveSession {
   sessionId: SessionId;
   enclave: Enclave;
   ws: WebSocket;
-  pendingToolCalls: Map<CallId, (result: unknown) => void>;
+  seq: number;
+  pendingToolCalls: Map<CallId, PendingToolCall>;
 }
 
 const sessions = new Map<SessionId, ActiveSession>();
@@ -187,6 +196,25 @@ interface CancelRequest {
 // Handle execute request
 async function handleExecute(ws: WebSocket, request: ExecuteRequest) {
   const sessionId = (request.sessionId ?? generateSessionId()) as SessionId;
+
+  console.log(`\x1b[35m[Runtime]\x1b[0m Execute request: session ${sessionId}`);
+
+  // Check for session collision and dispose existing session
+  const existingSession = sessions.get(sessionId);
+  if (existingSession) {
+    console.warn(`\x1b[33m[Runtime]\x1b[0m Session collision: ${sessionId}, disposing existing`);
+    existingSession.enclave.dispose();
+    // Reject all pending tool calls
+    for (const [_callId, pending] of existingSession.pendingToolCalls) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error('Session replaced'));
+    }
+    existingSession.pendingToolCalls.clear();
+    sessions.delete(sessionId);
+  }
+
+  // Create pending tool calls map for this session
+  const pendingToolCalls = new Map<CallId, PendingToolCall>();
   let seq = 0;
 
   console.log(`\x1b[35m[Runtime]\x1b[0m Execute request: session ${sessionId}`);
@@ -204,9 +232,6 @@ async function handleExecute(ws: WebSocket, request: ExecuteRequest) {
     },
   });
 
-  // Create pending tool calls map for this session
-  const pendingToolCalls = new Map<CallId, (result: unknown) => void>();
-
   // Create enclave with tool handler that sends to broker
   const enclave = new Enclave({
     timeout: 30000,
@@ -217,10 +242,14 @@ async function handleExecute(ws: WebSocket, request: ExecuteRequest) {
       console.log(`\x1b[35m[Runtime]\x1b[0m Tool call: ${toolName}(${JSON.stringify(args)})`);
 
       // Send tool_call event to broker
+      const currentSession = sessions.get(sessionId);
+      if (currentSession) {
+        currentSession.seq = ++seq;
+      }
       sendEvent(ws, {
         protocolVersion: PROTOCOL_VERSION,
         sessionId,
-        seq: ++seq,
+        seq,
         type: 'tool_call',
         payload: { callId, toolName, args },
       });
@@ -232,30 +261,17 @@ async function handleExecute(ws: WebSocket, request: ExecuteRequest) {
           reject(new Error(`Tool call ${toolName} timed out`));
         }, 30000);
 
-        pendingToolCalls.set(callId, (result: unknown) => {
-          clearTimeout(timeout);
-          pendingToolCalls.delete(callId);
-
-          // Send tool_result_applied event
-          sendEvent(ws, {
-            protocolVersion: PROTOCOL_VERSION,
-            sessionId,
-            seq: ++seq,
-            type: 'tool_result_applied',
-            payload: { callId },
-          });
-
-          resolve(result);
-        });
+        pendingToolCalls.set(callId, { resolve, reject, timeout });
       });
     },
   });
 
-  // Store session
+  // Store session with seq tracking
   const session: ActiveSession = {
     sessionId,
     enclave,
     ws,
+    seq,
     pendingToolCalls,
   };
   sessions.set(sessionId, session);
@@ -315,20 +331,34 @@ function handleToolResult(request: ToolResultRequest) {
     return;
   }
 
-  const resolver = session.pendingToolCalls.get(request.callId);
-  if (!resolver) {
+  const pending = session.pendingToolCalls.get(request.callId);
+  if (!pending) {
     console.warn(`\x1b[33m[Runtime]\x1b[0m Tool result for unknown call: ${request.callId}`);
     return;
   }
 
   console.log(`\x1b[35m[Runtime]\x1b[0m Tool result received: ${request.callId}`);
 
+  // Clear the timeout
+  clearTimeout(pending.timeout);
+  session.pendingToolCalls.delete(request.callId);
+
+  // Send tool_result_applied event
+  session.seq++;
+  sendEvent(session.ws, {
+    protocolVersion: PROTOCOL_VERSION,
+    sessionId: request.sessionId,
+    seq: session.seq,
+    type: 'tool_result_applied',
+    payload: { callId: request.callId },
+  });
+
   if (request.success) {
-    resolver(request.value);
+    pending.resolve(request.value);
   } else {
     // For errors, we still resolve but with the error info
     // The enclave will handle it appropriately
-    resolver({ __error: true, ...request.error });
+    pending.resolve({ __error: true, ...request.error });
   }
 }
 
@@ -346,20 +376,43 @@ function handleCancel(request: CancelRequest) {
   session.enclave.dispose();
   sessions.delete(request.sessionId);
 
-  // Reject any pending tool calls
-  for (const [callId, resolver] of session.pendingToolCalls) {
+  // Reject any pending tool calls (with proper cleanup)
+  for (const [callId, pending] of session.pendingToolCalls) {
     console.log(`\x1b[35m[Runtime]\x1b[0m Rejecting pending tool call: ${callId}`);
+    clearTimeout(pending.timeout);
+    pending.reject(new Error('Session cancelled'));
   }
   session.pendingToolCalls.clear();
 }
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
+async function gracefulShutdown() {
   console.log('\x1b[35m[Runtime]\x1b[0m Shutting down...');
-  wss.close();
-  for (const session of sessions.values()) {
-    session.enclave.dispose();
-  }
+
+  // Close WebSocket server
+  await new Promise<void>((resolve) => {
+    wss.close((err) => {
+      if (err) {
+        console.error('\x1b[31m[Runtime]\x1b[0m Error closing WebSocket server:', err);
+      }
+      resolve();
+    });
+  });
+
+  // Dispose all enclaves
+  const disposePromises = Array.from(sessions.values()).map(async (session) => {
+    try {
+      session.enclave.dispose();
+    } catch (err) {
+      console.error('\x1b[31m[Runtime]\x1b[0m Error disposing enclave:', err);
+    }
+  });
+  await Promise.all(disposePromises);
+
   sessions.clear();
+  console.log('\x1b[35m[Runtime]\x1b[0m Shutdown complete');
   process.exit(0);
-});
+}
+
+process.on('SIGTERM', () => void gracefulShutdown());
+process.on('SIGINT', () => void gracefulShutdown());

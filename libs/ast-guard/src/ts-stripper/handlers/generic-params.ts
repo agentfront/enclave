@@ -17,15 +17,7 @@ import {
 /**
  * Keywords that can be followed by generic parameters.
  */
-const GENERIC_KEYWORDS = new Set([
-  'function',
-  'class',
-  'interface',
-  'type',
-  'extends',
-  'implements',
-  'new',
-]);
+const GENERIC_KEYWORDS = new Set(['function', 'class', 'interface', 'type', 'extends', 'implements', 'new']);
 
 /**
  * Check if position starts generic type parameters that should be stripped.
@@ -74,7 +66,14 @@ export function checkGenericParams(source: string, position: number): number {
   }
 
   const prevChar = source[prevPos];
-  if (prevChar === '=' || prevChar === '(' || prevChar === '[' || prevChar === ',' || prevChar === ':' || prevChar === '?') {
+  if (
+    prevChar === '=' ||
+    prevChar === '(' ||
+    prevChar === '[' ||
+    prevChar === ',' ||
+    prevChar === ':' ||
+    prevChar === '?'
+  ) {
     return checkArrowFunctionGeneric(source, position);
   }
 
@@ -95,10 +94,7 @@ function findPrevNonWhitespace(source: string, start: number): number {
 /**
  * Analyze if < starts generic parameters in an ambiguous context.
  */
-function analyzeGenericContext(
-  source: string,
-  position: number,
-): { isGeneric: boolean; length: number } {
+function analyzeGenericContext(source: string, position: number): { isGeneric: boolean; length: number } {
   // Try to find matching >
   const endResult = findGenericEnd(source, position);
 
@@ -125,13 +121,7 @@ function analyzeGenericContext(
   // - `>,` - generic in list
   // - `>)` - generic as type argument
 
-  if (
-    afterChar === '(' ||
-    afterChar === '{' ||
-    afterChar === ',' ||
-    afterChar === ')' ||
-    afterChar === '>'
-  ) {
+  if (afterChar === '(' || afterChar === '{' || afterChar === ',' || afterChar === ')' || afterChar === '>') {
     return { isGeneric: true, length: endResult };
   }
 
@@ -274,7 +264,7 @@ function findGenericEnd(source: string, position: number): number {
     }
 
     // Invalid characters inside generics indicate this is not a generic
-    if (char === ';' || char === '{' && angleDepth > 0) {
+    if (char === ';' || (char === '{' && angleDepth > 0)) {
       return 0;
     }
 

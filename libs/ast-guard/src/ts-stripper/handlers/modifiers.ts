@@ -5,7 +5,7 @@
  * @module ts-stripper/handlers/modifiers
  */
 
-import { ACCESS_MODIFIERS, readIdentifier, skipWhitespace, isIdentifierStart } from '../utils/token-utils';
+import { ACCESS_MODIFIERS, readIdentifier, skipWhitespace, isIdentifierStart } from '../utils';
 
 /**
  * Check if position starts an access modifier that should be stripped.
@@ -41,29 +41,11 @@ export function checkAccessModifier(source: string, position: number): number {
   // - ( for constructor parameter
   // - * for generator
   // - get/set accessor
-  if (
-    isIdentifierStart(nextChar) ||
-    nextChar === '[' ||
-    nextChar === '(' ||
-    nextChar === '*'
-  ) {
+  if (isIdentifierStart(nextChar) || nextChar === '[' || nextChar === '(' || nextChar === '*') {
     // Check if next word is another modifier or a valid follow-up
     if (isIdentifierStart(nextChar)) {
-      const next = readIdentifier(source, afterModifier);
-      // Allow: another modifier, constructor, get, set, or any identifier
-      if (
-        ACCESS_MODIFIERS.has(next.identifier) ||
-        next.identifier === 'constructor' ||
-        next.identifier === 'get' ||
-        next.identifier === 'set' ||
-        next.identifier === 'static' ||
-        next.identifier === 'async' ||
-        // Any identifier for property/method name
-        true
-      ) {
-        // Strip the modifier and any trailing whitespace
-        return afterModifier - position;
-      }
+      // Any identifier (property/method name, modifier, constructor, get, set, etc.) is valid
+      return afterModifier - position;
     } else {
       // [ or ( or * - strip modifier
       return afterModifier - position;

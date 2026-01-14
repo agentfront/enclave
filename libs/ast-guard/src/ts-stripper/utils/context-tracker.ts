@@ -11,10 +11,7 @@ import { StripperContext, type StripperState } from '../stripper-state';
  * Process a character and update context state.
  * Returns true if the character should be included in output (not stripped).
  */
-export function updateContext(
-  source: string,
-  state: StripperState,
-): { newContext: StripperContext; skip: number } {
+export function updateContext(source: string, state: StripperState): { newContext: StripperContext; skip: number } {
   const char = source[state.position];
   const nextChar = source[state.position + 1];
   const context = state.context;

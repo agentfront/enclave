@@ -239,9 +239,9 @@ function findAsAssertionEnd(source: string, asPos: number, typeStart: number): n
         char === ';' ||
         char === ':' ||
         char === '?' ||
-        char === '&' && source[pos + 1] === '&' ||
-        char === '|' && source[pos + 1] === '|' ||
-        char === '!' && source[pos + 1] === '='
+        (char === '&' && source[pos + 1] === '&') ||
+        (char === '|' && source[pos + 1] === '|') ||
+        (char === '!' && source[pos + 1] === '=')
       ) {
         break;
       }

@@ -35,36 +35,57 @@ export function isDigit(char: string): boolean {
 /**
  * TypeScript keywords that introduce type-only constructs.
  */
-export const TYPE_KEYWORDS = new Set([
-  'interface',
-  'type',
-  'enum',
-  'declare',
-  'namespace',
-  'module',
-]);
+export const TYPE_KEYWORDS = new Set(['interface', 'type', 'enum', 'declare', 'namespace', 'module']);
 
 /**
  * TypeScript access modifiers.
  */
-export const ACCESS_MODIFIERS = new Set([
-  'public',
-  'private',
-  'protected',
-  'readonly',
-  'abstract',
-  'override',
-]);
+export const ACCESS_MODIFIERS = new Set(['public', 'private', 'protected', 'readonly', 'abstract', 'override']);
 
 /**
  * JavaScript reserved keywords (should not be treated as identifiers to transform).
  */
 export const JS_KEYWORDS = new Set([
-  'break', 'case', 'catch', 'continue', 'debugger', 'default', 'delete',
-  'do', 'else', 'finally', 'for', 'function', 'if', 'in', 'instanceof',
-  'new', 'return', 'switch', 'this', 'throw', 'try', 'typeof', 'var',
-  'void', 'while', 'with', 'class', 'const', 'let', 'export', 'import',
-  'extends', 'super', 'yield', 'static', 'await', 'async', 'of', 'get', 'set',
+  'break',
+  'case',
+  'catch',
+  'continue',
+  'debugger',
+  'default',
+  'delete',
+  'do',
+  'else',
+  'finally',
+  'for',
+  'function',
+  'if',
+  'in',
+  'instanceof',
+  'new',
+  'return',
+  'switch',
+  'this',
+  'throw',
+  'try',
+  'typeof',
+  'var',
+  'void',
+  'while',
+  'with',
+  'class',
+  'const',
+  'let',
+  'export',
+  'import',
+  'extends',
+  'super',
+  'yield',
+  'static',
+  'await',
+  'async',
+  'of',
+  'get',
+  'set',
 ]);
 
 /**
