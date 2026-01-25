@@ -186,25 +186,25 @@ Return a JSON object matching the output schema with:
       }
     },
     {
-      "name": "vectoriadb",
+      "name": "enclave-vm",
       "bump": "patch",
-      "newVersion": "1.0.1",
-      "reason": "Fixed memory leak in vector storage",
+      "newVersion": "2.0.1",
+      "reason": "Fixed memory leak in sandbox cleanup",
       "changelog": {
         "added": [],
         "changed": [],
         "deprecated": [],
         "removed": [],
-        "fixed": ["Fixed memory leak when deleting vectors from namespace"],
+        "fixed": ["Fixed memory leak when disposing sandbox instances"],
         "security": []
       }
     }
   ],
   "globalChangelog": {
-    "summary": "Minor updates to ast-guard and vectoriadb",
+    "summary": "Minor updates to ast-guard and enclave-vm",
     "projects": [
       { "name": "ast-guard", "version": "1.1.0", "summary": "Added sanitizeHtml function" },
-      { "name": "vectoriadb", "version": "1.0.1", "summary": "Fixed memory leak" }
+      { "name": "enclave-vm", "version": "2.0.1", "summary": "Fixed memory leak" }
     ]
   },
   "docs": {

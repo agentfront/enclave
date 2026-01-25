@@ -110,18 +110,6 @@
                 ]
               },
               {
-                "group": "vectoriadb",
-                "icon": "database",
-                "pages": [
-                  "core-libraries/vectoriadb/overview",
-                  "core-libraries/vectoriadb/indexing",
-                  "core-libraries/vectoriadb/search",
-                  "core-libraries/vectoriadb/persistence",
-                  "core-libraries/vectoriadb/hnsw",
-                  "core-libraries/vectoriadb/tfidf"
-                ]
-              },
-              {
                 "group": "EnclaveJS Streaming",
                 "icon": "wave-pulse",
                 "pages": [
@@ -152,7 +140,6 @@
                 "pages": [
                   "api-reference/enclave-vm",
                   "api-reference/ast-guard",
-                  "api-reference/vectoriadb",
                   "api-reference/enclavejs-types",
                   "api-reference/enclavejs-broker",
                   "api-reference/enclavejs-client",

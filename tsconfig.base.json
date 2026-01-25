@@ -23,7 +23,6 @@
     "paths": {
       "enclave-vm": ["libs/enclave-vm/src/index.ts"],
       "ast-guard": ["libs/ast-guard/src/index.ts"],
-      "vectoriadb": ["libs/vectoriadb/src/index.ts"],
       "@enclavejs/types": ["libs/enclavejs-types/src/index.ts"],
       "@enclavejs/stream": ["libs/enclavejs-stream/src/index.ts"],
       "@enclavejs/broker": ["libs/enclavejs-broker/src/index.ts"],

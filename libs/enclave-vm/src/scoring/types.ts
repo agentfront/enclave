@@ -342,6 +342,12 @@ export interface ScoringGateResult {
 
 /**
  * Configuration for VectoriaDB-based similarity scoring
+ *
+ * Requires the `vectoriadb` package to be installed:
+ * ```bash
+ * npm install vectoriadb
+ * ```
+ * See: https://github.com/agentfront/vectoriadb
  */
 export interface VectoriaConfigForScoring {
   /**
@@ -354,6 +360,18 @@ export interface VectoriaConfigForScoring {
    * @default 0.85
    */
   threshold?: number;
+
+  /**
+   * Top K results to consider
+   * @default 5
+   */
+  topK?: number;
+
+  /**
+   * Model for embeddings
+   * @default Uses the modelId from LocalLlmConfig or 'Xenova/all-MiniLM-L6-v2'
+   */
+  modelName?: string;
 }
 
 /**
@@ -430,6 +448,11 @@ export interface LocalLlmConfig {
   /**
    * Configuration for similarity mode (VectoriaDB)
    * Required when mode='similarity'
+   *
+   * Requires the `vectoriadb` package to be installed:
+   * ```bash
+   * npm install vectoriadb
+   * ```
    */
   vectoriaConfig?: VectoriaConfigForScoring;
 

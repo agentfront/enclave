@@ -6,7 +6,6 @@ For detailed changes to individual packages, see their respective changelogs:
 
 - [enclave-vm](libs/enclave-vm/CHANGELOG.md)
 - [ast-guard](libs/ast-guard/CHANGELOG.md)
-- [vectoriadb](libs/vectoriadb/CHANGELOG.md)
 
 ## [Unreleased]
 
@@ -35,7 +34,6 @@ Security-focused release aligning enclave sandbox globals with AST guard while h
 | Package    | Version | Highlights                                                                                     |
 | ---------- | ------- | ---------------------------------------------------------------------------------------------- |
 | enclave-vm | 2.5.0   | Sandbox now enforces security-level-specific globals and the double-VM bootstrap was hardened. |
-| vectoriadb | 2.0.2   | Regex analyzer and Redis namespace sanitization now resist ReDoS inputs.                       |
 | ast-guard  | 2.2.0   | Introduced security-level-aware AgentScript globals plus safer regex pre-scanning.             |
 
 ## 2026-01-06
@@ -63,7 +61,6 @@ Transformer-dependent features now load Hugging Face models lazily with optional
 | Package    | Version | Highlights                                                       |
 | ---------- | ------- | ---------------------------------------------------------------- |
 | enclave-vm | 1.0.2   | LocalLlmScorer lazy-loads transformers, optional peer dependency |
-| vectoriadb | 2.0.0   | EmbeddingService dynamic loading, injection hooks, optional peer |
 
 ## 2025-12-11
 
@@ -80,5 +77,4 @@ Initial release of the Enclave monorepo.
 | Package    | Version | Highlights                                         |
 | ---------- | ------- | -------------------------------------------------- |
 | ast-guard  | 1.0.0   | AST-based JavaScript validator with CVE protection |
-| vectoriadb | 1.0.0   | In-memory vector database for semantic search      |
 | enclave-vm | 1.0.0   | Secure AgentScript execution environment           |

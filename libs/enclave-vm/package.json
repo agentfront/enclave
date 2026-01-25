@@ -44,10 +44,14 @@
     "zod": "^4.1.13"
   },
   "peerDependencies": {
-    "@huggingface/transformers": "^3.2.2"
+    "@huggingface/transformers": "^3.2.2",
+    "vectoriadb": "^2.0.0"
   },
   "peerDependenciesMeta": {
     "@huggingface/transformers": {
+      "optional": true
+    },
+    "vectoriadb": {
       "optional": true
     }
   }

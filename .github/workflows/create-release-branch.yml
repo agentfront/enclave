@@ -2,7 +2,17 @@ name: Create release branch
 
 on:
   workflow_dispatch:
-    # No inputs - version bump is AI-detected by Codex
+    inputs:
+      bump_type:
+        description: "Version bump type (applies to all affected libs)"
+        required: false
+        type: choice
+        default: "auto"
+        options:
+          - auto # Use Codex AI (existing behavior)
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
@@ -22,8 +32,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Fail fast if env secret is not available
+      # Fail fast if env secret is not available (only for auto mode)
       - name: Ensure CODEX_OPENAI_KEY secret is set
+        if: github.event.inputs.bump_type == 'auto' || github.event.inputs.bump_type == ''
         run: |
           if [ -z "${{ secrets.CODEX_OPENAI_KEY }}" ]; then
             echo "::error::CODEX_OPENAI_KEY (env: release) is not set. Add it under Settings → Environments → release → Secrets." >&2
@@ -130,8 +141,10 @@ jobs:
 
       # ========================================
       # MCP Integration: Configure Codex home with MCP servers
+      # Only needed for auto mode (Codex)
       # ========================================
       - name: Prepare Codex home with MCP config
+        if: github.event.inputs.bump_type == 'auto' || github.event.inputs.bump_type == ''
         id: mcp
         shell: bash
         run: |
@@ -161,6 +174,7 @@ jobs:
           RUNNER_TEMP: ${{ runner.temp }}
 
       - name: Prepare diff context for Codex
+        if: github.event.inputs.bump_type == 'auto' || github.event.inputs.bump_type == ''
         id: ctx
         shell: bash
         run: |
@@ -224,11 +238,97 @@ jobs:
           date -u +"%Y-%m-%d" > .github/codex/prompts/date.txt
 
       # ========================================
+      # Manual version bump (when bump_type != 'auto')
+      # Generates mock Codex output for unified versioning
+      # ========================================
+      - name: Generate manual version bumps
+        if: steps.affected.outputs.projects != '' && github.event.inputs.bump_type != 'auto' && github.event.inputs.bump_type != ''
+        id: manual_bump
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUMP_TYPE="${{ github.event.inputs.bump_type }}"
+          PROJECTS="${{ steps.affected.outputs.projects }}"
+          PROJECT_VERSIONS="${{ steps.affected.outputs.project_versions }}"
+
+          echo "Manual bump type: $BUMP_TYPE"
+          echo "Affected projects: $PROJECTS"
+
+          # Find the highest version among affected libs
+          HIGHEST_VERSION="0.0.0"
+          IFS=',' read -ra VERSIONS <<< "$PROJECT_VERSIONS"
+          for entry in "${VERSIONS[@]}"; do
+            VER="${entry#*=}"
+            if [ "$(printf '%s\n%s' "$VER" "$HIGHEST_VERSION" | sort -V | tail -n1)" = "$VER" ]; then
+              HIGHEST_VERSION="$VER"
+            fi
+          done
+
+          echo "Highest current version: $HIGHEST_VERSION"
+
+          # Parse version components
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$HIGHEST_VERSION"
+
+          # Calculate new version based on bump type
+          case "$BUMP_TYPE" in
+            major)
+              NEW_VERSION="$((MAJOR + 1)).0.0"
+              ;;
+            minor)
+              NEW_VERSION="${MAJOR}.$((MINOR + 1)).0"
+              ;;
+            patch)
+              NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+              ;;
+          esac
+
+          echo "New unified version: $NEW_VERSION"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+          # Generate mock Codex output JSON for nx-release.mjs
+          mkdir -p .codex-release
+
+          # Build projects array with unified version
+          PROJECTS_JSON="["
+          FIRST=true
+          IFS=',' read -ra LIBS <<< "$PROJECTS"
+          for lib in "${LIBS[@]}"; do
+            if [ "$FIRST" = true ]; then
+              FIRST=false
+            else
+              PROJECTS_JSON+=","
+            fi
+            PROJECTS_JSON+="{\"name\":\"$lib\",\"bump\":\"$BUMP_TYPE\",\"newVersion\":\"$NEW_VERSION\",\"reason\":\"Manual $BUMP_TYPE bump\",\"changelog\":{\"added\":[],\"changed\":[],\"deprecated\":[],\"removed\":[],\"fixed\":[],\"security\":[]}}"
+          done
+          PROJECTS_JSON+="]"
+
+          # Write mock Codex output
+          cat > "${{ env.CODEX_OUTPUT }}" << EOF
+          {
+            "projects": $PROJECTS_JSON,
+            "globalChangelog": {
+              "summary": "Manual $BUMP_TYPE release",
+              "projects": []
+            },
+            "docs": {
+              "updated": false,
+              "files": [],
+              "summary": ""
+            }
+          }
+          EOF
+
+          echo "Generated manual Codex output:"
+          cat "${{ env.CODEX_OUTPUT }}"
+
+      # ========================================
       # Single Codex call for version analysis + docs update
       # (Cannot run sequential Codex actions due to sudo restrictions)
+      # Only runs in 'auto' mode
       # ========================================
       - name: Run Codex for release analysis
-        if: steps.affected.outputs.projects != ''
+        if: steps.affected.outputs.projects != '' && (github.event.inputs.bump_type == 'auto' || github.event.inputs.bump_type == '')
         id: codex
         uses: openai/codex-action@v1
         with:
@@ -412,4 +512,9 @@ jobs:
           echo "**Max Version:** ${{ steps.versions.outputs.max_version }}" >> $GITHUB_STEP_SUMMARY
           echo "**Projects:** ${{ steps.versions.outputs.bumped_projects }}" >> $GITHUB_STEP_SUMMARY
           echo "**Last Released Versions:** ${{ steps.affected.outputs.project_versions }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Analysis:** Codex AI (gpt-5.1-codex)" >> $GITHUB_STEP_SUMMARY
+          BUMP_TYPE="${{ github.event.inputs.bump_type }}"
+          if [ "$BUMP_TYPE" = "auto" ] || [ -z "$BUMP_TYPE" ]; then
+            echo "**Analysis:** Codex AI (gpt-5.1-codex)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Analysis:** Manual ($BUMP_TYPE bump)" >> $GITHUB_STEP_SUMMARY
+          fi
