@@ -13,7 +13,6 @@
 **Secure sandbox runtime for AI agents**
 
 [![npm ast-guard](https://img.shields.io/npm/v/ast-guard.svg?label=ast-guard&color=e8a045)](https://www.npmjs.com/package/ast-guard)
-[![npm vectoriadb](https://img.shields.io/npm/v/vectoriadb.svg?label=vectoriadb&color=e8a045)](https://www.npmjs.com/package/vectoriadb)
 [![npm enclave-vm](https://img.shields.io/npm/v/enclave-vm.svg?label=enclave-vm&color=e8a045)](https://www.npmjs.com/package/enclave-vm)
 <br>
 [![npm @enclavejs/broker](https://img.shields.io/npm/v/@enclavejs/broker.svg?label=@enclavejs/broker&color=e8a045)](https://www.npmjs.com/package/@enclavejs/broker)
@@ -44,7 +43,6 @@
 ```bash
 npm install enclave-vm    # Secure JS sandbox
 npm install ast-guard     # AST security validation
-npm install vectoriadb    # Vector search
 ```
 
 ### Streaming Runtime
@@ -67,7 +65,6 @@ npm install @enclavejs/react    # React hooks & components
 | [`@enclavejs/types`](./libs/enclavejs-types)     | TypeScript types & Zod schemas                      |
 | [`@enclavejs/stream`](./libs/enclavejs-stream)   | NDJSON streaming, encryption, reconnection          |
 | [`ast-guard`](./libs/ast-guard)                  | AST-based security validator                        |
-| [`vectoriadb`](./libs/vectoriadb)                | Lightweight in-memory vector database               |
 
 ## Quick Start
 

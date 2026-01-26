@@ -342,18 +342,45 @@ export interface ScoringGateResult {
 
 /**
  * Configuration for VectoriaDB-based similarity scoring
+ *
+ * Requires the `vectoriadb` package to be installed:
+ * ```bash
+ * npm install vectoriadb
+ * ```
+ * See: https://github.com/agentfront/vectoriadb
+ *
+ * @breaking v2.x removed the `indexPath` option. VectoriaDB v2.x handles persistence
+ * via storage adapters (MemoryStorageAdapter, FileStorageAdapter, RedisStorageAdapter)
+ * instead of loadIndex(). If you need to persist patterns, use VectoriaDB's
+ * saveToStorage() API directly.
+ *
+ * @example
+ * ```typescript
+ * const config: VectoriaConfigForScoring = {
+ *   threshold: 0.85,    // Match threshold
+ *   topK: 5,            // Return top 5 matches
+ *   modelName: 'Xenova/all-MiniLM-L6-v2',
+ * };
+ * ```
  */
 export interface VectoriaConfigForScoring {
-  /**
-   * Path to pre-built index with malicious patterns
-   */
-  indexPath?: string;
-
   /**
    * Similarity threshold (0-1) for considering a match
    * @default 0.85
    */
   threshold?: number;
+
+  /**
+   * Top K results to consider
+   * @default 5
+   */
+  topK?: number;
+
+  /**
+   * Model for embeddings
+   * @default Uses the modelId from LocalLlmConfig or 'Xenova/all-MiniLM-L6-v2'
+   */
+  modelName?: string;
 }
 
 /**
@@ -430,6 +457,11 @@ export interface LocalLlmConfig {
   /**
    * Configuration for similarity mode (VectoriaDB)
    * Required when mode='similarity'
+   *
+   * Requires the `vectoriadb` package to be installed:
+   * ```bash
+   * npm install vectoriadb
+   * ```
    */
   vectoriaConfig?: VectoriaConfigForScoring;
 

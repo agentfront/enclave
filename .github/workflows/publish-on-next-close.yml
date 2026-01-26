@@ -185,6 +185,8 @@ jobs:
       - name: Publish to npm via Nx Release
         if: steps.to_publish.outputs.projects != ''
         shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           echo "Publishing selected projects via Nx Release..."

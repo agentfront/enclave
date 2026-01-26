@@ -19,6 +19,18 @@ import { join } from 'node:path';
 // Pipeline type from @huggingface/transformers
 type Pipeline = (input: string, options?: Record<string, unknown>) => Promise<{ data: number[] }>;
 
+// VectoriaDB types (optional dependency)
+interface VectoriaSearchResult {
+  id: string;
+  score: number;
+  metadata?: Record<string, unknown>;
+}
+
+interface VectoriaDBInstance {
+  initialize(): Promise<void>;
+  search(query: string, options?: { topK?: number; threshold?: number }): Promise<VectoriaSearchResult[]>;
+}
+
 /**
  * Default model cache directory
  */
@@ -87,6 +99,7 @@ export class LocalLlmScorer extends BaseScorer {
   private initPromise: Promise<void> | null = null;
   private readonly fallbackScorer: RuleBasedScorer | null;
   private readonly config: LocalLlmConfig;
+  private vectoriaDB: VectoriaDBInstance | null = null;
 
   constructor(config: LocalLlmConfig) {
     super();
@@ -145,6 +158,11 @@ export class LocalLlmScorer extends BaseScorer {
         await this.config.customAnalyzer.initialize();
       }
 
+      // Initialize VectoriaDB for similarity mode
+      if (this.config.mode === 'similarity') {
+        await this.initializeVectoriaDB();
+      }
+
       this.ready = true;
     } catch (error) {
       this.initPromise = null;
@@ -161,12 +179,44 @@ export class LocalLlmScorer extends BaseScorer {
           await this.config.customAnalyzer.initialize();
         }
 
+        // Try to initialize VectoriaDB for similarity mode even if model fails
+        if (this.config.mode === 'similarity') {
+          await this.initializeVectoriaDB();
+        }
+
         this.ready = true; // Ready with fallback
       } else {
         throw new LocalLlmScorerError(
           `Failed to initialize model: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
+    }
+  }
+
+  /**
+   * Initialize VectoriaDB for similarity-based scoring
+   */
+  private async initializeVectoriaDB(): Promise<void> {
+    try {
+      // Dynamic import of VectoriaDB (optional dependency)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const vectoriaModule = await (Function('return import("vectoriadb")')() as Promise<any>);
+      const { VectoriaDB } = vectoriaModule;
+
+      const modelName = this.config.vectoriaConfig?.modelName ?? this.config.modelId;
+
+      this.vectoriaDB = new VectoriaDB({
+        modelName,
+      }) as VectoriaDBInstance;
+
+      await this.vectoriaDB.initialize();
+    } catch (error) {
+      console.warn(
+        `[LocalLlmScorer] VectoriaDB initialization failed, similarity mode will use heuristics: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      this.vectoriaDB = null;
     }
   }
 
@@ -202,7 +252,8 @@ export class LocalLlmScorer extends BaseScorer {
     }
 
     // If model failed to load and we have fallback (no custom analyzer)
-    if (!this.pipeline && this.fallbackScorer) {
+    // Skip fallback for similarity mode - it can work without the pipeline using VectoriaDB/heuristics
+    if (!this.pipeline && this.fallbackScorer && this.config.mode !== 'similarity') {
       const result = await this.fallbackScorer.score(features);
       return {
         ...result,
@@ -254,21 +305,47 @@ export class LocalLlmScorer extends BaseScorer {
 
   /**
    * Score using similarity to known malicious patterns
+   *
+   * Uses VectoriaDB to find similar patterns in a pre-built index.
+   * Falls back to heuristic analysis if VectoriaDB is not available.
    */
   private async scoreWithSimilarity(features: ExtractedFeatures, startTime: number): Promise<ScoringResult> {
-    // Convert features to text prompt
     const prompt = this.featuresToPrompt(features);
+    const signals: RiskSignal[] = [];
+    let score = 0;
 
-    // Score using custom analyzer or built-in heuristics
-    const { score, signals } = await this.analyzePrompt(prompt, features);
+    // Try VectoriaDB similarity search if available
+    if (this.vectoriaDB) {
+      const threshold = this.config.vectoriaConfig?.threshold ?? 0.85;
+      const topK = this.config.vectoriaConfig?.topK ?? 5;
 
-    // Add similarity mode signal
-    signals.push({
-      id: 'SIMILARITY_MODE',
-      score: 0,
-      description: 'Similarity scoring (VectoriaDB integration pending)',
-      level: 'none' as RiskLevel,
-    });
+      try {
+        const results = await this.vectoriaDB.search(prompt, { topK, threshold });
+
+        if (results.length > 0) {
+          // Calculate score based on similarity matches
+          const maxSimilarity = Math.max(...results.map((r) => r.score));
+          score = Math.floor(maxSimilarity * 100);
+
+          signals.push({
+            id: 'SIMILARITY_MATCH',
+            score,
+            description: `Matched ${results.length} known malicious pattern(s)`,
+            level: this.calculateRiskLevel(score),
+            context: { matches: results.map((r) => ({ id: r.id, score: r.score })) },
+          });
+        }
+      } catch (error) {
+        console.warn(
+          `[LocalLlmScorer] VectoriaDB search failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    // Also run heuristic analysis as supplementary
+    const heuristics = await this.analyzePrompt(prompt, features);
+    signals.push(...heuristics.signals);
+    score = Math.max(score, heuristics.score);
 
     return {
       totalScore: this.clampScore(score),
@@ -466,11 +543,19 @@ export class LocalLlmScorer extends BaseScorer {
   }
 
   /**
+   * Check if VectoriaDB is available for similarity scoring
+   */
+  isVectoriaDBAvailable(): boolean {
+    return this.vectoriaDB !== null;
+  }
+
+  /**
    * Dispose of resources
    */
   override dispose(): void {
     this.pipeline = null;
     this.initPromise = null;
+    this.vectoriaDB = null;
     this.fallbackScorer?.dispose?.();
     this.config.customAnalyzer?.dispose?.();
     super.dispose();

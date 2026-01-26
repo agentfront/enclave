@@ -11,6 +11,7 @@ export default [
           ignoredFiles: ['{projectRoot}/eslint.config.{js,cjs,mjs,ts,cts,mts}'],
           ignoredDependencies: [
             '@huggingface/transformers', // Optional peer dependency loaded dynamically
+            'vectoriadb', // Optional peer dependency loaded dynamically
             '@jest/reporters', // Test-only dependency used by benchmark reporter
           ],
         },
