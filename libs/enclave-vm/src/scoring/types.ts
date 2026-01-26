@@ -348,6 +348,20 @@ export interface ScoringGateResult {
  * npm install vectoriadb
  * ```
  * See: https://github.com/agentfront/vectoriadb
+ *
+ * @breaking v2.x removed the `indexPath` option. VectoriaDB v2.x handles persistence
+ * via storage adapters (MemoryStorageAdapter, FileStorageAdapter, RedisStorageAdapter)
+ * instead of loadIndex(). If you need to persist patterns, use VectoriaDB's
+ * saveToStorage() API directly.
+ *
+ * @example
+ * ```typescript
+ * const config: VectoriaConfigForScoring = {
+ *   threshold: 0.85,    // Match threshold
+ *   topK: 5,            // Return top 5 matches
+ *   modelName: 'Xenova/all-MiniLM-L6-v2',
+ * };
+ * ```
  */
 export interface VectoriaConfigForScoring {
   /**

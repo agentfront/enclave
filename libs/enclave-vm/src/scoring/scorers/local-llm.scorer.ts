@@ -252,7 +252,8 @@ export class LocalLlmScorer extends BaseScorer {
     }
 
     // If model failed to load and we have fallback (no custom analyzer)
-    if (!this.pipeline && this.fallbackScorer) {
+    // Skip fallback for similarity mode - it can work without the pipeline using VectoriaDB/heuristics
+    if (!this.pipeline && this.fallbackScorer && this.config.mode !== 'similarity') {
       const result = await this.fallbackScorer.score(features);
       return {
         ...result,

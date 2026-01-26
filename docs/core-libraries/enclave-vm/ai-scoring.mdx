@@ -88,6 +88,48 @@ const enclave = new Enclave({
 });
 ```
 
+### Similarity Mode with VectoriaDB
+
+For pattern-matching against known malicious code patterns, use similarity mode with VectoriaDB:
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({
+  scoringGate: {
+    scorer: 'local-llm',
+    localLlm: {
+      modelId: 'Xenova/all-MiniLM-L6-v2',
+      mode: 'similarity',
+      vectoriaConfig: {
+        threshold: 0.85,    // Similarity threshold (0-1)
+        topK: 5,            // Number of results to consider
+        modelName: 'Xenova/all-MiniLM-L6-v2', // Optional: override embedding model
+      },
+    },
+    blockThreshold: 70,
+    warnThreshold: 40,
+  },
+});
+```
+
+**VectoriaDB Configuration Options:**
+
+| Option      | Type     | Default                              | Description                                      |
+| ----------- | -------- | ------------------------------------ | ------------------------------------------------ |
+| `threshold` | `number` | `0.85`                               | Similarity threshold (0-1) for considering a match |
+| `topK`      | `number` | `5`                                  | Maximum number of similar patterns to return     |
+| `modelName` | `string` | Inherits from `localLlm.modelId`     | Embedding model for similarity computation       |
+
+<Note>
+Similarity mode requires the optional `vectoriadb` peer dependency:
+```bash
+npm install vectoriadb
+```
+</Note>
+
+Similarity mode can operate without the Hugging Face transformers pipeline - it will use VectoriaDB for similarity search and fall back to heuristics when needed.
+
 ## Detection Rules
 
 The rule-based scorer evaluates these patterns:
@@ -217,6 +259,42 @@ const enclave = new Enclave({
 3. **Use fail-open cautiously** - Only in non-critical paths
 4. **Monitor signals** - Track which rules trigger most often
 5. **Layer with other defenses** - Scoring complements AST validation
+
+## Breaking Changes
+
+### v2.x: VectoriaConfigForScoring API Changes
+
+**Removed: `indexPath` option**
+
+The `indexPath` option has been removed from `VectoriaConfigForScoring`. This option was intended to load pre-built malicious pattern indexes, but VectoriaDB v2.x handles persistence differently using storage adapters.
+
+**Migration:**
+
+```ts
+// Before (v1.x) - No longer supported
+const config = {
+  vectoriaConfig: {
+    indexPath: '/path/to/malicious-patterns.index', // REMOVED
+    threshold: 0.85,
+  },
+};
+
+// After (v2.x)
+const config = {
+  vectoriaConfig: {
+    threshold: 0.85,
+    topK: 5,
+    modelName: 'Xenova/all-MiniLM-L6-v2',
+  },
+};
+```
+
+If you were using `indexPath` to load pre-built indexes, you'll need to handle persistence externally using VectoriaDB's storage adapter APIs (`saveToStorage()`, `MemoryStorageAdapter`, `FileStorageAdapter`, or `RedisStorageAdapter`).
+
+**New options in v2.x:**
+
+- `topK` - Control how many similar patterns to consider (default: 5)
+- `modelName` - Override the embedding model (defaults to `localLlm.modelId`)
 
 ## Related
 
