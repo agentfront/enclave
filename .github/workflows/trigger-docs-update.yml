@@ -1,0 +1,184 @@
+# =============================================================================
+# Trigger Docs Update Workflow
+# =============================================================================
+#
+# Sends a repository_dispatch event to the agentfront-docs repo when:
+# 1. A GitHub Release is published (for stable releases)
+# 2. A PR is merged to a release/* branch (for docs changes before release)
+#
+# SETUP REQUIRED:
+# Create a repository secret named DOCS_SYNC_TOKEN:
+#   - Go to your repo Settings > Secrets and variables > Actions
+#   - Create a new secret named DOCS_SYNC_TOKEN
+#   - Value: A GitHub PAT with 'repo' scope that has access to agentfront-docs
+#
+# =============================================================================
+
+name: Trigger Docs Update
+
+on:
+  release:
+    types: [published]
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+env:
+  REPO_NAME: enclave
+
+jobs:
+  trigger-on-release:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger docs sync
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DOCS_SYNC_TOKEN }}
+          script: |
+            const repoName = process.env.REPO_NAME;
+            const tag = context.payload.release.tag_name;
+            const sha = context.sha;
+
+            // Extract version minor from tag (e.g., "v2.1.0" -> "2.1")
+            const versionMatch = tag.match(/^v?(\d+)\.(\d+)/);
+            const versionMinor = versionMatch ? `${versionMatch[1]}.${versionMatch[2]}` : null;
+
+            console.log(`Triggering docs sync for ${repoName}`);
+            console.log(`  Tag: ${tag}`);
+            console.log(`  SHA: ${sha}`);
+            console.log(`  Version minor: ${versionMinor}`);
+
+            try {
+              await github.rest.repos.createDispatchEvent({
+                owner: 'agentfront',
+                repo: 'docs',
+                event_type: 'sync-docs',
+                client_payload: {
+                  repo: repoName,
+                  sha: sha,
+                  tag: tag,
+                  version_minor: versionMinor
+                }
+              });
+              console.log(`Successfully triggered docs sync for ${tag}`);
+            } catch (error) {
+              console.error(`Failed to trigger docs sync: ${error.message}`);
+              if (error.status === 404) {
+                console.error('Check that DOCS_SYNC_TOKEN has access to agentfront/docs');
+              } else if (error.status === 401) {
+                console.error('Check that DOCS_SYNC_TOKEN secret is set correctly');
+              }
+              throw error;
+            }
+
+      - name: Summary
+        run: |
+          echo "## Docs Sync Triggered (Release)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository:** ${{ env.REPO_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag:** ${{ github.event.release.tag_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **SHA:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The [agentfront-docs](https://github.com/agentfront/docs) repository will sync the documentation shortly." >> $GITHUB_STEP_SUMMARY
+
+  trigger-on-pr-merge:
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.base.ref, 'release/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine diff base
+        id: diff_base
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BRANCH="${{ github.event.pull_request.base.ref }}"
+
+          # Check for .release-docs-base marker file
+          if [ -f ".release-docs-base" ]; then
+            DIFF_BASE=$(cat .release-docs-base)
+            echo "Using diff base from .release-docs-base: $DIFF_BASE"
+          else
+            # Fallback to branch creation point
+            DIFF_BASE=$(git merge-base origin/main "origin/$BRANCH" 2>/dev/null || echo "")
+            if [ -z "$DIFF_BASE" ]; then
+              DIFF_BASE="HEAD~1"
+            fi
+            echo "Using fallback diff base: $DIFF_BASE"
+          fi
+
+          echo "diff_base=$DIFF_BASE" >> "$GITHUB_OUTPUT"
+
+          # Extract version minor from branch (e.g., "release/2.1.x" -> "2.1")
+          VERSION_MINOR=$(echo "$BRANCH" | sed 's/release\/\([0-9]*\.[0-9]*\).*/\1/')
+          echo "version_minor=$VERSION_MINOR" >> "$GITHUB_OUTPUT"
+          echo "Version minor: $VERSION_MINOR"
+
+      - name: Trigger docs sync
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DOCS_SYNC_TOKEN }}
+          script: |
+            const repoName = process.env.REPO_NAME;
+            const branch = '${{ github.event.pull_request.base.ref }}';
+            const sha = context.sha;
+            const diffBase = '${{ steps.diff_base.outputs.diff_base }}';
+            const versionMinor = '${{ steps.diff_base.outputs.version_minor }}';
+            const prNumber = context.payload.pull_request.number;
+            const prTitle = context.payload.pull_request.title;
+
+            console.log(`Triggering docs sync for ${repoName}`);
+            console.log(`  Branch: ${branch}`);
+            console.log(`  SHA: ${sha}`);
+            console.log(`  Diff base: ${diffBase}`);
+            console.log(`  Version minor: ${versionMinor}`);
+            console.log(`  PR: #${prNumber} - ${prTitle}`);
+
+            try {
+              await github.rest.repos.createDispatchEvent({
+                owner: 'agentfront',
+                repo: 'docs',
+                event_type: 'sync-docs',
+                client_payload: {
+                  repo: repoName,
+                  sha: sha,
+                  branch: branch,
+                  diff_base: diffBase,
+                  version_minor: versionMinor,
+                  pr_number: prNumber,
+                  pr_title: prTitle
+                }
+              });
+              console.log(`Successfully triggered docs sync for PR #${prNumber}`);
+            } catch (error) {
+              console.error(`Failed to trigger docs sync: ${error.message}`);
+              if (error.status === 404) {
+                console.error('Check that DOCS_SYNC_TOKEN has access to agentfront/docs');
+              } else if (error.status === 401) {
+                console.error('Check that DOCS_SYNC_TOKEN secret is set correctly');
+              }
+              // Don't fail the workflow for docs sync issues
+              console.log('Continuing despite docs sync failure');
+            }
+
+      - name: Summary
+        run: |
+          echo "## Docs Sync Triggered (PR Merge)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository:** ${{ env.REPO_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.event.pull_request.base.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **PR:** #${{ github.event.pull_request.number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **SHA:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Diff base:** ${{ steps.diff_base.outputs.diff_base }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The [agentfront-docs](https://github.com/agentfront/docs) repository will sync the documentation shortly." >> $GITHUB_STEP_SUMMARY
