@@ -29,7 +29,6 @@ interface VectoriaSearchResult {
 interface VectoriaDBInstance {
   initialize(): Promise<void>;
   search(query: string, options?: { topK?: number; threshold?: number }): Promise<VectoriaSearchResult[]>;
-  loadIndex?(path: string): Promise<void>;
 }
 
 /**
@@ -211,11 +210,6 @@ export class LocalLlmScorer extends BaseScorer {
       }) as VectoriaDBInstance;
 
       await this.vectoriaDB.initialize();
-
-      // Load pre-built malicious patterns index if provided
-      if (this.config.vectoriaConfig?.indexPath && this.vectoriaDB.loadIndex) {
-        await this.vectoriaDB.loadIndex(this.config.vectoriaConfig.indexPath);
-      }
     } catch (error) {
       console.warn(
         `[LocalLlmScorer] VectoriaDB initialization failed, similarity mode will use heuristics: ${

@@ -843,7 +843,6 @@ describe('LocalLlmScorer', () => {
     let mockVectoriaDB: {
       initialize: jest.Mock;
       search: jest.Mock;
-      loadIndex: jest.Mock;
     };
 
     let originalImport: typeof Function;
@@ -852,7 +851,6 @@ describe('LocalLlmScorer', () => {
       mockVectoriaDB = {
         initialize: jest.fn().mockResolvedValue(undefined),
         search: jest.fn().mockResolvedValue([]),
-        loadIndex: jest.fn().mockResolvedValue(undefined),
       };
 
       // Store original Function constructor
@@ -1038,23 +1036,6 @@ describe('LocalLlmScorer', () => {
         const storedConfig = scorer.getConfig();
 
         expect(storedConfig.vectoriaConfig?.modelName).toBe('Xenova/custom-embedding-model');
-      });
-
-      it('should store indexPath configuration', () => {
-        const config: LocalLlmConfig = {
-          modelId: 'Xenova/all-MiniLM-L6-v2',
-          mode: 'similarity',
-          vectoriaConfig: {
-            indexPath: '/path/to/malicious-patterns.index',
-            threshold: 0.85,
-          },
-          fallbackToRules: true,
-        };
-
-        const scorer = new LocalLlmScorer(config);
-        const storedConfig = scorer.getConfig();
-
-        expect(storedConfig.vectoriaConfig?.indexPath).toBe('/path/to/malicious-patterns.index');
       });
     });
 

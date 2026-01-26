@@ -351,11 +351,6 @@ export interface ScoringGateResult {
  */
 export interface VectoriaConfigForScoring {
   /**
-   * Path to pre-built index with malicious patterns
-   */
-  indexPath?: string;
-
-  /**
    * Similarity threshold (0-1) for considering a match
    * @default 0.85
    */
