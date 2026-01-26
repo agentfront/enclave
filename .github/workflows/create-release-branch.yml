@@ -25,6 +25,8 @@ jobs:
     env:
       NX_DAEMON: "false"
       CODEX_OUTPUT: .codex-release/release-output.json
+      # Core libs that always release together with unified versioning
+      CORE_LIBS: "ast-guard,enclave-vm"
 
     steps:
       - name: Checkout
@@ -56,13 +58,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Find affected projects with per-package version detection
+      - name: Find affected projects with unified versioning for core libs
         id: affected
         shell: bash
         run: |
           set -euo pipefail
 
           FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
+
+          # Core libs use unified versioning - if any has changes, all are released together
+          CORE_LIBS="${{ env.CORE_LIBS }}"
+          echo "Core libs (unified versioning): $CORE_LIBS"
 
           # Get all publishable libs
           ALL_LIBS=$(node -e "
@@ -79,24 +85,26 @@ jobs:
           if [ -z "$ALL_LIBS" ]; then
             echo "projects=" >> "$GITHUB_OUTPUT"
             echo "project_versions=" >> "$GITHUB_OUTPUT"
+            echo "unified_version=" >> "$GITHUB_OUTPUT"
             echo "No publishable libraries found"
             exit 0
           fi
 
           echo "All publishable libs: $ALL_LIBS"
 
-          # For each lib, find its last release tag and check if affected
+          # Track versions and changes for all libs
+          CORE_HAS_CHANGES=false
+          CORE_HIGHEST_VERSION="0.0.0"
           AFFECTED_LIBS=""
           PROJECT_VERSIONS=""
 
           IFS=',' read -ra LIBS <<< "$ALL_LIBS"
           for lib in "${LIBS[@]}"; do
-            # Find the last release tag for this specific package (e.g., enclave-vm@2.0.0)
+            # Find the last release tag for this specific package
             LAST_TAG=$(git tag --list "${lib}@*" --sort=-version:refname | head -n1 || echo "")
 
             if [ -n "$LAST_TAG" ]; then
               BASE_REF="$LAST_TAG"
-              # Extract version from tag (e.g., enclave-vm@2.0.0 -> 2.0.0)
               LAST_VERSION="${LAST_TAG#*@}"
               echo "  $lib: last release tag=$LAST_TAG (v$LAST_VERSION)"
             else
@@ -105,30 +113,73 @@ jobs:
               echo "  $lib: no release tag found, using first commit (first release)"
             fi
 
+            # Check if this is a core lib
+            IS_CORE=false
+            IFS=',' read -ra CORE_ARR <<< "$CORE_LIBS"
+            for core in "${CORE_ARR[@]}"; do
+              if [ "$lib" = "$core" ]; then
+                IS_CORE=true
+                # Track highest version among core libs for unified versioning
+                if [ "$(printf '%s\n%s' "$LAST_VERSION" "$CORE_HIGHEST_VERSION" | sort -V | tail -n1)" = "$LAST_VERSION" ]; then
+                  CORE_HIGHEST_VERSION="$LAST_VERSION"
+                fi
+                break
+              fi
+            done
+
             # Check if this lib has changes since its last release
             CHANGES=$(git diff --name-only "$BASE_REF"...HEAD -- "libs/$lib/" 2>/dev/null | head -1 || echo "")
 
             if [ -n "$CHANGES" ]; then
               echo "  $lib: has changes since $BASE_REF"
-              if [ -n "$AFFECTED_LIBS" ]; then
-                AFFECTED_LIBS="${AFFECTED_LIBS},$lib"
-                PROJECT_VERSIONS="${PROJECT_VERSIONS},$lib=$LAST_VERSION"
+              if [ "$IS_CORE" = true ]; then
+                CORE_HAS_CHANGES=true
               else
-                AFFECTED_LIBS="$lib"
-                PROJECT_VERSIONS="$lib=$LAST_VERSION"
+                # Non-core libs are tracked independently
+                if [ -n "$AFFECTED_LIBS" ]; then
+                  AFFECTED_LIBS="${AFFECTED_LIBS},$lib"
+                  PROJECT_VERSIONS="${PROJECT_VERSIONS},$lib=$LAST_VERSION"
+                else
+                  AFFECTED_LIBS="$lib"
+                  PROJECT_VERSIONS="$lib=$LAST_VERSION"
+                fi
               fi
             else
               echo "  $lib: no changes since $BASE_REF"
             fi
           done
 
+          # If any core lib has changes, include ALL core libs with unified version
+          if [ "$CORE_HAS_CHANGES" = true ]; then
+            echo ""
+            echo "Core libs have changes - including all core libs with unified versioning"
+            echo "Unified version base: $CORE_HIGHEST_VERSION"
+
+            # Add all core libs to affected list
+            IFS=',' read -ra CORE_ARR <<< "$CORE_LIBS"
+            for core in "${CORE_ARR[@]}"; do
+              if [ -n "$AFFECTED_LIBS" ]; then
+                AFFECTED_LIBS="${AFFECTED_LIBS},$core"
+                PROJECT_VERSIONS="${PROJECT_VERSIONS},$core=$CORE_HIGHEST_VERSION"
+              else
+                AFFECTED_LIBS="$core"
+                PROJECT_VERSIONS="$core=$CORE_HIGHEST_VERSION"
+              fi
+            done
+          fi
+
           echo "projects=$AFFECTED_LIBS" >> "$GITHUB_OUTPUT"
           echo "project_versions=$PROJECT_VERSIONS" >> "$GITHUB_OUTPUT"
+          echo "unified_version=$CORE_HIGHEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "core_has_changes=$CORE_HAS_CHANGES" >> "$GITHUB_OUTPUT"
 
           if [ -n "$AFFECTED_LIBS" ]; then
             echo ""
-            echo "Affected publishable libs: $AFFECTED_LIBS"
-            echo "Last released versions: $PROJECT_VERSIONS"
+            echo "Projects to release: $AFFECTED_LIBS"
+            echo "Version info: $PROJECT_VERSIONS"
+            if [ "$CORE_HAS_CHANGES" = true ]; then
+              echo "Core libs unified version: $CORE_HIGHEST_VERSION"
+            fi
           else
             echo "No affected publishable libraries"
           fi
@@ -239,7 +290,7 @@ jobs:
 
       # ========================================
       # Manual version bump (when bump_type != 'auto')
-      # Generates mock Codex output for unified versioning
+      # Generates mock Codex output with unified versioning for core libs
       # ========================================
       - name: Generate manual version bumps
         if: steps.affected.outputs.projects != '' && github.event.inputs.bump_type != 'auto' && github.event.inputs.bump_type != ''
@@ -250,25 +301,16 @@ jobs:
 
           BUMP_TYPE="${{ github.event.inputs.bump_type }}"
           PROJECTS="${{ steps.affected.outputs.projects }}"
-          PROJECT_VERSIONS="${{ steps.affected.outputs.project_versions }}"
+          UNIFIED_VERSION="${{ steps.affected.outputs.unified_version }}"
+          CORE_LIBS="${{ env.CORE_LIBS }}"
 
           echo "Manual bump type: $BUMP_TYPE"
-          echo "Affected projects: $PROJECTS"
+          echo "Projects to release: $PROJECTS"
+          echo "Core libs: $CORE_LIBS"
+          echo "Current unified version: $UNIFIED_VERSION"
 
-          # Find the highest version among affected libs
-          HIGHEST_VERSION="0.0.0"
-          IFS=',' read -ra VERSIONS <<< "$PROJECT_VERSIONS"
-          for entry in "${VERSIONS[@]}"; do
-            VER="${entry#*=}"
-            if [ "$(printf '%s\n%s' "$VER" "$HIGHEST_VERSION" | sort -V | tail -n1)" = "$VER" ]; then
-              HIGHEST_VERSION="$VER"
-            fi
-          done
-
-          echo "Highest current version: $HIGHEST_VERSION"
-
-          # Parse version components
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$HIGHEST_VERSION"
+          # Parse version components from unified version
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$UNIFIED_VERSION"
 
           # Calculate new version based on bump type
           case "$BUMP_TYPE" in
@@ -289,17 +331,34 @@ jobs:
           # Generate mock Codex output JSON for nx-release.mjs
           mkdir -p .codex-release
 
-          # Build projects array with unified version
+          # Build projects array - core libs get unified version
           PROJECTS_JSON="["
           FIRST=true
           IFS=',' read -ra LIBS <<< "$PROJECTS"
           for lib in "${LIBS[@]}"; do
+            # Check if this is a core lib
+            IS_CORE=false
+            IFS=',' read -ra CORE_ARR <<< "$CORE_LIBS"
+            for core in "${CORE_ARR[@]}"; do
+              if [ "$lib" = "$core" ]; then
+                IS_CORE=true
+                break
+              fi
+            done
+
+            # Core libs use unified version, others use their own
+            if [ "$IS_CORE" = true ]; then
+              LIB_VERSION="$NEW_VERSION"
+            else
+              LIB_VERSION="$NEW_VERSION"  # For simplicity, use same version for all in manual mode
+            fi
+
             if [ "$FIRST" = true ]; then
               FIRST=false
             else
               PROJECTS_JSON+=","
             fi
-            PROJECTS_JSON+="{\"name\":\"$lib\",\"bump\":\"$BUMP_TYPE\",\"newVersion\":\"$NEW_VERSION\",\"reason\":\"Manual $BUMP_TYPE bump\",\"changelog\":{\"added\":[],\"changed\":[],\"deprecated\":[],\"removed\":[],\"fixed\":[],\"security\":[]}}"
+            PROJECTS_JSON+="{\"name\":\"$lib\",\"bump\":\"$BUMP_TYPE\",\"newVersion\":\"$LIB_VERSION\",\"reason\":\"Manual $BUMP_TYPE bump\",\"changelog\":{\"added\":[],\"changed\":[],\"deprecated\":[],\"removed\":[],\"fixed\":[],\"security\":[]}}"
           done
           PROJECTS_JSON+="]"
 
@@ -509,9 +568,13 @@ jobs:
           echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Branch:** ${{ steps.branch.outputs.branch_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Max Version:** ${{ steps.versions.outputs.max_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.versions.outputs.max_version }}" >> $GITHUB_STEP_SUMMARY
           echo "**Projects:** ${{ steps.versions.outputs.bumped_projects }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Last Released Versions:** ${{ steps.affected.outputs.project_versions }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Versioning Strategy" >> $GITHUB_STEP_SUMMARY
+          echo "**Core libs (unified):** ${{ env.CORE_LIBS }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Previous unified version:** ${{ steps.affected.outputs.unified_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           BUMP_TYPE="${{ github.event.inputs.bump_type }}"
           if [ "$BUMP_TYPE" = "auto" ] || [ -z "$BUMP_TYPE" ]; then
             echo "**Analysis:** Codex AI (gpt-5.1-codex)" >> $GITHUB_STEP_SUMMARY
