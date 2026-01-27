@@ -36,9 +36,12 @@ export type SecurityLevel = 'STRICT' | 'SECURE' | 'STANDARD' | 'PERMISSIVE';
  *
  * // Use strict preset for maximum security
  * const enclave = new Enclave({ preset: 'strict' });
+ *
+ * // Use babel preset for TSX/JSX transformation support
+ * const enclave = new Enclave({ preset: 'babel' });
  * ```
  */
-export type AstPreset = 'agentscript' | 'strict' | 'secure' | 'standard' | 'permissive';
+export type AstPreset = 'agentscript' | 'strict' | 'secure' | 'standard' | 'permissive' | 'babel';
 
 /**
  * Secure proxy configuration per security level

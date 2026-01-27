@@ -18,9 +18,18 @@ import {
   createSecurePreset,
   createStandardPreset,
   createPermissivePreset,
+  createBabelPreset,
+  getBabelConfig,
   getAgentScriptGlobals,
   type ValidationIssue,
 } from 'ast-guard';
+import {
+  createRestrictedBabel,
+  transformMultiple,
+  type MultiFileInput,
+  type MultiFileTransformOptions,
+  type MultiFileTransformResult,
+} from './babel';
 import { transformAgentScript, isWrappedInMain } from 'ast-guard';
 import { extractLargeStrings, transformConcatenation, transformTemplateLiterals } from 'ast-guard';
 import * as acorn from 'acorn';
@@ -218,6 +227,48 @@ export class Enclave {
       );
     }
 
+    // Build initial globals from base config and user options
+    const initialGlobals: Record<string, unknown> = {
+      ...BASE_CONFIG.globals,
+      ...options.globals,
+    };
+
+    // Add Babel global when preset is 'babel'
+    // Creates a restricted Babel.transform() and Babel.transformMultiple() API
+    // with security-level-aware limits
+    const presetName: AstPreset = options.preset ?? 'agentscript';
+    if (presetName === 'babel') {
+      const babelConfig = getBabelConfig(this.securityLevel);
+      const restrictedBabel = createRestrictedBabel({
+        maxInputSize: babelConfig.maxInputSize,
+        maxOutputSize: babelConfig.maxOutputSize,
+        allowedPresets: babelConfig.allowedPresets,
+        transformTimeout: babelConfig.transformTimeout,
+      });
+
+      // Multi-file limits from security level
+      const multiFileLimits = {
+        maxFiles: babelConfig.maxFiles,
+        maxTotalInputSize: babelConfig.maxTotalInputSize,
+        maxTotalOutputSize: babelConfig.maxTotalOutputSize,
+        transformTimeout: babelConfig.transformTimeout,
+      };
+
+      // Create combined Babel global with both transform and transformMultiple
+      initialGlobals['Babel'] = {
+        // Single file transform
+        transform: restrictedBabel.transform,
+
+        // Multi-file transform
+        transformMultiple: (
+          files: MultiFileInput,
+          transformOptions?: MultiFileTransformOptions,
+        ): MultiFileTransformResult => {
+          return transformMultiple(files, transformOptions ?? {}, multiFileLimits, restrictedBabel.transform);
+        },
+      };
+    }
+
     // Merge with defaults, applying security level configuration
     // Note: We explicitly set secureProxyConfig AFTER spreading options to ensure
     // the merged config from securityConfig takes precedence over partial options
@@ -235,25 +286,20 @@ export class Enclave {
       toolBridge: normalizedToolBridge,
       // secureProxyConfig must come AFTER options spread to use the merged config
       secureProxyConfig: securityConfig.secureProxyConfig,
-      globals: {
-        ...BASE_CONFIG.globals,
-        ...options.globals,
-      },
+      globals: initialGlobals,
     };
 
     // Create validator with custom globals
-    // Extract custom global names from options
-    const customGlobalNames = options.globals ? Object.keys(options.globals) : [];
+    // Extract custom global names from the final globals (includes Babel if preset='babel')
+    const customGlobalNames = Object.keys(initialGlobals);
 
     // For each custom global, we need to whitelist both:
     // 1. The original name (customValue)
     // 2. The transformed name (__safe_customValue)
     const customAllowedGlobals = customGlobalNames.flatMap((name) => [name, `__safe_${name}`]);
 
-    // Select preset based on options (default: agentscript)
-    const presetName: AstPreset = options.preset ?? 'agentscript';
-
     // Create validator based on selected preset
+    // Note: presetName is defined earlier (before config) for Babel global injection
     this.validator = this.createValidator(presetName, customAllowedGlobals);
 
     // Configuration flags
@@ -697,6 +743,17 @@ export class Enclave {
 
       case 'permissive':
         return new JSAstValidator(createPermissivePreset());
+
+      case 'babel':
+        // Babel preset uses security level for all limits
+        // Extends AgentScript preset with Babel.transform() support
+        return new JSAstValidator(
+          createBabelPreset({
+            securityLevel: this.securityLevel,
+            allowedGlobals: allAllowedGlobals,
+            allowDynamicArrayFill: this.config.memoryLimit > 0,
+          }),
+        );
 
       default: {
         // TypeScript exhaustiveness check

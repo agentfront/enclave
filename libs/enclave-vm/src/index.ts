@@ -211,3 +211,19 @@ export type {
 } from './session-types';
 
 export { isSession, isWaitingForTool, isTerminalState } from './session-types';
+
+// Babel Transform Support (for TSX/JSX transformation in sandbox)
+export { createRestrictedBabel, getAvailableBabelPresets, transformMultiple } from './babel';
+
+export type {
+  SafeTransformOptions,
+  SafeTransformResult,
+  BabelWrapperConfig,
+  MultiFileInput,
+  MultiFileTransformOptions,
+  MultiFileTransformResult,
+  MultiFileLimits,
+} from './babel';
+
+// Re-export ImportRewriteConfig from ast-guard for convenience
+export type { ImportRewriteConfig, ImportRewriteResult } from 'ast-guard';

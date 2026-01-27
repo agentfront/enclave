@@ -36,6 +36,7 @@
     }
   },
   "dependencies": {
+    "@babel/standalone": "^7.26.0",
     "@enclavejs/types": "0.1.0",
     "ast-guard": "2.4.0",
     "acorn": "8.15.0",

@@ -14,7 +14,8 @@
     "format:check": "git show-ref --quiet refs/heads/main && git diff --name-only -z --diff-filter=ACMR main... | grep -zE '\\.(js|jsx|ts|tsx|json|css|scss|md|html|yml|yaml)$' | xargs -0 -I {} sh -c '[ -f \"$1\" ] && printf \"%s\\0\" \"$1\"' _ {} | xargs -0 -r prettier --check || prettier --check .",
     "format:all": "prettier --write .",
     "format:all:check": "prettier --check .",
-    "prepare": "husky"
+    "prepare": "husky",
+    "docs": "cd docs && mint dev --port 4300"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx}": [

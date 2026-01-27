@@ -1,0 +1,229 @@
+---
+title: 'Babel Preset'
+description: 'Security preset for Babel transforms inside the enclave sandbox'
+---
+
+The Babel preset extends the [AgentScript preset](/core-libraries/ast-guard/agentscript-preset) to enable secure TSX/JSX transformation inside the enclave. It adds the `Babel` global while maintaining all AgentScript security guarantees.
+
+## Overview
+
+The Babel preset provides:
+
+- **Babel.transform()** - Transform TSX/JSX to JavaScript
+- **Security configs** - Per-level limits for input size, output size, timeouts
+- **Preset whitelist** - Only allowed Babel presets can be used
+- **Full AgentScript validation** - All blocked constructs remain blocked
+
+## Basic Usage
+
+```ts
+import { createBabelPreset, JSAstValidator } from 'ast-guard';
+
+const validator = new JSAstValidator(createBabelPreset({
+  securityLevel: 'STANDARD',
+}));
+
+const result = await validator.validate(`
+  const tsx = '<div>Hello</div>';
+  const js = Babel.transform(tsx, { presets: ['react'] });
+  return js.code;
+`);
+```
+
+## Security Configurations
+
+The Babel preset defines security limits per security level:
+
+```ts
+import { getBabelConfig, BABEL_SECURITY_CONFIGS } from 'ast-guard';
+
+// Get config for a specific level
+const config = getBabelConfig('SECURE');
+
+// Or access all configs
+console.log(BABEL_SECURITY_CONFIGS);
+```
+
+### Configuration by Security Level
+
+| Level | Max Input | Max Output | Timeout | Allowed Presets |
+|-------|-----------|------------|---------|-----------------|
+| `STRICT` | 100 KB | 500 KB | 5s | `react` |
+| `SECURE` | 500 KB | 2 MB | 10s | `typescript`, `react` |
+| `STANDARD` | 1 MB | 5 MB | 15s | `typescript`, `react` |
+| `PERMISSIVE` | 5 MB | 25 MB | 30s | `typescript`, `react`, `env` |
+
+<Tip>
+  Use `STRICT` for untrusted input where you only need JSX transformation. Use `STANDARD` for typical LLM-generated TypeScript+React code.
+</Tip>
+
+## Configuration Options
+
+```ts
+interface BabelSecurityConfig {
+  /** Maximum input code size in bytes */
+  maxInputSize: number;
+
+  /** Maximum output code size in bytes */
+  maxOutputSize: number;
+
+  /** Transform timeout in milliseconds */
+  transformTimeout: number;
+
+  /** Allowed Babel preset names */
+  allowedPresets: string[];
+}
+```
+
+### Default Configurations
+
+```ts
+// STRICT - Minimal, JSX only
+{
+  maxInputSize: 100 * 1024,    // 100 KB
+  maxOutputSize: 500 * 1024,   // 500 KB
+  transformTimeout: 5000,       // 5 seconds
+  allowedPresets: ['react'],
+}
+
+// SECURE - TypeScript + React
+{
+  maxInputSize: 500 * 1024,    // 500 KB
+  maxOutputSize: 2 * 1024 * 1024, // 2 MB
+  transformTimeout: 10000,      // 10 seconds
+  allowedPresets: ['typescript', 'react'],
+}
+
+// STANDARD - Default for most use cases
+{
+  maxInputSize: 1024 * 1024,   // 1 MB
+  maxOutputSize: 5 * 1024 * 1024, // 5 MB
+  transformTimeout: 15000,      // 15 seconds
+  allowedPresets: ['typescript', 'react'],
+}
+
+// PERMISSIVE - Extended capabilities
+{
+  maxInputSize: 5 * 1024 * 1024,   // 5 MB
+  maxOutputSize: 25 * 1024 * 1024, // 25 MB
+  transformTimeout: 30000,          // 30 seconds
+  allowedPresets: ['typescript', 'react', 'env'],
+}
+```
+
+## Allowed Globals
+
+The Babel preset adds these globals to the AgentScript allowlist:
+
+| Global | Description |
+|--------|-------------|
+| `Babel` | The restricted Babel transform API |
+| `__safe_Babel` | Internal transformed version |
+
+All other [AgentScript allowed globals](/core-libraries/ast-guard/agentscript-preset#default-allowed-globals) remain available.
+
+## What's Blocked
+
+The Babel preset inherits all AgentScript security rules:
+
+- **Dangerous Babel options** - `plugins`, `sourceMaps`, `ast`, `babelrc`, `configFile`
+- **Disallowed presets** - Any preset not in the security level's allowlist
+- **All AgentScript blocked constructs** - `eval`, `Function`, `process`, etc.
+
+<Warning>
+  Babel plugins are completely blocked because they can execute arbitrary code during transformation. Only presets from the allowlist can be used.
+</Warning>
+
+## Creating the Preset
+
+```ts
+import { createBabelPreset } from 'ast-guard';
+
+// Basic usage - inherits from AgentScript
+const rules = createBabelPreset({
+  securityLevel: 'STANDARD',
+});
+
+// With custom globals
+const rulesWithGlobals = createBabelPreset({
+  securityLevel: 'STANDARD',
+  allowedGlobals: ['customHelper'],
+});
+
+// With all AgentScript options
+const fullRules = createBabelPreset({
+  securityLevel: 'SECURE',
+  allowedGlobals: ['myGlobal'],
+  requireCallTool: true,
+  allowedLoops: {
+    allowFor: true,
+    allowForOf: true,
+    allowWhile: false,
+  },
+});
+```
+
+## Using with Enclave
+
+The enclave automatically uses the Babel preset when configured:
+
+```ts
+import { Enclave } from 'enclave-vm';
+
+const enclave = new Enclave({
+  preset: 'babel',           // Uses createBabelPreset internally
+  securityLevel: 'STANDARD', // Determines Babel limits
+});
+
+// Now Babel.transform is available inside the sandbox
+await enclave.run(`
+  const js = Babel.transform('<div/>', { presets: ['react'] });
+  return js.code;
+`);
+```
+
+## API Reference
+
+### `createBabelPreset(options)`
+
+Creates validation rules for the Babel preset.
+
+```ts
+function createBabelPreset(options?: BabelPresetOptions): ValidationRule[];
+
+interface BabelPresetOptions extends AgentScriptOptions {
+  // All AgentScriptOptions are supported
+  // Security level determines Babel limits
+}
+```
+
+### `getBabelConfig(level)`
+
+Gets Babel security configuration for a security level.
+
+```ts
+function getBabelConfig(level?: SecurityLevel): BabelSecurityConfig;
+
+// Example
+const config = getBabelConfig('SECURE');
+// Returns: { maxInputSize, maxOutputSize, transformTimeout, allowedPresets }
+```
+
+### `BABEL_SECURITY_CONFIGS`
+
+Direct access to all security configurations.
+
+```ts
+const BABEL_SECURITY_CONFIGS: Record<SecurityLevel, BabelSecurityConfig>;
+
+// Example
+const strictConfig = BABEL_SECURITY_CONFIGS.STRICT;
+const standardConfig = BABEL_SECURITY_CONFIGS.STANDARD;
+```
+
+## Related
+
+- [AgentScript Preset](/core-libraries/ast-guard/agentscript-preset) - Base preset for code validation
+- [Security Rules](/core-libraries/ast-guard/security-rules) - Rule reference
+- [Babel Transform (enclave-vm)](/core-libraries/enclave-vm/babel-transform) - Using Babel in enclave
+- [Security Levels](/core-libraries/enclave-vm/security-levels) - Security profiles

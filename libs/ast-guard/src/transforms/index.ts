@@ -21,3 +21,12 @@ export {
   ConcatTransformConfig,
   ConcatTransformResult,
 } from './concat.transform';
+
+// Import rewriting
+export {
+  rewriteImports,
+  isValidPackageName,
+  isValidSubpath,
+  type ImportRewriteConfig,
+  type ImportRewriteResult,
+} from './import-rewrite.transform';

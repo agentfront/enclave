@@ -97,9 +97,19 @@ export {
   AGENTSCRIPT_PERMISSIVE_GLOBALS,
   AGENTSCRIPT_BASE_GLOBALS, // Legacy alias for STRICT
   getAgentScriptGlobals,
+  // Babel preset for TSX/JSX transformation
+  createBabelPreset,
+  getBabelConfig,
+  BABEL_SECURITY_CONFIGS,
 } from './presets';
 
-export type { PresetOptions, AgentScriptOptions, SecurityLevel } from './presets';
+export type {
+  PresetOptions,
+  AgentScriptOptions,
+  SecurityLevel,
+  BabelPresetOptions,
+  BabelSecurityConfig,
+} from './presets';
 
 // AgentScript tool descriptions for AI agents
 export {
@@ -117,6 +127,10 @@ export {
   // Concatenation transformation
   transformConcatenation,
   transformTemplateLiterals,
+  // Import rewriting
+  rewriteImports,
+  isValidPackageName,
+  isValidSubpath,
 } from './transforms';
 
 export type {
@@ -124,6 +138,8 @@ export type {
   StringExtractionResult,
   ConcatTransformConfig,
   ConcatTransformResult,
+  ImportRewriteConfig,
+  ImportRewriteResult,
 } from './transforms';
 
 // Pre-Scanner (Layer 0 Defense)

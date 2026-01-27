@@ -90,6 +90,7 @@
                   "core-libraries/enclave-vm/overview",
                   "core-libraries/enclave-vm/security-levels",
                   "core-libraries/enclave-vm/tool-system",
+                  "core-libraries/enclave-vm/babel-transform",
                   "core-libraries/enclave-vm/worker-pool",
                   "core-libraries/enclave-vm/double-vm",
                   "core-libraries/enclave-vm/ai-scoring",
@@ -104,6 +105,7 @@
                   "core-libraries/ast-guard/overview",
                   "core-libraries/ast-guard/pre-scanner",
                   "core-libraries/ast-guard/agentscript-preset",
+                  "core-libraries/ast-guard/babel-preset",
                   "core-libraries/ast-guard/security-rules",
                   "core-libraries/ast-guard/code-transform",
                   "core-libraries/ast-guard/custom-rules"
@@ -135,19 +137,6 @@
                 ]
               },
               {
-                "group": "API Reference",
-                "icon": "code",
-                "pages": [
-                  "api-reference/enclave-vm",
-                  "api-reference/ast-guard",
-                  "api-reference/enclavejs-types",
-                  "api-reference/enclavejs-broker",
-                  "api-reference/enclavejs-client",
-                  "api-reference/enclavejs-react",
-                  "api-reference/enclavejs-runtime"
-                ]
-              },
-              {
                 "group": "Examples",
                 "icon": "flask",
                 "pages": [
@@ -172,6 +161,38 @@
                 "icon": "circle-info",
                 "pages": [
                   "changelog"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "dropdown": "API Reference",
+        "icon": "code",
+        "versions": [
+          {
+            "version": "v2.0 (latest)",
+            "default": true,
+            "groups": [
+              {
+                "group": "Core Libraries",
+                "icon": "cube",
+                "pages": [
+                  "api-reference/enclave-vm",
+                  "api-reference/ast-guard"
+                ]
+              },
+              {
+                "group": "EnclaveJS Packages",
+                "icon": "boxes-stacked",
+                "pages": [
+                  "api-reference/enclavejs-types",
+                  "api-reference/enclavejs-stream",
+                  "api-reference/enclavejs-broker",
+                  "api-reference/enclavejs-client",
+                  "api-reference/enclavejs-react",
+                  "api-reference/enclavejs-runtime"
                 ]
               }
             ]

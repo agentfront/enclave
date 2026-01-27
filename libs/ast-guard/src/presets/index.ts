@@ -31,6 +31,15 @@ export {
   type SecurityLevel,
 } from './agentscript.preset';
 
+// Babel preset for TSX/JSX transformation
+export {
+  createBabelPreset,
+  getBabelConfig,
+  BABEL_SECURITY_CONFIGS,
+  type BabelPresetOptions,
+  type BabelSecurityConfig,
+} from './babel.preset';
+
 // Re-export for convenience
 import { ValidationRule } from '../interfaces';
 import { ConfigurationError } from '../errors';
