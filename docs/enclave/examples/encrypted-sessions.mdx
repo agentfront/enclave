@@ -30,7 +30,7 @@ Implement end-to-end encryption (E2E) for sensitive code execution where even th
 ## Client Setup
 
 ```ts
-import { EnclaveClient } from '@enclavejs/client';
+import { EnclaveClient } from '@enclave-vm/client';
 
 const client = new EnclaveClient({
   serverUrl: 'https://broker.example.com',
@@ -295,7 +295,7 @@ import {
   encrypt,
   decrypt,
 } from './crypto';
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 interface Session {
   id: string;

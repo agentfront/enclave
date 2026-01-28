@@ -1,9 +1,9 @@
 ---
-title: 'enclave-vm'
+title: '@enclave-vm/core'
 description: 'Secure JavaScript execution environment with defense-in-depth architecture for running untrusted and LLM-generated code safely'
 ---
 
-# enclave-vm
+# @enclave-vm/core
 
 Enclave is a secure execution environment for running untrusted JavaScript code. It provides a defense-in-depth security model that combines AST validation (via ast-guard), code transformation, and runtime sandboxing to safely execute model-generated code.
 
@@ -31,13 +31,13 @@ Enclave is designed for scenarios where you need to execute JavaScript code from
 ## Installation
 
 ```bash
-npm install enclave-vm
+npm install @enclave-vm/core
 ```
 
 ## Quick Start
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 // Create an enclave with a tool handler
 const enclave = new Enclave({
@@ -76,7 +76,7 @@ enclave.dispose();
 Enclave provides pre-configured security profiles that balance functionality against risk:
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 // Use STRICT for untrusted AI-generated code
 const strictEnclave = new Enclave({ securityLevel: 'STRICT' });
@@ -285,7 +285,7 @@ The Scoring Gate adds semantic security analysis that detects attack patterns be
 - **Sensitive data access** - Passwords, tokens, PII fields
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 // Rule-based scorer (~1ms latency, zero dependencies)
 const enclave = new Enclave({
@@ -340,7 +340,7 @@ const enclaveWithApi = new Enclave({
 For OS-level memory isolation, use the worker threads adapter:
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({
   adapter: 'worker_threads',
@@ -377,7 +377,7 @@ const enclave = new Enclave({
 Setting the `memoryLimit` option instruments string and array allocations:
 
 ```typescript
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({ memoryLimit: 32 * 1024 * 1024 });
 const result = await enclave.execute(code);
@@ -394,7 +394,7 @@ console.log(`Peak tracked memory: ${result.stats.memoryUsage} bytes`);
 For advanced scenarios you can instantiate the tracker directly:
 
 ```typescript
-import { MemoryTracker } from 'enclave-vm';
+import { MemoryTracker } from '@enclave-vm/core';
 
 const tracker = new MemoryTracker({ memoryLimit: 10 * 1024 * 1024 });
 tracker.start();
@@ -504,7 +504,7 @@ const result = await enclave.run(code);
 For simple cases, use the convenience function:
 
 ```ts
-import { runAgentScript } from 'enclave-vm';
+import { runAgentScript } from '@enclave-vm/core';
 
 const result = await runAgentScript(`
   return Math.max(1, 2, 3);
@@ -520,7 +520,7 @@ console.log(result.value); // 3
 Integrate with your existing tool system:
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 import { ToolRegistry } from './tools';
 
 const enclave = new Enclave({
@@ -570,5 +570,5 @@ const enclave = new Enclave({
 ## Links
 
 - [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclave-vm)
-- [npm](https://www.npmjs.com/package/enclave-vm)
+- [npm](https://www.npmjs.com/package/@enclave-vm/core)
 - [ast-guard Documentation](/libraries/ast-guard)

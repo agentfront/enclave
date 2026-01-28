@@ -6,8 +6,8 @@
  * @packageDocumentation
  */
 
-import type { SessionId, CallId, SessionStats } from '@enclavejs/types';
-import { generateCallId, generateSessionId, DEFAULT_SESSION_LIMITS } from '@enclavejs/types';
+import type { SessionId, CallId, SessionStats } from '@enclave-vm/types';
+import { generateCallId, generateSessionId, DEFAULT_SESSION_LIMITS } from '@enclave-vm/types';
 import type {
   Session as ISession,
   SessionStateValue,

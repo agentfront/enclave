@@ -1,5 +1,5 @@
 /**
- * @enclavejs/types
+ * @enclave-vm/types
  *
  * Type definitions and Zod schemas for the EnclaveJS streaming runtime protocol.
  *

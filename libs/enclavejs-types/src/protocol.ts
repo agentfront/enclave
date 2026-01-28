@@ -1,5 +1,5 @@
 /**
- * @enclavejs/types - Protocol definitions
+ * @enclave-vm/types - Protocol definitions
  *
  * Core protocol constants and base types for the EnclaveJS streaming runtime.
  */

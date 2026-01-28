@@ -3,7 +3,7 @@ import { createBroker } from '../broker';
 import { SessionHandler, createSessionHandler } from './session-handler';
 import type { BrokerRequest, BrokerResponse, SessionInfoResponse, ListSessionsResponse, ErrorResponse } from './types';
 import type { Broker } from '../broker';
-import type { StreamEvent } from '@enclavejs/types';
+import type { StreamEvent } from '@enclave-vm/types';
 
 describe('SessionHandler', () => {
   let broker: Broker;

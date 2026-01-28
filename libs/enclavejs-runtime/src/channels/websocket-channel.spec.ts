@@ -2,8 +2,8 @@
  * WebSocket Channel Tests
  */
 
-import { EventType, PROTOCOL_VERSION } from '@enclavejs/types';
-import type { StreamEvent } from '@enclavejs/types';
+import { EventType, PROTOCOL_VERSION } from '@enclave-vm/types';
+import type { StreamEvent } from '@enclave-vm/types';
 import { WebSocketChannel, createWebSocketChannel } from './websocket-channel';
 
 // Mock WebSocket for Node.js environment

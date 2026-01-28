@@ -8,7 +8,7 @@ The simplest possible Enclave example - execute code and get results.
 ## Basic Example
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 // Create an enclave instance
 const enclave = new Enclave();
@@ -30,7 +30,7 @@ enclave.dispose();
 ## With TypeScript
 
 ```ts
-import { Enclave, ExecutionResult } from 'enclave-vm';
+import { Enclave, ExecutionResult } from '@enclave-vm/core';
 
 async function main(): Promise<void> {
   const enclave = new Enclave({
@@ -144,7 +144,7 @@ if (!result.success) {
 ## Complete Example
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 async function helloWorld() {
   // Create enclave with all options

@@ -1,22 +1,22 @@
 ---
-title: '@enclavejs/client'
+title: '@enclave-vm/client'
 description: 'Browser and Node.js client SDK for the EnclaveJS streaming runtime'
 ---
 
-# @enclavejs/client
+# @enclave-vm/client
 
 Browser and Node.js client SDK for connecting to an EnclaveJS broker. Provides streaming execution, event handling, and automatic reconnection.
 
 ## Installation
 
 ```bash
-npm install @enclavejs/client
+npm install @enclave-vm/client
 ```
 
 ## Quick Start
 
 ```typescript
-import { EnclaveClient } from '@enclavejs/client';
+import { EnclaveClient } from '@enclave-vm/client';
 
 const client = new EnclaveClient({
   baseUrl: 'http://localhost:3000',
@@ -38,7 +38,7 @@ console.log('Execution completed:', result);
 ## Client Configuration
 
 ```typescript
-import { EnclaveClient, type EnclaveClientConfig } from '@enclavejs/client';
+import { EnclaveClient, type EnclaveClientConfig } from '@enclave-vm/client';
 
 const config: EnclaveClientConfig = {
   // Required: Broker URL
@@ -83,7 +83,7 @@ handle.cancel();     // Cancel execution
 ### Execution Options
 
 ```typescript
-import type { ExecuteOptions } from '@enclavejs/client';
+import type { ExecuteOptions } from '@enclave-vm/client';
 
 const options: ExecuteOptions = {
   // Session limits
@@ -109,7 +109,7 @@ const handle = await client.execute(code, options);
 ### All Event Types
 
 ```typescript
-import type { SessionEventHandlers } from '@enclavejs/client';
+import type { SessionEventHandlers } from '@enclave-vm/client';
 
 const handlers: SessionEventHandlers = {
   // Session started
@@ -184,7 +184,7 @@ await client.execute(code, {
 The execute method returns a session handle for managing the execution:
 
 ```typescript
-import type { SessionHandle } from '@enclavejs/client';
+import type { SessionHandle } from '@enclave-vm/client';
 
 const handle: SessionHandle = await client.execute(code);
 
@@ -204,7 +204,7 @@ console.log('Active:', handle.isActive);
 ## Session Result
 
 ```typescript
-import type { SessionResult } from '@enclavejs/client';
+import type { SessionResult } from '@enclave-vm/client';
 
 const result: SessionResult = await handle.result;
 
@@ -224,7 +224,7 @@ result.stats.memoryUsage;     // bytes
 ## Error Handling
 
 ```typescript
-import { EnclaveClientError, type ClientErrorCode } from '@enclavejs/client';
+import { EnclaveClientError, type ClientErrorCode } from '@enclave-vm/client';
 
 try {
   await client.execute(code);
@@ -266,7 +266,7 @@ try {
 ## Connection State
 
 ```typescript
-import { ConnectionState } from '@enclavejs/client';
+import { ConnectionState } from '@enclave-vm/client';
 
 // Available states
 ConnectionState.DISCONNECTED   // Not connected
@@ -332,7 +332,7 @@ const client = new EnclaveClient({
 ## TypeScript Types
 
 ```typescript
-// Re-exported from @enclavejs/types
+// Re-exported from @enclave-vm/types
 import type {
   SessionId,
   SessionLimits,
@@ -343,10 +343,10 @@ import type {
   ToolCallEvent,
   FinalEvent,
   ErrorEvent,
-} from '@enclavejs/client';
+} from '@enclave-vm/client';
 ```
 
 ## Links
 
 - [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclavejs-client)
-- [npm](https://www.npmjs.com/package/@enclavejs/client)
+- [npm](https://www.npmjs.com/package/@enclave-vm/client)

@@ -22,8 +22,8 @@ import type {
   CallId,
   LogPayload,
   ErrorInfo,
-} from '@enclavejs/types';
-import { PROTOCOL_VERSION, EventType, LogLevel } from '@enclavejs/types';
+} from '@enclave-vm/types';
+import { PROTOCOL_VERSION, EventType, LogLevel } from '@enclave-vm/types';
 import type { SessionEventEmitter } from '../session-types';
 
 /**

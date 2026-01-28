@@ -1,5 +1,5 @@
 /**
- * @enclavejs/stream - Crypto module
+ * @enclave-vm/stream - Crypto module
  *
  * Per-hop encryption using ECDH key exchange and AES-GCM encryption.
  */

@@ -17,7 +17,7 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import WebSocket from 'ws';
-import { generateSessionId } from '@enclavejs/types';
+import { generateSessionId } from '@enclave-vm/types';
 
 const PORT = 4100;
 const BROKER_URL = 'http://localhost:4101';

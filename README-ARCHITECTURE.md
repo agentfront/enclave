@@ -12,15 +12,15 @@ The design intentionally supports:
 
 ## Implementation Status
 
-| Package              | Status  | Description                             |
-| -------------------- | ------- | --------------------------------------- |
-| `enclave-vm`         | ✅ Done | Core sandbox VM engine                  |
-| `@enclavejs/types`   | ✅ Done | Shared TypeScript types and Zod schemas |
-| `@enclavejs/stream`  | ✅ Done | NDJSON streaming protocol               |
-| `@enclavejs/broker`  | ✅ Done | Middleware/tool broker with HTTP API    |
-| `@enclavejs/client`  | ✅ Done | Browser + Node client SDK               |
-| `@enclavejs/runtime` | ✅ Done | Extracted runtime worker                |
-| `@enclavejs/react`   | ✅ Done | React hooks & components                |
+| Package               | Status  | Description                             |
+| --------------------- | ------- | --------------------------------------- |
+| `@enclave-vm/core`    | ✅ Done | Core sandbox VM engine                  |
+| `@enclave-vm/types`   | ✅ Done | Shared TypeScript types and Zod schemas |
+| `@enclave-vm/stream`  | ✅ Done | NDJSON streaming protocol               |
+| `@enclave-vm/broker`  | ✅ Done | Middleware/tool broker with HTTP API    |
+| `@enclave-vm/client`  | ✅ Done | Browser + Node client SDK               |
+| `@enclave-vm/runtime` | ✅ Done | Extracted runtime worker                |
+| `@enclave-vm/react`   | ✅ Done | React hooks & components                |
 
 ## Table of contents
 
@@ -67,7 +67,7 @@ The design intentionally supports:
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **Runtime**             | The component that runs AgentScript continuously (built on `enclave-vm`).                                                             |
 | **Client**              | JS SDK used from browser/server to start a session with the middleware and consume the streamed events/results.                       |
-| **Middleware / Broker** | Node.js service (often inside a VPC) that owns secrets and executes tool calls. Implemented in `@enclavejs/broker`.                   |
+| **Middleware / Broker** | Node.js service (often inside a VPC) that owns secrets and executes tool calls. Implemented in `@enclave-vm/broker`.                  |
 | **Session**             | A long-lived, continuous execution context for a single piece of code (plus its stream + tool roundtrips).                            |
 | **Tool**                | An external action callable from AgentScript via `callTool(name, args)`.                                                              |
 | **Reference Sidecar**   | Per-session in-memory store of large/sensitive values addressed by `refId`.                                                           |
@@ -85,8 +85,8 @@ The design intentionally supports:
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │   ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐   │
-│   │  @enclavejs/     │     │  @enclavejs/     │     │   enclave-vm     │   │
-│   │    client        │────▶│    broker        │────▶│   (runtime)      │   │
+│   │  @enclave-vm/    │     │  @enclave-vm/    │     │  @enclave-vm/    │   │
+│   │    client        │────▶│    broker        │────▶│   core (runtime) │   │
 │   │  (browser/node)  │     │  (middleware)    │     │   (sandboxed)    │   │
 │   └──────────────────┘     └──────────────────┘     └──────────────────┘   │
 │          │                        │                         │               │
@@ -103,15 +103,15 @@ The design intentionally supports:
 
 ### Packages
 
-| Package              | npm                  | Description                                                               |
-| -------------------- | -------------------- | ------------------------------------------------------------------------- |
-| `enclave-vm`         | `enclave-vm`         | Core sandbox VM engine. Executes untrusted code safely.                   |
-| `@enclavejs/types`   | `@enclavejs/types`   | Shared TypeScript types, Zod schemas, protocol constants.                 |
-| `@enclavejs/stream`  | `@enclavejs/stream`  | NDJSON streaming protocol, event parsing, reconnection logic.             |
-| `@enclavejs/broker`  | `@enclavejs/broker`  | Middleware: tool registry, secret management, session API, HTTP handlers. |
-| `@enclavejs/client`  | `@enclavejs/client`  | Browser + Node SDK for connecting to middleware. (Planned)                |
-| `@enclavejs/runtime` | `@enclavejs/runtime` | Extracted runtime worker for Lambda/DO/containers. (Planned)              |
-| `@enclavejs/react`   | `@enclavejs/react`   | React hooks for session management. (Planned)                             |
+| Package               | npm                   | Description                                                               |
+| --------------------- | --------------------- | ------------------------------------------------------------------------- |
+| `@enclave-vm/core`    | `@enclave-vm/core`    | Core sandbox VM engine. Executes untrusted code safely.                   |
+| `@enclave-vm/types`   | `@enclave-vm/types`   | Shared TypeScript types, Zod schemas, protocol constants.                 |
+| `@enclave-vm/stream`  | `@enclave-vm/stream`  | NDJSON streaming protocol, event parsing, reconnection logic.             |
+| `@enclave-vm/broker`  | `@enclave-vm/broker`  | Middleware: tool registry, secret management, session API, HTTP handlers. |
+| `@enclave-vm/client`  | `@enclave-vm/client`  | Browser + Node SDK for connecting to middleware. (Planned)                |
+| `@enclave-vm/runtime` | `@enclave-vm/runtime` | Extracted runtime worker for Lambda/DO/containers. (Planned)              |
+| `@enclave-vm/react`   | `@enclave-vm/react`   | React hooks for session management. (Planned)                             |
 
 ---
 
@@ -126,7 +126,7 @@ Browser connects to your VPC where middleware runs the runtime in-process. **Sim
 │   Browser   │ ◄────────────────────────► │       VPC / Your Server      │
 │  (Client)   │    POST /sessions          │                              │
 │             │    Stream events           │  ┌─────────────────────────┐ │
-└─────────────┘                            │  │     @enclavejs/broker   │ │
+└─────────────┘                            │  │     @enclave-vm/broker   │ │
                                            │  │  • Tool Registry        │ │
                                            │  │  • Secrets (API keys)   │ │
                                            │  │  • Session Manager      │ │
@@ -143,7 +143,7 @@ Browser connects to your VPC where middleware runs the runtime in-process. **Sim
 
 ```typescript
 import express from 'express';
-import { createBroker, createSessionHandler, registerExpressRoutes } from '@enclavejs/broker';
+import { createBroker, createSessionHandler, registerExpressRoutes } from '@enclave-vm/broker';
 import { z } from 'zod';
 
 const broker = createBroker()
@@ -202,7 +202,7 @@ Browser connects to middleware, but code execution happens on a separate Lambda/
 ```
 ┌─────────────┐    HTTPS/NDJSON    ┌─────────────────────┐    WebSocket    ┌─────────────────┐
 │   Browser   │ ◄────────────────► │   VPC Middleware    │ ◄─────────────► │  Lambda/Vercel  │
-│  (Client)   │  POST /sessions    │   @enclavejs/broker │  session channel │    Runtime      │
+│  (Client)   │  POST /sessions    │   @enclave-vm/broker │  session channel │    Runtime      │
 │             │  Stream events     │                     │                  │                 │
 └─────────────┘                    │  • Tool Registry    │                  │  • enclave-vm   │
                                    │  • Secrets          │                  │  • NO secrets   │
@@ -260,7 +260,7 @@ Your backend server (Node.js) executes code directly. No HTTP/browser involved. 
 │                          │                              │
 │                          ▼                              │
 │  ┌─────────────────────────────────────────────────┐   │
-│  │              @enclavejs/broker                   │   │
+│  │              @enclave-vm/broker                   │   │
 │  │   • Tool Registry    • Secrets                  │   │
 │  │   • enclave-vm (sandboxed execution)            │   │
 │  └─────────────────────────────────────────────────┘   │
@@ -270,7 +270,7 @@ Your backend server (Node.js) executes code directly. No HTTP/browser involved. 
 **Example:**
 
 ```typescript
-import { createBroker } from '@enclavejs/broker';
+import { createBroker } from '@enclave-vm/broker';
 import { z } from 'zod';
 
 const broker = createBroker()
@@ -332,7 +332,7 @@ Your server orchestrates but offloads code execution to Lambda/Vercel. **Best fo
 ```
 ┌──────────────────────────┐         WebSocket/HTTP        ┌─────────────────────┐
 │    Your Server (Node)    │ ◄───────────────────────────► │   Lambda Runtime    │
-│    @enclavejs/broker     │                               │   @enclavejs/runtime│
+│    @enclave-vm/broker     │                               │   @enclave-vm/runtime│
 │                          │    session channel            │                     │
 │  • Tool Registry         │    (tool_call/tool_result)    │  • enclave-vm       │
 │  • Secrets               │                               │  • NO secrets       │
@@ -468,10 +468,10 @@ Every message includes:
 | `heartbeat`           | Keep-alive signal                           |
 | `error`               | Non-fatal error during execution            |
 
-### TypeScript Types (from `@enclavejs/types`)
+### TypeScript Types (from `@enclave-vm/types`)
 
 ```typescript
-import type { StreamEvent, SessionId, CallId } from '@enclavejs/types';
+import type { StreamEvent, SessionId, CallId } from '@enclave-vm/types';
 
 // Event union type
 type StreamEvent =
@@ -514,7 +514,7 @@ const result = await callTool('toolName', { arg1: 'value' });
 ### Tool Registration
 
 ```typescript
-import { createBroker } from '@enclavejs/broker';
+import { createBroker } from '@enclave-vm/broker';
 import { z } from 'zod';
 
 const broker = createBroker()
@@ -649,7 +649,7 @@ Per-hop encryption using:
 
 ### Recommendations
 
-- **Server/container**: Best for most deployments. Run Node.js with `@enclavejs/broker`.
+- **Server/container**: Best for most deployments. Run Node.js with `@enclave-vm/broker`.
 - **Cloudflare DO**: Best for edge deployment with global distribution.
 - **Lambda**: Use for short-lived sessions or as extracted runtime with middleware coordination.
 - **Vercel Edge**: Use only as gateway/proxy to stateful runtime.

@@ -113,7 +113,7 @@ function adaptResponse(res: ExpressResponse): BrokerResponse {
  * @example
  * ```ts
  * import express from 'express';
- * import { createBroker, createSessionHandler, createExpressRouter } from '@enclavejs/broker';
+ * import { createBroker, createSessionHandler, createExpressRouter } from '@enclave-vm/broker';
  *
  * const broker = createBroker();
  * const handler = createSessionHandler({ broker });
@@ -179,7 +179,7 @@ export function createExpressRouter(handler: SessionHandler): ExpressRouter {
  * @example
  * ```ts
  * import express from 'express';
- * import { createBroker, createSessionHandler, registerExpressRoutes } from '@enclavejs/broker';
+ * import { createBroker, createSessionHandler, registerExpressRoutes } from '@enclave-vm/broker';
  *
  * const broker = createBroker();
  * const handler = createSessionHandler({ broker });

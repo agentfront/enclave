@@ -6,8 +6,8 @@
  * @packageDocumentation
  */
 
-import type { SessionId, CallId, SessionLimits } from '@enclavejs/types';
-import { createSession, Session } from 'enclave-vm';
+import type { SessionId, CallId, SessionLimits } from '@enclave-vm/types';
+import { createSession, Session } from '@enclave-vm/core';
 import type { RuntimeChannel, RuntimeSession } from './types';
 
 /**

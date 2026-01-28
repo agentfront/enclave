@@ -11,9 +11,9 @@ import express, { Express, Request, Response } from 'express';
 import { Server } from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { AddressInfo } from 'net';
-import type { SessionId, CallId, StreamEvent } from '@enclavejs/types';
-import { generateSessionId, PROTOCOL_VERSION } from '@enclavejs/types';
-import { Enclave } from 'enclave-vm';
+import type { SessionId, CallId, StreamEvent } from '@enclave-vm/types';
+import { generateSessionId, PROTOCOL_VERSION } from '@enclave-vm/types';
+import { Enclave } from '@enclave-vm/core';
 import { parseNdjson, delay, testCode } from './test-utils';
 
 // Integration test helpers

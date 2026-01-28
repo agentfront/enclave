@@ -1,12 +1,12 @@
 /**
- * @enclavejs/runtime
+ * @enclave-vm/runtime
  *
  * Standalone runtime worker for EnclaveJS.
  * Can be deployed as a separate process/worker for distributed execution.
  *
  * @example
  * ```typescript
- * import { createRuntimeWorker } from '@enclavejs/runtime';
+ * import { createRuntimeWorker } from '@enclave-vm/runtime';
  *
  * const worker = createRuntimeWorker({
  *   port: 3001,

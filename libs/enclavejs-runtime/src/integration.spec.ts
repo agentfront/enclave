@@ -7,7 +7,7 @@
 import { createRuntimeWorker } from './runtime-worker';
 import { createSessionExecutor } from './session-executor';
 import { createMemoryChannel, createMemoryChannelPair } from './channels/memory-channel';
-import type { StreamEvent } from '@enclavejs/types';
+import type { StreamEvent } from '@enclave-vm/types';
 
 describe('Runtime Integration', () => {
   describe('Worker with Memory Channel', () => {

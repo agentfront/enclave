@@ -1,5 +1,5 @@
 /**
- * @enclavejs/types - Event filter definitions
+ * @enclave-vm/types - Event filter definitions
  *
  * Types for server-side event filtering configuration.
  *

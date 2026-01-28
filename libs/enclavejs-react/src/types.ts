@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import type { EnclaveClient, EnclaveClientConfig, SessionResult, StreamEvent, SessionId } from '@enclavejs/client';
+import type { EnclaveClient, EnclaveClientConfig, SessionResult, StreamEvent, SessionId } from '@enclave-vm/client';
 
 /**
  * Session state enum

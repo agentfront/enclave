@@ -6,8 +6,8 @@
  * @packageDocumentation
  */
 
-import type { SessionId, StreamEvent } from '@enclavejs/types';
-import type { SessionFinalResult } from 'enclave-vm';
+import type { SessionId, StreamEvent } from '@enclave-vm/types';
+import type { SessionFinalResult } from '@enclave-vm/core';
 import { BrokerSession, createBrokerSession } from './broker-session';
 import type { BrokerSessionConfig } from './broker-session';
 import type { ToolRegistry } from './tool-registry';

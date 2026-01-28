@@ -8,7 +8,7 @@ For OS-level memory isolation, use the worker threads adapter. This provides str
 ## Basic Usage
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({
   adapter: 'worker_threads',
@@ -41,7 +41,7 @@ const enclave = new Enclave({
 ## Using Presets
 
 ```ts
-import { Enclave, WorkerPoolPresets } from 'enclave-vm';
+import { Enclave, WorkerPoolPresets } from '@enclave-vm/core';
 
 // Use STRICT preset for maximum isolation
 const enclave = new Enclave({

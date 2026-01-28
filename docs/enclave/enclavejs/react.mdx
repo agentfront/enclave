@@ -1,16 +1,16 @@
 ---
-title: '@enclavejs/react'
+title: '@enclave-vm/react'
 description: 'React hooks and components for the EnclaveJS streaming runtime'
 ---
 
-# @enclavejs/react
+# @enclave-vm/react
 
 React hooks and components for building interactive code execution UIs with the EnclaveJS streaming runtime.
 
 ## Installation
 
 ```bash
-npm install @enclavejs/react
+npm install @enclave-vm/react
 ```
 
 **Peer Dependencies:**
@@ -19,7 +19,7 @@ npm install @enclavejs/react
 ## Quick Start
 
 ```tsx
-import { EnclaveProvider, useEnclaveSession } from '@enclavejs/react';
+import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
 function App() {
   return (
@@ -53,7 +53,7 @@ function CodeEditor() {
 The provider sets up the EnclaveClient context for your application.
 
 ```tsx
-import { EnclaveProvider, type EnclaveProviderProps } from '@enclavejs/react';
+import { EnclaveProvider, type EnclaveProviderProps } from '@enclave-vm/react';
 
 const props: EnclaveProviderProps = {
   // Required: Broker URL
@@ -90,7 +90,7 @@ The main hook for executing code and managing session state.
 ### Basic Usage
 
 ```tsx
-import { useEnclaveSession } from '@enclavejs/react';
+import { useEnclaveSession } from '@enclave-vm/react';
 
 function CodeRunner() {
   const {
@@ -118,7 +118,7 @@ function CodeRunner() {
 ### Session States
 
 ```tsx
-import type { SessionState } from '@enclavejs/react';
+import type { SessionState } from '@enclave-vm/react';
 
 // Available states
 type SessionState =
@@ -149,7 +149,7 @@ function StatusIndicator() {
 ### Options
 
 ```tsx
-import { useEnclaveSession, type UseEnclaveSessionOptions } from '@enclavejs/react';
+import { useEnclaveSession, type UseEnclaveSessionOptions } from '@enclave-vm/react';
 
 function CodeRunner() {
   const options: UseEnclaveSessionOptions = {
@@ -197,7 +197,7 @@ function CodeRunner() {
 ### Return Value
 
 ```tsx
-import type { UseEnclaveSessionReturn } from '@enclavejs/react';
+import type { UseEnclaveSessionReturn } from '@enclave-vm/react';
 
 const session: UseEnclaveSessionReturn = useEnclaveSession();
 
@@ -228,7 +228,7 @@ session.reset();         // Reset to idle state
 Access the underlying EnclaveClient directly.
 
 ```tsx
-import { useEnclaveClient } from '@enclavejs/react';
+import { useEnclaveClient } from '@enclave-vm/react';
 
 function CustomComponent() {
   const client = useEnclaveClient();
@@ -251,7 +251,7 @@ function CustomComponent() {
 Access the full context value including client and configuration.
 
 ```tsx
-import { useEnclaveContext, type EnclaveContextValue } from '@enclavejs/react';
+import { useEnclaveContext, type EnclaveContextValue } from '@enclave-vm/react';
 
 function DebugComponent() {
   const context: EnclaveContextValue = useEnclaveContext();
@@ -271,7 +271,7 @@ function DebugComponent() {
 
 ```tsx
 import { useState } from 'react';
-import { EnclaveProvider, useEnclaveSession } from '@enclavejs/react';
+import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
 function CodeEditor() {
   const [code, setCode] = useState('console.log("Hello!");\nreturn 42;');
@@ -416,7 +416,7 @@ function MultiSession() {
 ## TypeScript Types
 
 ```tsx
-// Re-exported from @enclavejs/client
+// Re-exported from @enclave-vm/client
 import type {
   EnclaveClient,
   EnclaveClientConfig,
@@ -424,10 +424,10 @@ import type {
   SessionHandle,
   StreamEvent,
   SessionId,
-} from '@enclavejs/react';
+} from '@enclave-vm/react';
 ```
 
 ## Links
 
 - [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclavejs-react)
-- [npm](https://www.npmjs.com/package/@enclavejs/react)
+- [npm](https://www.npmjs.com/package/@enclave-vm/react)

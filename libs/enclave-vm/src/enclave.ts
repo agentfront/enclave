@@ -147,7 +147,7 @@ function buildReferenceConfig(
  *
  * @example
  * ```typescript
- * import { Enclave } from 'enclave-vm';
+ * import { Enclave } from '@enclave-vm/core';
  *
  * // Create enclave with tool handler
  * const enclave = new Enclave({

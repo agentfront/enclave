@@ -1,7 +1,7 @@
 /**
- * @enclavejs/broker
+ * @enclave-vm/broker
  *
- * Tool broker and session management for the EnclaveJS streaming runtime.
+ * Tool broker and session management for the Enclave VM streaming runtime.
  *
  * @packageDocumentation
  */

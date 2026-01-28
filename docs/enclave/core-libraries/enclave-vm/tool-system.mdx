@@ -8,7 +8,7 @@ The tool system allows scripts to interact with external systems through control
 ## Basic Tool Handler
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({
   timeout: 10000,
@@ -46,7 +46,7 @@ type ToolHandler = (
 Connect enclave to your existing tool system:
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 import { ToolRegistry } from './tools';
 
 const enclave = new Enclave({
@@ -112,7 +112,7 @@ const result = await enclave.run(code);
 For simple cases without a persistent enclave instance:
 
 ```ts
-import { runAgentScript } from 'enclave-vm';
+import { runAgentScript } from '@enclave-vm/core';
 
 const result = await runAgentScript(`
   return Math.max(1, 2, 3);

@@ -6,10 +6,10 @@
  * @packageDocumentation
  */
 
-import type { SessionId, StreamEvent, SessionLimits } from '@enclavejs/types';
-import { generateSessionId, generateCallId, DEFAULT_SESSION_LIMITS } from '@enclavejs/types';
-import { SessionEmitter, createSessionEmitter, Enclave } from 'enclave-vm';
-import type { SessionStateValue, SessionFinalResult, CreateEnclaveOptions, ExecutionStats } from 'enclave-vm';
+import type { SessionId, StreamEvent, SessionLimits } from '@enclave-vm/types';
+import { generateSessionId, generateCallId, DEFAULT_SESSION_LIMITS } from '@enclave-vm/types';
+import { SessionEmitter, createSessionEmitter, Enclave } from '@enclave-vm/core';
+import type { SessionStateValue, SessionFinalResult, CreateEnclaveOptions, ExecutionStats } from '@enclave-vm/core';
 import type { ToolRegistry, ToolContext } from './tool-registry';
 
 /**

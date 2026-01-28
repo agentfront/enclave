@@ -77,7 +77,7 @@ Simplest deployment - everything runs in one process:
 ```
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({
   toolHandler: async (name, args) => executeLocalTool(name, args),
@@ -106,7 +106,7 @@ Code runs in separate worker threads for stronger isolation:
 ```
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({
   adapter: 'worker_threads',
@@ -140,7 +140,7 @@ For production applications with streaming and real-time features:
 
 ```ts
 // Broker
-import { createBroker } from '@enclavejs/broker';
+import { createBroker } from '@enclave-vm/broker';
 
 const broker = createBroker({
   mode: 'extracted',

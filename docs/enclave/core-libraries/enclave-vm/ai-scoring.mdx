@@ -15,7 +15,7 @@ The Scoring Gate adds semantic security analysis that detects attack patterns be
 ## Basic Configuration
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 // Rule-based scorer (~1ms latency, zero dependencies)
 const enclave = new Enclave({
@@ -93,7 +93,7 @@ const enclave = new Enclave({
 For pattern-matching against known malicious code patterns, use similarity mode with VectoriaDB:
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({
   scoringGate: {

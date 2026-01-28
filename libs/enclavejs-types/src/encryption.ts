@@ -1,5 +1,5 @@
 /**
- * @enclavejs/types - Encryption types
+ * @enclave-vm/types - Encryption types
  *
  * Types for per-hop encryption using ECDH + AES-GCM.
  * Encryption is optional but recommended to prevent intermediaries from reading payloads.

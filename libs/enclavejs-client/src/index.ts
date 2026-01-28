@@ -1,5 +1,5 @@
 /**
- * @enclavejs/client
+ * @enclave-vm/client
  *
  * Browser and Node.js client SDK for the EnclaveJS streaming runtime.
  *
@@ -22,7 +22,7 @@ export {
   type ClientErrorCode,
 } from './types.js';
 
-// Re-export commonly used types from @enclavejs/types
+// Re-export commonly used types from @enclave-vm/types
 export type {
   SessionId,
   SessionLimits,
@@ -35,7 +35,7 @@ export type {
   FinalEvent,
   HeartbeatEvent,
   ErrorEvent,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 // Re-export connection state for checking session status
-export { ConnectionState } from '@enclavejs/stream';
+export { ConnectionState } from '@enclave-vm/stream';

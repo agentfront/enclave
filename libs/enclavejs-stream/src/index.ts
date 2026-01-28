@@ -1,5 +1,5 @@
 /**
- * @enclavejs/stream
+ * @enclave-vm/stream
  *
  * Streaming protocol implementation for EnclaveJS runtime.
  * Includes NDJSON parsing, encryption, and reconnection handling.
@@ -7,8 +7,8 @@
  * @packageDocumentation
  */
 
-// Re-export types from @enclavejs/types
-export * from '@enclavejs/types';
+// Re-export types from @enclave-vm/types
+export * from '@enclave-vm/types';
 
 // NDJSON exports
 export {

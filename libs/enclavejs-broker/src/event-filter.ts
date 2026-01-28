@@ -14,8 +14,8 @@ import type {
   FilterRule,
   ContentPattern,
   ContentFilter,
-} from '@enclavejs/types';
-import { FilterMode, PatternType, DEFAULT_ALWAYS_ALLOW } from '@enclavejs/types';
+} from '@enclave-vm/types';
+import { FilterMode, PatternType, DEFAULT_ALWAYS_ALLOW } from '@enclave-vm/types';
 import { minimatch } from 'minimatch';
 
 /**

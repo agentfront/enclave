@@ -1,14 +1,14 @@
 ---
-title: '@enclavejs/react'
+title: '@enclave-vm/react'
 description: 'API reference for the EnclaveJS React SDK'
 ---
 
-API reference for the `@enclavejs/react` package - React hooks and components for EnclaveJS.
+API reference for the `@enclave-vm/react` package - React hooks and components for EnclaveJS.
 
 ## Installation
 
 ```bash
-npm install @enclavejs/react @enclavejs/client
+npm install @enclave-vm/react @enclave-vm/client
 ```
 
 ## EnclaveProvider
@@ -16,7 +16,7 @@ npm install @enclavejs/react @enclavejs/client
 Provider component for the EnclaveJS context.
 
 ```tsx
-import { EnclaveProvider } from '@enclavejs/react';
+import { EnclaveProvider } from '@enclave-vm/react';
 
 function App() {
   return (
@@ -72,7 +72,7 @@ interface UseEnclaveReturn {
 ### Example
 
 ```tsx
-import { useEnclave } from '@enclavejs/react';
+import { useEnclave } from '@enclave-vm/react';
 
 function CodeRunner() {
   const { execute, isRunning, cancel } = useEnclave();
@@ -136,7 +136,7 @@ interface ToolCall {
 ### Example
 
 ```tsx
-import { useEnclave, useExecutionStream } from '@enclavejs/react';
+import { useEnclave, useExecutionStream } from '@enclave-vm/react';
 
 function CodeExecutor() {
   const { execute, stream, isRunning } = useEnclave();
@@ -185,7 +185,7 @@ function useToolHandler(
 ### Example
 
 ```tsx
-import { useEnclave, useExecutionStream, useToolHandler } from '@enclavejs/react';
+import { useEnclave, useExecutionStream, useToolHandler } from '@enclave-vm/react';
 
 function App() {
   const { execute, stream } = useEnclave();
@@ -223,7 +223,7 @@ const client = useEnclaveClient();
 ### Example
 
 ```tsx
-import { useEnclaveClient } from '@enclavejs/react';
+import { useEnclaveClient } from '@enclave-vm/react';
 
 function HealthCheck() {
   const client = useEnclaveClient();
@@ -248,7 +248,7 @@ function HealthCheck() {
 Pre-built console output component.
 
 ```tsx
-import { Console } from '@enclavejs/react';
+import { Console } from '@enclave-vm/react';
 
 <Console
   output={output}
@@ -275,7 +275,7 @@ interface ConsoleProps {
 Display tool call history.
 
 ```tsx
-import { ToolCallList } from '@enclavejs/react';
+import { ToolCallList } from '@enclave-vm/react';
 
 <ToolCallList
   toolCalls={toolCalls}
@@ -300,7 +300,7 @@ interface ToolCallListProps {
 Show execution status with stats.
 
 ```tsx
-import { ExecutionStatus } from '@enclavejs/react';
+import { ExecutionStatus } from '@enclave-vm/react';
 
 <ExecutionStatus
   status={status}
@@ -332,7 +332,7 @@ import {
   Console,
   ToolCallList,
   ExecutionStatus,
-} from '@enclavejs/react';
+} from '@enclave-vm/react';
 
 function CodePlayground() {
   const [code, setCode] = useState(`
@@ -438,7 +438,7 @@ import type {
   ToolCall,
   ExecutionStats,
   StreamEvent,
-} from '@enclavejs/react';
+} from '@enclave-vm/react';
 
 // Types are exported for use
 const handleResult = (result: UseExecutionStreamReturn['result']) => {
@@ -449,5 +449,5 @@ const handleResult = (result: UseExecutionStreamReturn['result']) => {
 ## Related
 
 - [React Code Editor Guide](/guides/react-code-editor) - Full implementation
-- [@enclavejs/client](/api-reference/enclavejs-client) - Client SDK
+- [@enclave-vm/client](/api-reference/enclavejs-client) - Client SDK
 - [Streaming UI Example](/examples/streaming-ui) - Example code

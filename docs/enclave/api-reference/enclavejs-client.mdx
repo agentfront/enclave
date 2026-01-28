@@ -1,14 +1,14 @@
 ---
-title: '@enclavejs/client'
+title: '@enclave-vm/client'
 description: 'API reference for the EnclaveJS client SDK'
 ---
 
-API reference for the `@enclavejs/client` package - the client SDK for EnclaveJS.
+API reference for the `@enclave-vm/client` package - the client SDK for EnclaveJS.
 
 ## Installation
 
 ```bash
-npm install @enclavejs/client
+npm install @enclave-vm/client
 ```
 
 ## EnclaveClient Class
@@ -350,7 +350,7 @@ const client = new EnclaveClient({
 ## Error Handling
 
 ```ts
-import { EnclaveError, isEnclaveError } from '@enclavejs/client';
+import { EnclaveError, isEnclaveError } from '@enclave-vm/client';
 
 try {
   const stream = client.execute(code);
@@ -382,7 +382,7 @@ try {
 ## Complete Example
 
 ```ts
-import { EnclaveClient } from '@enclavejs/client';
+import { EnclaveClient } from '@enclave-vm/client';
 
 async function main() {
   // Create client
@@ -446,7 +446,7 @@ main().catch(console.error);
 ## Browser Usage
 
 ```ts
-import { EnclaveClient } from '@enclavejs/client';
+import { EnclaveClient } from '@enclave-vm/client';
 
 // Works in browser
 const client = new EnclaveClient({
@@ -468,5 +468,5 @@ for await (const event of stream) {
 ## Related
 
 - [Client Overview](/enclavejs/client) - Usage guide
-- [@enclavejs/types](/api-reference/enclavejs-types) - Type definitions
-- [@enclavejs/react](/api-reference/enclavejs-react) - React hooks
+- [@enclave-vm/types](/api-reference/enclavejs-types) - Type definitions
+- [@enclave-vm/react](/api-reference/enclavejs-react) - React hooks

@@ -16,7 +16,7 @@ import type {
   StreamEvent,
   ToolCallPayload,
   RuntimeChannelMessage,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 import type { CreateEnclaveOptions, ExecutionStats } from './types';
 
 /**

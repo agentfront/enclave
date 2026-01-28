@@ -8,7 +8,7 @@ Examples demonstrating various tool-calling patterns with Enclave.
 ## Basic Tool Call
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({
   toolHandler: async (name, args) => {
@@ -386,7 +386,7 @@ const enclave = new Enclave({
 ## Complete Example
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 import { z } from 'zod';
 
 // Tool schemas

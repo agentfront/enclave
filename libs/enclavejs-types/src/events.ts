@@ -1,5 +1,5 @@
 /**
- * @enclavejs/types - Stream event definitions
+ * @enclave-vm/types - Stream event definitions
  *
  * All event types that can be sent over the streaming protocol.
  */

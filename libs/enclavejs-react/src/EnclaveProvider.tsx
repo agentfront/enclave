@@ -7,7 +7,7 @@
  */
 
 import React, { createContext, useContext, useMemo, useRef } from 'react';
-import { EnclaveClient } from '@enclavejs/client';
+import { EnclaveClient } from '@enclave-vm/client';
 import type { EnclaveProviderProps, EnclaveContextValue } from './types.js';
 
 /**

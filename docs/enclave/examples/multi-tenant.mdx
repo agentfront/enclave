@@ -59,7 +59,7 @@ function getTenantContext(req: Request): TenantContext {
 ## Tenant-Isolated Enclave
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 class TenantEnclaveService {
   private enclave: Enclave;
@@ -446,7 +446,7 @@ describe('Tenant Isolation', () => {
 ```ts
 // server.ts
 import express from 'express';
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 const app = express();
 app.use(express.json());

@@ -209,13 +209,13 @@ jobs:
 
               The Enclave ecosystem includes:
               - ast-guard: AST security guard with CVE protection
-              - enclave-vm: Secure AgentScript execution environment
-              - @enclavejs/types: Protocol types and Zod schemas
-              - @enclavejs/stream: NDJSON streaming with encryption
-              - @enclavejs/broker: Tool broker with session management
-              - @enclavejs/client: Browser and Node.js client SDK
-              - @enclavejs/react: React hooks and components
-              - @enclavejs/runtime: Standalone deployable runtime
+              - @enclave-vm/core: Secure AgentScript execution environment
+              - @enclave-vm/types: Protocol types and Zod schemas
+              - @enclave-vm/stream: NDJSON streaming with encryption
+              - @enclave-vm/broker: Tool broker with session management
+              - @enclave-vm/client: Browser and Node.js client SDK
+              - @enclave-vm/react: React hooks and components
+              - @enclave-vm/runtime: Standalone deployable runtime
 
               Version: ${version}
               Release Date: ${releaseDate}

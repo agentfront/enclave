@@ -14,12 +14,12 @@ Each library in the Enclave monorepo can be installed independently.
 
 ## Core Libraries
 
-### enclave-vm
+### @enclave-vm/core
 
 Secure AgentScript execution environment with defense-in-depth.
 
 ```bash
-npm install enclave-vm
+npm install @enclave-vm/core
 ```
 
 ### ast-guard
@@ -40,70 +40,70 @@ Install all packages needed for a complete streaming setup:
 
 ```bash
 # Server-side
-npm install @enclavejs/broker
+npm install @enclave-vm/broker
 
 # Client-side
-npm install @enclavejs/client @enclavejs/react
+npm install @enclave-vm/client @enclave-vm/react
 ```
 
 ### Individual Packages
 
-#### @enclavejs/types
+#### @enclave-vm/types
 
 Protocol types and Zod schemas (automatically installed as dependency).
 
 ```bash
-npm install @enclavejs/types
+npm install @enclave-vm/types
 ```
 
-#### @enclavejs/stream
+#### @enclave-vm/stream
 
 Streaming protocol implementation with encryption support.
 
 ```bash
-npm install @enclavejs/stream
+npm install @enclave-vm/stream
 ```
 
-#### @enclavejs/broker
+#### @enclave-vm/broker
 
 Tool broker with session management and HTTP API.
 
 ```bash
-npm install @enclavejs/broker
+npm install @enclave-vm/broker
 ```
 
-#### @enclavejs/client
+#### @enclave-vm/client
 
 Browser and Node.js client SDK.
 
 ```bash
-npm install @enclavejs/client
+npm install @enclave-vm/client
 ```
 
-#### @enclavejs/react
+#### @enclave-vm/react
 
 React hooks and components.
 
 ```bash
-npm install @enclavejs/react
+npm install @enclave-vm/react
 ```
 
 **Peer dependency:** React >= 17.0.0
 
-#### @enclavejs/runtime
+#### @enclave-vm/runtime
 
 Standalone deployable runtime worker.
 
 ```bash
-npm install @enclavejs/runtime
+npm install @enclave-vm/runtime
 ```
 
 ## Quick Start Examples
 
-### Basic Sandbox (enclave-vm)
+### Basic Sandbox (@enclave-vm/core)
 
 ```typescript
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({ securityLevel: 'SECURE' });
 const result = await enclave.execute('return 1 + 1');
@@ -113,7 +113,7 @@ console.log(result.value); // 2
 ### Streaming with React
 
 ```tsx
-import { EnclaveProvider, useEnclaveSession } from '@enclavejs/react';
+import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
 function App() {
   return (
@@ -157,11 +157,11 @@ yarn test
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| enclave-vm | 2.7.0 | Secure sandbox runtime |
+| @enclave-vm/core | 2.7.0 | Secure sandbox runtime |
 | ast-guard | 2.4.0 | AST security validator |
-| @enclavejs/types | 0.1.0 | Protocol types |
-| @enclavejs/stream | 0.1.0 | Streaming protocol |
-| @enclavejs/broker | 0.1.0 | Tool broker |
-| @enclavejs/client | 0.1.0 | Client SDK |
-| @enclavejs/react | 0.1.0 | React integration |
-| @enclavejs/runtime | 0.1.0 | Runtime worker |
+| @enclave-vm/types | 0.1.0 | Protocol types |
+| @enclave-vm/stream | 0.1.0 | Streaming protocol |
+| @enclave-vm/broker | 0.1.0 | Tool broker |
+| @enclave-vm/client | 0.1.0 | Client SDK |
+| @enclave-vm/react | 0.1.0 | React integration |
+| @enclave-vm/runtime | 0.1.0 | Runtime worker |

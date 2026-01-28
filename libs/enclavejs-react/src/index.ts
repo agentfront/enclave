@@ -1,5 +1,5 @@
 /**
- * @enclavejs/react
+ * @enclave-vm/react
  *
  * React hooks and components for the EnclaveJS streaming runtime.
  *
@@ -21,7 +21,7 @@ export type {
   EnclaveContextValue,
 } from './types.js';
 
-// Re-export commonly used types from @enclavejs/client
+// Re-export commonly used types from @enclave-vm/client
 export type {
   EnclaveClient,
   EnclaveClientConfig,
@@ -29,4 +29,4 @@ export type {
   SessionHandle,
   StreamEvent,
   SessionId,
-} from '@enclavejs/client';
+} from '@enclave-vm/client';

@@ -13,7 +13,7 @@ This guide walks you through building your first secure code execution environme
 ## Step 1: Install Packages
 
 ```bash
-npm install enclave-vm ast-guard
+npm install @enclave-vm/core ast-guard
 ```
 
 ## Step 2: Create Your First Sandbox
@@ -21,7 +21,7 @@ npm install enclave-vm ast-guard
 Create a new file `sandbox.ts`:
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 // Define your tools
 const tools = {
@@ -140,7 +140,7 @@ See [AgentScript](/concepts/agentscript) for the full language definition.
   <Card title="Concepts" icon="lightbulb" href="/concepts/architecture">
     Understand the architecture and security model
   </Card>
-  <Card title="enclave-vm" icon="lock" href="/core-libraries/enclave-vm/overview">
+  <Card title="@enclave-vm/core" icon="lock" href="/core-libraries/enclave-vm/overview">
     Deep dive into configuration and features
   </Card>
   <Card title="Guides" icon="map" href="/guides/first-agent">

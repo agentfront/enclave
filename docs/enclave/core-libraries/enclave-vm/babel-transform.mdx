@@ -29,7 +29,7 @@ The Babel transform feature enables secure TSX/JSX transformation inside the enc
 ## Quick Start
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 // Create enclave with babel preset
 const enclave = new Enclave({
@@ -85,7 +85,7 @@ Each security level provides different limits for Babel transforms:
 | `PERMISSIVE` | 5 MB | 25 MB | 30s | `typescript`, `react`, `env` |
 
 ```ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 import { getBabelConfig } from 'ast-guard';
 
 // Get config for a security level
@@ -298,7 +298,7 @@ enclave.dispose();
 For server-side use without the full enclave sandbox, use `createRestrictedBabel`:
 
 ```ts
-import { createRestrictedBabel } from 'enclave-vm';
+import { createRestrictedBabel } from '@enclave-vm/core';
 import { getBabelConfig } from 'ast-guard';
 
 const config = getBabelConfig('STANDARD');

@@ -24,9 +24,9 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import WebSocket from 'ws';
-import type { SessionId, CallId, StreamEvent } from '@enclavejs/types';
-import { generateSessionId, PROTOCOL_VERSION } from '@enclavejs/types';
-import { Enclave } from 'enclave-vm';
+import type { SessionId, CallId, StreamEvent } from '@enclave-vm/types';
+import { generateSessionId, PROTOCOL_VERSION } from '@enclave-vm/types';
+import { Enclave } from '@enclave-vm/core';
 
 const PORT = 4101;
 const RUNTIME_WS_URL = 'ws://localhost:4102/ws';

@@ -1,10 +1,10 @@
 /**
- * @enclavejs/stream - Reconnection State Machine
+ * @enclave-vm/stream - Reconnection State Machine
  *
  * Handles connection drops and automatic reconnection with exponential backoff.
  */
 
-import type { StreamEvent, EncryptedEnvelope } from '@enclavejs/types';
+import type { StreamEvent, EncryptedEnvelope } from '@enclave-vm/types';
 
 /**
  * Connection state.

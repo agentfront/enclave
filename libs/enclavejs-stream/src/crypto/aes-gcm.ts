@@ -1,5 +1,5 @@
 /**
- * @enclavejs/stream - AES-GCM Encryption
+ * @enclave-vm/stream - AES-GCM Encryption
  *
  * AES-GCM authenticated encryption using Web Crypto API.
  */
@@ -16,7 +16,7 @@ import {
   type EncryptedEnvelope,
   type SessionId,
   EncryptionAlgorithm,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 /**
  * Convert a Uint8Array to an ArrayBuffer.
