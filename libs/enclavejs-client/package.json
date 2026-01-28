@@ -1,6 +1,6 @@
 {
   "name": "@enclavejs/client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Browser and Node.js client SDK for the EnclaveJS streaming runtime",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",
@@ -31,8 +31,8 @@
     }
   },
   "dependencies": {
-    "@enclavejs/types": "0.1.0",
-    "@enclavejs/stream": "0.1.0"
+    "@enclavejs/types": "2.8.0",
+    "@enclavejs/stream": "2.8.0"
   },
   "type": "commonjs"
 }

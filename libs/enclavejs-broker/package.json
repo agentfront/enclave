@@ -1,6 +1,6 @@
 {
   "name": "@enclavejs/broker",
-  "version": "0.1.0",
+  "version": "2.8.0",
   "description": "Tool broker and session management for the EnclaveJS streaming runtime",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",
@@ -33,9 +33,9 @@
     }
   },
   "dependencies": {
-    "@enclavejs/types": "0.1.0",
-    "@enclavejs/stream": "0.1.0",
-    "enclave-vm": "2.7.0",
+    "@enclavejs/types": "2.8.0",
+    "@enclavejs/stream": "2.8.0",
+    "enclave-vm": "2.8.0",
     "minimatch": "^10.0.1",
     "zod": "^4.1.13"
   },

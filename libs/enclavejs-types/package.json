@@ -1,6 +1,6 @@
 {
   "name": "@enclavejs/types",
-  "version": "0.1.0",
+  "version": "2.8.0",
   "description": "Type definitions and Zod schemas for the EnclaveJS streaming runtime protocol",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",

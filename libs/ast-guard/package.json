@@ -1,6 +1,6 @@
 {
   "name": "ast-guard",
-  "version": "2.4.0",
+  "version": "2.8.0",
   "description": "A production-ready AST security guard for JavaScript - validate, protect, and enforce code safety with extensible rules",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave/tree/main/libs/ast-guard",
