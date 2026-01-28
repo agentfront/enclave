@@ -1,0 +1,763 @@
+---
+title: '@enclavejs/stream'
+description: 'API reference for the EnclaveJS streaming protocol implementation'
+---
+
+API reference for the `@enclavejs/stream` package - streaming protocol implementation including NDJSON parsing, encryption, and reconnection handling.
+
+## Installation
+
+```bash
+npm install @enclavejs/stream
+```
+
+## NDJSON Parsing
+
+### serializeEvent(event)
+
+Serialize an event to NDJSON format (single line).
+
+```ts
+function serializeEvent(event: MaybeEncrypted<StreamEvent>): string
+```
+
+**Example:**
+```ts
+import { serializeEvent } from '@enclavejs/stream';
+
+const line = serializeEvent({
+  type: 'stdout',
+  sessionId: 'sess_123',
+  seq: 1,
+  payload: { data: 'Hello' }
+});
+// '{"type":"stdout","sessionId":"sess_123","seq":1,"payload":{"data":"Hello"}}'
+```
+
+### serializeEvents(events)
+
+Serialize multiple events to NDJSON format.
+
+```ts
+function serializeEvents(events: MaybeEncrypted<StreamEvent>[]): string
+```
+
+**Example:**
+```ts
+import { serializeEvents } from '@enclavejs/stream';
+
+const ndjson = serializeEvents([event1, event2, event3]);
+// Each event on its own line
+```
+
+### parseLine(line)
+
+Parse a single NDJSON line into an event.
+
+```ts
+function parseLine(line: string): ParseResult<ParsedStreamEvent | ParsedEncryptedEnvelope>
+
+type ParseResult<T> =
+  | { success: true; data: T }
+  | { success: false; error: string; line: string };
+```
+
+**Example:**
+```ts
+import { parseLine } from '@enclavejs/stream';
+
+const result = parseLine('{"type":"stdout","sessionId":"sess_123","seq":1,"payload":{"data":"Hi"}}');
+if (result.success) {
+  console.log(result.data.type); // 'stdout'
+}
+```
+
+### parseLines(data)
+
+Parse multiple NDJSON lines into events.
+
+```ts
+function parseLines(data: string): {
+  events: (ParsedStreamEvent | ParsedEncryptedEnvelope)[];
+  errors: Array<{ line: number; error: string; content: string }>;
+}
+```
+
+**Example:**
+```ts
+import { parseLines } from '@enclavejs/stream';
+
+const { events, errors } = parseLines(ndjsonData);
+console.log(`Parsed ${events.length} events, ${errors.length} errors`);
+```
+
+### NdjsonStreamParser
+
+Incremental NDJSON parser for streaming data. Handles partial lines across chunks.
+
+```ts
+class NdjsonStreamParser {
+  constructor(options: {
+    onEvent: (event: ParsedStreamEvent | ParsedEncryptedEnvelope) => void;
+    onError: (error: { line: number; error: string; content: string }) => void;
+  });
+
+  feed(chunk: string): void;
+  flush(): void;
+  reset(): void;
+  getLineNumber(): number;
+  hasPendingData(): boolean;
+}
+```
+
+**Example:**
+```ts
+import { NdjsonStreamParser } from '@enclavejs/stream';
+
+const parser = new NdjsonStreamParser({
+  onEvent: (event) => console.log('Event:', event.type),
+  onError: (error) => console.error('Parse error:', error.error),
+});
+
+// Feed chunks as they arrive
+parser.feed('{"type":"stdout"');
+parser.feed(',"sessionId":"sess_123","seq":1,"payload":{"data":"Hi"}}\n');
+
+// Flush any remaining data when stream ends
+parser.flush();
+```
+
+### createNdjsonParseStream()
+
+Create a transform stream that parses NDJSON. Works with browser `fetch()` and Node.js streams.
+
+```ts
+function createNdjsonParseStream(): TransformStream<string, ParsedStreamEvent | ParsedEncryptedEnvelope>
+```
+
+**Example:**
+```ts
+import { createNdjsonParseStream } from '@enclavejs/stream';
+
+const response = await fetch('/api/stream');
+const reader = response.body
+  .pipeThrough(new TextDecoderStream())
+  .pipeThrough(createNdjsonParseStream())
+  .getReader();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  console.log('Event:', value.type);
+}
+```
+
+### createNdjsonSerializeStream()
+
+Create a transform stream that serializes events to NDJSON.
+
+```ts
+function createNdjsonSerializeStream(): TransformStream<MaybeEncrypted<StreamEvent>, string>
+```
+
+### parseNdjsonStream(stream)
+
+Async generator that parses NDJSON from a ReadableStream.
+
+```ts
+async function* parseNdjsonStream(
+  stream: ReadableStream<Uint8Array>
+): AsyncGenerator<ParsedStreamEvent | ParsedEncryptedEnvelope>
+```
+
+**Example:**
+```ts
+import { parseNdjsonStream } from '@enclavejs/stream';
+
+const response = await fetch('/api/stream');
+
+for await (const event of parseNdjsonStream(response.body)) {
+  console.log('Event:', event.type);
+}
+```
+
+## ECDH Key Exchange
+
+### generateKeyPair(curve?)
+
+Generate an ephemeral ECDH key pair.
+
+```ts
+async function generateKeyPair(curve?: SupportedCurve): Promise<EcdhKeyPair>
+
+interface EcdhKeyPair {
+  publicKey: CryptoKey;
+  privateKey: CryptoKey;
+}
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `curve` | `SupportedCurve` | `'P-256'` | Elliptic curve to use |
+
+**Example:**
+```ts
+import { generateKeyPair } from '@enclavejs/stream';
+
+const keyPair = await generateKeyPair();
+// Or with specific curve
+const keyPair384 = await generateKeyPair('P-384');
+```
+
+### exportPublicKey(publicKey)
+
+Export a public key to base64 format.
+
+```ts
+async function exportPublicKey(publicKey: CryptoKey): Promise<SerializedPublicKey>
+
+interface SerializedPublicKey {
+  publicKeyB64: string;
+  curve: SupportedCurve;
+}
+```
+
+### importPublicKey(publicKeyB64, curve?)
+
+Import a public key from base64 format.
+
+```ts
+async function importPublicKey(
+  publicKeyB64: string,
+  curve?: SupportedCurve
+): Promise<CryptoKey>
+```
+
+### deriveSharedSecret(privateKey, peerPublicKey)
+
+Derive shared secret from private key and peer's public key.
+
+```ts
+async function deriveSharedSecret(
+  privateKey: CryptoKey,
+  peerPublicKey: CryptoKey
+): Promise<Uint8Array>
+```
+
+**Example:**
+```ts
+import { generateKeyPair, deriveSharedSecret, importPublicKey } from '@enclavejs/stream';
+
+// Client side
+const clientKeyPair = await generateKeyPair();
+const serverPubKey = await importPublicKey(serverPublicKeyB64);
+const sharedSecret = await deriveSharedSecret(clientKeyPair.privateKey, serverPubKey);
+```
+
+### createClientHello(keyPair)
+
+Create a client hello message for the encryption handshake.
+
+```ts
+async function createClientHello(keyPair: EcdhKeyPair): Promise<ClientHello>
+```
+
+### createServerHello(keyPair, keyId)
+
+Create a server hello message for the encryption handshake.
+
+```ts
+async function createServerHello(keyPair: EcdhKeyPair, keyId: string): Promise<ServerHello>
+```
+
+### processClientHello(clientHello)
+
+Process a client hello and generate server response.
+
+```ts
+async function processClientHello(clientHello: ClientHello): Promise<{
+  serverKeyPair: EcdhKeyPair;
+  peerPublicKey: CryptoKey;
+  serverHello: ServerHello;
+  keyId: string;
+}>
+```
+
+### processServerHello(serverHello)
+
+Process a server hello and extract peer's public key.
+
+```ts
+async function processServerHello(serverHello: ServerHello): Promise<{
+  peerPublicKey: CryptoKey;
+  keyId: string;
+}>
+```
+
+### EcdhError
+
+Error class for ECDH operations.
+
+```ts
+class EcdhError extends Error {
+  readonly code: string;
+  constructor(message: string, code: string);
+}
+```
+
+## Key Derivation (HKDF)
+
+### deriveKey(sharedSecret, salt, info, keyLength?)
+
+Derive a key using HKDF-SHA256.
+
+```ts
+async function deriveKey(
+  sharedSecret: Uint8Array,
+  salt: Uint8Array | null,
+  info: string,
+  keyLength?: number
+): Promise<Uint8Array>
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `sharedSecret` | `Uint8Array` | Required | Shared secret from ECDH |
+| `salt` | `Uint8Array \| null` | `null` | Optional salt (defaults to zeros) |
+| `info` | `string` | Required | Context info string |
+| `keyLength` | `number` | `32` | Output key length in bytes |
+
+### deriveSessionKeys(sharedSecret, sessionId)
+
+Derive session keys for bidirectional communication.
+
+```ts
+async function deriveSessionKeys(
+  sharedSecret: Uint8Array,
+  sessionId: string
+): Promise<{
+  clientToServerKey: Uint8Array;
+  serverToClientKey: Uint8Array;
+}>
+```
+
+### importAesGcmKey(keyBytes)
+
+Import raw key bytes as a CryptoKey for AES-GCM.
+
+```ts
+async function importAesGcmKey(keyBytes: Uint8Array): Promise<CryptoKey>
+```
+
+### deriveSessionCryptoKeys(sharedSecret, sessionId)
+
+Derive and import session keys as CryptoKeys.
+
+```ts
+async function deriveSessionCryptoKeys(
+  sharedSecret: Uint8Array,
+  sessionId: string
+): Promise<{
+  clientToServerKey: CryptoKey;
+  serverToClientKey: CryptoKey;
+}>
+```
+
+**Example:**
+```ts
+import { deriveSessionCryptoKeys, deriveSharedSecret } from '@enclavejs/stream';
+
+const sharedSecret = await deriveSharedSecret(privateKey, peerPublicKey);
+const { clientToServerKey, serverToClientKey } = await deriveSessionCryptoKeys(
+  sharedSecret,
+  'sess_123'
+);
+```
+
+### HkdfError
+
+Error class for HKDF operations.
+
+```ts
+class HkdfError extends Error {
+  readonly code: string;
+  constructor(message: string, code: string);
+}
+```
+
+## AES-GCM Encryption
+
+### encrypt(key, plaintext, nonce, additionalData?)
+
+Encrypt data using AES-GCM.
+
+```ts
+async function encrypt(
+  key: CryptoKey,
+  plaintext: Uint8Array,
+  nonce: Uint8Array,
+  additionalData?: Uint8Array
+): Promise<Uint8Array>
+```
+
+### decrypt(key, ciphertext, nonce, additionalData?)
+
+Decrypt data using AES-GCM.
+
+```ts
+async function decrypt(
+  key: CryptoKey,
+  ciphertext: Uint8Array,
+  nonce: Uint8Array,
+  additionalData?: Uint8Array
+): Promise<Uint8Array>
+```
+
+### encryptJson(key, keyId, data, nonce?)
+
+Encrypt a JSON object and create an encrypted envelope payload.
+
+```ts
+async function encryptJson(
+  key: CryptoKey,
+  keyId: string,
+  data: unknown,
+  nonce?: Uint8Array
+): Promise<EncryptedEnvelopePayload>
+```
+
+### decryptJson(key, payload)
+
+Decrypt an encrypted envelope payload and parse as JSON.
+
+```ts
+async function decryptJson<T>(
+  key: CryptoKey,
+  payload: EncryptedEnvelopePayload
+): Promise<T>
+```
+
+### createEncryptedEnvelope(key, keyId, sessionId, seq, innerEvent, nonce?)
+
+Create an encrypted envelope from an event.
+
+```ts
+async function createEncryptedEnvelope(
+  key: CryptoKey,
+  keyId: string,
+  sessionId: SessionId,
+  seq: number,
+  innerEvent: unknown,
+  nonce?: Uint8Array
+): Promise<EncryptedEnvelope>
+```
+
+### generateNonce()
+
+Generate a random 12-byte nonce for AES-GCM.
+
+```ts
+function generateNonce(): Uint8Array
+```
+
+### generateCounterNonce(prefix, counter)
+
+Generate a counter-based nonce (8 bytes prefix + 4 bytes counter).
+
+```ts
+function generateCounterNonce(prefix: Uint8Array, counter: bigint): Uint8Array
+```
+
+### toBase64(bytes)
+
+Encode bytes to base64.
+
+```ts
+function toBase64(bytes: Uint8Array): string
+```
+
+### fromBase64(base64)
+
+Decode base64 to bytes.
+
+```ts
+function fromBase64(base64: string): Uint8Array
+```
+
+### AesGcmError
+
+Error class for AES-GCM operations.
+
+```ts
+class AesGcmError extends Error {
+  readonly code: string;
+  constructor(message: string, code: string);
+}
+```
+
+## SessionEncryptionContext
+
+Manages encryption key state for a session.
+
+```ts
+class SessionEncryptionContext {
+  constructor(key: CryptoKey, keyInfo: SessionKeyInfo);
+
+  // Properties
+  readonly keyId: string;
+
+  // Methods
+  needsRotation(): boolean;
+  encrypt(plaintext: Uint8Array): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array }>;
+  encryptJson(data: unknown): Promise<EncryptedEnvelopePayload>;
+  createEnvelope(sessionId: SessionId, seq: number, innerEvent: unknown): Promise<EncryptedEnvelope>;
+  decrypt(payload: EncryptedEnvelopePayload): Promise<Uint8Array>;
+  decryptJson<T>(payload: EncryptedEnvelopePayload): Promise<T>;
+  getNonceCounter(): bigint;
+  toKeyInfo(): SessionKeyInfo;
+
+  // Static methods
+  static fromKeyBytes(keyBytes: Uint8Array, keyId: string): Promise<SessionEncryptionContext>;
+}
+```
+
+**Example:**
+```ts
+import { SessionEncryptionContext } from '@enclavejs/stream';
+
+// Create from key bytes
+const ctx = await SessionEncryptionContext.fromKeyBytes(keyBytes, 'key_123');
+
+// Encrypt an event
+const envelope = await ctx.createEnvelope('sess_123', 1, {
+  type: 'stdout',
+  payload: { data: 'Hello' }
+});
+
+// Check if key rotation is needed
+if (ctx.needsRotation()) {
+  // Perform key rotation
+}
+
+// Decrypt
+const decrypted = await ctx.decryptJson(envelope.payload);
+```
+
+## Reconnection
+
+### ConnectionState
+
+Connection state enumeration.
+
+```ts
+const ConnectionState = {
+  Disconnected: 'disconnected',
+  Connecting: 'connecting',
+  Connected: 'connected',
+  Reconnecting: 'reconnecting',
+  Failed: 'failed',
+  Closed: 'closed',
+} as const;
+
+type ConnectionState = (typeof ConnectionState)[keyof typeof ConnectionState];
+```
+
+### DEFAULT_RECONNECTION_CONFIG
+
+Default reconnection configuration.
+
+```ts
+const DEFAULT_RECONNECTION_CONFIG: ReconnectionConfig = {
+  maxRetries: 5,
+  initialDelayMs: 1000,
+  maxDelayMs: 30000,
+  backoffMultiplier: 2,
+  jitter: true,
+  jitterFactor: 0.3,
+};
+
+interface ReconnectionConfig {
+  maxRetries: number;
+  initialDelayMs: number;
+  maxDelayMs: number;
+  backoffMultiplier: number;
+  jitter: boolean;
+  jitterFactor: number;
+}
+```
+
+### ReconnectionStateMachine
+
+Manages connection state and automatic reconnection.
+
+```ts
+class ReconnectionStateMachine {
+  constructor(options: {
+    config?: Partial<ReconnectionConfig>;
+    onEvent: (event: ReconnectionEvent) => void;
+  });
+
+  getState(): ConnectionState;
+  getRetryCount(): number;
+  connect(): void;
+  onConnected(): void;
+  onDisconnected(reason?: string): void;
+  onFatalError(reason: string): void;
+  close(): void;
+  reset(): void;
+  canReconnect(): boolean;
+}
+
+type ReconnectionEvent =
+  | { type: 'state_change'; state: ConnectionState; previousState: ConnectionState }
+  | { type: 'retry_scheduled'; attempt: number; delayMs: number }
+  | { type: 'retry_started'; attempt: number }
+  | { type: 'connected' }
+  | { type: 'disconnected'; reason?: string }
+  | { type: 'failed'; reason: string };
+```
+
+**Example:**
+```ts
+import { ReconnectionStateMachine, ConnectionState } from '@enclavejs/stream';
+
+const reconnect = new ReconnectionStateMachine({
+  config: { maxRetries: 3 },
+  onEvent: (event) => {
+    switch (event.type) {
+      case 'state_change':
+        console.log(`State: ${event.previousState} -> ${event.state}`);
+        break;
+      case 'retry_scheduled':
+        console.log(`Retry ${event.attempt} in ${event.delayMs}ms`);
+        break;
+      case 'connected':
+        console.log('Connected!');
+        break;
+      case 'failed':
+        console.error('Connection failed:', event.reason);
+        break;
+    }
+  },
+});
+
+reconnect.connect();
+// ... when connection succeeds
+reconnect.onConnected();
+// ... when connection drops
+reconnect.onDisconnected('Network error');
+```
+
+### SequenceTracker
+
+Tracks sequence numbers and detects gaps for replay.
+
+```ts
+class SequenceTracker {
+  constructor(maxGaps?: number);
+
+  receive(seq: number): { gap: boolean; missingStart?: number; missingEnd?: number };
+  getLastSeq(): number;
+  getGaps(): Array<{ start: number; end: number }>;
+  clearGap(start: number, end: number): void;
+  hasGaps(): boolean;
+  reset(): void;
+}
+```
+
+**Example:**
+```ts
+import { SequenceTracker } from '@enclavejs/stream';
+
+const tracker = new SequenceTracker();
+
+tracker.receive(1); // { gap: false }
+tracker.receive(2); // { gap: false }
+tracker.receive(5); // { gap: true, missingStart: 3, missingEnd: 4 }
+
+console.log(tracker.getGaps()); // [{ start: 3, end: 4 }]
+```
+
+### EventBuffer
+
+Buffer for storing events during reconnection.
+
+```ts
+class EventBuffer {
+  constructor(maxSize?: number);
+
+  add(event: StreamEvent | EncryptedEnvelope): boolean;
+  getAll(): (StreamEvent | EncryptedEnvelope)[];
+  drain(): (StreamEvent | EncryptedEnvelope)[];
+  size(): number;
+  isFull(): boolean;
+  clear(): void;
+}
+```
+
+**Example:**
+```ts
+import { EventBuffer } from '@enclavejs/stream';
+
+const buffer = new EventBuffer(100);
+
+buffer.add(event1);
+buffer.add(event2);
+
+// Get all events and clear buffer
+const events = buffer.drain();
+```
+
+### HeartbeatMonitor
+
+Monitors heartbeats to detect stale connections.
+
+```ts
+class HeartbeatMonitor {
+  constructor(options: { timeoutMs: number; onTimeout: () => void });
+
+  start(): void;
+  stop(): void;
+  reset(): void;
+  onHeartbeat(): void;
+  getTimeSinceLastHeartbeat(): number;
+}
+```
+
+**Example:**
+```ts
+import { HeartbeatMonitor } from '@enclavejs/stream';
+
+const monitor = new HeartbeatMonitor({
+  timeoutMs: 30000,
+  onTimeout: () => {
+    console.log('Connection stale, reconnecting...');
+    reconnect();
+  },
+});
+
+monitor.start();
+
+// When heartbeat received
+monitor.onHeartbeat();
+
+// When done
+monitor.stop();
+```
+
+## Re-exported Types
+
+This package re-exports all types from `@enclavejs/types`:
+
+```ts
+export * from '@enclavejs/types';
+```
+
+See [@enclavejs/types API](/api-reference/enclavejs-types) for the complete type reference.
+
+## Related
+
+- [Stream Overview](/enclavejs/stream) - Usage guide
+- [@enclavejs/types](/api-reference/enclavejs-types) - Type definitions
+- [@enclavejs/client](/api-reference/enclavejs-client) - Client SDK
+- [Streaming Protocol](/concepts/streaming-protocol) - Protocol concepts

@@ -3,20 +3,22 @@ name: Create release branch
 on:
   workflow_dispatch:
     inputs:
-      bump_type:
-        description: "Version bump type (applies to all affected libs)"
+      major_version:
+        description: "Major version (X in release/X.Y.x)"
+        required: true
+        type: string
+      minor_version:
+        description: "Minor version (Y in release/X.Y.x)"
+        required: true
+        type: string
+      base_branch:
+        description: "Base branch to create from"
         required: false
-        type: choice
-        default: "auto"
-        options:
-          - auto # Use Codex AI (existing behavior)
-          - patch
-          - minor
-          - major
+        type: string
+        default: "main"
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   create:
@@ -24,24 +26,35 @@ jobs:
     environment: release
     env:
       NX_DAEMON: "false"
-      CODEX_OUTPUT: .codex-release/release-output.json
-      # Core libs that always release together with unified versioning
-      CORE_LIBS: "ast-guard,enclave-vm"
 
     steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MAJOR="${{ inputs.major_version }}"
+          MINOR="${{ inputs.minor_version }}"
+
+          # Validate major version is a number
+          if ! [[ "$MAJOR" =~ ^[0-9]+$ ]]; then
+            echo "::error::Major version must be a positive integer. Got: $MAJOR"
+            exit 1
+          fi
+
+          # Validate minor version is a number
+          if ! [[ "$MINOR" =~ ^[0-9]+$ ]]; then
+            echo "::error::Minor version must be a positive integer. Got: $MINOR"
+            exit 1
+          fi
+
+          echo "Creating release branch for version $MAJOR.$MINOR.x"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      # Fail fast if env secret is not available (only for auto mode)
-      - name: Ensure CODEX_OPENAI_KEY secret is set
-        if: github.event.inputs.bump_type == 'auto' || github.event.inputs.bump_type == ''
-        run: |
-          if [ -z "${{ secrets.CODEX_OPENAI_KEY }}" ]; then
-            echo "::error::CODEX_OPENAI_KEY (env: release) is not set. Add it under Settings → Environments → release → Secrets." >&2
-            exit 1
-          fi
+          ref: ${{ inputs.base_branch }}
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -51,27 +64,66 @@ jobs:
           registry-url: "https://registry.npmjs.org/"
 
       - name: Install deps
-        run: yarn
+        run: yarn install --frozen-lockfile
 
       - name: Configure git user
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Find affected projects with unified versioning for core libs
-        id: affected
+      - name: Check if branch already exists
+        id: check_branch
         shell: bash
         run: |
           set -euo pipefail
 
-          FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
+          MAJOR="${{ inputs.major_version }}"
+          MINOR="${{ inputs.minor_version }}"
+          BRANCH_NAME="release/${MAJOR}.${MINOR}.x"
 
-          # Core libs use unified versioning - if any has changes, all are released together
-          CORE_LIBS="${{ env.CORE_LIBS }}"
-          echo "Core libs (unified versioning): $CORE_LIBS"
+          # Check if branch exists on remote
+          if git ls-remote --heads origin "$BRANCH_NAME" | grep -q .; then
+            echo "::error::Branch $BRANCH_NAME already exists on remote!"
+            exit 1
+          fi
+
+          echo "branch_name=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate initial version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MAJOR="${{ inputs.major_version }}"
+          MINOR="${{ inputs.minor_version }}"
+          INITIAL_VERSION="${MAJOR}.${MINOR}.0"
+
+          echo "initial_version=$INITIAL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Initial version: $INITIAL_VERSION"
+
+      - name: Create release branch
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BRANCH_NAME="${{ steps.check_branch.outputs.branch_name }}"
+          BASE_BRANCH="${{ inputs.base_branch }}"
+
+          git fetch origin "$BASE_BRANCH" --tags
+          git switch -c "$BRANCH_NAME" "origin/$BASE_BRANCH"
+
+          echo "Created branch: $BRANCH_NAME"
+
+      - name: Find publishable projects
+        id: projects
+        shell: bash
+        run: |
+          set -euo pipefail
 
           # Get all publishable libs
-          ALL_LIBS=$(node -e "
+          PROJECTS=$(node -e "
           const { execSync } = require('child_process');
           try {
             const out = execSync('npx nx show projects -p tag:scope:publishable --type lib --json', { encoding: 'utf8' });
@@ -82,502 +134,109 @@ jobs:
           }
           ")
 
-          if [ -z "$ALL_LIBS" ]; then
-            echo "projects=" >> "$GITHUB_OUTPUT"
-            echo "project_versions=" >> "$GITHUB_OUTPUT"
-            echo "unified_version=" >> "$GITHUB_OUTPUT"
-            echo "No publishable libraries found"
-            exit 0
-          fi
+          echo "projects=$PROJECTS" >> "$GITHUB_OUTPUT"
+          echo "Publishable projects: $PROJECTS"
 
-          echo "All publishable libs: $ALL_LIBS"
-
-          # Track versions and changes for all libs
-          CORE_HAS_CHANGES=false
-          CORE_HIGHEST_VERSION="0.0.0"
-          AFFECTED_LIBS=""
-          PROJECT_VERSIONS=""
-
-          IFS=',' read -ra LIBS <<< "$ALL_LIBS"
-          for lib in "${LIBS[@]}"; do
-            # Find the last release tag for this specific package
-            LAST_TAG=$(git tag --list "${lib}@*" --sort=-version:refname | head -n1 || echo "")
-
-            if [ -n "$LAST_TAG" ]; then
-              BASE_REF="$LAST_TAG"
-              LAST_VERSION="${LAST_TAG#*@}"
-              echo "  $lib: last release tag=$LAST_TAG (v$LAST_VERSION)"
-            else
-              BASE_REF="$FIRST_COMMIT"
-              LAST_VERSION="0.0.0"
-              echo "  $lib: no release tag found, using first commit (first release)"
-            fi
-
-            # Check if this is a core lib
-            IS_CORE=false
-            IFS=',' read -ra CORE_ARR <<< "$CORE_LIBS"
-            for core in "${CORE_ARR[@]}"; do
-              if [ "$lib" = "$core" ]; then
-                IS_CORE=true
-                # Track highest version among core libs for unified versioning
-                if [ "$(printf '%s\n%s' "$LAST_VERSION" "$CORE_HIGHEST_VERSION" | sort -V | tail -n1)" = "$LAST_VERSION" ]; then
-                  CORE_HIGHEST_VERSION="$LAST_VERSION"
-                fi
-                break
-              fi
-            done
-
-            # Check if this lib has changes since its last release
-            CHANGES=$(git diff --name-only "$BASE_REF"...HEAD -- "libs/$lib/" 2>/dev/null | head -1 || echo "")
-
-            if [ -n "$CHANGES" ]; then
-              echo "  $lib: has changes since $BASE_REF"
-              if [ "$IS_CORE" = true ]; then
-                CORE_HAS_CHANGES=true
-              else
-                # Non-core libs are tracked independently
-                if [ -n "$AFFECTED_LIBS" ]; then
-                  AFFECTED_LIBS="${AFFECTED_LIBS},$lib"
-                  PROJECT_VERSIONS="${PROJECT_VERSIONS},$lib=$LAST_VERSION"
-                else
-                  AFFECTED_LIBS="$lib"
-                  PROJECT_VERSIONS="$lib=$LAST_VERSION"
-                fi
-              fi
-            else
-              echo "  $lib: no changes since $BASE_REF"
-            fi
-          done
-
-          # If any core lib has changes, include ALL core libs with unified version
-          if [ "$CORE_HAS_CHANGES" = true ]; then
-            echo ""
-            echo "Core libs have changes - including all core libs with unified versioning"
-            echo "Unified version base: $CORE_HIGHEST_VERSION"
-
-            # Add all core libs to affected list
-            IFS=',' read -ra CORE_ARR <<< "$CORE_LIBS"
-            for core in "${CORE_ARR[@]}"; do
-              if [ -n "$AFFECTED_LIBS" ]; then
-                AFFECTED_LIBS="${AFFECTED_LIBS},$core"
-                PROJECT_VERSIONS="${PROJECT_VERSIONS},$core=$CORE_HIGHEST_VERSION"
-              else
-                AFFECTED_LIBS="$core"
-                PROJECT_VERSIONS="$core=$CORE_HIGHEST_VERSION"
-              fi
-            done
-          fi
-
-          echo "projects=$AFFECTED_LIBS" >> "$GITHUB_OUTPUT"
-          echo "project_versions=$PROJECT_VERSIONS" >> "$GITHUB_OUTPUT"
-          echo "unified_version=$CORE_HIGHEST_VERSION" >> "$GITHUB_OUTPUT"
-          echo "core_has_changes=$CORE_HAS_CHANGES" >> "$GITHUB_OUTPUT"
-
-          if [ -n "$AFFECTED_LIBS" ]; then
-            echo ""
-            echo "Projects to release: $AFFECTED_LIBS"
-            echo "Version info: $PROJECT_VERSIONS"
-            if [ "$CORE_HAS_CHANGES" = true ]; then
-              echo "Core libs unified version: $CORE_HIGHEST_VERSION"
-            fi
-          else
-            echo "No affected publishable libraries"
-          fi
-
-      - name: Stop if no affected projects
-        if: steps.affected.outputs.projects == ''
-        run: |
-          echo "No affected projects to release."
-          exit 0
-
-      # ========================================
-      # MCP Integration: Configure Codex home with MCP servers
-      # Only needed for auto mode (Codex)
-      # ========================================
-      - name: Prepare Codex home with MCP config
-        if: github.event.inputs.bump_type == 'auto' || github.event.inputs.bump_type == ''
-        id: mcp
-        shell: bash
-        run: |
-          set -euo pipefail
-          CODEX_HOME="${RUNNER_TEMP}/codex-home"
-          mkdir -p "$CODEX_HOME"
-
-          echo "Setting up Codex home with MCP servers..."
-
-          cat > "$CODEX_HOME/config.toml" << 'EOF'
-          [features]
-          # Enable the Rust MCP client (needed for HTTP/OAuth MCP support)
-          rmcp_client = true
-
-          # --- Mintlify Documentation Server ---
-          # Provides access to Mintlify documentation best practices
-          [mcp_servers.mintlify_docs]
-          url = "https://mintlify.com/docs/mcp"
-          http_headers = { "X-MCP-Readonly" = "true" }
-          startup_timeout_sec = 30
-          tool_timeout_sec = 60
-          EOF
-
-          echo "✓ Codex home configured with MCP servers"
-          echo "codex_home=${CODEX_HOME}" >> "$GITHUB_OUTPUT"
-        env:
-          RUNNER_TEMP: ${{ runner.temp }}
-
-      - name: Prepare diff context for Codex
-        if: github.event.inputs.bump_type == 'auto' || github.event.inputs.bump_type == ''
-        id: ctx
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p .github/codex/prompts .codex-release
-
-          PROJECTS="${{ steps.affected.outputs.projects }}"
-          PROJECT_VERSIONS="${{ steps.affected.outputs.project_versions }}"
-          FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
-
-          echo "Preparing diff context..."
-          echo "Projects: $PROJECTS"
-          echo "Last released versions: $PROJECT_VERSIONS"
-
-          # Save context files for Codex
-          echo "$PROJECTS" > .github/codex/prompts/projects.txt
-
-          # Save last released versions (from tags) - this is what Codex should bump FROM
-          echo "Last released versions (bump from these):" > .github/codex/prompts/last-released-versions.txt
-          echo "$PROJECT_VERSIONS" | tr ',' '\n' >> .github/codex/prompts/last-released-versions.txt
-
-          # Generate per-project diffs and combined diff
-          > .github/codex/prompts/diff.patch
-          > .github/codex/prompts/commits.txt
-
-          IFS=',' read -ra LIBS <<< "$PROJECTS"
-          for lib in "${LIBS[@]}"; do
-            # Find the last release tag for this package
-            LAST_TAG=$(git tag --list "${lib}@*" --sort=-version:refname | head -n1 || echo "")
-
-            if [ -n "$LAST_TAG" ]; then
-              BASE_REF="$LAST_TAG"
-            else
-              BASE_REF="$FIRST_COMMIT"
-            fi
-
-            echo "=== $lib (since $BASE_REF) ===" >> .github/codex/prompts/diff.patch
-
-            # Generate diff for this specific lib
-            git diff "$BASE_REF"...HEAD --unified=3 \
-              -- \
-              "libs/$lib/**/*.ts" \
-              "libs/$lib/package.json" \
-              ":!**/*.spec.ts" \
-              ":!**/*.test.ts" \
-              ":!**/__tests__/**" \
-              >> .github/codex/prompts/diff.patch 2>/dev/null || true
-
-            echo "" >> .github/codex/prompts/diff.patch
-
-            # Collect commits for this lib
-            echo "=== $lib commits (since $BASE_REF) ===" >> .github/codex/prompts/commits.txt
-            git log "$BASE_REF"...HEAD --pretty=format:'%H%x09%s' -n 20 -- "libs/$lib/" >> .github/codex/prompts/commits.txt 2>/dev/null || true
-            echo "" >> .github/codex/prompts/commits.txt
-          done
-
-          DIFF_SIZE=$(wc -c < .github/codex/prompts/diff.patch || echo "0")
-          echo "Diff size: $DIFF_SIZE bytes"
-
-          # ISO date
-          date -u +"%Y-%m-%d" > .github/codex/prompts/date.txt
-
-      # ========================================
-      # Manual version bump (when bump_type != 'auto')
-      # Generates mock Codex output with unified versioning for core libs
-      # ========================================
-      - name: Generate manual version bumps
-        if: steps.affected.outputs.projects != '' && github.event.inputs.bump_type != 'auto' && github.event.inputs.bump_type != ''
-        id: manual_bump
+      - name: Apply version via Nx Release
         shell: bash
         run: |
           set -euo pipefail
 
-          BUMP_TYPE="${{ github.event.inputs.bump_type }}"
-          PROJECTS="${{ steps.affected.outputs.projects }}"
-          UNIFIED_VERSION="${{ steps.affected.outputs.unified_version }}"
-          CORE_LIBS="${{ env.CORE_LIBS }}"
+          INITIAL_VERSION="${{ steps.version.outputs.initial_version }}"
+          PROJECTS="${{ steps.projects.outputs.projects }}"
 
-          echo "Manual bump type: $BUMP_TYPE"
-          echo "Projects to release: $PROJECTS"
-          echo "Core libs: $CORE_LIBS"
-          echo "Current unified version: $UNIFIED_VERSION"
-
-          # Parse version components from unified version
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$UNIFIED_VERSION"
-
-          # Calculate new version based on bump type
-          case "$BUMP_TYPE" in
-            major)
-              NEW_VERSION="$((MAJOR + 1)).0.0"
-              ;;
-            minor)
-              NEW_VERSION="${MAJOR}.$((MINOR + 1)).0"
-              ;;
-            patch)
-              NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
-              ;;
-          esac
-
-          echo "New unified version: $NEW_VERSION"
-          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-
-          # Generate mock Codex output JSON for nx-release.mjs
-          mkdir -p .codex-release
-
-          # Build projects array - core libs get unified version
-          PROJECTS_JSON="["
-          FIRST=true
-          IFS=',' read -ra LIBS <<< "$PROJECTS"
-          for lib in "${LIBS[@]}"; do
-            # Check if this is a core lib
-            IS_CORE=false
-            IFS=',' read -ra CORE_ARR <<< "$CORE_LIBS"
-            for core in "${CORE_ARR[@]}"; do
-              if [ "$lib" = "$core" ]; then
-                IS_CORE=true
-                break
-              fi
-            done
-
-            # Core libs use unified version, others use their own
-            if [ "$IS_CORE" = true ]; then
-              LIB_VERSION="$NEW_VERSION"
-            else
-              LIB_VERSION="$NEW_VERSION"  # For simplicity, use same version for all in manual mode
-            fi
-
-            if [ "$FIRST" = true ]; then
-              FIRST=false
-            else
-              PROJECTS_JSON+=","
-            fi
-            PROJECTS_JSON+="{\"name\":\"$lib\",\"bump\":\"$BUMP_TYPE\",\"newVersion\":\"$LIB_VERSION\",\"reason\":\"Manual $BUMP_TYPE bump\",\"changelog\":{\"added\":[],\"changed\":[],\"deprecated\":[],\"removed\":[],\"fixed\":[],\"security\":[]}}"
-          done
-          PROJECTS_JSON+="]"
-
-          # Write mock Codex output
-          cat > "${{ env.CODEX_OUTPUT }}" << EOF
-          {
-            "projects": $PROJECTS_JSON,
-            "globalChangelog": {
-              "summary": "Manual $BUMP_TYPE release",
-              "projects": []
-            },
-            "docs": {
-              "updated": false,
-              "files": [],
-              "summary": ""
-            }
-          }
-          EOF
-
-          echo "Generated manual Codex output:"
-          cat "${{ env.CODEX_OUTPUT }}"
-
-      # ========================================
-      # Single Codex call for version analysis + docs update
-      # (Cannot run sequential Codex actions due to sudo restrictions)
-      # Only runs in 'auto' mode
-      # ========================================
-      - name: Run Codex for release analysis
-        if: steps.affected.outputs.projects != '' && (github.event.inputs.bump_type == 'auto' || github.event.inputs.bump_type == '')
-        id: codex
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.CODEX_OPENAI_KEY }}
-          codex-home: ${{ steps.mcp.outputs.codex_home }}
-          prompt-file: .github/codex/prompts/analyze-release.md
-          output-file: ${{ env.CODEX_OUTPUT }}
-          model: "gpt-5.1-codex"
-          output-schema-file: .github/codex/schemas/release-output.json
-          codex-args: "--full-auto"
-
-      - name: Apply version bumps and changelogs via Nx Release
-        id: versions
-        if: steps.affected.outputs.projects != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Applying version bumps via Nx Release..."
-
-          if [ ! -f "${{ env.CODEX_OUTPUT }}" ]; then
-            echo "::error::Codex output file not found"
+          if [ -z "$PROJECTS" ]; then
+            echo "::error::No publishable projects found"
             exit 1
           fi
 
-          echo "Codex output:"
-          cat "${{ env.CODEX_OUTPUT }}"
+          echo "Setting version to $INITIAL_VERSION for projects: $PROJECTS"
 
-          # Run Nx Release script to bump versions and update changelogs
-          node scripts/nx-release.mjs
+          # Use Nx Release to set version (without git operations)
+          npx nx release version "$INITIAL_VERSION" --projects="$PROJECTS" --git-commit=false --git-tag=false
 
-          # Extract max version and bumped projects from Codex output
-          RESULT=$(node -e "
-            const fs = require('fs');
-            const output = JSON.parse(fs.readFileSync('${{ env.CODEX_OUTPUT }}', 'utf8'));
-            const bumped = output.projects.filter(p => p.bump !== 'none');
-            const maxVersion = bumped.map(p => p.newVersion)
-              .sort((a,b) => b.localeCompare(a, undefined, {numeric: true}))[0] || '0.0.0';
-            const bumpedProjects = bumped.map(p => p.name).join(',');
-            console.log(JSON.stringify({ maxVersion, bumpedProjects }));
-          ")
-
-          MAX_VERSION=$(echo "$RESULT" | jq -r '.maxVersion')
-          BUMPED=$(echo "$RESULT" | jq -r '.bumpedProjects')
-
-          echo "max_version=$MAX_VERSION" >> "$GITHUB_OUTPUT"
-          echo "bumped_projects=$BUMPED" >> "$GITHUB_OUTPUT"
-
-          echo "Max version: $MAX_VERSION"
-          echo "Bumped projects: $BUMPED"
-        env:
-          CODEX_OUTPUT: ${{ env.CODEX_OUTPUT }}
-
-      - name: Log release analysis result
-        if: steps.affected.outputs.projects != ''
+      - name: Create release docs base marker
         shell: bash
         run: |
-          if [ -f "${{ env.CODEX_OUTPUT }}" ]; then
-            echo "Release analysis result:"
-            cat "${{ env.CODEX_OUTPUT }}"
+          set -euo pipefail
 
-            # Extract and display docs summary
-            DOCS_UPDATED=$(node -e "const o = require('./${{ env.CODEX_OUTPUT }}'); console.log(o.docs?.updated || false)")
-            if [ "$DOCS_UPDATED" = "true" ]; then
-              echo ""
-              echo "Documentation was updated:"
-              node -e "const o = require('./${{ env.CODEX_OUTPUT }}'); console.log('  Summary: ' + o.docs.summary); console.log('  Files: ' + o.docs.files.join(', '))"
-            else
-              echo "No documentation updates were made"
+          # Create marker file for docs diffing
+          # This file records the commit SHA from which docs changes should be computed
+          MARKER_FILE=".release-docs-base"
+          BASE_SHA=$(git rev-parse HEAD)
+
+          echo "$BASE_SHA" > "$MARKER_FILE"
+          echo "Created $MARKER_FILE with base SHA: $BASE_SHA"
+
+      - name: Update CHANGELOG.md files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INITIAL_VERSION="${{ steps.version.outputs.initial_version }}"
+          PROJECTS="${{ steps.projects.outputs.projects }}"
+          TODAY=$(date -u +"%Y-%m-%d")
+
+          # Update per-library CHANGELOGs
+          IFS=',' read -ra LIBS <<< "$PROJECTS"
+          for lib in "${LIBS[@]}"; do
+            CHANGELOG_PATH="libs/$lib/CHANGELOG.md"
+            if [ -f "$CHANGELOG_PATH" ]; then
+              # Add new version entry after [Unreleased]
+              sed -i.bak "s/## \[Unreleased\]/## [Unreleased]\n\n## [$INITIAL_VERSION] - $TODAY/" "$CHANGELOG_PATH"
+              rm -f "${CHANGELOG_PATH}.bak"
+              echo "Updated $CHANGELOG_PATH"
             fi
+          done
+
+          # Update root CHANGELOG.md
+          ROOT_CHANGELOG="CHANGELOG.md"
+          if [ -f "$ROOT_CHANGELOG" ]; then
+            sed -i.bak "s/## \[Unreleased\]/## [Unreleased]\n\n## [$INITIAL_VERSION] - $TODAY/" "$ROOT_CHANGELOG"
+            rm -f "${ROOT_CHANGELOG}.bak"
+            echo "Updated $ROOT_CHANGELOG"
           fi
 
-      - name: Create release branch
-        id: branch
-        if: steps.versions.outputs.bumped_projects != ''
+      - name: Commit changes
         shell: bash
         run: |
           set -euo pipefail
 
-          MAX_VERSION="${{ steps.versions.outputs.max_version }}"
-          BRANCH_NAME="next/$MAX_VERSION"
-
-          git fetch origin main --tags
-          git switch -c "$BRANCH_NAME" origin/main
-
-          echo "branch_name=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
-          echo "Created branch: $BRANCH_NAME"
-
-      - name: Commit version bumps and docs
-        if: steps.versions.outputs.bumped_projects != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          MAX_VERSION="${{ steps.versions.outputs.max_version }}"
-          BUMPED="${{ steps.versions.outputs.bumped_projects }}"
+          INITIAL_VERSION="${{ steps.version.outputs.initial_version }}"
+          BRANCH_NAME="${{ steps.check_branch.outputs.branch_name }}"
 
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
-            git commit -m "chore(release): prepare release v$MAX_VERSION" \
-              -m "Bumped versions for: $BUMPED" \
-              -m "Version analysis and docs updates by Codex AI."
-            echo "Created release preparation commit"
+            git commit -m "chore(release): initialize $BRANCH_NAME at v$INITIAL_VERSION" \
+              -m "- Set package version to $INITIAL_VERSION" \
+              -m "- Add .release-docs-base marker for docs diffing"
+            echo "Created initialization commit"
           else
             echo "No changes to commit"
-            git commit --allow-empty -m "chore(release): prepare release v$MAX_VERSION"
           fi
 
       - name: Push branch
-        if: steps.versions.outputs.bumped_projects != ''
         shell: bash
         run: |
           set -euo pipefail
-          BRANCH_NAME="${{ steps.branch.outputs.branch_name }}"
+
+          BRANCH_NAME="${{ steps.check_branch.outputs.branch_name }}"
           git push --set-upstream origin "$BRANCH_NAME"
-
-      - name: Create PR
-        if: steps.versions.outputs.bumped_projects != ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          MAX_VERSION="${{ steps.versions.outputs.max_version }}"
-          BUMPED="${{ steps.versions.outputs.bumped_projects }}"
-          BRANCH_NAME="${{ steps.branch.outputs.branch_name }}"
-          BASE="main"
-          TITLE="Release v$MAX_VERSION"
-
-          # Check for existing PR
-          EXISTING_PR=$(gh pr list \
-            --base "$BASE" \
-            --head "$BRANCH_NAME" \
-            --state open \
-            --json number \
-            --jq '.[0].number' || echo "")
-
-          if [ -n "$EXISTING_PR" ]; then
-            echo "PR #$EXISTING_PR already exists"
-            exit 0
-          fi
-
-          # Create PR body
-          BODY=$(cat <<EOF
-          ## Release v$MAX_VERSION
-
-          ### Projects to publish
-          $(echo "$BUMPED" | tr ',' '\n' | sed 's/^/- /')
-
-          ### Version analysis
-          Versions determined by Codex AI based on semantic analysis of code changes.
-
-          ### Documentation
-          Documentation updates included if applicable.
-
-          ---
-          Merge this PR to publish the affected packages to npm.
-          EOF
-          )
-
-          gh pr create \
-            --base "$BASE" \
-            --head "$BRANCH_NAME" \
-            --title "$TITLE" \
-            --body "$BODY"
-
-      - name: Upload artifacts (debug)
-        uses: actions/upload-artifact@v4
-        with:
-          name: codex-release-artifacts
-          path: |
-            .codex-release/**
-            .github/codex/prompts/**
+          echo "Pushed $BRANCH_NAME to origin"
 
       - name: Summary
         run: |
-          echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Release Branch Created" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ steps.branch.outputs.branch_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ steps.versions.outputs.max_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Projects:** ${{ steps.versions.outputs.bumped_projects }}" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${{ steps.check_branch.outputs.branch_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Initial Version** | \`${{ steps.version.outputs.initial_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Base Branch** | \`${{ inputs.base_branch }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Projects** | ${{ steps.projects.outputs.projects }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Versioning Strategy" >> $GITHUB_STEP_SUMMARY
-          echo "**Core libs (unified):** ${{ env.CORE_LIBS }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Previous unified version:** ${{ steps.affected.outputs.unified_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          BUMP_TYPE="${{ github.event.inputs.bump_type }}"
-          if [ "$BUMP_TYPE" = "auto" ] || [ -z "$BUMP_TYPE" ]; then
-            echo "**Analysis:** Codex AI (gpt-5.1-codex)" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "**Analysis:** Manual ($BUMP_TYPE bump)" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "1. Create PRs targeting \`${{ steps.check_branch.outputs.branch_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "2. When ready to publish, run the **Publish Release** workflow from this branch" >> $GITHUB_STEP_SUMMARY
+          echo "3. Subsequent releases from this branch will increment: ${{ steps.version.outputs.initial_version }} -> x.y.1 -> x.y.2 ..." >> $GITHUB_STEP_SUMMARY
