@@ -89,13 +89,9 @@ jobs:
           # Get all publishable libs
           PROJECTS=$(node -e "
           const { execSync } = require('child_process');
-          try {
-            const out = execSync('npx nx show projects -p tag:scope:publishable --type lib --json', { encoding: 'utf8' });
-            const arr = JSON.parse(out);
-            process.stdout.write(arr.join(','));
-          } catch (e) {
-            process.stdout.write('');
-          }
+          const out = execSync('npx nx show projects -p tag:scope:publishable --type lib --json', { encoding: 'utf8' });
+          const arr = JSON.parse(out);
+          process.stdout.write(arr.join(','));
           ")
 
           echo "projects=$PROJECTS" >> "$GITHUB_OUTPUT"
