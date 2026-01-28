@@ -184,82 +184,99 @@ jobs:
       - name: Generate AI changelog
         id: ai_changelog
         if: ${{ inputs.dry_run != true && inputs.release_type == 'stable' }}
+        continue-on-error: true
         uses: actions/github-script@v7
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           VERSION: v${{ steps.version.outputs.version }}
           VERSION_MINOR: ${{ steps.context.outputs.release_line }}
         with:
           script: |
             const fs = require('fs');
-            const diff = fs.readFileSync('/tmp/diff.txt', 'utf8');
-            const releaseDate = new Date().toISOString().split('T')[0];
-            const version = process.env.VERSION;
-            const versionNum = version.replace('v', '');
 
-            const prompt = `You are a technical writer for Enclave, a production-ready JavaScript sandbox for AI agent code execution.
+            // Skip if API key is missing
+            if (!process.env.OPENAI_API_KEY) {
+              core.warning('OPENAI_API_KEY missing; skipping AI changelog');
+              core.setOutput('changelog', '');
+              core.setOutput('has_card_mdx', 'false');
+              return;
+            }
 
-            The Enclave ecosystem includes:
-            - ast-guard: AST security guard with CVE protection
-            - enclave-vm: Secure AgentScript execution environment
-            - @enclavejs/types: Protocol types and Zod schemas
-            - @enclavejs/stream: NDJSON streaming with encryption
-            - @enclavejs/broker: Tool broker with session management
-            - @enclavejs/client: Browser and Node.js client SDK
-            - @enclavejs/react: React hooks and components
-            - @enclavejs/runtime: Standalone deployable runtime
+            try {
+              const diff = fs.readFileSync('/tmp/diff.txt', 'utf8');
+              const releaseDate = new Date().toISOString().split('T')[0];
+              const version = process.env.VERSION;
+              const versionNum = version.replace('v', '');
 
-            Version: ${version}
-            Release Date: ${releaseDate}
+              const prompt = `You are a technical writer for Enclave, a production-ready JavaScript sandbox for AI agent code execution.
 
-            Git diff:
-            \`\`\`
-            ${diff.substring(0, 40000)}
-            \`\`\`
+              The Enclave ecosystem includes:
+              - ast-guard: AST security guard with CVE protection
+              - enclave-vm: Secure AgentScript execution environment
+              - @enclavejs/types: Protocol types and Zod schemas
+              - @enclavejs/stream: NDJSON streaming with encryption
+              - @enclavejs/broker: Tool broker with session management
+              - @enclavejs/client: Browser and Node.js client SDK
+              - @enclavejs/react: React hooks and components
+              - @enclavejs/runtime: Standalone deployable runtime
 
-            Generate two outputs:
+              Version: ${version}
+              Release Date: ${releaseDate}
 
-            1. CHANGELOG entry (Keep a Changelog format):
-            ## [${versionNum}] - ${releaseDate}
-            ### Added/Changed/Fixed/Security (only include relevant sections)
-            - Concise description of changes
+              Git diff:
+              \`\`\`
+              ${diff.substring(0, 40000)}
+              \`\`\`
 
-            2. A SINGLE Mintlify <Card> component (NOT the full file, just the Card):
-            <Card
-              title="Enclave ${version}: Brief title"
-              href="https://github.com/agentfront/enclave/releases/tag/${version}"
-              cta="View full changelog"
-            >
-              **Feature** – Description.
-              - Details if needed
-            </Card>
+              Generate two outputs:
 
-            IMPORTANT: For cardMdx, output ONLY the <Card>...</Card> component, nothing else.
+              1. CHANGELOG entry (Keep a Changelog format):
+              ## [${versionNum}] - ${releaseDate}
+              ### Added/Changed/Fixed/Security (only include relevant sections)
+              - Concise description of changes
 
-            Output ONLY valid JSON: {"changelog": "...", "cardMdx": "<Card...>...</Card>"}`;
+              2. A SINGLE Mintlify <Card> component (NOT the full file, just the Card):
+              <Card
+                title="Enclave ${version}: Brief title"
+                href="https://github.com/agentfront/enclave/releases/tag/${version}"
+                cta="View full changelog"
+              >
+                **Feature** – Description.
+                - Details if needed
+              </Card>
 
-            const response = await fetch('https://api.openai.com/v1/chat/completions', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({
-                model: process.env.OPENAI_MODEL || 'gpt-4o',
-                messages: [{ role: 'user', content: prompt }],
-                response_format: { type: 'json_object' }
-              })
-            });
+              IMPORTANT: For cardMdx, output ONLY the <Card>...</Card> component, nothing else.
 
-            if (!response.ok) throw new Error(`OpenAI API error: ${response.status}`);
-            const data = await response.json();
-            const result = JSON.parse(data.choices[0].message.content);
+              Output ONLY valid JSON: {"changelog": "...", "cardMdx": "<Card...>...</Card>"}`;
 
-            // Write card MDX to file to avoid shell escaping issues
-            fs.writeFileSync('/tmp/card-mdx.txt', result.cardMdx);
+              const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: process.env.OPENAI_MODEL || 'gpt-4o',
+                  messages: [{ role: 'user', content: prompt }],
+                  response_format: { type: 'json_object' }
+                })
+              });
 
-            core.setOutput('changelog', result.changelog);
-            core.setOutput('has_card_mdx', result.cardMdx ? 'true' : 'false');
+              if (!response.ok) throw new Error(`OpenAI API error: ${response.status}`);
+              const data = await response.json();
+              const result = JSON.parse(data.choices[0].message.content);
+
+              // Write card MDX to file to avoid shell escaping issues
+              fs.writeFileSync('/tmp/card-mdx.txt', result.cardMdx);
+
+              core.setOutput('changelog', result.changelog);
+              core.setOutput('has_card_mdx', result.cardMdx ? 'true' : 'false');
+            } catch (err) {
+              core.warning(`AI changelog skipped: ${err.message}`);
+              core.setOutput('changelog', '');
+              core.setOutput('has_card_mdx', 'false');
+            }
 
       - name: Update package versions
         if: ${{ inputs.dry_run != true && steps.projects.outputs.projects != '' }}
@@ -304,7 +321,7 @@ jobs:
           echo "Successfully published version ${{ steps.version.outputs.version }}"
 
       - name: Create and push git tag
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ inputs.dry_run != true && steps.projects.outputs.projects != '' }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           TAG="v$VERSION"
@@ -379,7 +396,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ inputs.dry_run != true && steps.projects.outputs.projects != '' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}

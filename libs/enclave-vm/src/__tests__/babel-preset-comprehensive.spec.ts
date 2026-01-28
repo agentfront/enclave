@@ -6,8 +6,14 @@
  */
 
 import { Enclave } from '../enclave';
-import { transformMultiple, type MultiFileInput, type MultiFileLimits } from '../babel';
-import { createRestrictedBabel, type BabelWrapperConfig, resetBabelContext } from '../babel';
+import {
+  transformMultiple,
+  createRestrictedBabel,
+  resetBabelContext,
+  type MultiFileInput,
+  type MultiFileLimits,
+  type BabelWrapperConfig,
+} from '../babel';
 import { rewriteImports, type ImportRewriteConfig } from 'ast-guard';
 
 describe('Babel Preset Comprehensive Tests', () => {
@@ -471,89 +477,91 @@ import { Button } from '@mui/material';
         securityLevel: 'STANDARD',
       });
 
-      const code = `
-        const files = {
-          'Button.tsx': \`
-            import React from 'react';
+      try {
+        const code = `
+          const files = {
+            'Button.tsx': \`
+              import React from 'react';
 
-            interface ButtonProps {
-              variant?: 'primary' | 'secondary';
-              children: React.ReactNode;
-              onClick?: () => void;
+              interface ButtonProps {
+                variant?: 'primary' | 'secondary';
+                children: React.ReactNode;
+                onClick?: () => void;
+              }
+
+              export const Button: React.FC<ButtonProps> = ({
+                variant = 'primary',
+                children,
+                onClick
+              }) => (
+                <button
+                  className={\\\`btn btn-\\\${variant}\\\`}
+                  onClick={onClick}
+                >
+                  {children}
+                </button>
+              );
+            \`,
+            'Card.tsx': \`
+              import React from 'react';
+              import { Button } from './Button';
+
+              interface CardProps {
+                title: string;
+                children: React.ReactNode;
+              }
+
+              export const Card: React.FC<CardProps> = ({ title, children }) => (
+                <div className="card">
+                  <h2>{title}</h2>
+                  <div className="card-body">{children}</div>
+                  <Button variant="secondary">Close</Button>
+                </div>
+              );
+            \`
+          };
+
+          const result = Babel.transformMultiple(files, {
+            presets: ['typescript', 'react'],
+            importRewrite: {
+              enabled: true,
+              cdnBaseUrl: 'https://esm.agentfront.dev',
+              packageVersions: {
+                'react': '18.2.0'
+              }
             }
+          });
 
-            export const Button: React.FC<ButtonProps> = ({
-              variant = 'primary',
-              children,
-              onClick
-            }) => (
-              <button
-                className={\\\`btn btn-\\\${variant}\\\`}
-                onClick={onClick}
-              >
-                {children}
-              </button>
-            );
-          \`,
-          'Card.tsx': \`
-            import React from 'react';
-            import { Button } from './Button';
+          return {
+            files: Object.keys(result.files),
+            buttonHasReact: result.files['Button.js'].includes('React.createElement'),
+            buttonHasCDN: result.files['Button.js'].includes('esm.agentfront.dev'),
+            cardImportsButton: result.files['Card.js'].includes('./Button.js'),
+            noTypeScript: !result.files['Button.js'].includes('interface'),
+            rewrittenCount: result.rewrittenImports?.length || 0
+          };
+        `;
 
-            interface CardProps {
-              title: string;
-              children: React.ReactNode;
-            }
+        const result = await enclave.run<{
+          files: string[];
+          buttonHasReact: boolean;
+          buttonHasCDN: boolean;
+          cardImportsButton: boolean;
+          noTypeScript: boolean;
+          rewrittenCount: number;
+        }>(code);
 
-            export const Card: React.FC<CardProps> = ({ title, children }) => (
-              <div className="card">
-                <h2>{title}</h2>
-                <div className="card-body">{children}</div>
-                <Button variant="secondary">Close</Button>
-              </div>
-            );
-          \`
-        };
-
-        const result = Babel.transformMultiple(files, {
-          presets: ['typescript', 'react'],
-          importRewrite: {
-            enabled: true,
-            cdnBaseUrl: 'https://esm.agentfront.dev',
-            packageVersions: {
-              'react': '18.2.0'
-            }
-          }
-        });
-
-        return {
-          files: Object.keys(result.files),
-          buttonHasReact: result.files['Button.js'].includes('React.createElement'),
-          buttonHasCDN: result.files['Button.js'].includes('esm.agentfront.dev'),
-          cardImportsButton: result.files['Card.js'].includes('./Button.js'),
-          noTypeScript: !result.files['Button.js'].includes('interface'),
-          rewrittenCount: result.rewrittenImports?.length || 0
-        };
-      `;
-
-      const result = await enclave.run<{
-        files: string[];
-        buttonHasReact: boolean;
-        buttonHasCDN: boolean;
-        cardImportsButton: boolean;
-        noTypeScript: boolean;
-        rewrittenCount: number;
-      }>(code);
-
-      expect(result.success).toBe(true);
-      expect(result.value?.files).toContain('Button.js');
-      expect(result.value?.files).toContain('Card.js');
-      expect(result.value?.buttonHasReact).toBe(true);
-      expect(result.value?.buttonHasCDN).toBe(true);
-      expect(result.value?.cardImportsButton).toBe(true);
-      expect(result.value?.noTypeScript).toBe(true);
-      expect(result.value?.rewrittenCount).toBeGreaterThan(0);
-
-      enclave.dispose();
+        expect(result.success).toBe(true);
+        expect(result.value?.files).toContain('Button.js');
+        expect(result.value?.files).toContain('Card.js');
+        expect(result.value?.buttonHasReact).toBe(true);
+        expect(result.value?.buttonHasCDN).toBe(true);
+        expect(result.value?.cardImportsButton).toBe(true);
+        expect(result.value?.noTypeScript).toBe(true);
+        expect(result.value?.rewrittenCount).toBeGreaterThan(0);
+      } finally {
+        enclave.dispose();
+      }
     });
 
     it('should handle errors gracefully in sandbox', async () => {
@@ -562,32 +570,34 @@ import { Button } from '@mui/material';
         securityLevel: 'STANDARD',
       });
 
-      const code = `
-        try {
-          // Try to import a package not in packageVersions
-          Babel.transformMultiple(
-            { 'app.tsx': "import evil from 'evil-package';" },
-            {
-              presets: ['react'],
-              importRewrite: {
-                enabled: true,
-                cdnBaseUrl: 'https://esm.agentfront.dev',
-                packageVersions: { 'react': '18.2.0' }
+      try {
+        const code = `
+          try {
+            // Try to import a package not in packageVersions
+            Babel.transformMultiple(
+              { 'app.tsx': "import evil from 'evil-package';" },
+              {
+                presets: ['react'],
+                importRewrite: {
+                  enabled: true,
+                  cdnBaseUrl: 'https://esm.agentfront.dev',
+                  packageVersions: { 'react': '18.2.0' }
+                }
               }
-            }
-          );
-          return { error: null };
-        } catch (e) {
-          return { error: e.message };
-        }
-      `;
+            );
+            return { error: null };
+          } catch (e) {
+            return { error: e.message };
+          }
+        `;
 
-      const result = await enclave.run<{ error: string | null }>(code);
+        const result = await enclave.run<{ error: string | null }>(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value?.error).toContain('not allowed');
-
-      enclave.dispose();
+        expect(result.success).toBe(true);
+        expect(result.value?.error).toContain('not allowed');
+      } finally {
+        enclave.dispose();
+      }
     });
 
     it('should handle syntax errors gracefully', async () => {
@@ -596,25 +606,27 @@ import { Button } from '@mui/material';
         securityLevel: 'STANDARD',
       });
 
-      const code = `
-        try {
-          Babel.transformMultiple(
-            { 'broken.tsx': 'const x = {' },  // Syntax error
-            { presets: ['typescript'] }
-          );
-          return { error: null };
-        } catch (e) {
-          return { error: e.message, hasFailed: true };
-        }
-      `;
+      try {
+        const code = `
+          try {
+            Babel.transformMultiple(
+              { 'broken.tsx': 'const x = {' },  // Syntax error
+              { presets: ['typescript'] }
+            );
+            return { error: null };
+          } catch (e) {
+            return { error: e.message, hasFailed: true };
+          }
+        `;
 
-      const result = await enclave.run<{ error: string | null; hasFailed: boolean }>(code);
+        const result = await enclave.run<{ error: string | null; hasFailed: boolean }>(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value?.hasFailed).toBe(true);
-      expect(result.value?.error).toBeTruthy();
-
-      enclave.dispose();
+        expect(result.success).toBe(true);
+        expect(result.value?.hasFailed).toBe(true);
+        expect(result.value?.error).toBeTruthy();
+      } finally {
+        enclave.dispose();
+      }
     });
 
     it('should support single-file transform with import rewriting', async () => {
@@ -623,50 +635,52 @@ import { Button } from '@mui/material';
         securityLevel: 'STANDARD',
       });
 
-      const code = `
-        const tsx = \`
-          import React from 'react';
-          import { useState } from 'react';
+      try {
+        const code = `
+          const tsx = \`
+            import React from 'react';
+            import { useState } from 'react';
 
-          const Counter = () => {
-            const [count, setCount] = useState(0);
-            return <button onClick={() => setCount(c => c + 1)}>{count}</button>;
-          };
+            const Counter = () => {
+              const [count, setCount] = useState(0);
+              return <button onClick={() => setCount(c => c + 1)}>{count}</button>;
+            };
 
-          export default Counter;
-        \`;
+            export default Counter;
+          \`;
 
-        const result = Babel.transform(tsx, {
-          presets: ['typescript', 'react'],
-          filename: 'Counter.tsx',
-          importRewrite: {
-            enabled: true,
-            cdnBaseUrl: 'https://esm.agentfront.dev',
-            packageVersions: {
-              'react': '18.2.0'
+          const result = Babel.transform(tsx, {
+            presets: ['typescript', 'react'],
+            filename: 'Counter.tsx',
+            importRewrite: {
+              enabled: true,
+              cdnBaseUrl: 'https://esm.agentfront.dev',
+              packageVersions: {
+                'react': '18.2.0'
+              }
             }
-          }
-        });
+          });
 
-        return {
-          hasReactElement: result.code.includes('React.createElement'),
-          hasCDNImport: result.code.includes('esm.agentfront.dev/react@18.2.0'),
-          hasExport: result.code.includes('export default')
-        };
-      `;
+          return {
+            hasReactElement: result.code.includes('React.createElement'),
+            hasCDNImport: result.code.includes('esm.agentfront.dev/react@18.2.0'),
+            hasExport: result.code.includes('export default')
+          };
+        `;
 
-      const result = await enclave.run<{
-        hasReactElement: boolean;
-        hasCDNImport: boolean;
-        hasExport: boolean;
-      }>(code);
+        const result = await enclave.run<{
+          hasReactElement: boolean;
+          hasCDNImport: boolean;
+          hasExport: boolean;
+        }>(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value?.hasReactElement).toBe(true);
-      expect(result.value?.hasCDNImport).toBe(true);
-      expect(result.value?.hasExport).toBe(true);
-
-      enclave.dispose();
+        expect(result.success).toBe(true);
+        expect(result.value?.hasReactElement).toBe(true);
+        expect(result.value?.hasCDNImport).toBe(true);
+        expect(result.value?.hasExport).toBe(true);
+      } finally {
+        enclave.dispose();
+      }
     });
 
     it('should work with latest versions (no @version in URL)', async () => {
@@ -675,55 +689,57 @@ import { Button } from '@mui/material';
         securityLevel: 'STANDARD',
       });
 
-      // Note: imports must be used to avoid being tree-shaken by Babel
-      const code = `
-        const files = {
-          'app.tsx': \`
-            import React from 'react';
-            import axios from 'axios';
-            import dayjs from 'dayjs';
-            // Use the imports to prevent tree-shaking
-            const App = () => <div>{axios.name} {dayjs.name}</div>;
-            export { axios, dayjs };
-          \`
-        };
+      try {
+        // Note: imports must be used to avoid being tree-shaken by Babel
+        const code = `
+          const files = {
+            'app.tsx': \`
+              import React from 'react';
+              import axios from 'axios';
+              import dayjs from 'dayjs';
+              // Use the imports to prevent tree-shaking
+              const App = () => <div>{axios.name} {dayjs.name}</div>;
+              export { axios, dayjs };
+            \`
+          };
 
-        const result = Babel.transformMultiple(files, {
-          presets: ['typescript', 'react'],
-          importRewrite: {
-            enabled: true,
-            cdnBaseUrl: 'https://esm.agentfront.dev',
-            packageVersions: {
-              'react': '18.2.0',  // pinned
-              'axios': '',        // latest
-              'dayjs': ''         // latest
+          const result = Babel.transformMultiple(files, {
+            presets: ['typescript', 'react'],
+            importRewrite: {
+              enabled: true,
+              cdnBaseUrl: 'https://esm.agentfront.dev',
+              packageVersions: {
+                'react': '18.2.0',  // pinned
+                'axios': '',        // latest
+                'dayjs': ''         // latest
+              }
             }
-          }
-        });
+          });
 
-        const outputCode = result.files['app.js'];
-        return {
-          code: outputCode,
-          hasReactVersion: outputCode.includes('react@18.2.0'),
-          // Check axios has no @ version - look for the URL without @
-          hasAxiosLatest: outputCode.includes('esm.agentfront.dev/axios') && !outputCode.includes('axios@'),
-          hasDayjsLatest: outputCode.includes('esm.agentfront.dev/dayjs') && !outputCode.includes('dayjs@')
-        };
-      `;
+          const outputCode = result.files['app.js'];
+          return {
+            code: outputCode,
+            hasReactVersion: outputCode.includes('react@18.2.0'),
+            // Check axios has no @ version - look for the URL without @
+            hasAxiosLatest: outputCode.includes('esm.agentfront.dev/axios') && !outputCode.includes('axios@'),
+            hasDayjsLatest: outputCode.includes('esm.agentfront.dev/dayjs') && !outputCode.includes('dayjs@')
+          };
+        `;
 
-      const result = await enclave.run<{
-        code: string;
-        hasReactVersion: boolean;
-        hasAxiosLatest: boolean;
-        hasDayjsLatest: boolean;
-      }>(code);
+        const result = await enclave.run<{
+          code: string;
+          hasReactVersion: boolean;
+          hasAxiosLatest: boolean;
+          hasDayjsLatest: boolean;
+        }>(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value?.hasReactVersion).toBe(true);
-      expect(result.value?.hasAxiosLatest).toBe(true);
-      expect(result.value?.hasDayjsLatest).toBe(true);
-
-      enclave.dispose();
+        expect(result.success).toBe(true);
+        expect(result.value?.hasReactVersion).toBe(true);
+        expect(result.value?.hasAxiosLatest).toBe(true);
+        expect(result.value?.hasDayjsLatest).toBe(true);
+      } finally {
+        enclave.dispose();
+      }
     });
   });
 

@@ -218,7 +218,7 @@ function resolveLocalImport(importSource: string, fromFilename: string, availabl
   }
 
   // Try to find matching file with various extensions
-  const extensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', ''];
+  const extensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts', ''];
 
   for (const ext of extensions) {
     const candidate = relativePath + ext;
@@ -241,6 +241,19 @@ function resolveLocalImport(importSource: string, fromFilename: string, availabl
 }
 
 /**
+ * Determine the output extension for a given source extension.
+ * If no extension, defaults to .js
+ */
+function getOutputExtension(sourceExt: string): string {
+  if (sourceExt in EXTENSION_MAP) {
+    return EXTENSION_MAP[sourceExt];
+  }
+  // Keep existing extension if it's already a JS extension, otherwise default to .js
+  const jsExtensions = ['.js', '.mjs', '.cjs'];
+  return jsExtensions.includes(sourceExt) ? sourceExt : '.js';
+}
+
+/**
  * Update local import paths in the output code
  */
 function updateLocalImportPaths(code: string, _fileMap: Map<string, string>): string {
@@ -255,7 +268,7 @@ function updateLocalImportPaths(code: string, _fileMap: Map<string, string>): st
             return prefix + source.slice(0, -inputExt.length) + outputExt + suffix;
           }
         }
-        // If no extension, add .js
+        // If no extension, add .js (most common case for extensionless imports)
         if (!source.match(/\.[a-z]+$/i)) {
           return prefix + source + '.js' + suffix;
         }

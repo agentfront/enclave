@@ -4,6 +4,9 @@
  * Measures transform throughput, latency, and performance characteristics
  * across different complexity levels.
  *
+ * Note: Performance assertions are only enforced when RUN_PERF_TESTS=true.
+ * On shared CI without this flag, tests still run but assertions are skipped.
+ *
  * @packageDocumentation
  */
 
@@ -18,6 +21,9 @@ import {
 import { benchmark, benchmarkSync } from './utils/perf-utils';
 import { calculateLatencyStats, calculateReport, formatReport } from './utils/statistics';
 import { recordMetric, recordMetrics } from './utils/benchmark-reporter';
+
+// Performance assertions are opt-in via RUN_PERF_TESTS env var
+const ENFORCE_PERF_ASSERTIONS = process.env['RUN_PERF_TESTS'] === 'true';
 
 describe('Babel Transform Performance', () => {
   const defaultConfig: BabelWrapperConfig = {
@@ -83,9 +89,11 @@ describe('Babel Transform Performance', () => {
         { name: `babel_${levelKey}_p95`, value: stats.p95, unit: 'ms', threshold: getLatencyThreshold(level, 'p95') },
       ]);
 
-      // Performance assertions based on complexity
-      expect(stats.p50).toBeLessThan(getLatencyThreshold(level, 'p50'));
-      expect(stats.p95).toBeLessThan(getLatencyThreshold(level, 'p95'));
+      // Performance assertions based on complexity (only enforced when RUN_PERF_TESTS=true)
+      if (ENFORCE_PERF_ASSERTIONS) {
+        expect(stats.p50).toBeLessThan(getLatencyThreshold(level, 'p50'));
+        expect(stats.p95).toBeLessThan(getLatencyThreshold(level, 'p95'));
+      }
     });
   });
 

@@ -5,9 +5,14 @@
  */
 
 import { Enclave } from '../enclave';
-import { transformMultiple, type MultiFileInput, type MultiFileLimits } from '../babel';
-import { createRestrictedBabel, type BabelWrapperConfig } from '../babel';
-import { resetBabelContext } from '../babel';
+import {
+  transformMultiple,
+  createRestrictedBabel,
+  resetBabelContext,
+  type MultiFileInput,
+  type MultiFileLimits,
+  type BabelWrapperConfig,
+} from '../babel';
 
 describe('Multi-file Babel Transform', () => {
   // Reset context between test suites to ensure isolation
