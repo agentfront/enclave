@@ -90,22 +90,20 @@
   },
   "release": {
     "projects": ["libs/*"],
-    "projectsRelationship": "independent",
+    "projectsRelationship": "fixed",
     "version": {
       "conventionalCommits": false,
       "preVersionCommand": "npx nx run-many -t build",
       "git": {
         "commit": true,
         "tag": true,
-        "commitMessage": "chore(release): bump versions\n\n{projectName}@{version}"
+        "commitMessage": "chore(release): v{version}"
       }
     },
     "changelog": {
       "projectChangelogs": false,
       "workspaceChangelog": false
     },
-    "releaseTag": {
-      "pattern": "{projectName}@{version}"
-    }
+    "releaseTagPattern": "v{version}"
   }
 }

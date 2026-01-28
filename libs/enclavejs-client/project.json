@@ -3,7 +3,7 @@
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "libs/enclavejs-client/src",
   "projectType": "library",
-  "tags": ["scope:enclavejs", "type:lib"],
+  "tags": ["scope:enclavejs", "scope:publishable", "type:lib"],
   "targets": {
     "build-tsc": {
       "executor": "@nx/js:tsc",
@@ -31,6 +31,13 @@
     },
     "lint": {
       "executor": "@nx/eslint:lint"
+    },
+    "nx-release-publish": {
+      "executor": "@nx/js:release-publish",
+      "dependsOn": ["build"],
+      "options": {
+        "packageRoot": "libs/enclavejs-client/dist"
+      }
     }
   }
 }
