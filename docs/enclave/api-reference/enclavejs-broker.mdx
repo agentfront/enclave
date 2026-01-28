@@ -1,14 +1,14 @@
 ---
-title: '@enclavejs/broker'
+title: '@enclave-vm/broker'
 description: 'API reference for the EnclaveJS broker package'
 ---
 
-API reference for the `@enclavejs/broker` package - the orchestration layer for EnclaveJS.
+API reference for the `@enclave-vm/broker` package - the orchestration layer for EnclaveJS.
 
 ## Installation
 
 ```bash
-npm install @enclavejs/broker
+npm install @enclave-vm/broker
 ```
 
 ## EnclaveBroker Class
@@ -375,7 +375,7 @@ broker.on('tool:completed', (session, tool, result) => { });
 ## Complete Example
 
 ```ts
-import { EnclaveBroker, ToolRegistry } from '@enclavejs/broker';
+import { EnclaveBroker, ToolRegistry } from '@enclave-vm/broker';
 import Redis from 'ioredis';
 
 // Create tool registry
@@ -441,5 +441,5 @@ process.on('SIGTERM', async () => {
 ## Related
 
 - [Broker Overview](/enclavejs/broker) - Architecture guide
-- [@enclavejs/types](/api-reference/enclavejs-types) - Type definitions
-- [@enclavejs/client](/api-reference/enclavejs-client) - Client SDK
+- [@enclave-vm/types](/api-reference/enclavejs-types) - Type definitions
+- [@enclave-vm/client](/api-reference/enclavejs-client) - Client SDK

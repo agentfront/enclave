@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import type { SessionId, StreamEvent } from '@enclavejs/types';
+import type { SessionId, StreamEvent } from '@enclave-vm/types';
 import type { Broker } from '../broker';
 import type { BrokerSession } from '../broker-session';
 import type { SessionInfo } from '../session-manager';

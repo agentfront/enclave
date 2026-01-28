@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import type { SessionId, StreamEvent, SessionLimits } from '@enclavejs/types';
+import type { SessionId, StreamEvent, SessionLimits } from '@enclave-vm/types';
 
 /**
  * Client configuration

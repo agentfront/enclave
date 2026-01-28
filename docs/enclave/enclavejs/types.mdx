@@ -1,16 +1,16 @@
 ---
-title: '@enclavejs/types'
+title: '@enclave-vm/types'
 description: 'Protocol types and Zod schemas for the EnclaveJS streaming runtime'
 ---
 
-# @enclavejs/types
+# @enclave-vm/types
 
 Type definitions and Zod schemas for the EnclaveJS streaming runtime protocol. This package provides the foundation for type-safe communication between all EnclaveJS components.
 
 ## Installation
 
 ```bash
-npm install @enclavejs/types
+npm install @enclave-vm/types
 ```
 
 ## Protocol Identifiers
@@ -29,7 +29,7 @@ import {
   CALL_ID_PREFIX,     // 'call_'
   REF_ID_PREFIX,      // 'ref_'
   PROTOCOL_VERSION,   // 1
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 // Generate unique IDs
 const sessionId = generateSessionId();  // 'ses_a1b2c3d4-...'
@@ -45,7 +45,7 @@ if (isSessionId(id)) {
 ### Session State Machine
 
 ```typescript
-import { SessionState } from '@enclavejs/types';
+import { SessionState } from '@enclave-vm/types';
 
 // Possible states
 type SessionState =
@@ -59,7 +59,7 @@ type SessionState =
 ### Session Limits
 
 ```typescript
-import { DEFAULT_SESSION_LIMITS, type SessionLimits } from '@enclavejs/types';
+import { DEFAULT_SESSION_LIMITS, type SessionLimits } from '@enclave-vm/types';
 
 const limits: SessionLimits = {
   timeout: 30000,           // Max execution time (ms)
@@ -87,7 +87,7 @@ import {
   isFinalEvent,
   isHeartbeatEvent,
   isErrorEvent,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 // Event type enum values
 EventType.SESSION_INIT         // 'session_init'
@@ -111,7 +111,7 @@ import type {
   ToolCallEvent,
   FinalEvent,
   ErrorEvent,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 // Session Init
 const initEvent: SessionInitEvent = {
@@ -189,7 +189,7 @@ import {
   SessionInitEventSchema,
   ToolCallEventSchema,
   parseStreamEvent,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 // Validate a session ID
 const result = SessionIdSchema.safeParse('ses_abc123');
@@ -233,13 +233,13 @@ import {
   AES_GCM_TAG_SIZE,    // 16
   AES_256_KEY_SIZE,    // 32
   isEncryptedEnvelope,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 import type {
   EncryptedEnvelope,
   ClientHello,
   ServerHello,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 // Client hello for key exchange
 const clientHello: ClientHello = {
@@ -273,14 +273,14 @@ import {
   FilterMode,
   PatternType,
   DEFAULT_ALWAYS_ALLOW,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 import type {
   ContentPattern,
   TypeFilter,
   ContentFilter,
   EventFilterConfig,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 // Filter modes
 FilterMode.INCLUDE  // Only include matching events
@@ -316,13 +316,13 @@ const filterConfig: EventFilterConfig = {
 import {
   RuntimeChannelMessageType,
   parseRuntimeChannelMessage,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 import type {
   ToolResultSubmitMessage,
   CancelMessage,
   RuntimeChannelMessage,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 // Submit tool result
 const toolResult: ToolResultSubmitMessage = {
@@ -350,9 +350,9 @@ const cancel: CancelMessage = {
 import {
   isRefToken,
   createRefToken,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
-import type { RefToken } from '@enclavejs/types';
+import type { RefToken } from '@enclave-vm/types';
 
 // Create a reference token for large data
 const token = createRefToken();
@@ -368,4 +368,4 @@ if (isRefToken(value)) {
 ## Links
 
 - [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclavejs-types)
-- [npm](https://www.npmjs.com/package/@enclavejs/types)
+- [npm](https://www.npmjs.com/package/@enclave-vm/types)

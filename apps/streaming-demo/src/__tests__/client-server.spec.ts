@@ -17,8 +17,8 @@ import { Server } from 'http';
 import request from 'supertest';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { AddressInfo } from 'net';
-import type { SessionId, CallId, StreamEvent } from '@enclavejs/types';
-import { generateSessionId, PROTOCOL_VERSION } from '@enclavejs/types';
+import type { SessionId, CallId, StreamEvent } from '@enclave-vm/types';
+import { generateSessionId, PROTOCOL_VERSION } from '@enclave-vm/types';
 import { parseNdjson, delay } from './test-utils';
 
 // Mock Broker server for testing

@@ -11,9 +11,9 @@
 
 import { WebSocket, WebSocketServer } from 'ws';
 import type { AddressInfo, Server } from 'net';
-import type { SessionId, CallId, StreamEvent } from '@enclavejs/types';
-import { generateSessionId, PROTOCOL_VERSION } from '@enclavejs/types';
-import { Enclave } from 'enclave-vm';
+import type { SessionId, CallId, StreamEvent } from '@enclave-vm/types';
+import { generateSessionId, PROTOCOL_VERSION } from '@enclave-vm/types';
+import { Enclave } from '@enclave-vm/core';
 import { waitForConnection, collectEvents, delay, testCode } from './test-utils';
 
 // We'll create a minimal runtime server for testing

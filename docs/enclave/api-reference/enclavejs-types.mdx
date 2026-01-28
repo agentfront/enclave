@@ -1,5 +1,5 @@
 ---
-title: '@enclavejs/types'
+title: '@enclave-vm/types'
 description: 'Type definitions and Zod schemas for EnclaveJS'
 ---
 
@@ -8,7 +8,7 @@ Type definitions and Zod schemas for the EnclaveJS streaming protocol.
 ## Installation
 
 ```bash
-npm install @enclavejs/types
+npm install @enclave-vm/types
 ```
 
 ## Stream Events
@@ -294,7 +294,7 @@ import {
   ExecuteRequestSchema,
   ToolResultRequestSchema,
   SessionSchema,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 // Validate incoming event
 const event = StreamEventSchema.parse(rawData);
@@ -313,7 +313,7 @@ import {
   ToolCallEventSchema,
   FinalEventSchema,
   ErrorEventSchema,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 // Parse and type-narrow
 function handleEvent(raw: unknown) {
@@ -348,7 +348,7 @@ import {
   isToolCallEvent,
   isFinalEvent,
   isErrorEvent,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 function processEvent(event: StreamEvent) {
   if (isStdoutEvent(event)) {
@@ -383,7 +383,7 @@ import {
   MAX_CODE_SIZE,
   EVENT_TYPES,
   ERROR_CODES,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 console.log(PROTOCOL_VERSION); // "1.0"
 console.log(HEARTBEAT_INTERVAL); // 5000
@@ -407,7 +407,7 @@ import {
   isToolCallEvent,
   isFinalEvent,
   isErrorEvent,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 // Validate request
 function validateExecuteRequest(body: unknown): ExecuteRequest {
@@ -450,5 +450,5 @@ const request: ExecuteRequest = {
 ## Related
 
 - [Streaming Protocol](/concepts/streaming-protocol) - Protocol overview
-- [@enclavejs/stream](/api-reference/enclavejs-stream) - Stream utilities
-- [@enclavejs/client](/api-reference/enclavejs-client) - Client SDK
+- [@enclave-vm/stream](/api-reference/enclavejs-stream) - Stream utilities
+- [@enclave-vm/client](/api-reference/enclavejs-client) - Client SDK

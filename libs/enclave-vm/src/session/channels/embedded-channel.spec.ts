@@ -1,5 +1,5 @@
-import type { StreamEvent, RuntimeChannelMessage } from '@enclavejs/types';
-import { EventType, PROTOCOL_VERSION, RuntimeChannelMessageType } from '@enclavejs/types';
+import type { StreamEvent, RuntimeChannelMessage } from '@enclave-vm/types';
+import { EventType, PROTOCOL_VERSION, RuntimeChannelMessageType } from '@enclave-vm/types';
 import { EmbeddedChannel, createEmbeddedChannelPair } from './embedded-channel';
 
 describe('EmbeddedChannel', () => {

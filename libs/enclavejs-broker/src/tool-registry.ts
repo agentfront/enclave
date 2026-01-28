@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import type { ToolConfig } from '@enclavejs/types';
+import type { ToolConfig } from '@enclave-vm/types';
 
 /**
  * Tool definition for registration

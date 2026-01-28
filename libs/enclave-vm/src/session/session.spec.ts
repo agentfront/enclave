@@ -1,5 +1,5 @@
-import { EventType, generateCallId } from '@enclavejs/types';
-import type { StreamEvent, CallId } from '@enclavejs/types';
+import { EventType, generateCallId } from '@enclave-vm/types';
+import type { StreamEvent, CallId } from '@enclave-vm/types';
 import { Session, createSession } from './session';
 import { SessionEmitter, createSessionEmitter } from './session-emitter';
 import { SessionStateMachine, createSessionStateMachine } from './session-state-machine';

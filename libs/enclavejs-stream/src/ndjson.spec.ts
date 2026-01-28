@@ -1,6 +1,6 @@
 import { serializeEvent, serializeEvents, parseLine, parseLines, NdjsonStreamParser } from './ndjson';
-import { PROTOCOL_VERSION, EventType } from '@enclavejs/types';
-import type { StreamEvent } from '@enclavejs/types';
+import { PROTOCOL_VERSION, EventType } from '@enclave-vm/types';
+import type { StreamEvent } from '@enclave-vm/types';
 
 describe('NDJSON', () => {
   const createSessionInitEvent = (): StreamEvent => ({

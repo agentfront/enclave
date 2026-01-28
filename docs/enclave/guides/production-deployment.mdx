@@ -124,7 +124,7 @@ LOG_FORMAT=json
 
 ```ts
 // src/config/enclave.ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 export function createProductionEnclave(toolHandler: Function) {
   return new Enclave({

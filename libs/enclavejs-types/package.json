@@ -1,5 +1,5 @@
 {
-  "name": "@enclavejs/types",
+  "name": "@enclave-vm/types",
   "version": "0.1.0",
   "description": "Type definitions and Zod schemas for the EnclaveJS streaming runtime protocol",
   "author": "AgentFront <info@agentfront.dev>",

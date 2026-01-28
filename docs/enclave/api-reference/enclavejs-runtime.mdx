@@ -1,14 +1,14 @@
 ---
-title: '@enclavejs/runtime'
+title: '@enclave-vm/runtime'
 description: 'API reference for the EnclaveJS runtime package'
 ---
 
-API reference for the `@enclavejs/runtime` package - the execution worker for distributed EnclaveJS deployments.
+API reference for the `@enclave-vm/runtime` package - the execution worker for distributed EnclaveJS deployments.
 
 ## Installation
 
 ```bash
-npm install @enclavejs/runtime
+npm install @enclave-vm/runtime
 ```
 
 ## EnclaveRuntime Class
@@ -162,7 +162,7 @@ runtime.on('execution:error', (sessionId, error) => {
 ### Basic Runtime
 
 ```ts
-import { EnclaveRuntime } from '@enclavejs/runtime';
+import { EnclaveRuntime } from '@enclave-vm/runtime';
 
 const runtime = new EnclaveRuntime({
   brokerUrl: 'ws://localhost:3001',
@@ -174,7 +174,7 @@ await runtime.connect();
 ### With Worker Pool
 
 ```ts
-import { EnclaveRuntime } from '@enclavejs/runtime';
+import { EnclaveRuntime } from '@enclave-vm/runtime';
 
 const runtime = new EnclaveRuntime({
   brokerUrl: 'ws://localhost:3001',
@@ -192,7 +192,7 @@ await runtime.connect();
 ### With Labels for Routing
 
 ```ts
-import { EnclaveRuntime } from '@enclavejs/runtime';
+import { EnclaveRuntime } from '@enclave-vm/runtime';
 
 const runtime = new EnclaveRuntime({
   brokerUrl: 'ws://localhost:3001',
@@ -209,7 +209,7 @@ await runtime.connect();
 ### With Custom Enclave Options
 
 ```ts
-import { EnclaveRuntime } from '@enclavejs/runtime';
+import { EnclaveRuntime } from '@enclave-vm/runtime';
 
 const runtime = new EnclaveRuntime({
   brokerUrl: 'ws://localhost:3001',
@@ -307,7 +307,7 @@ spec:
 
 ```ts
 // runtime.ts
-import { EnclaveRuntime } from '@enclavejs/runtime';
+import { EnclaveRuntime } from '@enclave-vm/runtime';
 import pino from 'pino';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
@@ -390,7 +390,7 @@ main().catch((error) => {
 
 ```ts
 import express from 'express';
-import { EnclaveRuntime } from '@enclavejs/runtime';
+import { EnclaveRuntime } from '@enclave-vm/runtime';
 
 const app = express();
 let runtime: EnclaveRuntime;
@@ -421,5 +421,5 @@ app.listen(8080);
 ## Related
 
 - [Runtime Overview](/enclavejs/runtime) - Architecture guide
-- [@enclavejs/broker](/api-reference/enclavejs-broker) - Broker API
+- [@enclave-vm/broker](/api-reference/enclavejs-broker) - Broker API
 - [Scaling Guide](/guides/scaling) - Scaling runtimes

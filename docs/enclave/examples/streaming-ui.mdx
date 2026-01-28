@@ -8,7 +8,7 @@ Build real-time interfaces that show code execution as it happens.
 ## Basic Streaming
 
 ```ts
-import { EnclaveClient } from '@enclavejs/client';
+import { EnclaveClient } from '@enclave-vm/client';
 
 const client = new EnclaveClient({
   serverUrl: 'http://localhost:3001',
@@ -53,7 +53,7 @@ for await (const event of stream) {
 
 ```tsx
 import { useState, useCallback } from 'react';
-import { EnclaveClient, StreamEvent } from '@enclavejs/client';
+import { EnclaveClient, StreamEvent } from '@enclave-vm/client';
 
 interface StreamState {
   status: 'idle' | 'running' | 'completed' | 'error';
@@ -257,7 +257,7 @@ export function ToolTimeline({ toolCalls }: ToolTimelineProps) {
 
 ```tsx
 import React, { useState } from 'react';
-import { EnclaveClient } from '@enclavejs/client';
+import { EnclaveClient } from '@enclave-vm/client';
 import { useStreaming } from './hooks/useStreaming';
 import { StreamingConsole } from './components/StreamingConsole';
 import { ToolTimeline } from './components/ToolTimeline';
@@ -377,7 +377,7 @@ For simpler setups, use SSE instead of WebSockets:
 ```ts
 // Server
 import express from 'express';
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 const app = express();
 app.use(express.json());
@@ -508,5 +508,5 @@ export function ExecutionProgress({ status, toolCallCount, duration }: ProgressP
 ## Next Steps
 
 - [React Code Editor Guide](/guides/react-code-editor) - Full implementation
-- [@enclavejs/react](/enclavejs/react) - React SDK
+- [@enclave-vm/react](/enclavejs/react) - React SDK
 - [Multi-Tenant](/examples/multi-tenant) - Per-user isolation

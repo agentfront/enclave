@@ -1,5 +1,5 @@
 /**
- * @enclavejs/stream - ECDH Key Exchange
+ * @enclave-vm/stream - ECDH Key Exchange
  *
  * Elliptic Curve Diffie-Hellman key exchange using Web Crypto API.
  * Uses P-256 curve for broad browser compatibility.
@@ -13,7 +13,7 @@ import {
   PROTOCOL_VERSION,
   EncryptionAlgorithm,
   KeyDerivation,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 /**
  * ECDH key pair.

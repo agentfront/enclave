@@ -21,7 +21,7 @@ This guide covers scaling Enclave for high-throughput workloads, from single-ser
 For CPU-bound workloads, use the worker pool adapter:
 
 ```ts
-import { Enclave, createWorkerPoolAdapter } from 'enclave-vm';
+import { Enclave, createWorkerPoolAdapter } from '@enclave-vm/core';
 
 const enclave = new Enclave({
   adapter: createWorkerPoolAdapter({
@@ -154,7 +154,7 @@ class EnclavePool {
 
 ```ts
 // broker/server.ts
-import { EnclaveBroker } from '@enclavejs/broker';
+import { EnclaveBroker } from '@enclave-vm/broker';
 import Redis from 'ioredis';
 
 const redis = new Redis(process.env.REDIS_URL);
@@ -187,7 +187,7 @@ broker.listen(3001);
 
 ```ts
 // runtime/server.ts
-import { EnclaveRuntime } from '@enclavejs/runtime';
+import { EnclaveRuntime } from '@enclave-vm/runtime';
 
 const runtime = new EnclaveRuntime({
   // Connect to broker
@@ -216,7 +216,7 @@ runtime.connect();
 
 ```ts
 // api/client.ts
-import { EnclaveClient } from '@enclavejs/client';
+import { EnclaveClient } from '@enclave-vm/client';
 
 const client = new EnclaveClient({
   serverUrl: process.env.BROKER_URL,

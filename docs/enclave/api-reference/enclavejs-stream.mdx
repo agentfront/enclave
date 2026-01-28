@@ -1,14 +1,14 @@
 ---
-title: '@enclavejs/stream'
+title: '@enclave-vm/stream'
 description: 'API reference for the EnclaveJS streaming protocol implementation'
 ---
 
-API reference for the `@enclavejs/stream` package - streaming protocol implementation including NDJSON parsing, encryption, and reconnection handling.
+API reference for the `@enclave-vm/stream` package - streaming protocol implementation including NDJSON parsing, encryption, and reconnection handling.
 
 ## Installation
 
 ```bash
-npm install @enclavejs/stream
+npm install @enclave-vm/stream
 ```
 
 ## NDJSON Parsing
@@ -23,7 +23,7 @@ function serializeEvent(event: MaybeEncrypted<StreamEvent>): string
 
 **Example:**
 ```ts
-import { serializeEvent } from '@enclavejs/stream';
+import { serializeEvent } from '@enclave-vm/stream';
 
 const line = serializeEvent({
   type: 'stdout',
@@ -44,7 +44,7 @@ function serializeEvents(events: MaybeEncrypted<StreamEvent>[]): string
 
 **Example:**
 ```ts
-import { serializeEvents } from '@enclavejs/stream';
+import { serializeEvents } from '@enclave-vm/stream';
 
 const ndjson = serializeEvents([event1, event2, event3]);
 // Each event on its own line
@@ -64,7 +64,7 @@ type ParseResult<T> =
 
 **Example:**
 ```ts
-import { parseLine } from '@enclavejs/stream';
+import { parseLine } from '@enclave-vm/stream';
 
 const result = parseLine('{"type":"stdout","sessionId":"sess_123","seq":1,"payload":{"data":"Hi"}}');
 if (result.success) {
@@ -85,7 +85,7 @@ function parseLines(data: string): {
 
 **Example:**
 ```ts
-import { parseLines } from '@enclavejs/stream';
+import { parseLines } from '@enclave-vm/stream';
 
 const { events, errors } = parseLines(ndjsonData);
 console.log(`Parsed ${events.length} events, ${errors.length} errors`);
@@ -112,7 +112,7 @@ class NdjsonStreamParser {
 
 **Example:**
 ```ts
-import { NdjsonStreamParser } from '@enclavejs/stream';
+import { NdjsonStreamParser } from '@enclave-vm/stream';
 
 const parser = new NdjsonStreamParser({
   onEvent: (event) => console.log('Event:', event.type),
@@ -137,7 +137,7 @@ function createNdjsonParseStream(): TransformStream<string, ParsedStreamEvent | 
 
 **Example:**
 ```ts
-import { createNdjsonParseStream } from '@enclavejs/stream';
+import { createNdjsonParseStream } from '@enclave-vm/stream';
 
 const response = await fetch('/api/stream');
 const reader = response.body
@@ -172,7 +172,7 @@ async function* parseNdjsonStream(
 
 **Example:**
 ```ts
-import { parseNdjsonStream } from '@enclavejs/stream';
+import { parseNdjsonStream } from '@enclave-vm/stream';
 
 const response = await fetch('/api/stream');
 
@@ -202,7 +202,7 @@ interface EcdhKeyPair {
 
 **Example:**
 ```ts
-import { generateKeyPair } from '@enclavejs/stream';
+import { generateKeyPair } from '@enclave-vm/stream';
 
 const keyPair = await generateKeyPair();
 // Or with specific curve
@@ -246,7 +246,7 @@ async function deriveSharedSecret(
 
 **Example:**
 ```ts
-import { generateKeyPair, deriveSharedSecret, importPublicKey } from '@enclavejs/stream';
+import { generateKeyPair, deriveSharedSecret, importPublicKey } from '@enclave-vm/stream';
 
 // Client side
 const clientKeyPair = await generateKeyPair();
@@ -365,7 +365,7 @@ async function deriveSessionCryptoKeys(
 
 **Example:**
 ```ts
-import { deriveSessionCryptoKeys, deriveSharedSecret } from '@enclavejs/stream';
+import { deriveSessionCryptoKeys, deriveSharedSecret } from '@enclave-vm/stream';
 
 const sharedSecret = await deriveSharedSecret(privateKey, peerPublicKey);
 const { clientToServerKey, serverToClientKey } = await deriveSessionCryptoKeys(
@@ -523,7 +523,7 @@ class SessionEncryptionContext {
 
 **Example:**
 ```ts
-import { SessionEncryptionContext } from '@enclavejs/stream';
+import { SessionEncryptionContext } from '@enclave-vm/stream';
 
 // Create from key bytes
 const ctx = await SessionEncryptionContext.fromKeyBytes(keyBytes, 'key_123');
@@ -619,7 +619,7 @@ type ReconnectionEvent =
 
 **Example:**
 ```ts
-import { ReconnectionStateMachine, ConnectionState } from '@enclavejs/stream';
+import { ReconnectionStateMachine, ConnectionState } from '@enclave-vm/stream';
 
 const reconnect = new ReconnectionStateMachine({
   config: { maxRetries: 3 },
@@ -667,7 +667,7 @@ class SequenceTracker {
 
 **Example:**
 ```ts
-import { SequenceTracker } from '@enclavejs/stream';
+import { SequenceTracker } from '@enclave-vm/stream';
 
 const tracker = new SequenceTracker();
 
@@ -697,7 +697,7 @@ class EventBuffer {
 
 **Example:**
 ```ts
-import { EventBuffer } from '@enclavejs/stream';
+import { EventBuffer } from '@enclave-vm/stream';
 
 const buffer = new EventBuffer(100);
 
@@ -726,7 +726,7 @@ class HeartbeatMonitor {
 
 **Example:**
 ```ts
-import { HeartbeatMonitor } from '@enclavejs/stream';
+import { HeartbeatMonitor } from '@enclave-vm/stream';
 
 const monitor = new HeartbeatMonitor({
   timeoutMs: 30000,
@@ -747,17 +747,17 @@ monitor.stop();
 
 ## Re-exported Types
 
-This package re-exports all types from `@enclavejs/types`:
+This package re-exports all types from `@enclave-vm/types`:
 
 ```ts
-export * from '@enclavejs/types';
+export * from '@enclave-vm/types';
 ```
 
-See [@enclavejs/types API](/api-reference/enclavejs-types) for the complete type reference.
+See [@enclave-vm/types API](/api-reference/enclavejs-types) for the complete type reference.
 
 ## Related
 
 - [Stream Overview](/enclavejs/stream) - Usage guide
-- [@enclavejs/types](/api-reference/enclavejs-types) - Type definitions
-- [@enclavejs/client](/api-reference/enclavejs-client) - Client SDK
+- [@enclave-vm/types](/api-reference/enclavejs-types) - Type definitions
+- [@enclave-vm/client](/api-reference/enclavejs-client) - Client SDK
 - [Streaming Protocol](/concepts/streaming-protocol) - Protocol concepts

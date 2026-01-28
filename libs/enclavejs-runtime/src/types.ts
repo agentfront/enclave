@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import type { SessionId, SessionLimits, StreamEvent, RuntimeChannelMessage } from '@enclavejs/types';
+import type { SessionId, SessionLimits, StreamEvent, RuntimeChannelMessage } from '@enclave-vm/types';
 
 /**
  * Runtime configuration

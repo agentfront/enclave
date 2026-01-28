@@ -1,16 +1,16 @@
 ---
-title: '@enclavejs/runtime'
+title: '@enclave-vm/runtime'
 description: 'Standalone deployable runtime worker for EnclaveJS'
 ---
 
-# @enclavejs/runtime
+# @enclave-vm/runtime
 
 Standalone runtime worker for EnclaveJS that can be deployed separately from the broker. Enables distributed execution, serverless deployments, and horizontal scaling.
 
 ## Installation
 
 ```bash
-npm install @enclavejs/runtime
+npm install @enclave-vm/runtime
 ```
 
 ## Quick Start
@@ -31,7 +31,7 @@ npx enclave-runtime --port 3001 --max-sessions 20
 ### Programmatic Usage
 
 ```typescript
-import { createRuntimeWorker } from '@enclavejs/runtime';
+import { createRuntimeWorker } from '@enclave-vm/runtime';
 
 const worker = createRuntimeWorker({
   port: 3001,
@@ -72,7 +72,7 @@ The runtime worker receives code execution requests from a broker via WebSocket 
 ## Runtime Configuration
 
 ```typescript
-import { createRuntimeWorker, type RuntimeConfig } from '@enclavejs/runtime';
+import { createRuntimeWorker, type RuntimeConfig } from '@enclave-vm/runtime';
 
 const config: RuntimeConfig = {
   // WebSocket port
@@ -104,7 +104,7 @@ const worker = createRuntimeWorker(config);
 ## Runtime Worker API
 
 ```typescript
-import { createRuntimeWorker, type RuntimeWorker } from '@enclavejs/runtime';
+import { createRuntimeWorker, type RuntimeWorker } from '@enclave-vm/runtime';
 
 const worker: RuntimeWorker = createRuntimeWorker(config);
 
@@ -127,7 +127,7 @@ await worker.stop();
 ### Runtime Stats
 
 ```typescript
-import type { RuntimeStats } from '@enclavejs/runtime';
+import type { RuntimeStats } from '@enclave-vm/runtime';
 
 const stats: RuntimeStats = {
   activeSessions: 5,
@@ -145,7 +145,7 @@ const stats: RuntimeStats = {
 Lower-level API for executing code within the runtime.
 
 ```typescript
-import { createSessionExecutor, type SessionExecutorOptions } from '@enclavejs/runtime';
+import { createSessionExecutor, type SessionExecutorOptions } from '@enclave-vm/runtime';
 
 const executor = createSessionExecutor({
   securityLevel: 'SECURE',
@@ -167,7 +167,7 @@ for await (const event of stream) {
 ### Memory Channel (Testing)
 
 ```typescript
-import { createMemoryChannel, createMemoryChannelPair } from '@enclavejs/runtime';
+import { createMemoryChannel, createMemoryChannelPair } from '@enclave-vm/runtime';
 
 // Create a pair for testing
 const [clientChannel, serverChannel] = createMemoryChannelPair();
@@ -184,7 +184,7 @@ serverChannel.onMessage((msg) => {
 ### WebSocket Channel
 
 ```typescript
-import { createWebSocketChannel, type WebSocketChannelConfig } from '@enclavejs/runtime';
+import { createWebSocketChannel, type WebSocketChannelConfig } from '@enclave-vm/runtime';
 
 const config: WebSocketChannelConfig = {
   url: 'ws://localhost:3001',
@@ -215,7 +215,7 @@ channel.close();
 ### Channel State
 
 ```typescript
-import type { WebSocketChannelState } from '@enclavejs/runtime';
+import type { WebSocketChannelState } from '@enclave-vm/runtime';
 
 type WebSocketChannelState =
   | 'connecting'
@@ -229,7 +229,7 @@ type WebSocketChannelState =
 Configure the broker to use an extracted runtime:
 
 ```typescript
-import { createBroker } from '@enclavejs/broker';
+import { createBroker } from '@enclave-vm/broker';
 
 const broker = createBroker({
   mode: 'extracted',
@@ -253,7 +253,7 @@ FROM node:22-alpine
 WORKDIR /app
 
 # Install runtime
-RUN npm install @enclavejs/runtime
+RUN npm install @enclave-vm/runtime
 
 # Expose WebSocket port
 EXPOSE 3001
@@ -277,7 +277,7 @@ services:
 
   runtime:
     image: node:22-alpine
-    command: npx @enclavejs/runtime --port 3001
+    command: npx @enclave-vm/runtime --port 3001
     ports:
       - "3001:3001"
     deploy:
@@ -291,7 +291,7 @@ services:
 
 ```typescript
 // lambda.ts
-import { createRuntimeWorker } from '@enclavejs/runtime';
+import { createRuntimeWorker } from '@enclave-vm/runtime';
 
 let worker: RuntimeWorker | null = null;
 
@@ -325,7 +325,7 @@ import type {
   CancelRequest,
   ToolResultRequest,
   PingRequest,
-} from '@enclavejs/runtime';
+} from '@enclave-vm/runtime';
 
 // Execute code request
 const executeReq: ExecuteRequest = {
@@ -360,7 +360,7 @@ const pingReq: PingRequest = {
 ## Event Handling
 
 ```typescript
-import type { RuntimeEventHandler } from '@enclavejs/runtime';
+import type { RuntimeEventHandler } from '@enclave-vm/runtime';
 
 const handler: RuntimeEventHandler = {
   onExecute: (sessionId, code) => {
@@ -384,7 +384,7 @@ const handler: RuntimeEventHandler = {
 ## Connection Handling
 
 ```typescript
-import type { ConnectionHandler } from '@enclavejs/runtime';
+import type { ConnectionHandler } from '@enclave-vm/runtime';
 
 const connectionHandler: ConnectionHandler = {
   onConnect: (clientId) => {
@@ -404,4 +404,4 @@ const connectionHandler: ConnectionHandler = {
 ## Links
 
 - [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclavejs-runtime)
-- [npm](https://www.npmjs.com/package/@enclavejs/runtime)
+- [npm](https://www.npmjs.com/package/@enclave-vm/runtime)

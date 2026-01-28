@@ -14,13 +14,12 @@
 import express, { Express } from 'express';
 import { Server } from 'http';
 import request from 'supertest';
-import { WebSocket, WebSocketServer } from 'ws';
 import type { AddressInfo } from 'net';
-import type { SessionId, CallId, StreamEvent } from '@enclavejs/types';
-import { generateSessionId, PROTOCOL_VERSION } from '@enclavejs/types';
+import type { CallId } from '@enclave-vm/types';
+import { generateSessionId, PROTOCOL_VERSION } from '@enclave-vm/types';
 import { z } from 'zod';
-import { Enclave } from 'enclave-vm';
-import { parseNdjson, delay, testCode } from './test-utils';
+import { Enclave } from '@enclave-vm/core';
+import { parseNdjson, testCode } from './test-utils';
 
 // Tool handlers for testing
 const testToolHandlers: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {

@@ -4,8 +4,8 @@
 
 import { EnclaveClient, EnclaveClientError } from './index';
 import type { SessionResult, SessionEventHandlers } from './index';
-import type { StreamEvent, SessionId, CallId } from '@enclavejs/types';
-import { EventType, PROTOCOL_VERSION } from '@enclavejs/types';
+import type { StreamEvent, SessionId, CallId } from '@enclave-vm/types';
+import { EventType, PROTOCOL_VERSION } from '@enclave-vm/types';
 
 // Helper to create a mock ReadableStream from NDJSON events
 function createMockStream(events: StreamEvent[]): ReadableStream<Uint8Array> {

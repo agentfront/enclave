@@ -24,7 +24,7 @@ An AI agent that:
 ```bash
 mkdir my-agent && cd my-agent
 npm init -y
-npm install enclave-vm openai typescript @types/node
+npm install @enclave-vm/core openai typescript @types/node
 npx tsc --init
 ```
 
@@ -130,7 +130,7 @@ Configure the secure execution environment:
 
 ```ts
 // src/enclave.ts
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 import { executeTool } from './tools';
 
 export function createEnclave() {
@@ -297,7 +297,7 @@ export async function runAgent(userRequest: string) {
 For real-time output, use EnclaveJS:
 
 ```ts
-import { EnclaveClient } from '@enclavejs/client';
+import { EnclaveClient } from '@enclave-vm/client';
 
 const client = new EnclaveClient({
   serverUrl: 'http://localhost:3001',

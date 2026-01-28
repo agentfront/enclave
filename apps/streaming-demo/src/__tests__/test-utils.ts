@@ -4,7 +4,7 @@
 
 import { WebSocket, WebSocketServer } from 'ws';
 import type { AddressInfo } from 'net';
-import type { StreamEvent, SessionId, CallId } from '@enclavejs/types';
+import type { StreamEvent, SessionId, CallId } from '@enclave-vm/types';
 
 /**
  * Wait for a WebSocket to connect

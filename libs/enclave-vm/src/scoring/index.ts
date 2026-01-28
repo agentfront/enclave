@@ -6,7 +6,7 @@
  *
  * @example
  * ```typescript
- * import { ScoringGate } from 'enclave-vm';
+ * import { ScoringGate } from '@enclave-vm/core';
  *
  * const gate = new ScoringGate({
  *   scorer: 'rule-based',

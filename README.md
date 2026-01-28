@@ -13,11 +13,11 @@
 **Secure sandbox runtime for AI agents**
 
 [![npm ast-guard](https://img.shields.io/npm/v/ast-guard.svg?label=ast-guard&color=e8a045)](https://www.npmjs.com/package/ast-guard)
-[![npm enclave-vm](https://img.shields.io/npm/v/enclave-vm.svg?label=enclave-vm&color=e8a045)](https://www.npmjs.com/package/enclave-vm)
+[![npm @enclave-vm/core](https://img.shields.io/npm/v/@enclave-vm/core.svg?label=@enclave-vm/core&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/core)
 <br>
-[![npm @enclavejs/broker](https://img.shields.io/npm/v/@enclavejs/broker.svg?label=@enclavejs/broker&color=e8a045)](https://www.npmjs.com/package/@enclavejs/broker)
-[![npm @enclavejs/client](https://img.shields.io/npm/v/@enclavejs/client.svg?label=@enclavejs/client&color=e8a045)](https://www.npmjs.com/package/@enclavejs/client)
-[![npm @enclavejs/react](https://img.shields.io/npm/v/@enclavejs/react.svg?label=@enclavejs/react&color=e8a045)](https://www.npmjs.com/package/@enclavejs/react)
+[![npm @enclave-vm/broker](https://img.shields.io/npm/v/@enclave-vm/broker.svg?label=@enclave-vm/broker&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/broker)
+[![npm @enclave-vm/client](https://img.shields.io/npm/v/@enclave-vm/client.svg?label=@enclave-vm/client&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/client)
+[![npm @enclave-vm/react](https://img.shields.io/npm/v/@enclave-vm/react.svg?label=@enclave-vm/react&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/react)
 <br>
 [![Node](https://img.shields.io/badge/node-%3E%3D22-339933)](https://nodejs.org)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
@@ -41,35 +41,35 @@
 ### Core Packages
 
 ```bash
-npm install enclave-vm    # Secure JS sandbox
-npm install ast-guard     # AST security validation
+npm install @enclave-vm/core    # Secure JS sandbox
+npm install ast-guard           # AST security validation
 ```
 
 ### Streaming Runtime
 
 ```bash
-npm install @enclavejs/broker   # Tool broker & session management
-npm install @enclavejs/client   # Browser/Node client SDK
-npm install @enclavejs/react    # React hooks & components
+npm install @enclave-vm/broker   # Tool broker & session management
+npm install @enclave-vm/client   # Browser/Node client SDK
+npm install @enclave-vm/react    # React hooks & components
 ```
 
 ## Packages
 
-| Package                                          | Description                                         |
-| ------------------------------------------------ | --------------------------------------------------- |
-| [`enclave-vm`](./libs/enclave-vm)                | Secure JavaScript sandbox with 6 security layers    |
-| [`@enclavejs/broker`](./libs/enclavejs-broker)   | Tool registry, secrets management, session API      |
-| [`@enclavejs/client`](./libs/enclavejs-client)   | Browser & Node.js client for streaming sessions     |
-| [`@enclavejs/react`](./libs/enclavejs-react)     | React hooks: `useEnclaveSession`, `EnclaveProvider` |
-| [`@enclavejs/runtime`](./libs/enclavejs-runtime) | Deployable runtime worker (Lambda, Vercel, etc.)    |
-| [`@enclavejs/types`](./libs/enclavejs-types)     | TypeScript types & Zod schemas                      |
-| [`@enclavejs/stream`](./libs/enclavejs-stream)   | NDJSON streaming, encryption, reconnection          |
-| [`ast-guard`](./libs/ast-guard)                  | AST-based security validator                        |
+| Package                                           | Description                                         |
+| ------------------------------------------------- | --------------------------------------------------- |
+| [`@enclave-vm/core`](./libs/enclave-vm)           | Secure JavaScript sandbox with 6 security layers    |
+| [`@enclave-vm/broker`](./libs/enclavejs-broker)   | Tool registry, secrets management, session API      |
+| [`@enclave-vm/client`](./libs/enclavejs-client)   | Browser & Node.js client for streaming sessions     |
+| [`@enclave-vm/react`](./libs/enclavejs-react)     | React hooks: `useEnclaveSession`, `EnclaveProvider` |
+| [`@enclave-vm/runtime`](./libs/enclavejs-runtime) | Deployable runtime worker (Lambda, Vercel, etc.)    |
+| [`@enclave-vm/types`](./libs/enclavejs-types)     | TypeScript types & Zod schemas                      |
+| [`@enclave-vm/stream`](./libs/enclavejs-stream)   | NDJSON streaming, encryption, reconnection          |
+| [`ast-guard`](./libs/ast-guard)                   | AST-based security validator                        |
 
 ## Quick Start
 
 ```typescript
-import { Enclave } from 'enclave-vm';
+import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({
   securityLevel: 'SECURE',
@@ -94,7 +94,7 @@ enclave.dispose();
 ## React Integration
 
 ```tsx
-import { EnclaveProvider, useEnclaveSession } from '@enclavejs/react';
+import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
 function App() {
   return (

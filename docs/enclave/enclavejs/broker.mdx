@@ -1,22 +1,22 @@
 ---
-title: '@enclavejs/broker'
+title: '@enclave-vm/broker'
 description: 'Tool broker with session management and HTTP API for EnclaveJS'
 ---
 
-# @enclavejs/broker
+# @enclave-vm/broker
 
 Tool broker and session management for the EnclaveJS streaming runtime. Orchestrates code execution, tool handling, and session lifecycle.
 
 ## Installation
 
 ```bash
-npm install @enclavejs/broker
+npm install @enclave-vm/broker
 ```
 
 ## Quick Start
 
 ```typescript
-import { createBroker } from '@enclavejs/broker';
+import { createBroker } from '@enclave-vm/broker';
 import { z } from 'zod';
 
 const broker = createBroker({
@@ -53,7 +53,7 @@ for await (const event of stream) {
 ## Broker Configuration
 
 ```typescript
-import { createBroker, type BrokerConfig } from '@enclavejs/broker';
+import { createBroker, type BrokerConfig } from '@enclave-vm/broker';
 
 const config: BrokerConfig = {
   // Security level for enclave-vm
@@ -82,7 +82,7 @@ const broker = createBroker(config);
 ### Defining Tools
 
 ```typescript
-import { createToolRegistry, type ToolDefinition } from '@enclavejs/broker';
+import { createToolRegistry, type ToolDefinition } from '@enclave-vm/broker';
 import { z } from 'zod';
 
 const registry = createToolRegistry();
@@ -118,7 +118,7 @@ broker.tool('sendEmail', {
 ### Tool Context
 
 ```typescript
-import type { ToolContext } from '@enclavejs/broker';
+import type { ToolContext } from '@enclave-vm/broker';
 
 // The handler receives context about the execution
 const handler = async (args: Args, context: ToolContext) => {
@@ -155,7 +155,7 @@ const tools = registry.list();
 ### Session Manager
 
 ```typescript
-import { createSessionManager, type SessionManagerConfig } from '@enclavejs/broker';
+import { createSessionManager, type SessionManagerConfig } from '@enclave-vm/broker';
 
 const manager = createSessionManager({
   maxConcurrentSessions: 100,
@@ -183,7 +183,7 @@ await manager.cancel(sessionId, 'User requested cancellation');
 ### Session Info
 
 ```typescript
-import type { SessionInfo } from '@enclavejs/broker';
+import type { SessionInfo } from '@enclave-vm/broker';
 
 const info: SessionInfo = {
   sessionId: 'ses_...',
@@ -204,7 +204,7 @@ const info: SessionInfo = {
 ### Broker Session
 
 ```typescript
-import { createBrokerSession, type BrokerSessionConfig } from '@enclavejs/broker';
+import { createBrokerSession, type BrokerSessionConfig } from '@enclave-vm/broker';
 
 // Lower-level session wrapper
 const session = createBrokerSession({
@@ -230,7 +230,7 @@ await session.cancel('Timeout exceeded');
 
 ```typescript
 import express from 'express';
-import { createBroker, createExpressRouter } from '@enclavejs/broker';
+import { createBroker, createExpressRouter } from '@enclave-vm/broker';
 
 const app = express();
 const broker = createBroker();
@@ -251,7 +251,7 @@ app.listen(3000);
 ### Manual Route Registration
 
 ```typescript
-import { registerExpressRoutes } from '@enclavejs/broker';
+import { registerExpressRoutes } from '@enclave-vm/broker';
 
 const app = express();
 const broker = createBroker();
@@ -265,7 +265,7 @@ registerExpressRoutes(app, broker, {
 ### Session Handler
 
 ```typescript
-import { createSessionHandler, type SessionHandlerConfig } from '@enclavejs/broker';
+import { createSessionHandler, type SessionHandlerConfig } from '@enclave-vm/broker';
 
 const handler = createSessionHandler({
   broker,
@@ -290,7 +290,7 @@ import type {
   ListSessionsResponse,
   ErrorResponse,
   StreamOptions,
-} from '@enclavejs/broker';
+} from '@enclave-vm/broker';
 
 // Create session request
 const request: CreateSessionRequest = {
@@ -322,8 +322,8 @@ Filter which events are streamed to clients.
 ### Type-Based Filtering
 
 ```typescript
-import { createEventFilter, createTypeFilter } from '@enclavejs/broker';
-import { FilterMode } from '@enclavejs/types';
+import { createEventFilter, createTypeFilter } from '@enclave-vm/broker';
+import { FilterMode } from '@enclave-vm/types';
 
 // Exclude heartbeats and debug logs
 const filter = createEventFilter({
@@ -343,8 +343,8 @@ const filteredStream = filter.filterStream(eventStream);
 ### Content-Based Filtering
 
 ```typescript
-import { createContentFilter } from '@enclavejs/broker';
-import { FilterMode, PatternType } from '@enclavejs/types';
+import { createContentFilter } from '@enclave-vm/broker';
+import { FilterMode, PatternType } from '@enclave-vm/types';
 
 // Filter out events containing sensitive data
 const filter = createEventFilter({
@@ -388,7 +388,7 @@ for await (const event of stream) {
 Some events are always included regardless of filters to ensure protocol correctness:
 
 ```typescript
-import { DEFAULT_ALWAYS_ALLOW } from '@enclavejs/types';
+import { DEFAULT_ALWAYS_ALLOW } from '@enclave-vm/types';
 
 // These events bypass filters:
 // - session_init
@@ -399,7 +399,7 @@ import { DEFAULT_ALWAYS_ALLOW } from '@enclavejs/types';
 ## Execution Options
 
 ```typescript
-import type { ExecuteOptions } from '@enclavejs/broker';
+import type { ExecuteOptions } from '@enclave-vm/broker';
 
 const options: ExecuteOptions = {
   // Override default limits
@@ -428,4 +428,4 @@ const stream = broker.execute(code, options);
 ## Links
 
 - [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclavejs-broker)
-- [npm](https://www.npmjs.com/package/@enclavejs/broker)
+- [npm](https://www.npmjs.com/package/@enclave-vm/broker)

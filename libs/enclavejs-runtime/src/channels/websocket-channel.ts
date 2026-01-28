@@ -6,8 +6,8 @@
  * @packageDocumentation
  */
 
-import type { StreamEvent, RuntimeChannelMessage } from '@enclavejs/types';
-import { serializeEvent } from '@enclavejs/stream';
+import type { StreamEvent, RuntimeChannelMessage } from '@enclave-vm/types';
+import { serializeEvent } from '@enclave-vm/stream';
 import type { RuntimeChannel } from '../types';
 
 /**

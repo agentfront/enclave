@@ -1,5 +1,5 @@
 /**
- * @enclavejs/stream - NDJSON Parser/Serializer
+ * @enclave-vm/stream - NDJSON Parser/Serializer
  *
  * Newline-delimited JSON (NDJSON) parsing and serialization for streaming events.
  * NDJSON format: one JSON object per line, separated by newlines.
@@ -11,7 +11,7 @@ import {
   type MaybeEncrypted,
   type ParsedStreamEvent,
   type ParsedEncryptedEnvelope,
-} from '@enclavejs/types';
+} from '@enclave-vm/types';
 
 /**
  * Result of parsing an NDJSON line.

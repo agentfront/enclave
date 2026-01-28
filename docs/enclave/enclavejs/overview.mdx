@@ -5,7 +5,7 @@ description: 'Real-time streaming execution environment for AI agents with tool 
 
 # EnclaveJS Streaming Runtime
 
-EnclaveJS is a streaming runtime layer built on top of `enclave-vm` that enables real-time code execution with tool orchestration, session management, and client SDKs for browser and React applications.
+EnclaveJS is a streaming runtime layer built on top of `@enclave-vm/core` that enables real-time code execution with tool orchestration, session management, and client SDKs for browser and React applications.
 
 ## Architecture
 
@@ -14,7 +14,7 @@ EnclaveJS provides a distributed architecture for executing AI-generated code wi
 ```
 ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
 │   React App     │      │     Broker      │      │    Runtime      │
-│  (@enclavejs/   │ HTTP │  (@enclavejs/   │  WS  │  (@enclavejs/   │
+│  (@enclave-vm/  │ HTTP │  (@enclave-vm/  │  WS  │  (@enclave-vm/  │
 │    react)       │─────▶│    broker)      │─────▶│    runtime)     │
 └─────────────────┘      └─────────────────┘      └─────────────────┘
          │                        │                        │
@@ -27,22 +27,22 @@ EnclaveJS provides a distributed architecture for executing AI-generated code wi
 ## Packages
 
 <CardGroup cols={2}>
-  <Card title="@enclavejs/types" icon="code" href="/enclavejs/types">
+  <Card title="@enclave-vm/types" icon="code" href="/enclavejs/types">
     Protocol types and Zod schemas for the streaming runtime
   </Card>
-  <Card title="@enclavejs/stream" icon="wave-pulse" href="/enclavejs/stream">
+  <Card title="@enclave-vm/stream" icon="wave-pulse" href="/enclavejs/stream">
     NDJSON streaming, encryption, and reconnection handling
   </Card>
-  <Card title="@enclavejs/broker" icon="server" href="/enclavejs/broker">
+  <Card title="@enclave-vm/broker" icon="server" href="/enclavejs/broker">
     Tool broker with session management and HTTP API
   </Card>
-  <Card title="@enclavejs/client" icon="plug" href="/enclavejs/client">
+  <Card title="@enclave-vm/client" icon="plug" href="/enclavejs/client">
     Browser and Node.js client SDK
   </Card>
-  <Card title="@enclavejs/react" icon="react" href="/enclavejs/react">
+  <Card title="@enclave-vm/react" icon="react" href="/enclavejs/react">
     React hooks and components
   </Card>
-  <Card title="@enclavejs/runtime" icon="microchip" href="/enclavejs/runtime">
+  <Card title="@enclave-vm/runtime" icon="microchip" href="/enclavejs/runtime">
     Standalone deployable runtime worker
   </Card>
 </CardGroup>
@@ -61,7 +61,7 @@ EnclaveJS provides a distributed architecture for executing AI-generated code wi
 ### Server Setup (Broker)
 
 ```typescript
-import { Broker, createBroker } from '@enclavejs/broker';
+import { Broker, createBroker } from '@enclave-vm/broker';
 import { z } from 'zod';
 
 const broker = createBroker({
@@ -94,7 +94,7 @@ for await (const event of stream) {
 ### Client Setup (React)
 
 ```tsx
-import { EnclaveProvider, useEnclaveSession } from '@enclavejs/react';
+import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
 function App() {
   return (
@@ -149,7 +149,7 @@ const broker = createBroker({
 });
 
 // Runtime Worker
-import { createRuntimeWorker } from '@enclavejs/runtime';
+import { createRuntimeWorker } from '@enclave-vm/runtime';
 
 const worker = createRuntimeWorker({ port: 3001 });
 await worker.start();
@@ -173,4 +173,4 @@ The streaming protocol emits these event types:
 ## Links
 
 - [GitHub](https://github.com/agentfront/enclave)
-- [npm @enclavejs](https://www.npmjs.com/org/enclavejs)
+- [npm @enclave-vm](https://www.npmjs.com/org/enclave-vm)

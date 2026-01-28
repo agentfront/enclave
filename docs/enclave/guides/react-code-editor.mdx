@@ -25,7 +25,7 @@ A code editor with:
 ```bash
 npx create-react-app code-editor --template typescript
 cd code-editor
-npm install @enclavejs/react @enclavejs/client @monaco-editor/react
+npm install @enclave-vm/react @enclave-vm/client @monaco-editor/react
 ```
 
 ## Architecture
@@ -54,7 +54,7 @@ npm install @enclavejs/react @enclavejs/client @monaco-editor/react
 
 ```tsx
 // src/enclave/config.ts
-import { EnclaveClient } from '@enclavejs/client';
+import { EnclaveClient } from '@enclave-vm/client';
 
 export const enclaveClient = new EnclaveClient({
   serverUrl: process.env.REACT_APP_ENCLAVE_URL || 'http://localhost:3001',
@@ -70,7 +70,7 @@ export const enclaveClient = new EnclaveClient({
 ```tsx
 // src/enclave/EnclaveProvider.tsx
 import React, { createContext, useContext, ReactNode } from 'react';
-import { EnclaveClient } from '@enclavejs/client';
+import { EnclaveClient } from '@enclave-vm/client';
 import { enclaveClient } from './config';
 
 const EnclaveContext = createContext<EnclaveClient | null>(null);
@@ -98,7 +98,7 @@ export function useEnclaveClient() {
 // src/hooks/useCodeExecution.ts
 import { useState, useCallback, useRef } from 'react';
 import { useEnclaveClient } from '../enclave/EnclaveProvider';
-import type { StreamEvent } from '@enclavejs/types';
+import type { StreamEvent } from '@enclave-vm/types';
 
 interface ExecutionState {
   status: 'idle' | 'running' | 'completed' | 'error';
@@ -567,10 +567,10 @@ export default App;
 
 ## Using the Official React Package
 
-The `@enclavejs/react` package provides pre-built hooks:
+The `@enclave-vm/react` package provides pre-built hooks:
 
 ```tsx
-import { useEnclave, useExecutionStream } from '@enclavejs/react';
+import { useEnclave, useExecutionStream } from '@enclave-vm/react';
 
 function MyComponent() {
   const { execute, stream } = useEnclave();
@@ -598,6 +598,6 @@ function MyComponent() {
 
 ## Related
 
-- [@enclavejs/react](/enclavejs/react) - React SDK reference
-- [@enclavejs/client](/enclavejs/client) - Client SDK reference
+- [@enclave-vm/react](/enclavejs/react) - React SDK reference
+- [@enclave-vm/client](/enclavejs/client) - Client SDK reference
 - [Streaming UI Example](/examples/streaming-ui) - Complete example

@@ -2,8 +2,8 @@
  * Memory Channel Tests
  */
 
-import { EventType, PROTOCOL_VERSION } from '@enclavejs/types';
-import type { StreamEvent } from '@enclavejs/types';
+import { EventType, PROTOCOL_VERSION } from '@enclave-vm/types';
+import type { StreamEvent } from '@enclave-vm/types';
 import { MemoryChannel, createMemoryChannel, createMemoryChannelPair } from './memory-channel';
 
 describe('MemoryChannel', () => {

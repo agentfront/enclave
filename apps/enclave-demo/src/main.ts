@@ -4,7 +4,7 @@
  * Demonstrates secure JavaScript execution with defense-in-depth
  */
 
-import { Enclave, ToolHandler } from 'enclave-vm';
+import { Enclave, ToolHandler } from '@enclave-vm/core';
 
 async function main() {
   console.log('=== enclave Demo ===\n');

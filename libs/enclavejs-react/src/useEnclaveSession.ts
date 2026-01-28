@@ -7,7 +7,7 @@
  */
 
 import { useState, useCallback, useRef } from 'react';
-import type { SessionResult, SessionHandle, StreamEvent, SessionId } from '@enclavejs/client';
+import type { SessionResult, SessionHandle, StreamEvent, SessionId } from '@enclave-vm/client';
 import { useEnclaveClient } from './EnclaveProvider.js';
 import type { SessionState, UseEnclaveSessionOptions, UseEnclaveSessionReturn } from './types.js';
 

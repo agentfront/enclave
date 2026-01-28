@@ -1,11 +1,11 @@
 /**
- * @enclavejs/stream - HKDF Key Derivation
+ * @enclave-vm/stream - HKDF Key Derivation
  *
  * HMAC-based Key Derivation Function using Web Crypto API.
  * Derives encryption keys from ECDH shared secret.
  */
 
-import { HkdfInfo, AES_256_KEY_SIZE, EncryptionErrorCode } from '@enclavejs/types';
+import { HkdfInfo, AES_256_KEY_SIZE, EncryptionErrorCode } from '@enclave-vm/types';
 
 /**
  * Convert a Uint8Array to an ArrayBuffer.

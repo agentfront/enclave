@@ -12,9 +12,9 @@
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
-import type { SessionId, CallId, StreamEvent } from '@enclavejs/types';
-import { generateSessionId, PROTOCOL_VERSION } from '@enclavejs/types';
-import { Enclave } from 'enclave-vm';
+import type { SessionId, CallId, StreamEvent } from '@enclave-vm/types';
+import { generateSessionId, PROTOCOL_VERSION } from '@enclave-vm/types';
+import { Enclave } from '@enclave-vm/core';
 import crypto from 'crypto';
 
 const PORT = 4102;

@@ -7,7 +7,7 @@
  * @packageDocumentation
  */
 
-import type { SessionId } from '@enclavejs/types';
+import type { SessionId } from '@enclave-vm/types';
 import type {
   RuntimeConfig,
   RuntimeState,

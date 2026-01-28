@@ -6,8 +6,8 @@
  * @packageDocumentation
  */
 
-import type { SessionId, StreamEvent, SessionLimits } from '@enclavejs/types';
-import type { CreateEnclaveOptions, SessionFinalResult } from 'enclave-vm';
+import type { SessionId, StreamEvent, SessionLimits } from '@enclave-vm/types';
+import type { CreateEnclaveOptions, SessionFinalResult } from '@enclave-vm/core';
 import { ToolRegistry, createToolRegistry } from './tool-registry';
 import type { ToolDefinition } from './tool-registry';
 import { SessionManager, createSessionManager } from './session-manager';

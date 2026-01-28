@@ -1,5 +1,5 @@
 /**
- * @enclavejs/types - Zod schemas
+ * @enclave-vm/types - Zod schemas
  *
  * Runtime validation schemas for all protocol types.
  * These schemas are used for validating incoming messages from untrusted sources.

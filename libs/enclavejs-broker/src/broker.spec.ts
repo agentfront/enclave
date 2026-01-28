@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { Broker, createBroker } from './broker';
-import type { StreamEvent } from '@enclavejs/types';
+import type { StreamEvent } from '@enclave-vm/types';
 
 describe('Broker', () => {
   let broker: Broker;

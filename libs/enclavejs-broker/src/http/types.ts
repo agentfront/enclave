@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import type { SessionId, EventFilterConfig } from '@enclavejs/types';
+import type { SessionId, EventFilterConfig } from '@enclave-vm/types';
 
 /**
  * HTTP request abstraction

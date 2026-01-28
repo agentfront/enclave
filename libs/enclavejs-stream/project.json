@@ -3,7 +3,7 @@
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "libs/enclavejs-stream/src",
   "projectType": "library",
-  "tags": ["scope:libs", "scope:publishable", "versioning:independent"],
+  "tags": ["scope:publishable", "type:lib", "versioning:independent"],
   "implicitDependencies": ["enclavejs-types"],
   "targets": {
     "build-tsc": {

@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import type { SessionId, SessionLimits, StreamEvent, FinalEvent } from '@enclavejs/types';
+import type { SessionId, SessionLimits, StreamEvent, FinalEvent } from '@enclave-vm/types';
 import {
   generateSessionId,
   isFinalEvent,
@@ -17,8 +17,8 @@ import {
   isToolResultAppliedEvent,
   isHeartbeatEvent,
   isErrorEvent,
-} from '@enclavejs/types';
-import { parseNdjsonStream, ReconnectionStateMachine, HeartbeatMonitor } from '@enclavejs/stream';
+} from '@enclave-vm/types';
+import { parseNdjsonStream, ReconnectionStateMachine, HeartbeatMonitor } from '@enclave-vm/stream';
 
 import type {
   EnclaveClientConfig,

@@ -7,8 +7,8 @@ import { render, screen, act, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { EnclaveProvider } from './EnclaveProvider';
 import { useEnclaveSession } from './useEnclaveSession';
-import type { SessionResult, SessionHandle } from '@enclavejs/client';
-import { EventType, PROTOCOL_VERSION } from '@enclavejs/types';
+import type { SessionResult, SessionHandle } from '@enclave-vm/client';
+import { EventType, PROTOCOL_VERSION } from '@enclave-vm/types';
 
 // Helper to create mock session result
 function createMockResult<T>(value: T, success = true): SessionResult<T> {

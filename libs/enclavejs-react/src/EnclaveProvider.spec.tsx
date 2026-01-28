@@ -5,10 +5,10 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { EnclaveProvider, useEnclaveClient, useEnclaveContext } from './EnclaveProvider';
-import { EnclaveClient } from '@enclavejs/client';
+import { EnclaveClient } from '@enclave-vm/client';
 
 // Mock the EnclaveClient
-jest.mock('@enclavejs/client', () => ({
+jest.mock('@enclave-vm/client', () => ({
   EnclaveClient: jest.fn().mockImplementation((config) => ({
     config,
     execute: jest.fn(),

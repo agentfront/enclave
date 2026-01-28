@@ -1,16 +1,16 @@
 ---
-title: '@enclavejs/stream'
+title: '@enclave-vm/stream'
 description: 'NDJSON streaming, encryption, and reconnection handling for EnclaveJS'
 ---
 
-# @enclavejs/stream
+# @enclave-vm/stream
 
 Streaming protocol implementation for the EnclaveJS runtime. Provides NDJSON parsing, end-to-end encryption, and automatic reconnection with event buffering.
 
 ## Installation
 
 ```bash
-npm install @enclavejs/stream
+npm install @enclave-vm/stream
 ```
 
 ## NDJSON Protocol
@@ -23,7 +23,7 @@ EnclaveJS uses NDJSON (Newline-Delimited JSON) for streaming events. Each line i
 import {
   serializeEvent,
   serializeEvents,
-} from '@enclavejs/stream';
+} from '@enclave-vm/stream';
 
 // Serialize a single event
 const line = serializeEvent({
@@ -47,7 +47,7 @@ import {
   parseLine,
   parseLines,
   NdjsonStreamParser,
-} from '@enclavejs/stream';
+} from '@enclave-vm/stream';
 
 // Parse a single line
 const result = parseLine('{"type":"stdout",...}');
@@ -83,7 +83,7 @@ import {
   createNdjsonParseStream,
   createNdjsonSerializeStream,
   parseNdjsonStream,
-} from '@enclavejs/stream';
+} from '@enclave-vm/stream';
 
 // Create a transform stream for parsing
 const parseStream = createNdjsonParseStream();
@@ -114,7 +114,7 @@ import {
   createServerHello,
   processClientHello,
   processServerHello,
-} from '@enclavejs/stream';
+} from '@enclave-vm/stream';
 
 // Client: Generate key pair and create hello
 const clientKeys = await generateKeyPair('P-256');
@@ -141,7 +141,7 @@ import {
   deriveKey,
   deriveSessionKeys,
   deriveSessionCryptoKeys,
-} from '@enclavejs/stream';
+} from '@enclave-vm/stream';
 
 // Derive encryption key from shared secret
 const key = await deriveKey(sharedSecret, {
@@ -173,7 +173,7 @@ import {
   toBase64,
   fromBase64,
   SessionEncryptionContext,
-} from '@enclavejs/stream';
+} from '@enclave-vm/stream';
 
 // Low-level encryption
 const nonce = generateNonce();
@@ -205,7 +205,7 @@ import {
   AES_GCM_TAG_SIZE,     // 16 bytes
   AES_256_KEY_SIZE,     // 32 bytes
   MAX_MESSAGES_PER_KEY, // Max messages before key rotation
-} from '@enclavejs/stream';
+} from '@enclave-vm/stream';
 ```
 
 ## Reconnection Handling
@@ -215,7 +215,7 @@ Built-in support for automatic reconnection with event buffering and sequence tr
 ### Connection State Machine
 
 ```typescript
-import { ConnectionState, ReconnectionStateMachine } from '@enclavejs/stream';
+import { ConnectionState, ReconnectionStateMachine } from '@enclave-vm/stream';
 
 // Connection states
 ConnectionState.DISCONNECTED  // Not connected
@@ -252,7 +252,7 @@ stateMachine.connectionSucceeded();
 import {
   DEFAULT_RECONNECTION_CONFIG,
   type ReconnectionConfig,
-} from '@enclavejs/stream';
+} from '@enclave-vm/stream';
 
 const config: ReconnectionConfig = {
   enabled: true,           // Enable auto-reconnection
@@ -269,7 +269,7 @@ console.log(DEFAULT_RECONNECTION_CONFIG);
 ### Sequence Tracking
 
 ```typescript
-import { SequenceTracker } from '@enclavejs/stream';
+import { SequenceTracker } from '@enclave-vm/stream';
 
 const tracker = new SequenceTracker();
 
@@ -291,7 +291,7 @@ const replayFrom = tracker.getReplaySequence();
 ### Event Buffering
 
 ```typescript
-import { EventBuffer } from '@enclavejs/stream';
+import { EventBuffer } from '@enclave-vm/stream';
 
 const buffer = new EventBuffer({
   maxSize: 1000,       // Max events to buffer
@@ -312,7 +312,7 @@ console.log(buffer.isEmpty);
 ### Heartbeat Monitoring
 
 ```typescript
-import { HeartbeatMonitor } from '@enclavejs/stream';
+import { HeartbeatMonitor } from '@enclave-vm/stream';
 
 const monitor = new HeartbeatMonitor({
   interval: 30000,   // Expected interval (ms)
@@ -333,7 +333,7 @@ monitor.stop();
 
 ## Re-exported Types
 
-This package re-exports all types from `@enclavejs/types` for convenience:
+This package re-exports all types from `@enclave-vm/types` for convenience:
 
 ```typescript
 import {
@@ -350,10 +350,10 @@ import {
   // Schemas
   StreamEventSchema,
   parseStreamEvent,
-} from '@enclavejs/stream';
+} from '@enclave-vm/stream';
 ```
 
 ## Links
 
 - [GitHub](https://github.com/agentfront/enclave/tree/main/libs/enclavejs-stream)
-- [npm](https://www.npmjs.com/package/@enclavejs/stream)
+- [npm](https://www.npmjs.com/package/@enclave-vm/stream)
