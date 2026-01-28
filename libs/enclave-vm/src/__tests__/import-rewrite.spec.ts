@@ -4,8 +4,8 @@
  * Tests for rewriting npm imports to CDN URLs.
  */
 
-import { rewriteImports, isValidPackageName, isValidSubpath } from 'ast-guard';
-import type { ImportRewriteConfig } from 'ast-guard';
+import { rewriteImports, isValidPackageName, isValidSubpath } from '@enclave-vm/ast';
+import type { ImportRewriteConfig } from '@enclave-vm/ast';
 
 describe('Import Rewrite Transform', () => {
   const defaultConfig: ImportRewriteConfig = {

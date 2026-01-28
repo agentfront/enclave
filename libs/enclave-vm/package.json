@@ -37,8 +37,8 @@
   },
   "dependencies": {
     "@babel/standalone": "^7.28.6",
-    "@enclave-vm/types": "0.1.0",
-    "ast-guard": "2.4.0",
+    "@enclave-vm/types": "2.8.0",
+    "@enclave-vm/ast": "2.8.0",
     "acorn": "8.15.0",
     "acorn-walk": "8.3.4",
     "astring": "1.9.0",

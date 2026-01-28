@@ -159,7 +159,7 @@ export type BabelPresetOptions = AgentScriptOptions;
  *
  * @example
  * ```typescript
- * import { getBabelConfig } from 'ast-guard';
+ * import { getBabelConfig } from '@enclave-vm/ast';
  *
  * const config = getBabelConfig('SECURE');
  * console.log(config.allowedPresets); // ['typescript', 'react']
@@ -193,7 +193,7 @@ export function getBabelConfig(securityLevel: SecurityLevel = 'STANDARD'): Babel
  *
  * @example
  * ```typescript
- * import { createBabelPreset, JSAstValidator } from 'ast-guard';
+ * import { createBabelPreset, JSAstValidator } from '@enclave-vm/ast';
  *
  * const rules = createBabelPreset({
  *   securityLevel: 'SECURE',

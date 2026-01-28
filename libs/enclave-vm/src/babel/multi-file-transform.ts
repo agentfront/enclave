@@ -16,7 +16,7 @@
  * @packageDocumentation
  */
 
-import { rewriteImports, type ImportRewriteConfig } from 'ast-guard';
+import { rewriteImports, type ImportRewriteConfig } from '@enclave-vm/ast';
 import type { SafeTransformOptions, SafeTransformResult } from './babel-wrapper';
 
 /**

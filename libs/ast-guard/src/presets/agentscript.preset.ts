@@ -303,7 +303,7 @@ export interface AgentScriptOptions {
  *
  * @example
  * ```typescript
- * import { createAgentScriptPreset } from 'ast-guard';
+ * import { createAgentScriptPreset } from '@enclave-vm/ast';
  *
  * // Default configuration
  * const rules = createAgentScriptPreset();

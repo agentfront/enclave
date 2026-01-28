@@ -22,7 +22,7 @@ import {
   getBabelConfig,
   getAgentScriptGlobals,
   type ValidationIssue,
-} from 'ast-guard';
+} from '@enclave-vm/ast';
 import {
   createRestrictedBabel,
   transformMultiple,
@@ -30,8 +30,8 @@ import {
   type MultiFileTransformOptions,
   type MultiFileTransformResult,
 } from './babel';
-import { transformAgentScript, isWrappedInMain } from 'ast-guard';
-import { extractLargeStrings, transformConcatenation, transformTemplateLiterals } from 'ast-guard';
+import { transformAgentScript, isWrappedInMain } from '@enclave-vm/ast';
+import { extractLargeStrings, transformConcatenation, transformTemplateLiterals } from '@enclave-vm/ast';
 import * as acorn from 'acorn';
 import { generate } from 'astring';
 import type {

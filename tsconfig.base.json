@@ -21,8 +21,8 @@
     "skipLibCheck": true,
     "skipDefaultLibCheck": true,
     "paths": {
+      "@enclave-vm/ast": ["libs/ast-guard/src/index.ts"],
       "@enclave-vm/core": ["libs/enclave-vm/src/index.ts"],
-      "ast-guard": ["libs/ast-guard/src/index.ts"],
       "@enclave-vm/types": ["libs/enclavejs-types/src/index.ts"],
       "@enclave-vm/stream": ["libs/enclavejs-stream/src/index.ts"],
       "@enclave-vm/broker": ["libs/enclavejs-broker/src/index.ts"],

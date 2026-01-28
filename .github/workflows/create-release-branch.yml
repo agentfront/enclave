@@ -116,44 +116,14 @@ jobs:
 
           echo "Created branch: $BRANCH_NAME"
 
-      - name: Find publishable projects
-        id: projects
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Get all publishable libs
-          PROJECTS=$(node -e "
-          const { execSync } = require('child_process');
-          try {
-            const out = execSync('npx nx show projects -p tag:scope:publishable --type lib --json', { encoding: 'utf8' });
-            const arr = JSON.parse(out);
-            process.stdout.write(arr.join(','));
-          } catch (e) {
-            process.stdout.write('');
-          }
-          ")
-
-          echo "projects=$PROJECTS" >> "$GITHUB_OUTPUT"
-          echo "Publishable projects: $PROJECTS"
-
       - name: Apply version via Nx Release
         shell: bash
         run: |
           set -euo pipefail
-
           INITIAL_VERSION="${{ steps.version.outputs.initial_version }}"
-          PROJECTS="${{ steps.projects.outputs.projects }}"
 
-          if [ -z "$PROJECTS" ]; then
-            echo "::error::No publishable projects found"
-            exit 1
-          fi
-
-          echo "Setting version to $INITIAL_VERSION for projects: $PROJECTS"
-
-          # Use Nx Release to set version (without git operations)
-          npx nx release version "$INITIAL_VERSION" --projects="$PROJECTS" --git-commit=false --git-tag=false
+          echo "Setting version to $INITIAL_VERSION for all libs"
+          npx nx release version "$INITIAL_VERSION" --git-commit=false --git-tag=false
 
       - name: Create release docs base marker
         shell: bash
@@ -174,7 +144,7 @@ jobs:
           set -euo pipefail
 
           INITIAL_VERSION="${{ steps.version.outputs.initial_version }}"
-          PROJECTS="${{ steps.projects.outputs.projects }}"
+          PROJECTS="enclave-vm,enclavejs-types,enclavejs-stream,enclavejs-broker,enclavejs-client,enclavejs-react,enclavejs-runtime,ast-guard"
           TODAY=$(date -u +"%Y-%m-%d")
 
           # Update per-library CHANGELOGs
@@ -233,7 +203,7 @@ jobs:
           echo "| **Branch** | \`${{ steps.check_branch.outputs.branch_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Initial Version** | \`${{ steps.version.outputs.initial_version }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Base Branch** | \`${{ inputs.base_branch }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Projects** | ${{ steps.projects.outputs.projects }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Packages** | All libs/* |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

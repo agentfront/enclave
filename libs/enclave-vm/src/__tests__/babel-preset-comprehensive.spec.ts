@@ -14,7 +14,7 @@ import {
   type MultiFileLimits,
   type BabelWrapperConfig,
 } from '../babel';
-import { rewriteImports, type ImportRewriteConfig } from 'ast-guard';
+import { rewriteImports, type ImportRewriteConfig } from '@enclave-vm/ast';
 
 describe('Babel Preset Comprehensive Tests', () => {
   afterAll(() => {

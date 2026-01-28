@@ -58,7 +58,7 @@ import { createPermissivePreset } from './permissive.preset';
  *
  * @example
  * ```typescript
- * import { createPreset, PresetLevel } from 'ast-guard';
+ * import { createPreset, PresetLevel } from '@enclave-vm/ast';
  *
  * // Create a strict preset (bank-grade)
  * const rules = createPreset(PresetLevel.STRICT);
@@ -96,7 +96,7 @@ export function createPreset(level: PresetLevel, options: PresetOptions = {}): V
  *
  * @example
  * ```typescript
- * import { Presets } from 'ast-guard';
+ * import { Presets } from '@enclave-vm/ast';
  *
  * // Create presets using the Presets object
  * const strictRules = Presets.strict();

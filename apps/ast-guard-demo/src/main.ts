@@ -4,7 +4,7 @@
  * Demonstrates AST-based JavaScript validation with security presets
  */
 
-import { JSAstValidator, Presets, preScan } from 'ast-guard';
+import { JSAstValidator, Presets, preScan } from '@enclave-vm/ast';
 
 // Sample code snippets to validate
 const safeCode = `

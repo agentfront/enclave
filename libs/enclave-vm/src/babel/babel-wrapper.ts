@@ -18,7 +18,7 @@
 
 import * as vm from 'vm';
 import * as BabelStandalone from '@babel/standalone';
-import { rewriteImports, type ImportRewriteConfig } from 'ast-guard';
+import { rewriteImports, type ImportRewriteConfig } from '@enclave-vm/ast';
 
 /**
  * Safe transform options that can be passed by sandbox code

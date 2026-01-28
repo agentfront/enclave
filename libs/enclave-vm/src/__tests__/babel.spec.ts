@@ -6,7 +6,7 @@
 
 import { Enclave } from '../enclave';
 import { createRestrictedBabel, BabelWrapperConfig } from '../babel';
-import { getBabelConfig, BABEL_SECURITY_CONFIGS } from 'ast-guard';
+import { getBabelConfig, BABEL_SECURITY_CONFIGS } from '@enclave-vm/ast';
 
 import { resetBabelContext } from '../babel';
 

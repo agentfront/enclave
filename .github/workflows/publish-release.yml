@@ -80,23 +80,6 @@ jobs:
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
-      - name: Find publishable projects
-        id: projects
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Get all publishable libs
-          PROJECTS=$(node -e "
-          const { execSync } = require('child_process');
-          const out = execSync('npx nx show projects -p tag:scope:publishable --type lib --json', { encoding: 'utf8' });
-          const arr = JSON.parse(out);
-          process.stdout.write(arr.join(','));
-          ")
-
-          echo "projects=$PROJECTS" >> "$GITHUB_OUTPUT"
-          echo "Projects to publish: $PROJECTS"
-
       - name: Compute version
         id: version
         shell: bash
@@ -275,15 +258,11 @@ jobs:
             }
 
       - name: Update package versions
-        if: ${{ inputs.dry_run != true && steps.projects.outputs.projects != '' }}
+        if: ${{ inputs.dry_run != true }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          PROJECTS="${{ steps.projects.outputs.projects }}"
-
-          echo "Setting version $VERSION for projects: $PROJECTS"
-
-          # Use Nx Release to set version (without git operations)
-          npx nx release version "$VERSION" --projects="$PROJECTS" --git-commit=false --git-tag=false
+          echo "Setting version $VERSION for all libs"
+          npx nx release version "$VERSION" --git-commit=false --git-tag=false
 
       - name: Commit version bump
         if: ${{ inputs.dry_run != true }}
@@ -295,29 +274,24 @@ jobs:
           fi
 
       - name: Build packages
-        if: steps.projects.outputs.projects != ''
         run: |
-          PROJECTS="${{ steps.projects.outputs.projects }}"
-          yarn nx run-many --targets=build --projects="$PROJECTS" --parallel
+          echo "Building all lib packages..."
+          yarn nx run-many --targets=build --projects='libs/*' --parallel
 
       - name: Publish to npm
-        if: ${{ inputs.dry_run != true && steps.projects.outputs.projects != '' }}
+        if: ${{ inputs.dry_run != true }}
         shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-
           NPM_TAG="${{ steps.version.outputs.npm_tag }}"
-          PROJECTS="${{ steps.projects.outputs.projects }}"
-
-          echo "Publishing projects via Nx Release with tag $NPM_TAG..."
-          npx nx release publish --projects="$PROJECTS" --tag="$NPM_TAG"
-
+          echo "Publishing all libs with tag $NPM_TAG..."
+          npx nx release publish --tag="$NPM_TAG"
           echo "Successfully published version ${{ steps.version.outputs.version }}"
 
       - name: Create and push git tag
-        if: ${{ inputs.dry_run != true && steps.projects.outputs.projects != '' }}
+        if: ${{ inputs.dry_run != true }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           TAG="v$VERSION"
@@ -343,7 +317,7 @@ jobs:
           RELEASE_LINE="${{ steps.context.outputs.release_line }}"
           BRANCH="${{ steps.context.outputs.branch }}"
           IS_PRERELEASE="${{ steps.version.outputs.is_prerelease }}"
-          PROJECTS="${{ steps.projects.outputs.projects }}"
+          PROJECTS="enclave-vm,enclavejs-types,enclavejs-stream,enclavejs-broker,enclavejs-client,enclavejs-react,enclavejs-runtime,ast-guard"
 
           # Start building the release body
           {
@@ -392,7 +366,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        if: ${{ inputs.dry_run != true && steps.projects.outputs.projects != '' }}
+        if: ${{ inputs.dry_run != true }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
@@ -421,4 +395,4 @@ jobs:
           echo "| NPM tag | \`${{ steps.version.outputs.npm_tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Pre-release | ${{ steps.version.outputs.is_prerelease }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Branch | \`${{ steps.context.outputs.branch }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Projects | ${{ steps.projects.outputs.projects }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Packages | All libs/* |" >> "$GITHUB_STEP_SUMMARY"

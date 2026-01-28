@@ -225,5 +225,5 @@ export type {
   MultiFileLimits,
 } from './babel';
 
-// Re-export ImportRewriteConfig from ast-guard for convenience
-export type { ImportRewriteConfig, ImportRewriteResult } from 'ast-guard';
+// Re-export ImportRewriteConfig from @enclave-vm/ast for convenience
+export type { ImportRewriteConfig, ImportRewriteResult } from '@enclave-vm/ast';
