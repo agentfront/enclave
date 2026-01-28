@@ -46,7 +46,7 @@
   },
   "peerDependencies": {
     "@huggingface/transformers": "^3.2.2",
-    "vectoriadb": "^2.0.0"
+    "vectoriadb": "^2.1.3"
   },
   "peerDependenciesMeta": {
     "@huggingface/transformers": {
