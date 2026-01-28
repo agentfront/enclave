@@ -16,7 +16,7 @@
 
 import * as acorn from 'acorn';
 import { generate } from 'astring';
-import type { ImportDeclaration, Program, Node, Literal } from 'estree';
+import type { ImportDeclaration, ExportNamedDeclaration, ExportAllDeclaration, Program, Literal } from 'estree';
 
 /**
  * Configuration for import rewriting
@@ -226,6 +226,7 @@ export function rewriteImports(code: string, config: ImportRewriteConfig): Impor
     : new Set(Object.keys(config.packageVersions));
 
   // Parse the code into an AST
+  // Note: acorn only parses JavaScript. For TypeScript/JSX, run Babel transform first.
   let ast: Program;
   try {
     ast = acorn.parse(code, {
@@ -233,63 +234,74 @@ export function rewriteImports(code: string, config: ImportRewriteConfig): Impor
       sourceType: 'module',
     }) as unknown as Program;
   } catch (error) {
-    throw new Error(`Failed to parse code for import rewriting: ${(error as Error).message}`);
+    throw new Error(`Failed to parse JavaScript code for import rewriting: ${(error as Error).message}`);
   }
 
   const rewrittenImports: Array<{ original: string; rewritten: string }> = [];
   const skippedImports: string[] = [];
 
-  // Walk through all import declarations
+  // Helper function to rewrite a module source
+  const rewriteSource = (source: string, sourceNode: Literal): void => {
+    // Skip local imports if configured
+    if (isLocalImport(source)) {
+      if (skipLocalImports) {
+        skippedImports.push(source);
+        return;
+      }
+    }
+
+    // Parse the import source
+    const { packageName, subpath } = parseImportSource(source);
+
+    // Check if package is allowed
+    if (!allowedPackages.has(packageName)) {
+      throw new Error(
+        `Package "${packageName}" is not allowed. ` +
+          `Only packages listed in packageVersions or allowedPackages can be imported: ${[...allowedPackages].join(', ')}`,
+      );
+    }
+
+    // Validate package name
+    validatePackageName(packageName);
+
+    // Validate subpath if present
+    if (subpath) {
+      validateSubpath(subpath);
+    }
+
+    // Get version from config (may be empty string or undefined for latest)
+    const version = config.packageVersions[packageName];
+
+    // Construct CDN URL
+    // If version is empty or undefined, don't include @version (use latest)
+    const packageWithVersion = version ? `${packageName}@${version}` : packageName;
+    const cdnUrl = subpath
+      ? `${config.cdnBaseUrl}/${packageWithVersion}/${subpath}`
+      : `${config.cdnBaseUrl}/${packageWithVersion}`;
+
+    // Update the source
+    sourceNode.value = cdnUrl;
+    sourceNode.raw = JSON.stringify(cdnUrl);
+
+    rewrittenImports.push({
+      original: source,
+      rewritten: cdnUrl,
+    });
+  };
+
+  // Walk through all import and export declarations
   for (const node of ast.body) {
     if (node.type === 'ImportDeclaration') {
       const importNode = node as ImportDeclaration;
       const source = importNode.source.value as string;
-
-      // Skip local imports if configured
-      if (isLocalImport(source)) {
-        if (skipLocalImports) {
-          skippedImports.push(source);
-          continue;
-        }
+      rewriteSource(source, importNode.source as Literal);
+    } else if (node.type === 'ExportNamedDeclaration' || node.type === 'ExportAllDeclaration') {
+      const exportNode = node as ExportNamedDeclaration | ExportAllDeclaration;
+      // Only process re-exports (those with a source)
+      if (exportNode.source) {
+        const source = exportNode.source.value as string;
+        rewriteSource(source, exportNode.source as Literal);
       }
-
-      // Parse the import source
-      const { packageName, subpath } = parseImportSource(source);
-
-      // Check if package is allowed
-      if (!allowedPackages.has(packageName)) {
-        throw new Error(
-          `Package "${packageName}" is not allowed. ` +
-            `Only packages listed in packageVersions or allowedPackages can be imported: ${[...allowedPackages].join(', ')}`,
-        );
-      }
-
-      // Validate package name
-      validatePackageName(packageName);
-
-      // Validate subpath if present
-      if (subpath) {
-        validateSubpath(subpath);
-      }
-
-      // Get version from config (may be empty string or undefined for latest)
-      const version = config.packageVersions[packageName];
-
-      // Construct CDN URL
-      // If version is empty or undefined, don't include @version (use latest)
-      const packageWithVersion = version ? `${packageName}@${version}` : packageName;
-      const cdnUrl = subpath
-        ? `${config.cdnBaseUrl}/${packageWithVersion}/${subpath}`
-        : `${config.cdnBaseUrl}/${packageWithVersion}`;
-
-      // Update the import source
-      (importNode.source as Literal).value = cdnUrl;
-      (importNode.source as Literal).raw = JSON.stringify(cdnUrl);
-
-      rewrittenImports.push({
-        original: source,
-        rewritten: cdnUrl,
-      });
     }
   }
 

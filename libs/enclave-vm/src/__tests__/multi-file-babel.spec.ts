@@ -303,41 +303,43 @@ describe('Multi-file Babel Transform', () => {
         securityLevel: 'STANDARD',
       });
 
-      const code = `
-        const files = {
-          'theme.ts': 'export const theme = { primary: "#007bff" };',
-          'App.tsx': \`
-            import { theme } from './theme';
-            const App = () => <div style={{ color: theme.primary }}>Hello</div>;
-            export default App;
-          \`
-        };
+      try {
+        const code = `
+          const files = {
+            'theme.ts': 'export const theme = { primary: "#007bff" };',
+            'App.tsx': \`
+              import { theme } from './theme';
+              const App = () => <div style={{ color: theme.primary }}>Hello</div>;
+              export default App;
+            \`
+          };
 
-        const result = Babel.transformMultiple(files, {
-          presets: ['typescript', 'react'],
-        });
+          const result = Babel.transformMultiple(files, {
+            presets: ['typescript', 'react'],
+          });
 
-        return {
-          fileCount: Object.keys(result.files).length,
-          hasTheme: 'theme.js' in result.files,
-          hasApp: 'App.js' in result.files,
-          warnings: result.warnings,
-        };
-      `;
+          return {
+            fileCount: Object.keys(result.files).length,
+            hasTheme: 'theme.js' in result.files,
+            hasApp: 'App.js' in result.files,
+            warnings: result.warnings,
+          };
+        `;
 
-      const result = await enclave.run<{
-        fileCount: number;
-        hasTheme: boolean;
-        hasApp: boolean;
-        warnings: string[];
-      }>(code);
+        const result = await enclave.run<{
+          fileCount: number;
+          hasTheme: boolean;
+          hasApp: boolean;
+          warnings: string[];
+        }>(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value?.fileCount).toBe(2);
-      expect(result.value?.hasTheme).toBe(true);
-      expect(result.value?.hasApp).toBe(true);
-
-      enclave.dispose();
+        expect(result.success).toBe(true);
+        expect(result.value?.fileCount).toBe(2);
+        expect(result.value?.hasTheme).toBe(true);
+        expect(result.value?.hasApp).toBe(true);
+      } finally {
+        enclave.dispose();
+      }
     });
 
     it('should transform with import rewriting in sandbox', async () => {
@@ -346,45 +348,47 @@ describe('Multi-file Babel Transform', () => {
         securityLevel: 'STANDARD',
       });
 
-      const code = `
-        const files = {
-          'App.tsx': \`
-            import React from 'react';
-            import Button from '@mui/material/Button';
-            const App = () => <Button>Click me</Button>;
-            export default App;
-          \`
-        };
+      try {
+        const code = `
+          const files = {
+            'App.tsx': \`
+              import React from 'react';
+              import Button from '@mui/material/Button';
+              const App = () => <Button>Click me</Button>;
+              export default App;
+            \`
+          };
 
-        const result = Babel.transformMultiple(files, {
-          presets: ['typescript', 'react'],
-          importRewrite: {
-            enabled: true,
-            cdnBaseUrl: 'https://esm.agentfront.dev',
-            packageVersions: {
-              'react': '18.2.0',
-              '@mui/material': '5.15.0'
+          const result = Babel.transformMultiple(files, {
+            presets: ['typescript', 'react'],
+            importRewrite: {
+              enabled: true,
+              cdnBaseUrl: 'https://esm.agentfront.dev',
+              packageVersions: {
+                'react': '18.2.0',
+                '@mui/material': '5.15.0'
+              }
             }
-          }
-        });
+          });
 
-        return {
-          code: result.files['App.js'],
-          rewrittenImports: result.rewrittenImports,
-        };
-      `;
+          return {
+            code: result.files['App.js'],
+            rewrittenImports: result.rewrittenImports,
+          };
+        `;
 
-      const result = await enclave.run<{
-        code: string;
-        rewrittenImports: Array<{ original: string; rewritten: string }>;
-      }>(code);
+        const result = await enclave.run<{
+          code: string;
+          rewrittenImports: Array<{ original: string; rewritten: string }>;
+        }>(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value?.code).toContain('https://esm.agentfront.dev/react@18.2.0');
-      expect(result.value?.code).toContain('https://esm.agentfront.dev/@mui/material@5.15.0/Button');
-      expect(result.value?.rewrittenImports?.length).toBeGreaterThan(0);
-
-      enclave.dispose();
+        expect(result.success).toBe(true);
+        expect(result.value?.code).toContain('https://esm.agentfront.dev/react@18.2.0');
+        expect(result.value?.code).toContain('https://esm.agentfront.dev/@mui/material@5.15.0/Button');
+        expect(result.value?.rewrittenImports?.length).toBeGreaterThan(0);
+      } finally {
+        enclave.dispose();
+      }
     });
 
     it('should respect security level limits for multi-file transforms', async () => {
@@ -393,28 +397,30 @@ describe('Multi-file Babel Transform', () => {
         securityLevel: 'STRICT', // STRICT allows max 3 files
       });
 
-      const code = `
-        const files = {
-          'a.tsx': '<div>A</div>',
-          'b.tsx': '<div>B</div>',
-          'c.tsx': '<div>C</div>',
-          'd.tsx': '<div>D</div>', // 4th file - should exceed STRICT limit
-        };
+      try {
+        const code = `
+          const files = {
+            'a.tsx': '<div>A</div>',
+            'b.tsx': '<div>B</div>',
+            'c.tsx': '<div>C</div>',
+            'd.tsx': '<div>D</div>', // 4th file - should exceed STRICT limit
+          };
 
-        try {
-          Babel.transformMultiple(files, { presets: ['react'] });
-          return { error: null };
-        } catch (e) {
-          return { error: e.message };
-        }
-      `;
+          try {
+            Babel.transformMultiple(files, { presets: ['react'] });
+            return { error: null };
+          } catch (e) {
+            return { error: e.message };
+          }
+        `;
 
-      const result = await enclave.run<{ error: string | null }>(code);
+        const result = await enclave.run<{ error: string | null }>(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value?.error).toContain('Too many files');
-
-      enclave.dispose();
+        expect(result.success).toBe(true);
+        expect(result.value?.error).toContain('Too many files');
+      } finally {
+        enclave.dispose();
+      }
     });
 
     it('should handle the example from the plan', async () => {
@@ -423,69 +429,71 @@ describe('Multi-file Babel Transform', () => {
         securityLevel: 'STANDARD',
       });
 
-      const code = `
-        const files = {
-          'theme.ts': \`
-            export const theme = { primary: '#007bff' };
-          \`,
-          'MyCard.tsx': \`
-            import React from 'react';
-            import Button from '@mui/material/Button';
-            import Card from '@mui/material/Card';
-            import { theme } from './theme';
+      try {
+        const code = `
+          const files = {
+            'theme.ts': \`
+              export const theme = { primary: '#007bff' };
+            \`,
+            'MyCard.tsx': \`
+              import React from 'react';
+              import Button from '@mui/material/Button';
+              import Card from '@mui/material/Card';
+              import { theme } from './theme';
 
-            const MyCard = () => {
-              return (
-                <Card>
-                  <span style={{ color: theme.primary }}>Content</span>
-                  <Button>Refresh</Button>
-                </Card>
-              );
-            };
-            export default MyCard;
-          \`
-        };
+              const MyCard = () => {
+                return (
+                  <Card>
+                    <span style={{ color: theme.primary }}>Content</span>
+                    <Button>Refresh</Button>
+                  </Card>
+                );
+              };
+              export default MyCard;
+            \`
+          };
 
-        const result = Babel.transformMultiple(files, {
-          presets: ['typescript', 'react'],
-          importRewrite: {
-            enabled: true,
-            cdnBaseUrl: 'https://esm.agentfront.dev',
-            packageVersions: {
-              'react': '18.2.0',
-              '@mui/material': '5.15.0'
+          const result = Babel.transformMultiple(files, {
+            presets: ['typescript', 'react'],
+            importRewrite: {
+              enabled: true,
+              cdnBaseUrl: 'https://esm.agentfront.dev',
+              packageVersions: {
+                'react': '18.2.0',
+                '@mui/material': '5.15.0'
+              }
             }
-          }
-        });
+          });
 
-        return {
-          outputFiles: Object.keys(result.files),
-          themeCode: result.files['theme.js'],
-          myCardCode: result.files['MyCard.js'],
-          rewrittenCount: result.rewrittenImports?.length || 0,
-        };
-      `;
+          return {
+            outputFiles: Object.keys(result.files),
+            themeCode: result.files['theme.js'],
+            myCardCode: result.files['MyCard.js'],
+            rewrittenCount: result.rewrittenImports?.length || 0,
+          };
+        `;
 
-      const result = await enclave.run<{
-        outputFiles: string[];
-        themeCode: string;
-        myCardCode: string;
-        rewrittenCount: number;
-      }>(code);
+        const result = await enclave.run<{
+          outputFiles: string[];
+          themeCode: string;
+          myCardCode: string;
+          rewrittenCount: number;
+        }>(code);
 
-      expect(result.success).toBe(true);
-      expect(result.value?.outputFiles).toContain('theme.js');
-      expect(result.value?.outputFiles).toContain('MyCard.js');
-      // theme.ts has no types, so it's just valid JS output
-      expect(result.value?.themeCode).toContain('primary');
-      expect(result.value?.myCardCode).toContain('React.createElement');
-      expect(result.value?.myCardCode).toContain('https://esm.agentfront.dev/react@18.2.0');
-      expect(result.value?.myCardCode).toContain('https://esm.agentfront.dev/@mui/material@5.15.0');
-      // Local import should be kept as local with updated extension
-      expect(result.value?.myCardCode).toContain('./theme.js');
-      expect(result.value?.rewrittenCount).toBeGreaterThan(0);
-
-      enclave.dispose();
+        expect(result.success).toBe(true);
+        expect(result.value?.outputFiles).toContain('theme.js');
+        expect(result.value?.outputFiles).toContain('MyCard.js');
+        // theme.ts has no types, so it's just valid JS output
+        expect(result.value?.themeCode).toContain('primary');
+        expect(result.value?.myCardCode).toContain('React.createElement');
+        expect(result.value?.myCardCode).toContain('https://esm.agentfront.dev/react@18.2.0');
+        expect(result.value?.myCardCode).toContain('https://esm.agentfront.dev/@mui/material@5.15.0');
+        // Local import should be kept as local with updated extension
+        expect(result.value?.myCardCode).toContain('./theme.js');
+        expect(result.value?.rewrittenCount).toBeGreaterThan(0);
+      } finally {
+        enclave.dispose();
+      }
     });
   });
 

@@ -141,12 +141,13 @@ describe('Babel Transform Examples', () => {
   describe('JSX Transformation', () => {
     it('should transform JSX to React.createElement calls', () => {
       for (const example of BABEL_EXAMPLES) {
+        // Use explicit classic runtime to ensure React.createElement output
         const result = babel.transform(example.code, {
-          presets: ['typescript', 'react'],
+          presets: ['typescript', 'react'] as string[],
           filename: `${example.name}.tsx`,
         });
 
-        // All examples should produce React.createElement calls
+        // All examples should produce React.createElement calls (classic runtime)
         expect(result.code).toContain('React.createElement');
       }
     });
@@ -154,7 +155,7 @@ describe('Babel Transform Examples', () => {
     it('should not contain JSX syntax in output', () => {
       for (const example of BABEL_EXAMPLES) {
         const result = babel.transform(example.code, {
-          presets: ['typescript', 'react'],
+          presets: ['typescript', 'react'] as string[],
           filename: `${example.name}.tsx`,
         });
 

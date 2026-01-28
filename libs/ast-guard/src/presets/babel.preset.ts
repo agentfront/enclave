@@ -167,7 +167,8 @@ export type BabelPresetOptions = AgentScriptOptions;
  * ```
  */
 export function getBabelConfig(securityLevel: SecurityLevel = 'STANDARD'): BabelSecurityConfig {
-  return BABEL_SECURITY_CONFIGS[securityLevel];
+  const config = BABEL_SECURITY_CONFIGS[securityLevel];
+  return { ...config, allowedPresets: [...config.allowedPresets] };
 }
 
 /**

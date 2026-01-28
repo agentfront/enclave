@@ -26,6 +26,7 @@
   },
   "private": true,
   "devDependencies": {
+    "@mintlify/cli": "^4.0.0",
     "@eslint/js": "^9.8.0",
     "@nx/eslint": "22.3.3",
     "@nx/eslint-plugin": "22.3.3",

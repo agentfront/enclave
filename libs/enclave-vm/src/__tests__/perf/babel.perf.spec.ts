@@ -518,6 +518,9 @@ const GeneratedComponent = ({ items, onItemClick }: Props) => (
 
   // Insert additional elements before closing main
   const insertPoint = base.lastIndexOf('</main>');
+  if (insertPoint === -1) {
+    return base + additionalElements.join('\n');
+  }
   return base.slice(0, insertPoint) + additionalElements.join('\n') + base.slice(insertPoint);
 }
 

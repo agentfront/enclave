@@ -100,7 +100,7 @@ export interface MultiFileLimits {
 /**
  * Regex for valid filenames (no path traversal)
  */
-const VALID_FILENAME_REGEX = /^[a-zA-Z0-9_\-./]+\.(ts|tsx|js|jsx|mjs|cjs)$/;
+const VALID_FILENAME_REGEX = /^[a-zA-Z0-9_\-./]+\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 
 /**
  * Map of TypeScript/JSX extensions to output JavaScript extensions

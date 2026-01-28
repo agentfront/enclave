@@ -65,19 +65,17 @@ describe('Babel Preset Comprehensive Tests', () => {
     });
 
     it('should handle export from statements', () => {
-      // Note: The import rewrite transform currently only handles import statements,
-      // not export from statements. This is a known limitation.
-      // Export from statements are not rewritten by the transform.
+      // Export from statements (re-exports) are now handled by the transform
       const code = `
         export { useState, useEffect } from 'react';
         export { Button } from '@mui/material';
       `;
       const result = rewriteImports(code, baseConfig);
 
-      // Current implementation doesn't rewrite export from statements
-      // This is acceptable because Babel transforms the code first,
-      // and export from is less common in application code
-      expect(result.rewrittenImports.length).toBe(0);
+      // Re-exports should be rewritten to CDN URLs
+      expect(result.rewrittenImports.length).toBe(2);
+      expect(result.code).toContain('react@18.2.0');
+      expect(result.code).toContain('@mui/material@5.15.0');
     });
 
     it('should handle deeply nested scoped package paths', () => {

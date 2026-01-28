@@ -145,6 +145,11 @@ jobs:
           INITIAL_VERSION="${{ steps.version.outputs.initial_version }}"
           PROJECTS="${{ steps.projects.outputs.projects }}"
 
+          if [ -z "$PROJECTS" ]; then
+            echo "::error::No publishable projects found"
+            exit 1
+          fi
+
           echo "Setting version to $INITIAL_VERSION for projects: $PROJECTS"
 
           # Use Nx Release to set version (without git operations)
