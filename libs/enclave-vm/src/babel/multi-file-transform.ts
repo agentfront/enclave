@@ -150,16 +150,17 @@ function getOutputFilename(inputFilename: string): string {
 
 /**
  * Parse import sources from code to build dependency graph
+ *
+ * SECURITY: Uses a ReDoS-safe regex pattern. The pattern `[^'"]*` cannot
+ * overlap with the following `['"]`, preventing polynomial backtracking.
  */
 function extractImports(code: string): string[] {
   const imports: string[] = [];
 
-  // Match import statements with various quote styles
-  // import X from 'source'
-  // import { X } from "source"
-  // import * as X from 'source'
-  // import 'source'
-  const importRegex = /import\s+(?:(?:\{[^}]*\}|[\w*\s,]+)\s+from\s+)?['"]([^'"]+)['"]/g;
+  // Match import statements - safe pattern that avoids ReDoS
+  // Uses [^'"]* which cannot overlap with the following quote character
+  // Matches: import X from 'source', import { X } from "source", import 'source', etc.
+  const importRegex = /import\b[^'"]*['"]([^'"]+)['"]/g;
 
   let match;
   while ((match = importRegex.exec(code)) !== null) {
@@ -167,6 +168,7 @@ function extractImports(code: string): string[] {
   }
 
   // Also match dynamic imports: import('source')
+  // Safe pattern - \s* and ['"] don't overlap (whitespace vs quotes)
   const dynamicImportRegex = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
   while ((match = dynamicImportRegex.exec(code)) !== null) {
     imports.push(match[1]);
