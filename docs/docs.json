@@ -68,99 +68,99 @@
                 "group": "Get Started",
                 "icon": "rocket",
                 "pages": [
-                  "getting-started/welcome",
-                  "getting-started/installation",
-                  "getting-started/quickstart"
+                  "enclave/getting-started/welcome",
+                  "enclave/getting-started/installation",
+                  "enclave/getting-started/quickstart"
                 ]
               },
               {
                 "group": "Concepts",
                 "icon": "lightbulb",
                 "pages": [
-                  "concepts/architecture",
-                  "concepts/security-model",
-                  "concepts/agentscript",
-                  "concepts/streaming-protocol"
+                  "enclave/concepts/architecture",
+                  "enclave/concepts/security-model",
+                  "enclave/concepts/agentscript",
+                  "enclave/concepts/streaming-protocol"
                 ]
               },
               {
                 "group": "enclave-vm",
                 "icon": "lock",
                 "pages": [
-                  "core-libraries/enclave-vm/overview",
-                  "core-libraries/enclave-vm/security-levels",
-                  "core-libraries/enclave-vm/tool-system",
-                  "core-libraries/enclave-vm/babel-transform",
-                  "core-libraries/enclave-vm/worker-pool",
-                  "core-libraries/enclave-vm/double-vm",
-                  "core-libraries/enclave-vm/ai-scoring",
-                  "core-libraries/enclave-vm/reference-sidecar",
-                  "core-libraries/enclave-vm/configuration"
+                  "enclave/core-libraries/enclave-vm/overview",
+                  "enclave/core-libraries/enclave-vm/security-levels",
+                  "enclave/core-libraries/enclave-vm/tool-system",
+                  "enclave/core-libraries/enclave-vm/babel-transform",
+                  "enclave/core-libraries/enclave-vm/worker-pool",
+                  "enclave/core-libraries/enclave-vm/double-vm",
+                  "enclave/core-libraries/enclave-vm/ai-scoring",
+                  "enclave/core-libraries/enclave-vm/reference-sidecar",
+                  "enclave/core-libraries/enclave-vm/configuration"
                 ]
               },
               {
                 "group": "ast-guard",
                 "icon": "shield-check",
                 "pages": [
-                  "core-libraries/ast-guard/overview",
-                  "core-libraries/ast-guard/pre-scanner",
-                  "core-libraries/ast-guard/agentscript-preset",
-                  "core-libraries/ast-guard/babel-preset",
-                  "core-libraries/ast-guard/security-rules",
-                  "core-libraries/ast-guard/code-transform",
-                  "core-libraries/ast-guard/custom-rules"
+                  "enclave/core-libraries/ast-guard/overview",
+                  "enclave/core-libraries/ast-guard/pre-scanner",
+                  "enclave/core-libraries/ast-guard/agentscript-preset",
+                  "enclave/core-libraries/ast-guard/babel-preset",
+                  "enclave/core-libraries/ast-guard/security-rules",
+                  "enclave/core-libraries/ast-guard/code-transform",
+                  "enclave/core-libraries/ast-guard/custom-rules"
                 ]
               },
               {
                 "group": "EnclaveJS Streaming",
                 "icon": "wave-pulse",
                 "pages": [
-                  "enclavejs/overview",
-                  "enclavejs/types",
-                  "enclavejs/stream",
-                  "enclavejs/broker",
-                  "enclavejs/client",
-                  "enclavejs/react",
-                  "enclavejs/runtime"
+                  "enclave/enclavejs/overview",
+                  "enclave/enclavejs/types",
+                  "enclave/enclavejs/stream",
+                  "enclave/enclavejs/broker",
+                  "enclave/enclavejs/client",
+                  "enclave/enclavejs/react",
+                  "enclave/enclavejs/runtime"
                 ]
               },
               {
                 "group": "Guides",
                 "icon": "map",
                 "pages": [
-                  "guides/first-agent",
-                  "guides/tool-integration",
-                  "guides/react-code-editor",
-                  "guides/production-deployment",
-                  "guides/scaling",
-                  "guides/security-hardening"
+                  "enclave/guides/first-agent",
+                  "enclave/guides/tool-integration",
+                  "enclave/guides/react-code-editor",
+                  "enclave/guides/production-deployment",
+                  "enclave/guides/scaling",
+                  "enclave/guides/security-hardening"
                 ]
               },
               {
                 "group": "Examples",
                 "icon": "flask",
                 "pages": [
-                  "examples/hello-world",
-                  "examples/tool-calling",
-                  "examples/streaming-ui",
-                  "examples/multi-tenant",
-                  "examples/encrypted-sessions"
+                  "enclave/examples/hello-world",
+                  "enclave/examples/tool-calling",
+                  "enclave/examples/streaming-ui",
+                  "enclave/examples/multi-tenant",
+                  "enclave/examples/encrypted-sessions"
                 ]
               },
               {
                 "group": "Troubleshooting",
                 "icon": "wrench",
                 "pages": [
-                  "troubleshooting/common-errors",
-                  "troubleshooting/debugging",
-                  "troubleshooting/faq"
+                  "enclave/troubleshooting/common-errors",
+                  "enclave/troubleshooting/debugging",
+                  "enclave/troubleshooting/faq"
                 ]
               },
               {
                 "group": "Resources",
                 "icon": "circle-info",
                 "pages": [
-                  "changelog"
+                  "enclave/updates"
                 ]
               }
             ]
@@ -179,20 +179,20 @@
                 "group": "Core Libraries",
                 "icon": "cube",
                 "pages": [
-                  "api-reference/enclave-vm",
-                  "api-reference/ast-guard"
+                  "enclave/api-reference/enclave-vm",
+                  "enclave/api-reference/ast-guard"
                 ]
               },
               {
                 "group": "EnclaveJS Packages",
                 "icon": "boxes-stacked",
                 "pages": [
-                  "api-reference/enclavejs-types",
-                  "api-reference/enclavejs-stream",
-                  "api-reference/enclavejs-broker",
-                  "api-reference/enclavejs-client",
-                  "api-reference/enclavejs-react",
-                  "api-reference/enclavejs-runtime"
+                  "enclave/api-reference/enclavejs-types",
+                  "enclave/api-reference/enclavejs-stream",
+                  "enclave/api-reference/enclavejs-broker",
+                  "enclave/api-reference/enclavejs-client",
+                  "enclave/api-reference/enclavejs-react",
+                  "enclave/api-reference/enclavejs-runtime"
                 ]
               }
             ]
