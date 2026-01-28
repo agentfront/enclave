@@ -20,19 +20,21 @@
   "bugs": {
     "url": "https://github.com/agentfront/enclave/issues"
   },
-  "main": "./dist/src/index.js",
-  "types": "./dist/src/index.d.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/esm/index.mjs",
+  "types": "./dist/index.d.ts",
   "exports": {
     "./package.json": "./package.json",
     ".": {
-      "types": "./dist/src/index.d.ts",
-      "import": "./dist/src/index.js",
-      "default": "./dist/src/index.js"
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/esm/index.mjs",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "dependencies": {
     "@enclave-vm/types": "2.8.0",
     "@enclave-vm/stream": "2.8.0"
-  },
-  "type": "commonjs"
+  }
 }

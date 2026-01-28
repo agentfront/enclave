@@ -8,9 +8,10 @@
   },
   "theme": "mint",
   "favicon": {
-    "light": "/favicon.ico",
-    "dark": "/favicon.ico"
+    "light": "/enclave/favicon.ico",
+    "dark": "/enclave/favicon.ico"
   },
+  "css": "/enclave/style.css",
   "colors": {
     "primary": "#e8a045",
     "light": "#f0b865",
