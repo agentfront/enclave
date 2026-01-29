@@ -19,7 +19,7 @@
         "bundle": true,
         "thirdParty": false,
         "platform": "node",
-        "assets": ["libs/ast-guard/README.md", "libs/ast-guard/CHANGELOG.md", "LICENSE", "libs/ast-guard/package.json"],
+        "assets": ["libs/ast-guard/README.md", "LICENSE", "libs/ast-guard/package.json"],
         "esbuildOptions": {
           "outExtension": { ".js": ".js" },
           "external": ["acorn", "acorn-walk", "astring", "@types/estree"]
