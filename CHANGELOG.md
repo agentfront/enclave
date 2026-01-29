@@ -9,6 +9,8 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-01-29
+
 ## 2026-01-09
 
 Security-focused updates to enclave-vm plus a new AST Guard option for controlled Array.fill usage.
