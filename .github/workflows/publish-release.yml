@@ -377,6 +377,43 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Trigger docs sync
+        if: ${{ inputs.dry_run != true && steps.version.outputs.is_prerelease == 'false' }}
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          VERSION: v${{ steps.version.outputs.version }}
+          VERSION_MINOR: ${{ steps.context.outputs.release_line }}
+        with:
+          github-token: ${{ secrets.DOCS_SYNC_TOKEN }}
+          script: |
+            const tag = process.env.VERSION;
+            const versionMinor = process.env.VERSION_MINOR;
+            const sha = context.sha;
+
+            console.log(`Triggering docs sync for enclave`);
+            console.log(`  Tag: ${tag}`);
+            console.log(`  SHA: ${sha}`);
+            console.log(`  Version minor: ${versionMinor}`);
+
+            try {
+              await github.rest.repos.createDispatchEvent({
+                owner: 'agentfront',
+                repo: 'docs',
+                event_type: 'sync-docs',
+                client_payload: {
+                  repo: 'enclave',
+                  sha: sha,
+                  tag: tag,
+                  version_minor: versionMinor
+                }
+              });
+              console.log(`Successfully triggered docs sync for ${tag}`);
+            } catch (error) {
+              console.error(`Failed to trigger docs sync: ${error.message}`);
+              // Don't fail the release for docs sync issues
+            }
+
       - name: Summary
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
