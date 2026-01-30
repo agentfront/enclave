@@ -19,8 +19,6 @@ name: Trigger Docs Update
 on:
   release:
     types: [published]
-  pull_request:
-    types: [closed]
 
 permissions:
   contents: read
