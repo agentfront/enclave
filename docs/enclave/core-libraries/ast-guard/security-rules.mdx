@@ -121,27 +121,6 @@ new NoRegexLiteralRule({
 });
 ```
 
-## ResourceExhaustionRule
-
-Detects AST patterns that could cause CPU or memory exhaustion.
-
-```ts
-import { ResourceExhaustionRule } from '@enclave-vm/ast';
-
-const rule = new ResourceExhaustionRule({
-  maxBigIntExponent: 10000,
-  maxArraySize: 1000000,
-  maxStringRepeat: 100000,
-  blockConstructorAccess: true,
-});
-```
-
-**Blocks:**
-- `2n ** 1000000n` - BigInt exponentiation
-- `new Array(10000000)` - Large array allocations
-- `'x'.repeat(10000000)` - String repeat exploits
-- Constructor property access chains
-
 ## DisallowedIdentifierRule
 
 Blocks specific identifier names.

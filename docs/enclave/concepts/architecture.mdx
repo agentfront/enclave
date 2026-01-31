@@ -19,14 +19,14 @@ flowchart LR
     style C fill:#f0b865,stroke:#c78935,color:#333
 ```
 
-### ast-guard
+### @enclave-vm/ast
 
 Static analysis and validation layer:
 - **Pre-scanner** - Catches DoS attacks before parsing
 - **AST validation** - Blocks dangerous constructs
 - **Code transformation** - Wraps code for safe execution
 
-### enclave-vm
+### @enclave-vm/core
 
 Runtime execution layer:
 - **Sandboxed context** - Isolated JavaScript environment
