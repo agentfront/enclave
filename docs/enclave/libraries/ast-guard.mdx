@@ -8,7 +8,7 @@ description: 'Production ready JavaScript AST validation with extensible rules, 
 ast-guard is a production-ready AST validation library for JavaScript. It inspects user-provided or LLM-generated code before execution, blocking dangerous constructs and enforcing API usage policies. ast-guard powers Enclave's first security layer and can be used standalone for any JavaScript validation needs.
 
 <CardGroup cols={3}>
-  <Card title="16 Built-in Rules" icon="shield">
+  <Card title="15 Built-in Rules" icon="shield">
     Block eval, dangerous globals, prototype manipulation, unbounded loops, ReDoS, and more with battle-tested validation rules.
   </Card>
   <Card title="Pre-Scanner Defense" icon="radar">
@@ -405,27 +405,6 @@ new NoRegexLiteralRule({
   warnThreshold: 50,
 });
 ```
-
-### ResourceExhaustionRule
-
-Detects AST patterns that could cause CPU or memory exhaustion.
-
-```ts
-import { ResourceExhaustionRule } from '@enclave-vm/ast';
-
-const rule = new ResourceExhaustionRule({
-  maxBigIntExponent: 10000,
-  maxArraySize: 1000000,
-  maxStringRepeat: 100000,
-  blockConstructorAccess: true,
-});
-```
-
-**Blocked patterns:**
-- `2n ** 1000000n` - BigInt exponentiation
-- `new Array(10000000)` - Large array allocations
-- `'x'.repeat(10000000)` - String repeat exploits
-- Constructor property access chains
 
 ---
 
