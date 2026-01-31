@@ -85,7 +85,7 @@
                 ]
               },
               {
-                "group": "enclave-vm",
+                "group": "@enclave-vm/core",
                 "icon": "lock",
                 "pages": [
                   "enclave/core-libraries/enclave-vm/overview",
@@ -100,7 +100,7 @@
                 ]
               },
               {
-                "group": "ast-guard",
+                "group": "@enclave-vm/ast",
                 "icon": "shield-check",
                 "pages": [
                   "enclave/core-libraries/ast-guard/overview",

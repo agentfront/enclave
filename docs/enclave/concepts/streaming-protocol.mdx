@@ -7,24 +7,24 @@ The EnclaveJS streaming protocol enables real-time communication between clients
 
 ## Protocol Overview
 
-```
-Client                    Broker                    Runtime
-  │                         │                         │
-  │──── HTTP POST ─────────▶│                         │
-  │     (execute code)      │                         │
-  │                         │──── WebSocket ─────────▶│
-  │                         │     (start session)     │
-  │                         │                         │
-  │◀──── NDJSON Stream ─────│◀──── Events ───────────│
-  │      (events)           │                         │
-  │                         │                         │
-  │      (on tool_call)     │                         │
-  │──── Tool Result ───────▶│──── Tool Result ──────▶│
-  │                         │                         │
-  │◀──── More Events ───────│◀──── Continue ─────────│
-  │                         │                         │
-  │◀──── Final Event ───────│◀──── Complete ─────────│
-  │                         │                         │
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+sequenceDiagram
+    participant C as Client
+    participant B as Broker
+    participant R as Runtime
+
+    C->>B: HTTP POST (execute code)
+    B->>R: WebSocket (start session)
+    R-->>B: Events
+    B-->>C: NDJSON Stream (events)
+    Note over C,R: On tool_call
+    C->>B: Tool Result
+    B->>R: Tool Result
+    R-->>B: Continue
+    B-->>C: More Events
+    R-->>B: Complete
+    B-->>C: Final Event
 ```
 
 ## Event Types
@@ -180,16 +180,18 @@ Benefits:
 
 When the runtime needs to call a tool:
 
-```
-1. Runtime emits tool_call event
-   ↓
-2. Client/Broker receives and executes tool
-   ↓
-3. Client/Broker sends tool result
-   ↓
-4. Runtime applies result, emits tool_result_applied
-   ↓
-5. Execution continues
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TD
+    TC1["1. Runtime emits tool_call event"] --> TC2["2. Client/Broker receives and executes tool"]
+    TC2 --> TC3["3. Client/Broker sends tool result"]
+    TC3 --> TC4["4. Runtime applies result, emits tool_result_applied"]
+    TC4 --> TC5["5. Execution continues"]
+    style TC1 fill:#e8a045,stroke:#c78935,color:#fff
+    style TC2 fill:#f0b865,stroke:#c78935,color:#333
+    style TC3 fill:#f0b865,stroke:#c78935,color:#333
+    style TC4 fill:#e8a045,stroke:#c78935,color:#fff
+    style TC5 fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 ### Submitting Tool Results

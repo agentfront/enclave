@@ -7,19 +7,16 @@ Enclave provides a layered security architecture for executing untrusted JavaScr
 
 ## Core Components
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Your Application                         │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
-│  │  ast-guard  │───▶│  enclave-vm │───▶│   Tools     │     │
-│  │             │    │             │    │             │     │
-│  │ • Validate  │    │ • Transform │    │ • Execute   │     │
-│  │ • Pre-scan  │    │ • Sandbox   │    │ • Return    │     │
-│  └─────────────┘    └─────────────┘    └─────────────┘     │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart LR
+    subgraph app["Your Application"]
+        A["@enclave-vm/ast<br/>• Validate<br/>• Pre-scan"] --> B["@enclave-vm/core<br/>• Transform<br/>• Sandbox"]
+        B --> C["Tools<br/>• Execute<br/>• Return"]
+    end
+    style A fill:#e8a045,stroke:#c78935,color:#fff
+    style B fill:#e8a045,stroke:#c78935,color:#fff
+    style C fill:#f0b865,stroke:#c78935,color:#333
 ```
 
 ### ast-guard
@@ -64,16 +61,17 @@ Each layer provides independent protection. Even if one layer is bypassed, subse
 
 Simplest deployment - everything runs in one process:
 
-```
-┌──────────────────────────┐
-│     Your Application     │
-│  ┌────────────────────┐  │
-│  │    enclave-vm      │  │
-│  │  ┌──────────────┐  │  │
-│  │  │   vm context │  │  │
-│  │  └──────────────┘  │  │
-│  └────────────────────┘  │
-└──────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TB
+    subgraph app["Your Application"]
+        subgraph enclave["@enclave-vm/core"]
+            VM["vm context"]
+        end
+    end
+    style app fill:#fff5e6,stroke:#c78935,color:#333
+    style enclave fill:#f0b865,stroke:#c78935,color:#333
+    style VM fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 ```ts
@@ -90,19 +88,30 @@ const enclave = new Enclave({
 
 Code runs in separate worker threads for stronger isolation:
 
-```
-┌───────────────────────────────────────┐
-│          Your Application             │
-│  ┌─────────────────────────────────┐  │
-│  │         Worker Pool             │  │
-│  │  ┌─────────┐  ┌─────────┐       │  │
-│  │  │ Worker  │  │ Worker  │  ...  │  │
-│  │  │ ┌─────┐ │  │ ┌─────┐ │       │  │
-│  │  │ │ vm  │ │  │ │ vm  │ │       │  │
-│  │  │ └─────┘ │  │ └─────┘ │       │  │
-│  │  └─────────┘  └─────────┘       │  │
-│  └─────────────────────────────────┘  │
-└───────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TB
+    subgraph app["Your Application"]
+        subgraph pool["Worker Pool"]
+            subgraph w1["Worker"]
+                VM1["vm"]
+            end
+            subgraph w2["Worker"]
+                VM2["vm"]
+            end
+            subgraph w3["..."]
+                VM3["vm"]
+            end
+        end
+    end
+    style app fill:#fff5e6,stroke:#c78935,color:#333
+    style pool fill:#f0b865,stroke:#c78935,color:#333
+    style w1 fill:#e8a045,stroke:#c78935,color:#fff
+    style w2 fill:#e8a045,stroke:#c78935,color:#fff
+    style w3 fill:#e8a045,stroke:#c78935,color:#fff
+    style VM1 fill:#c78935,stroke:#c78935,color:#fff
+    style VM2 fill:#c78935,stroke:#c78935,color:#fff
+    style VM3 fill:#c78935,stroke:#c78935,color:#fff
 ```
 
 ```ts
@@ -124,14 +133,25 @@ const enclave = new Enclave({
 
 For production applications with streaming and real-time features:
 
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Client    │     │   Broker    │     │   Runtime   │
-│  (React)    │────▶│  (Express)  │────▶│  (Worker)   │
-│             │HTTP │             │ WS  │             │
-│  useEnclave │     │ Tool Router │     │ enclave-vm  │
-│  Session    │     │ Session Mgr │     │             │
-└─────────────┘     └─────────────┘     └─────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart LR
+    subgraph client["Client (React)"]
+        C1["useEnclave"]
+        C2["Session"]
+    end
+    subgraph broker["Broker (Express)"]
+        B1["Tool Router"]
+        B2["Session Mgr"]
+    end
+    subgraph runtime["Runtime (Worker)"]
+        R1["@enclave-vm/core"]
+    end
+    client -->|HTTP| broker
+    broker -->|WS| runtime
+    style client fill:#f0b865,stroke:#c78935,color:#333
+    style broker fill:#e8a045,stroke:#c78935,color:#fff
+    style runtime fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 - **Client** - React hooks for real-time streaming UI
@@ -158,42 +178,46 @@ broker.tool('users:list', {
 
 ### Request Flow
 
-```
-1. Code submitted
-   ↓
-2. Pre-scanner checks (DoS protection)
-   ↓
-3. AST validation (blocked constructs)
-   ↓
-4. Code transformation (wrapping)
-   ↓
-5. AI scoring (optional, attack detection)
-   ↓
-6. Sandbox execution
-   ↓
-7. Tool calls routed to handlers
-   ↓
-8. Output sanitization
-   ↓
-9. Result returned
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TD
+    S1["1. Code submitted"] --> S2["2. Pre-scanner checks<br/>(DoS protection)"]
+    S2 --> S3["3. AST validation<br/>(blocked constructs)"]
+    S3 --> S4["4. Code transformation<br/>(wrapping)"]
+    S4 --> S5["5. AI scoring<br/>(optional, attack detection)"]
+    S5 --> S6["6. Sandbox execution"]
+    S6 --> S7["7. Tool calls routed<br/>to handlers"]
+    S7 --> S8["8. Output sanitization"]
+    S8 --> S9["9. Result returned"]
+    style S1 fill:#f0b865,stroke:#c78935,color:#333
+    style S2 fill:#e8a045,stroke:#c78935,color:#fff
+    style S3 fill:#e8a045,stroke:#c78935,color:#fff
+    style S4 fill:#e8a045,stroke:#c78935,color:#fff
+    style S5 fill:#f0b865,stroke:#c78935,color:#333
+    style S6 fill:#e8a045,stroke:#c78935,color:#fff
+    style S7 fill:#e8a045,stroke:#c78935,color:#fff
+    style S8 fill:#e8a045,stroke:#c78935,color:#fff
+    style S9 fill:#f0b865,stroke:#c78935,color:#333
 ```
 
 ### Tool Call Flow
 
-```
-Script: callTool('users:list', { limit: 10 })
-   ↓
-Sandbox: intercept and validate
-   ↓
-Double VM: pattern detection (optional)
-   ↓
-Host: toolHandler invoked
-   ↓
-Your Code: execute and return
-   ↓
-Sandbox: sanitize response
-   ↓
-Script: receives result
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TD
+    T1["Script: callTool('users:list', { limit: 10 })"] --> T2["Sandbox: intercept and validate"]
+    T2 --> T3["Double VM: pattern detection (optional)"]
+    T3 --> T4["Host: toolHandler invoked"]
+    T4 --> T5["Your Code: execute and return"]
+    T5 --> T6["Sandbox: sanitize response"]
+    T6 --> T7["Script: receives result"]
+    style T1 fill:#f0b865,stroke:#c78935,color:#333
+    style T2 fill:#e8a045,stroke:#c78935,color:#fff
+    style T3 fill:#e8a045,stroke:#c78935,color:#fff
+    style T4 fill:#e8a045,stroke:#c78935,color:#fff
+    style T5 fill:#f0b865,stroke:#c78935,color:#333
+    style T6 fill:#e8a045,stroke:#c78935,color:#fff
+    style T7 fill:#f0b865,stroke:#c78935,color:#333
 ```
 
 ## When to Use Each Architecture

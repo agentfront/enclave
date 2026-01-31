@@ -144,7 +144,7 @@ jobs:
           set -euo pipefail
 
           INITIAL_VERSION="${{ steps.version.outputs.initial_version }}"
-          PROJECTS="enclave-vm,enclavejs-types,enclavejs-stream,enclavejs-broker,enclavejs-client,enclavejs-react,enclavejs-runtime,ast-guard"
+          PROJECTS="core,types,stream,broker,client,react,runtime,ast"
           TODAY=$(date -u +"%Y-%m-%d")
 
           # Update per-library CHANGELOGs

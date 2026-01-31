@@ -30,24 +30,25 @@ npm install @enclave-vm/react @enclave-vm/client @monaco-editor/react
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────┐
-│              React Frontend                  │
-│  ┌─────────────────────────────────────┐    │
-│  │         Code Editor Component       │    │
-│  │  ┌─────────────┐ ┌───────────────┐  │    │
-│  │  │   Monaco    │ │    Output     │  │    │
-│  │  │   Editor    │ │    Panel      │  │    │
-│  │  └─────────────┘ └───────────────┘  │    │
-│  └─────────────────────────────────────┘    │
-│                    │                         │
-│     useEnclave()   ▼   EnclaveClient        │
-└────────────────────┼────────────────────────┘
-                     │ WebSocket/HTTP
-                     ▼
-          ┌─────────────────────┐
-          │   EnclaveJS Broker  │
-          └─────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TB
+    subgraph frontend["React Frontend"]
+        subgraph editor["Code Editor Component"]
+            Monaco["Monaco Editor"]
+            Output["Output Panel"]
+        end
+        Hook["useEnclave() / EnclaveClient"]
+    end
+    Broker["EnclaveJS Broker"]
+    editor --> Hook
+    Hook -->|"WebSocket/HTTP"| Broker
+    style frontend fill:#fff5e6,stroke:#c78935,color:#333
+    style editor fill:#f0b865,stroke:#c78935,color:#333
+    style Monaco fill:#e8a045,stroke:#c78935,color:#fff
+    style Output fill:#e8a045,stroke:#c78935,color:#fff
+    style Hook fill:#f0b865,stroke:#c78935,color:#333
+    style Broker fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 ## Step 1: Configure EnclaveJS Client

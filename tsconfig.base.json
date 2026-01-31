@@ -21,14 +21,14 @@
     "skipLibCheck": true,
     "skipDefaultLibCheck": true,
     "paths": {
-      "@enclave-vm/ast": ["libs/ast-guard/src/index.ts"],
-      "@enclave-vm/core": ["libs/enclave-vm/src/index.ts"],
-      "@enclave-vm/types": ["libs/enclavejs-types/src/index.ts"],
-      "@enclave-vm/stream": ["libs/enclavejs-stream/src/index.ts"],
-      "@enclave-vm/broker": ["libs/enclavejs-broker/src/index.ts"],
-      "@enclave-vm/client": ["libs/enclavejs-client/src/index.ts"],
-      "@enclave-vm/react": ["libs/enclavejs-react/src/index.ts"],
-      "@enclave-vm/runtime": ["libs/enclavejs-runtime/src/index.ts"]
+      "@enclave-vm/ast": ["libs/ast/src/index.ts"],
+      "@enclave-vm/core": ["libs/core/src/index.ts"],
+      "@enclave-vm/types": ["libs/types/src/index.ts"],
+      "@enclave-vm/stream": ["libs/stream/src/index.ts"],
+      "@enclave-vm/broker": ["libs/broker/src/index.ts"],
+      "@enclave-vm/client": ["libs/client/src/index.ts"],
+      "@enclave-vm/react": ["libs/react/src/index.ts"],
+      "@enclave-vm/runtime": ["libs/runtime/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"]

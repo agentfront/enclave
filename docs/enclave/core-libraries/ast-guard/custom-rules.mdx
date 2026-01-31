@@ -16,7 +16,7 @@ import {
   ForbiddenLoopRule,
   RequiredFunctionCallRule,
   UnknownGlobalRule,
-} from 'ast-guard';
+} from '@enclave-vm/ast';
 
 const customValidator = new JSAstValidator([
   new DisallowedIdentifierRule({
@@ -52,7 +52,7 @@ ast-guard includes pre-built security presets:
 | **PERMISSIVE**  | Internal/test code           | Minimal - eval blocked      |
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset, Presets } from 'ast-guard';
+import { JSAstValidator, createAgentScriptPreset, Presets } from '@enclave-vm/ast';
 
 // AgentScript (recommended for LLM code)
 const agentScript = new JSAstValidator(createAgentScriptPreset());
@@ -99,7 +99,7 @@ interface ValidationIssue {
 ### Example: Custom Rule
 
 ```ts
-import { ValidationRule, ValidationContext, ValidationIssue } from 'ast-guard';
+import { ValidationRule, ValidationContext, ValidationIssue } from '@enclave-vm/ast';
 import { walk } from 'estree-walker';
 
 class NoMagicNumbersRule implements ValidationRule {
@@ -193,7 +193,7 @@ const validator = new JSAstValidator([
 Add rules to an existing preset:
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
 const preset = createAgentScriptPreset();
 
@@ -239,7 +239,7 @@ const validator = new JSAstValidator([
 ## Testing Custom Rules
 
 ```ts
-import { JSAstValidator } from 'ast-guard';
+import { JSAstValidator } from '@enclave-vm/ast';
 import { describe, it, expect } from 'vitest';
 
 describe('CustomRule', () => {

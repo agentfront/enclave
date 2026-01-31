@@ -3,12 +3,12 @@ title: 'ast-guard'
 description: 'API reference for the ast-guard package'
 ---
 
-API reference for the `ast-guard` package.
+API reference for the `@enclave-vm/ast` package.
 
 ## Installation
 
 ```bash
-npm install ast-guard
+npm install @enclave-vm/ast
 ```
 
 ## JSAstValidator Class
@@ -59,7 +59,7 @@ interface ValidationIssue {
 
 **Example:**
 ```ts
-import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
 const validator = new JSAstValidator(createAgentScriptPreset());
 const result = await validator.validate(`
@@ -109,7 +109,7 @@ interface PreScanIssue {
 
 **Example:**
 ```ts
-import { PreScanner, createPreScannerConfig } from 'ast-guard';
+import { PreScanner, createPreScannerConfig } from '@enclave-vm/ast';
 
 const scanner = new PreScanner(createPreScannerConfig('agentscript'));
 const result = scanner.scan(code);
@@ -273,7 +273,7 @@ interface TransformOptions {
 
 **Example:**
 ```ts
-import { transformAgentScript } from 'ast-guard';
+import { transformAgentScript } from '@enclave-vm/ast';
 
 const transformed = transformAgentScript(`
   const users = await callTool('users:list', {});
@@ -302,7 +302,7 @@ const transformed = transformAgentScript(`
 ### Creating a Custom Rule
 
 ```ts
-import { ValidationRule, RuleContext } from 'ast-guard';
+import { ValidationRule, RuleContext } from '@enclave-vm/ast';
 
 const noConsoleRule: ValidationRule = {
   id: 'no-console',
@@ -333,7 +333,7 @@ const noConsoleRule: ValidationRule = {
 ### Using Custom Rules
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
 const preset = createAgentScriptPreset();
 preset.rules.push(noConsoleRule);
@@ -350,7 +350,7 @@ import {
   createAgentScriptPreset,
   createPreScannerConfig,
   transformAgentScript,
-} from 'ast-guard';
+} from '@enclave-vm/ast';
 
 async function validateAndTransform(code: string) {
   // Step 1: Pre-scan

@@ -7,25 +7,29 @@ Implement secure, isolated code execution for multiple users or tenants.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        API Gateway                           │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  Auth Middleware → Tenant Resolver → Rate Limiter   │    │
-│  └─────────────────────────────────────────────────────┘    │
-└───────────────────────────┬─────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Enclave Service                           │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │           Tenant-Aware Tool Handler                 │    │
-│  │  ┌─────────────┐ ┌────────────┐ ┌───────────────┐   │    │
-│  │  │ Permission  │ │   Data     │ │    Audit      │   │    │
-│  │  │   Check     │ │ Isolation  │ │   Logging     │   │    │
-│  │  └─────────────┘ └────────────┘ └───────────────┘   │    │
-│  └─────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TB
+    subgraph gateway["API Gateway"]
+        Auth["Auth Middleware"] --> Tenant["Tenant Resolver"] --> Rate["Rate Limiter"]
+    end
+    subgraph enclave["Enclave Service"]
+        subgraph handler["Tenant-Aware Tool Handler"]
+            Perm["Permission Check"]
+            Data["Data Isolation"]
+            Audit["Audit Logging"]
+        end
+    end
+    gateway --> enclave
+    style gateway fill:#f0b865,stroke:#c78935,color:#333
+    style enclave fill:#fff5e6,stroke:#c78935,color:#333
+    style handler fill:#f0b865,stroke:#c78935,color:#333
+    style Auth fill:#e8a045,stroke:#c78935,color:#fff
+    style Tenant fill:#e8a045,stroke:#c78935,color:#fff
+    style Rate fill:#e8a045,stroke:#c78935,color:#fff
+    style Perm fill:#e8a045,stroke:#c78935,color:#fff
+    style Data fill:#e8a045,stroke:#c78935,color:#fff
+    style Audit fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 ## Tenant Context

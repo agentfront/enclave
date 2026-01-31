@@ -113,18 +113,20 @@ Use the default VM adapter when:
 
 The worker pool provides two layers of isolation:
 
-```
-┌─────────────────────────────────┐
-│         Main Process            │
-├─────────────────────────────────┤
-│  ┌────────────────────────────┐ │
-│  │      Worker Thread         │ │
-│  │  ┌──────────────────────┐  │ │
-│  │  │     VM Context       │  │ │
-│  │  │  (User Code Runs)    │  │ │
-│  │  └──────────────────────┘  │ │
-│  └────────────────────────────┘ │
-└─────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TB
+    subgraph main["Main Process"]
+        subgraph worker["Worker Thread"]
+            subgraph vm["VM Context (User Code Runs)"]
+                code["Sandboxed Code"]
+            end
+        end
+    end
+    style main fill:#fff5e6,stroke:#c78935,color:#333
+    style worker fill:#f0b865,stroke:#c78935,color:#333
+    style vm fill:#e8a045,stroke:#c78935,color:#fff
+    style code fill:#c78935,stroke:#c78935,color:#fff
 ```
 
 1. **Worker Thread** - OS-level process isolation

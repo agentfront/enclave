@@ -17,7 +17,7 @@ The Babel preset provides:
 ## Basic Usage
 
 ```ts
-import { createBabelPreset, JSAstValidator } from 'ast-guard';
+import { createBabelPreset, JSAstValidator } from '@enclave-vm/ast';
 
 const validator = new JSAstValidator(createBabelPreset({
   securityLevel: 'STANDARD',
@@ -35,7 +35,7 @@ const result = await validator.validate(`
 The Babel preset defines security limits per security level:
 
 ```ts
-import { getBabelConfig, BABEL_SECURITY_CONFIGS } from 'ast-guard';
+import { getBabelConfig, BABEL_SECURITY_CONFIGS } from '@enclave-vm/ast';
 
 // Get config for a specific level
 const config = getBabelConfig('SECURE');
@@ -137,7 +137,7 @@ The Babel preset inherits all AgentScript security rules:
 ## Creating the Preset
 
 ```ts
-import { createBabelPreset } from 'ast-guard';
+import { createBabelPreset } from '@enclave-vm/ast';
 
 // Basic usage - inherits from AgentScript
 const rules = createBabelPreset({

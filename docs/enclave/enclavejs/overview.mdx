@@ -11,17 +11,26 @@ EnclaveJS is a streaming runtime layer built on top of `@enclave-vm/core` that e
 
 EnclaveJS provides a distributed architecture for executing AI-generated code with streaming results:
 
-```
-┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
-│   React App     │      │     Broker      │      │    Runtime      │
-│  (@enclave-vm/  │ HTTP │  (@enclave-vm/  │  WS  │  (@enclave-vm/  │
-│    react)       │─────▶│    broker)      │─────▶│    runtime)     │
-└─────────────────┘      └─────────────────┘      └─────────────────┘
-         │                        │                        │
-         │                        │                        │
-         ▼                        ▼                        ▼
-   useEnclaveSession        Tool Registry            enclave-vm
-   EnclaveProvider          Session Manager          Sandboxed Code
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart LR
+    subgraph react["React App<br/>(@enclave-vm/react)"]
+        R1["useEnclaveSession"]
+        R2["EnclaveProvider"]
+    end
+    subgraph broker["Broker<br/>(@enclave-vm/broker)"]
+        B1["Tool Registry"]
+        B2["Session Manager"]
+    end
+    subgraph runtime["Runtime<br/>(@enclave-vm/runtime)"]
+        RT1["@enclave-vm/core"]
+        RT2["Sandboxed Code"]
+    end
+    react -->|HTTP| broker
+    broker -->|WS| runtime
+    style react fill:#f0b865,stroke:#c78935,color:#333
+    style broker fill:#e8a045,stroke:#c78935,color:#fff
+    style runtime fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 ## Packages

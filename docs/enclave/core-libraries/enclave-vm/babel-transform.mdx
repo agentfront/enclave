@@ -7,23 +7,19 @@ The Babel transform feature enables secure TSX/JSX transformation inside the enc
 
 ## Overview
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    Enclave Sandbox                           │
-│  ┌─────────────┐      ┌─────────────┐      ┌─────────────┐  │
-│  │  TSX Input  │─────▶│   Babel     │─────▶│  JS Output  │  │
-│  │             │      │  Transform  │      │             │  │
-│  │ <App />     │      │  (Isolated) │      │ React.create│  │
-│  └─────────────┘      └─────────────┘      └─────────────┘  │
-│                              │                               │
-│                     ┌────────┴────────┐                     │
-│                     │ Security Layer  │                     │
-│                     │ - Preset allow  │                     │
-│                     │ - Size limits   │                     │
-│                     │ - Timeout       │                     │
-│                     │ - No plugins    │                     │
-│                     └─────────────────┘                     │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TB
+    subgraph sandbox["Enclave Sandbox"]
+        TSX["TSX Input<br/>&lt;App /&gt;"] --> Babel["Babel Transform<br/>(Isolated)"]
+        Babel --> JS["JS Output<br/>React.createElement"]
+        Babel --> Security["Security Layer<br/>• Preset allow<br/>• Size limits<br/>• Timeout<br/>• No plugins"]
+    end
+    style sandbox fill:#fff5e6,stroke:#c78935,color:#333
+    style TSX fill:#f0b865,stroke:#c78935,color:#333
+    style Babel fill:#e8a045,stroke:#c78935,color:#fff
+    style JS fill:#f0b865,stroke:#c78935,color:#333
+    style Security fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 ## Quick Start
@@ -86,7 +82,7 @@ Each security level provides different limits for Babel transforms:
 
 ```ts
 import { Enclave } from '@enclave-vm/core';
-import { getBabelConfig } from 'ast-guard';
+import { getBabelConfig } from '@enclave-vm/ast';
 
 // Get config for a security level
 const config = getBabelConfig('SECURE');
@@ -299,7 +295,7 @@ For server-side use without the full enclave sandbox, use `createRestrictedBabel
 
 ```ts
 import { createRestrictedBabel } from '@enclave-vm/core';
-import { getBabelConfig } from 'ast-guard';
+import { getBabelConfig } from '@enclave-vm/ast';
 
 const config = getBabelConfig('STANDARD');
 const babel = createRestrictedBabel(config);

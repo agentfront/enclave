@@ -123,31 +123,40 @@ class EnclavePool {
 
 ### Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     Load Balancer                        │
-└───────────────────────┬─────────────────────────────────┘
-                        │
-        ┌───────────────┼───────────────┐
-        ▼               ▼               ▼
-┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│   API Pod 1   │ │   API Pod 2   │ │   API Pod 3   │
-│ EnclaveClient │ │ EnclaveClient │ │ EnclaveClient │
-└───────┬───────┘ └───────┬───────┘ └───────┬───────┘
-        │                 │                 │
-        └─────────────────┼─────────────────┘
-                          ▼
-                ┌─────────────────────┐
-                │   EnclaveJS Broker  │
-                │   (Redis-backed)    │
-                └─────────┬───────────┘
-                          │
-        ┌─────────────────┼─────────────────┐
-        ▼                 ▼                 ▼
-┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│  Runtime Pod  │ │  Runtime Pod  │ │  Runtime Pod  │
-│       1       │ │       2       │ │       3       │
-└───────────────┘ └───────────────┘ └───────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TB
+    LB["Load Balancer"]
+    subgraph apiTier["API Tier"]
+        API1["API Pod 1<br/>EnclaveClient"]
+        API2["API Pod 2<br/>EnclaveClient"]
+        API3["API Pod 3<br/>EnclaveClient"]
+    end
+    Broker["EnclaveJS Broker<br/>(Redis-backed)"]
+    subgraph runtimeTier["Runtime Tier"]
+        R1["Runtime Pod 1"]
+        R2["Runtime Pod 2"]
+        R3["Runtime Pod 3"]
+    end
+    LB --> API1
+    LB --> API2
+    LB --> API3
+    API1 --> Broker
+    API2 --> Broker
+    API3 --> Broker
+    Broker --> R1
+    Broker --> R2
+    Broker --> R3
+    style LB fill:#f0b865,stroke:#c78935,color:#333
+    style apiTier fill:#fff5e6,stroke:#c78935,color:#333
+    style runtimeTier fill:#fff5e6,stroke:#c78935,color:#333
+    style API1 fill:#e8a045,stroke:#c78935,color:#fff
+    style API2 fill:#e8a045,stroke:#c78935,color:#fff
+    style API3 fill:#e8a045,stroke:#c78935,color:#fff
+    style Broker fill:#e8a045,stroke:#c78935,color:#fff
+    style R1 fill:#e8a045,stroke:#c78935,color:#fff
+    style R2 fill:#e8a045,stroke:#c78935,color:#fff
+    style R3 fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 ### Broker Configuration

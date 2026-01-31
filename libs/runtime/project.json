@@ -1,28 +1,30 @@
 {
-  "name": "enclavejs-client",
+  "name": "runtime",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "sourceRoot": "libs/enclavejs-client/src",
+  "sourceRoot": "libs/runtime/src",
   "projectType": "library",
   "tags": ["scope:publishable", "type:lib", "versioning:independent"],
+  "implicitDependencies": ["types", "stream", "core"],
   "targets": {
     "build-cjs": {
       "executor": "@nx/esbuild:esbuild",
       "dependsOn": ["^build"],
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "libs/enclavejs-client/dist",
-        "main": "libs/enclavejs-client/src/index.ts",
-        "tsConfig": "libs/enclavejs-client/tsconfig.lib.json",
+        "outputPath": "libs/runtime/dist",
+        "main": "libs/runtime/src/index.ts",
+        "additionalEntryPoints": ["libs/runtime/src/cli.ts"],
+        "tsConfig": "libs/runtime/tsconfig.lib.json",
         "format": ["cjs"],
         "declaration": true,
-        "declarationRootDir": "libs/enclavejs-client/src",
+        "declarationRootDir": "libs/runtime/src",
         "bundle": true,
         "thirdParty": false,
         "platform": "node",
-        "assets": ["libs/enclavejs-client/README.md", "LICENSE", "libs/enclavejs-client/package.json"],
+        "assets": ["libs/runtime/README.md", "LICENSE", "libs/runtime/package.json"],
         "esbuildOptions": {
           "outExtension": { ".js": ".js" },
-          "external": ["@enclave-vm/types", "@enclave-vm/stream"]
+          "external": ["@enclave-vm/types", "@enclave-vm/stream", "@enclave-vm/core", "ws"]
         }
       }
     },
@@ -31,9 +33,10 @@
       "dependsOn": ["build-cjs"],
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "libs/enclavejs-client/dist/esm",
-        "main": "libs/enclavejs-client/src/index.ts",
-        "tsConfig": "libs/enclavejs-client/tsconfig.lib.json",
+        "outputPath": "libs/runtime/dist/esm",
+        "main": "libs/runtime/src/index.ts",
+        "additionalEntryPoints": ["libs/runtime/src/cli.ts"],
+        "tsConfig": "libs/runtime/tsconfig.lib.json",
         "format": ["esm"],
         "declaration": false,
         "bundle": true,
@@ -41,7 +44,7 @@
         "platform": "node",
         "esbuildOptions": {
           "outExtension": { ".js": ".mjs" },
-          "external": ["@enclave-vm/types", "@enclave-vm/stream"]
+          "external": ["@enclave-vm/types", "@enclave-vm/stream", "@enclave-vm/core", "ws"]
         }
       }
     },
@@ -49,14 +52,15 @@
       "executor": "nx:run-commands",
       "dependsOn": ["build-cjs", "build-esm"],
       "options": {
-        "command": "node scripts/strip-dist-from-pkg.js libs/enclavejs-client/dist/package.json"
+        "command": "node scripts/strip-dist-from-pkg.js libs/runtime/dist/package.json"
       }
     },
     "test": {
       "executor": "@nx/jest:jest",
-      "outputs": ["{workspaceRoot}/coverage/libs/enclavejs-client"],
+      "outputs": ["{workspaceRoot}/coverage/{projectRoot}"],
       "options": {
-        "jestConfig": "libs/enclavejs-client/jest.config.ts"
+        "jestConfig": "libs/runtime/jest.config.ts",
+        "passWithNoTests": true
       }
     },
     "lint": {
@@ -66,7 +70,7 @@
       "executor": "@nx/js:release-publish",
       "dependsOn": ["build"],
       "options": {
-        "packageRoot": "libs/enclavejs-client/dist"
+        "packageRoot": "libs/runtime/dist"
       }
     }
   }
