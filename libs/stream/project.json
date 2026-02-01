@@ -1,29 +1,29 @@
 {
-  "name": "enclavejs-broker",
+  "name": "stream",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "sourceRoot": "libs/enclavejs-broker/src",
+  "sourceRoot": "libs/stream/src",
   "projectType": "library",
   "tags": ["scope:publishable", "type:lib", "versioning:independent"],
-  "implicitDependencies": ["enclavejs-types", "enclavejs-stream", "enclave-vm"],
+  "implicitDependencies": ["types"],
   "targets": {
     "build-cjs": {
       "executor": "@nx/esbuild:esbuild",
       "dependsOn": ["^build"],
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "libs/enclavejs-broker/dist",
-        "main": "libs/enclavejs-broker/src/index.ts",
-        "tsConfig": "libs/enclavejs-broker/tsconfig.lib.json",
+        "outputPath": "libs/stream/dist",
+        "main": "libs/stream/src/index.ts",
+        "tsConfig": "libs/stream/tsconfig.lib.json",
         "format": ["cjs"],
         "declaration": true,
-        "declarationRootDir": "libs/enclavejs-broker/src",
+        "declarationRootDir": "libs/stream/src",
         "bundle": true,
         "thirdParty": false,
         "platform": "node",
-        "assets": ["libs/enclavejs-broker/README.md", "LICENSE", "libs/enclavejs-broker/package.json"],
+        "assets": ["libs/stream/README.md", "LICENSE", "libs/stream/package.json"],
         "esbuildOptions": {
           "outExtension": { ".js": ".js" },
-          "external": ["@enclave-vm/types", "@enclave-vm/stream", "@enclave-vm/core", "minimatch", "zod"]
+          "external": ["@enclave-vm/types"]
         }
       }
     },
@@ -32,9 +32,9 @@
       "dependsOn": ["build-cjs"],
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "libs/enclavejs-broker/dist/esm",
-        "main": "libs/enclavejs-broker/src/index.ts",
-        "tsConfig": "libs/enclavejs-broker/tsconfig.lib.json",
+        "outputPath": "libs/stream/dist/esm",
+        "main": "libs/stream/src/index.ts",
+        "tsConfig": "libs/stream/tsconfig.lib.json",
         "format": ["esm"],
         "declaration": false,
         "bundle": true,
@@ -42,7 +42,7 @@
         "platform": "node",
         "esbuildOptions": {
           "outExtension": { ".js": ".mjs" },
-          "external": ["@enclave-vm/types", "@enclave-vm/stream", "@enclave-vm/core", "minimatch", "zod"]
+          "external": ["@enclave-vm/types"]
         }
       }
     },
@@ -50,21 +50,14 @@
       "executor": "nx:run-commands",
       "dependsOn": ["build-cjs", "build-esm"],
       "options": {
-        "command": "node scripts/strip-dist-from-pkg.js libs/enclavejs-broker/dist/package.json"
-      }
-    },
-    "test": {
-      "executor": "@nx/jest:jest",
-      "outputs": ["{workspaceRoot}/coverage/libs/enclavejs-broker"],
-      "options": {
-        "jestConfig": "libs/enclavejs-broker/jest.config.ts"
+        "command": "node scripts/strip-dist-from-pkg.js libs/stream/dist/package.json"
       }
     },
     "nx-release-publish": {
       "executor": "@nx/js:release-publish",
       "dependsOn": ["build"],
       "options": {
-        "packageRoot": "libs/enclavejs-broker/dist"
+        "packageRoot": "libs/stream/dist"
       }
     }
   }

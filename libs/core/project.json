@@ -1,16 +1,16 @@
 {
-  "name": "enclave-vm",
+  "name": "core",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "sourceRoot": "libs/enclave-vm/src",
+  "sourceRoot": "libs/core/src",
   "projectType": "library",
   "tags": ["scope:publishable", "type:lib", "versioning:independent"],
-  "implicitDependencies": ["ast-guard"],
+  "implicitDependencies": ["ast"],
   "targets": {
     "test-perf": {
       "executor": "@nx/jest:jest",
       "outputs": ["{workspaceRoot}/coverage/{projectRoot}"],
       "options": {
-        "jestConfig": "libs/enclave-vm/jest.perf.config.ts",
+        "jestConfig": "libs/core/jest.perf.config.ts",
         "runInBand": true
       }
     },
@@ -19,21 +19,16 @@
       "dependsOn": ["^build"],
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "libs/enclave-vm/dist",
-        "main": "libs/enclave-vm/src/index.ts",
-        "tsConfig": "libs/enclave-vm/tsconfig.lib.json",
+        "outputPath": "libs/core/dist",
+        "main": "libs/core/src/index.ts",
+        "tsConfig": "libs/core/tsconfig.lib.json",
         "format": ["cjs"],
         "declaration": true,
-        "declarationRootDir": "libs/enclave-vm/src",
+        "declarationRootDir": "libs/core/src",
         "bundle": true,
         "thirdParty": false,
         "platform": "node",
-        "assets": [
-          "libs/enclave-vm/README.md",
-          "libs/enclave-vm/SECURITY-AUDIT.md",
-          "LICENSE",
-          "libs/enclave-vm/package.json"
-        ],
+        "assets": ["libs/core/README.md", "libs/core/SECURITY-AUDIT.md", "LICENSE", "libs/core/package.json"],
         "esbuildOptions": {
           "outExtension": { ".js": ".js" },
           "external": [
@@ -55,9 +50,9 @@
       "dependsOn": ["build-cjs"],
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "libs/enclave-vm/dist/esm",
-        "main": "libs/enclave-vm/src/index.ts",
-        "tsConfig": "libs/enclave-vm/tsconfig.lib.json",
+        "outputPath": "libs/core/dist/esm",
+        "main": "libs/core/src/index.ts",
+        "tsConfig": "libs/core/tsconfig.lib.json",
         "format": ["esm"],
         "declaration": false,
         "bundle": true,
@@ -83,14 +78,14 @@
       "executor": "nx:run-commands",
       "dependsOn": ["build-cjs", "build-esm"],
       "options": {
-        "command": "node scripts/strip-dist-from-pkg.js libs/enclave-vm/dist/package.json"
+        "command": "node scripts/strip-dist-from-pkg.js libs/core/dist/package.json"
       }
     },
     "nx-release-publish": {
       "executor": "@nx/js:release-publish",
       "dependsOn": ["build"],
       "options": {
-        "packageRoot": "libs/enclave-vm/dist"
+        "packageRoot": "libs/core/dist"
       }
     }
   }

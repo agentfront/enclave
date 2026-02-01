@@ -31,13 +31,13 @@ ast-guard is a production-ready AST validation library for JavaScript. It inspec
 ## Installation
 
 ```bash
-npm install ast-guard
+npm install @enclave-vm/ast
 ```
 
 ## Quick Start
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
 // Create validator with AgentScript preset (recommended for LLM code)
 const validator = new JSAstValidator(createAgentScriptPreset());

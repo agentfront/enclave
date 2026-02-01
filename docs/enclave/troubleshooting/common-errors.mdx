@@ -256,7 +256,7 @@ const enclave = new Enclave({
 ### Log validation results
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
 const validator = new JSAstValidator(createAgentScriptPreset());
 const result = await validator.validate(code);

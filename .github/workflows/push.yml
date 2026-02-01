@@ -141,7 +141,7 @@ jobs:
           key: build-${{ github.sha }}
 
       - name: Run performance tests
-        run: npx nx run enclave-vm:test-perf --passWithNoTests
+        run: npx nx run core:test-perf --passWithNoTests
         continue-on-error: true
 
       - name: Generate performance summary

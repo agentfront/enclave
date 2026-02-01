@@ -7,24 +7,31 @@ Implement end-to-end encryption (E2E) for sensitive code execution where even th
 
 ## Overview
 
-```
-┌──────────────────┐                      ┌──────────────────┐
-│      Client      │                      │      Server      │
-│  ┌────────────┐  │                      │  ┌────────────┐  │
-│  │ Public Key │──┼──────────────────────┼─▶│ Public Key │  │
-│  │Private Key │  │   Key Exchange       │  │Private Key │  │
-│  └────────────┘  │                      │  └────────────┘  │
-│        │         │                      │        │         │
-│        ▼         │                      │        ▼         │
-│  ┌────────────┐  │                      │  ┌────────────┐  │
-│  │Shared Sec. │  │  ══════════════════  │  │Shared Sec. │  │
-│  └────────────┘  │                      │  └────────────┘  │
-│        │         │                      │        │         │
-│        ▼         │                      │        ▼         │
-│  ┌────────────┐  │   Encrypted Data    │  ┌────────────┐  │
-│  │  Encrypt   │──┼─────────────────────┼─▶│  Decrypt   │  │
-│  └────────────┘  │                      │  └────────────┘  │
-└──────────────────┘                      └──────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart LR
+    subgraph client["Client"]
+        CPub["Public Key<br/>Private Key"]
+        CShared["Shared Secret"]
+        CEnc["Encrypt"]
+        CPub --> CShared --> CEnc
+    end
+    subgraph server["Server"]
+        SPub["Public Key<br/>Private Key"]
+        SShared["Shared Secret"]
+        SDec["Decrypt"]
+        SPub --> SShared --> SDec
+    end
+    CPub <-->|"Key Exchange"| SPub
+    CEnc -->|"Encrypted Data"| SDec
+    style client fill:#fff5e6,stroke:#c78935,color:#333
+    style server fill:#fff5e6,stroke:#c78935,color:#333
+    style CPub fill:#e8a045,stroke:#c78935,color:#fff
+    style CShared fill:#f0b865,stroke:#c78935,color:#333
+    style CEnc fill:#e8a045,stroke:#c78935,color:#fff
+    style SPub fill:#e8a045,stroke:#c78935,color:#fff
+    style SShared fill:#f0b865,stroke:#c78935,color:#333
+    style SDec fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 ## Client Setup

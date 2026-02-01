@@ -1,28 +1,28 @@
 {
-  "name": "ast-guard",
+  "name": "client",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "sourceRoot": "libs/ast-guard/src",
+  "sourceRoot": "libs/client/src",
   "projectType": "library",
-  "tags": ["scope:libs", "scope:publishable", "versioning:independent"],
+  "tags": ["scope:publishable", "type:lib", "versioning:independent"],
   "targets": {
     "build-cjs": {
       "executor": "@nx/esbuild:esbuild",
       "dependsOn": ["^build"],
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "libs/ast-guard/dist",
-        "main": "libs/ast-guard/src/index.ts",
-        "tsConfig": "libs/ast-guard/tsconfig.lib.json",
+        "outputPath": "libs/client/dist",
+        "main": "libs/client/src/index.ts",
+        "tsConfig": "libs/client/tsconfig.lib.json",
         "format": ["cjs"],
         "declaration": true,
-        "declarationRootDir": "libs/ast-guard/src",
+        "declarationRootDir": "libs/client/src",
         "bundle": true,
         "thirdParty": false,
         "platform": "node",
-        "assets": ["libs/ast-guard/README.md", "libs/ast-guard/CHANGELOG.md", "LICENSE", "libs/ast-guard/package.json"],
+        "assets": ["libs/client/README.md", "LICENSE", "libs/client/package.json"],
         "esbuildOptions": {
           "outExtension": { ".js": ".js" },
-          "external": ["acorn", "acorn-walk", "astring", "@types/estree"]
+          "external": ["@enclave-vm/types", "@enclave-vm/stream"]
         }
       }
     },
@@ -31,9 +31,9 @@
       "dependsOn": ["build-cjs"],
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "libs/ast-guard/dist/esm",
-        "main": "libs/ast-guard/src/index.ts",
-        "tsConfig": "libs/ast-guard/tsconfig.lib.json",
+        "outputPath": "libs/client/dist/esm",
+        "main": "libs/client/src/index.ts",
+        "tsConfig": "libs/client/tsconfig.lib.json",
         "format": ["esm"],
         "declaration": false,
         "bundle": true,
@@ -41,7 +41,7 @@
         "platform": "node",
         "esbuildOptions": {
           "outExtension": { ".js": ".mjs" },
-          "external": ["acorn", "acorn-walk", "astring", "@types/estree"]
+          "external": ["@enclave-vm/types", "@enclave-vm/stream"]
         }
       }
     },
@@ -49,14 +49,24 @@
       "executor": "nx:run-commands",
       "dependsOn": ["build-cjs", "build-esm"],
       "options": {
-        "command": "node scripts/strip-dist-from-pkg.js libs/ast-guard/dist/package.json"
+        "command": "node scripts/strip-dist-from-pkg.js libs/client/dist/package.json"
       }
+    },
+    "test": {
+      "executor": "@nx/jest:jest",
+      "outputs": ["{workspaceRoot}/coverage/libs/client"],
+      "options": {
+        "jestConfig": "libs/client/jest.config.ts"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint"
     },
     "nx-release-publish": {
       "executor": "@nx/js:release-publish",
       "dependsOn": ["build"],
       "options": {
-        "packageRoot": "libs/ast-guard/dist"
+        "packageRoot": "libs/client/dist"
       }
     }
   }

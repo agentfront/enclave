@@ -8,7 +8,7 @@ ast-guard can transform validated code for safe execution. Transformations wrap 
 ## Basic Usage
 
 ```ts
-import { transformAgentScript } from 'ast-guard';
+import { transformAgentScript } from '@enclave-vm/ast';
 
 const code = `
   const users = await callTool('users:list', {});
@@ -148,7 +148,7 @@ Any attempt to declare identifiers with these prefixes is blocked by the `Reserv
 For advanced use cases, you can customize transformations:
 
 ```ts
-import { transformAgentScript } from 'ast-guard';
+import { transformAgentScript } from '@enclave-vm/ast';
 
 const transformed = transformAgentScript(code, {
   wrapInMain: true,
@@ -195,7 +195,7 @@ await enclave.run(`
 You can transform code independently of validation:
 
 ```ts
-import { transformAgentScript, JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+import { transformAgentScript, JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
 const validator = new JSAstValidator(createAgentScriptPreset());
 

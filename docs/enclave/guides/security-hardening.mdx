@@ -80,7 +80,7 @@ app.post('/execute', async (req, res) => {
 Block obvious attacks early:
 
 ```ts
-import { PreScanner, createPreScannerConfig } from 'ast-guard';
+import { PreScanner, createPreScannerConfig } from '@enclave-vm/ast';
 
 const scanner = new PreScanner(createPreScannerConfig('agentscript'));
 
@@ -101,7 +101,7 @@ function preScreen(code: string): boolean {
 Strict AST validation:
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
 const validator = new JSAstValidator(
   createAgentScriptPreset({

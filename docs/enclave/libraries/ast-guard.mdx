@@ -8,7 +8,7 @@ description: 'Production ready JavaScript AST validation with extensible rules, 
 ast-guard is a production-ready AST validation library for JavaScript. It inspects user-provided or LLM-generated code before execution, blocking dangerous constructs and enforcing API usage policies. ast-guard powers Enclave's first security layer and can be used standalone for any JavaScript validation needs.
 
 <CardGroup cols={3}>
-  <Card title="16 Built-in Rules" icon="shield">
+  <Card title="15 Built-in Rules" icon="shield">
     Block eval, dangerous globals, prototype manipulation, unbounded loops, ReDoS, and more with battle-tested validation rules.
   </Card>
   <Card title="Pre-Scanner Defense" icon="radar">
@@ -33,13 +33,13 @@ ast-guard is a production-ready AST validation library for JavaScript. It inspec
 ## Installation
 
 ```bash
-npm install ast-guard
+npm install @enclave-vm/ast
 ```
 
 ## Quick Start
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
 // Create validator with AgentScript preset (recommended for LLM code)
 const validator = new JSAstValidator(createAgentScriptPreset());
@@ -68,7 +68,7 @@ if (result.valid) {
 The pre-scanner runs BEFORE the JavaScript parser (acorn) to catch DoS attacks that could crash or hang the parser itself. It enforces mandatory security limits that cannot be disabled.
 
 ```ts
-import { PreScanner, createPreScannerConfig } from 'ast-guard';
+import { PreScanner, createPreScannerConfig } from '@enclave-vm/ast';
 
 // Create pre-scanner with AgentScript config (strictest)
 const scanner = new PreScanner(createPreScannerConfig('agentscript'));
@@ -114,7 +114,7 @@ The pre-scanner supports three regex handling modes:
 - **`allow`** - Allow all regex without analysis (Permissive only)
 
 ```ts
-import { createPreScannerConfig, analyzeForReDoS } from 'ast-guard';
+import { createPreScannerConfig, analyzeForReDoS } from '@enclave-vm/ast';
 
 // Analyze a pattern for ReDoS vulnerabilities
 const result = analyzeForReDoS('(a+)+', 'catastrophic');
@@ -141,7 +141,7 @@ The pre-scanner detects these dangerous regex patterns:
 The AgentScript preset is purpose-built for validating LLM-generated orchestration code. It's the default preset used by [enclave-vm](/libraries/enclave).
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
 const validator = new JSAstValidator(createAgentScriptPreset({
   // Require at least one callTool() invocation (default: false)
@@ -233,7 +233,7 @@ return { count, active, names };
 ast-guard can transform validated code for safe execution:
 
 ```ts
-import { transformAgentScript } from 'ast-guard';
+import { transformAgentScript } from '@enclave-vm/ast';
 
 const code = `
   const users = await callTool('users:list', {});
@@ -282,7 +282,7 @@ ast-guard includes four security presets for different use cases:
 | **PERMISSIVE**  | Internal/test code           | Minimal - eval blocked      |
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset, Presets } from 'ast-guard';
+import { JSAstValidator, createAgentScriptPreset, Presets } from '@enclave-vm/ast';
 
 // AgentScript (recommended for LLM code)
 const agentScript = new JSAstValidator(createAgentScriptPreset());
@@ -313,7 +313,7 @@ ast-guard ships with a comprehensive set of security rules:
 Blocks access to dangerous global objects via member expressions (e.g., `window.location`, `process.env`).
 
 ```ts
-import { NoGlobalAccessRule } from 'ast-guard';
+import { NoGlobalAccessRule } from '@enclave-vm/ast';
 
 const rule = new NoGlobalAccessRule({
   blockedGlobals: ['window', 'process', 'global', 'globalThis'],
@@ -326,7 +326,7 @@ const rule = new NoGlobalAccessRule({
 Prevents user code from declaring or assigning identifiers with reserved prefixes.
 
 ```ts
-import { ReservedPrefixRule } from 'ast-guard';
+import { ReservedPrefixRule } from '@enclave-vm/ast';
 
 const rule = new ReservedPrefixRule({
   prefixes: ['__ag_', '__safe_'],
@@ -339,7 +339,7 @@ const rule = new ReservedPrefixRule({
 Protects critical call targets from being reassigned or shadowed.
 
 ```ts
-import { NoCallTargetAssignmentRule } from 'ast-guard';
+import { NoCallTargetAssignmentRule } from '@enclave-vm/ast';
 
 const rule = new NoCallTargetAssignmentRule({
   protectedTargets: ['callTool', '__safe_callTool'],
@@ -358,7 +358,7 @@ This blocks:
 Detects and blocks Unicode-based attacks including Trojan Source, homoglyphs, and invisible characters.
 
 ```ts
-import { UnicodeSecurityRule } from 'ast-guard';
+import { UnicodeSecurityRule } from '@enclave-vm/ast';
 
 const rule = new UnicodeSecurityRule({
   blockBidi: true,          // Block bidirectional text attacks (Trojan Source)
@@ -378,7 +378,7 @@ const rule = new UnicodeSecurityRule({
 Enforces static string literals for call targets, preventing dynamic tool name injection.
 
 ```ts
-import { StaticCallTargetRule } from 'ast-guard';
+import { StaticCallTargetRule } from '@enclave-vm/ast';
 
 const rule = new StaticCallTargetRule({
   targetFunctions: ['callTool', '__safe_callTool'],
@@ -392,7 +392,7 @@ const rule = new StaticCallTargetRule({
 Blocks or analyzes regex literals for ReDoS vulnerabilities.
 
 ```ts
-import { NoRegexLiteralRule } from 'ast-guard';
+import { NoRegexLiteralRule } from '@enclave-vm/ast';
 
 // Block all regex (AgentScript preset)
 new NoRegexLiteralRule({ blockAll: true });
@@ -405,27 +405,6 @@ new NoRegexLiteralRule({
   warnThreshold: 50,
 });
 ```
-
-### ResourceExhaustionRule
-
-Detects AST patterns that could cause CPU or memory exhaustion.
-
-```ts
-import { ResourceExhaustionRule } from 'ast-guard';
-
-const rule = new ResourceExhaustionRule({
-  maxBigIntExponent: 10000,
-  maxArraySize: 1000000,
-  maxStringRepeat: 100000,
-  blockConstructorAccess: true,
-});
-```
-
-**Blocked patterns:**
-- `2n ** 1000000n` - BigInt exponentiation
-- `new Array(10000000)` - Large array allocations
-- `'x'.repeat(10000000)` - String repeat exploits
-- Constructor property access chains
 
 ---
 
@@ -440,7 +419,7 @@ import {
   ForbiddenLoopRule,
   RequiredFunctionCallRule,
   UnknownGlobalRule,
-} from 'ast-guard';
+} from '@enclave-vm/ast';
 
 const customValidator = new JSAstValidator([
   new DisallowedIdentifierRule({
@@ -475,5 +454,5 @@ const stats = validator.getStats(result, durationMs);
 
 ## Links
 
-- [GitHub](https://github.com/agentfront/enclave/tree/main/libs/ast-guard)
-- [npm](https://www.npmjs.com/package/ast-guard)
+- [GitHub](https://github.com/agentfront/enclave/tree/main/libs/ast)
+- [npm](https://www.npmjs.com/package/@enclave-vm/ast)

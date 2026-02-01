@@ -11,46 +11,55 @@ This guide covers deploying Enclave to production environments, including config
 
 For smaller workloads:
 
-```
-┌─────────────────────────────────────────────┐
-│               Application Server             │
-│  ┌─────────────────────────────────────┐    │
-│  │           Your Application           │    │
-│  │  ┌─────────────┐ ┌───────────────┐  │    │
-│  │  │   API       │ │   Enclave     │  │    │
-│  │  │   Routes    │ │   Instance    │  │    │
-│  │  └─────────────┘ └───────────────┘  │    │
-│  └─────────────────────────────────────┘    │
-└─────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TB
+    subgraph server["Application Server"]
+        subgraph app["Your Application"]
+            API["API Routes"]
+            Enclave["Enclave Instance"]
+        end
+    end
+    style server fill:#fff5e6,stroke:#c78935,color:#333
+    style app fill:#f0b865,stroke:#c78935,color:#333
+    style API fill:#e8a045,stroke:#c78935,color:#fff
+    style Enclave fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 ### Distributed Deployment
 
 For production scale:
 
-```
-┌───────────────────┐
-│    Load Balancer  │
-└─────────┬─────────┘
-          │
-    ┌─────┴─────┐
-    ▼           ▼
-┌───────┐   ┌───────┐
-│ API 1 │   │ API 2 │     Application Tier
-└───┬───┘   └───┬───┘
-    │           │
-    ▼           ▼
-┌─────────────────────┐
-│   EnclaveJS Broker  │   Orchestration Tier
-│   (Redis-backed)    │
-└─────────┬───────────┘
-          │
-    ┌─────┴─────┐
-    ▼           ▼
-┌───────┐   ┌───────┐
-│Runtime│   │Runtime│     Execution Tier
-│   1   │   │   2   │
-└───────┘   └───────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TB
+    LB["Load Balancer"]
+    subgraph appTier["Application Tier"]
+        API1["API 1"]
+        API2["API 2"]
+    end
+    subgraph orchTier["Orchestration Tier"]
+        Broker["EnclaveJS Broker<br/>(Redis-backed)"]
+    end
+    subgraph execTier["Execution Tier"]
+        R1["Runtime 1"]
+        R2["Runtime 2"]
+    end
+    LB --> API1
+    LB --> API2
+    API1 --> Broker
+    API2 --> Broker
+    Broker --> R1
+    Broker --> R2
+    style LB fill:#f0b865,stroke:#c78935,color:#333
+    style appTier fill:#fff5e6,stroke:#c78935,color:#333
+    style orchTier fill:#fff5e6,stroke:#c78935,color:#333
+    style execTier fill:#fff5e6,stroke:#c78935,color:#333
+    style API1 fill:#e8a045,stroke:#c78935,color:#fff
+    style API2 fill:#e8a045,stroke:#c78935,color:#fff
+    style Broker fill:#e8a045,stroke:#c78935,color:#fff
+    style R1 fill:#e8a045,stroke:#c78935,color:#fff
+    style R2 fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 ## Pre-Deployment Checklist

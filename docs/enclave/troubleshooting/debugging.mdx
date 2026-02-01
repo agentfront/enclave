@@ -12,7 +12,7 @@ This page covers techniques for debugging issues with Enclave code execution.
 Before running code in the enclave, validate it separately:
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset, PreScanner, createPreScannerConfig } from 'ast-guard';
+import { JSAstValidator, createAgentScriptPreset, PreScanner, createPreScannerConfig } from '@enclave-vm/ast';
 
 async function debugValidation(code: string) {
   // Step 1: Pre-scan
@@ -50,7 +50,7 @@ async function debugValidation(code: string) {
 See what the code looks like after transformation:
 
 ```ts
-import { transformAgentScript } from 'ast-guard';
+import { transformAgentScript } from '@enclave-vm/ast';
 
 const original = `
   const users = await callTool('users:list', {});

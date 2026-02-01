@@ -7,28 +7,25 @@ Tools are the bridge between your AI agent and the outside world. This guide cov
 
 ## Tool Architecture
 
-```
-┌─────────────────────────────────────────────────┐
-│                    Enclave                       │
-│  ┌───────────────────────────────────────────┐  │
-│  │    const result = await callTool(         │  │
-│  │      'github:issues',                     │  │
-│  │      { repo: 'owner/repo', state: 'open' }│  │
-│  │    );                                     │  │
-│  └───────────────────┬───────────────────────┘  │
-└──────────────────────┼──────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────┐
-│                 Tool Handler                      │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐ │
-│  │  Validate  │──│  Execute   │──│  Sanitize  │ │
-│  │  Input     │  │  API Call  │  │  Output    │ │
-│  └────────────┘  └────────────┘  └────────────┘ │
-└──────────────────────────────────────────────────┘
-                       │
-                       ▼
-              External APIs/Services
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TB
+    subgraph enclave["Enclave"]
+        Code["callTool('github:issues',<br/>{ repo: 'owner/repo', state: 'open' })"]
+    end
+    subgraph handler["Tool Handler"]
+        Validate["Validate Input"] --> Execute["Execute API Call"] --> Sanitize["Sanitize Output"]
+    end
+    External["External APIs/Services"]
+    enclave --> handler
+    handler --> External
+    style enclave fill:#fff5e6,stroke:#c78935,color:#333
+    style Code fill:#f0b865,stroke:#c78935,color:#333
+    style handler fill:#fff5e6,stroke:#c78935,color:#333
+    style Validate fill:#e8a045,stroke:#c78935,color:#fff
+    style Execute fill:#e8a045,stroke:#c78935,color:#fff
+    style Sanitize fill:#e8a045,stroke:#c78935,color:#fff
+    style External fill:#f0b865,stroke:#c78935,color:#333
 ```
 
 ## Basic Tool Handler

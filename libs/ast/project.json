@@ -1,28 +1,28 @@
 {
-  "name": "enclavejs-types",
+  "name": "ast",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "sourceRoot": "libs/enclavejs-types/src",
+  "sourceRoot": "libs/ast/src",
   "projectType": "library",
-  "tags": ["scope:publishable", "type:lib", "versioning:independent"],
+  "tags": ["scope:libs", "scope:publishable", "versioning:independent"],
   "targets": {
     "build-cjs": {
       "executor": "@nx/esbuild:esbuild",
       "dependsOn": ["^build"],
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "libs/enclavejs-types/dist",
-        "main": "libs/enclavejs-types/src/index.ts",
-        "tsConfig": "libs/enclavejs-types/tsconfig.lib.json",
+        "outputPath": "libs/ast/dist",
+        "main": "libs/ast/src/index.ts",
+        "tsConfig": "libs/ast/tsconfig.lib.json",
         "format": ["cjs"],
         "declaration": true,
-        "declarationRootDir": "libs/enclavejs-types/src",
+        "declarationRootDir": "libs/ast/src",
         "bundle": true,
         "thirdParty": false,
         "platform": "node",
-        "assets": ["libs/enclavejs-types/README.md", "LICENSE", "libs/enclavejs-types/package.json"],
+        "assets": ["libs/ast/README.md", "libs/ast/CHANGELOG.md", "LICENSE", "libs/ast/package.json"],
         "esbuildOptions": {
           "outExtension": { ".js": ".js" },
-          "external": ["zod"]
+          "external": ["acorn", "acorn-walk", "astring", "@types/estree"]
         }
       }
     },
@@ -31,9 +31,9 @@
       "dependsOn": ["build-cjs"],
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "libs/enclavejs-types/dist/esm",
-        "main": "libs/enclavejs-types/src/index.ts",
-        "tsConfig": "libs/enclavejs-types/tsconfig.lib.json",
+        "outputPath": "libs/ast/dist/esm",
+        "main": "libs/ast/src/index.ts",
+        "tsConfig": "libs/ast/tsconfig.lib.json",
         "format": ["esm"],
         "declaration": false,
         "bundle": true,
@@ -41,7 +41,7 @@
         "platform": "node",
         "esbuildOptions": {
           "outExtension": { ".js": ".mjs" },
-          "external": ["zod"]
+          "external": ["acorn", "acorn-walk", "astring", "@types/estree"]
         }
       }
     },
@@ -49,14 +49,14 @@
       "executor": "nx:run-commands",
       "dependsOn": ["build-cjs", "build-esm"],
       "options": {
-        "command": "node scripts/strip-dist-from-pkg.js libs/enclavejs-types/dist/package.json"
+        "command": "node scripts/strip-dist-from-pkg.js libs/ast/dist/package.json"
       }
     },
     "nx-release-publish": {
       "executor": "@nx/js:release-publish",
       "dependsOn": ["build"],
       "options": {
-        "packageRoot": "libs/enclavejs-types/dist"
+        "packageRoot": "libs/ast/dist"
       }
     }
   }

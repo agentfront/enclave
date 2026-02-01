@@ -7,39 +7,24 @@ Enclave uses a defense-in-depth approach with 6 independent security layers. Eac
 
 ## The 6 Layers
 
-```
-┌─────────────────────────────────────────────────┐
-│ Layer 0: Pre-Scanner                            │
-│   • Input size limits                           │
-│   • Nesting depth limits                        │
-│   • ReDoS pattern detection                     │
-│   • Unicode attack detection                    │
-├─────────────────────────────────────────────────┤
-│ Layer 1: AST Validation                         │
-│   • Block dangerous constructs                  │
-│   • Enforce allowed globals                     │
-│   • Restrict control flow                       │
-├─────────────────────────────────────────────────┤
-│ Layer 2: Code Transformation                    │
-│   • Wrap in safe runtime                        │
-│   • Proxy tool calls                            │
-│   • Instrument loops                            │
-├─────────────────────────────────────────────────┤
-│ Layer 3: AI Scoring Gate (Optional)             │
-│   • Semantic attack detection                   │
-│   • Exfiltration pattern recognition            │
-│   • Risk scoring                                │
-├─────────────────────────────────────────────────┤
-│ Layer 4: Runtime Sandbox                        │
-│   • Isolated vm context                         │
-│   • Controlled globals                          │
-│   • Resource limits enforced                    │
-├─────────────────────────────────────────────────┤
-│ Layer 5: Output Sanitization                    │
-│   • Stack trace sanitization                    │
-│   • Reference token resolution                  │
-│   • Result validation                           │
-└─────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
+flowchart TD
+    L0["Layer 0: Pre-Scanner<br/>• Input size limits<br/>• Nesting depth limits<br/>• ReDoS pattern detection<br/>• Unicode attack detection"]
+    L1["Layer 1: AST Validation<br/>• Block dangerous constructs<br/>• Enforce allowed globals<br/>• Restrict control flow"]
+    L2["Layer 2: Code Transformation<br/>• Wrap in safe runtime<br/>• Proxy tool calls<br/>• Instrument loops"]
+    L3["Layer 3: AI Scoring Gate (Optional)<br/>• Semantic attack detection<br/>• Exfiltration pattern recognition<br/>• Risk scoring"]
+    L4["Layer 4: Runtime Sandbox<br/>• Isolated vm context<br/>• Controlled globals<br/>• Resource limits enforced"]
+    L5["Layer 5: Output Sanitization<br/>• Stack trace sanitization<br/>• Reference token resolution<br/>• Result validation"]
+
+    L0 --> L1 --> L2 --> L3 --> L4 --> L5
+
+    style L0 fill:#e8a045,stroke:#c78935,color:#fff
+    style L1 fill:#e8a045,stroke:#c78935,color:#fff
+    style L2 fill:#e8a045,stroke:#c78935,color:#fff
+    style L3 fill:#f0b865,stroke:#c78935,color:#333
+    style L4 fill:#e8a045,stroke:#c78935,color:#fff
+    style L5 fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 ## Layer 0: Pre-Scanner

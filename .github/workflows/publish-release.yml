@@ -191,7 +191,7 @@ jobs:
               const prompt = `You are a technical writer for Enclave, a production-ready JavaScript sandbox for AI agent code execution.
 
               The Enclave ecosystem includes:
-              - ast-guard: AST security guard with CVE protection
+              - @enclave-vm/ast: AST security guard with CVE protection
               - @enclave-vm/core: Secure AgentScript execution environment
               - @enclave-vm/types: Protocol types and Zod schemas
               - @enclave-vm/stream: NDJSON streaming with encryption
@@ -317,7 +317,7 @@ jobs:
           RELEASE_LINE="${{ steps.context.outputs.release_line }}"
           BRANCH="${{ steps.context.outputs.branch }}"
           IS_PRERELEASE="${{ steps.version.outputs.is_prerelease }}"
-          PROJECTS="enclave-vm,enclavejs-types,enclavejs-stream,enclavejs-broker,enclavejs-client,enclavejs-react,enclavejs-runtime,ast-guard"
+          PROJECTS="core,types,stream,broker,client,react,runtime,ast"
 
           # Start building the release body
           {

@@ -8,7 +8,7 @@ The pre-scanner runs BEFORE the JavaScript parser (acorn) to catch DoS attacks t
 ## Basic Usage
 
 ```ts
-import { PreScanner, createPreScannerConfig } from 'ast-guard';
+import { PreScanner, createPreScannerConfig } from '@enclave-vm/ast';
 
 // Create pre-scanner with AgentScript config (strictest)
 const scanner = new PreScanner(createPreScannerConfig('agentscript'));
@@ -59,7 +59,7 @@ These limits protect against parser crashes and cannot be overridden:
 ## Using Presets
 
 ```ts
-import { createPreScannerConfig, PreScanner } from 'ast-guard';
+import { createPreScannerConfig, PreScanner } from '@enclave-vm/ast';
 
 // AgentScript (strictest)
 const agentScript = new PreScanner(createPreScannerConfig('agentscript'));
@@ -130,7 +130,7 @@ The pre-scanner detects dangerous regex patterns that cause exponential backtrac
 ### Manual ReDoS Analysis
 
 ```ts
-import { analyzeForReDoS } from 'ast-guard';
+import { analyzeForReDoS } from '@enclave-vm/ast';
 
 // Analyze a pattern for ReDoS vulnerabilities
 const result = analyzeForReDoS('(a+)+', 'catastrophic');

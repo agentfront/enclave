@@ -3,14 +3,14 @@ title: 'Security Rules'
 description: 'Built-in security rules for AST validation'
 ---
 
-ast-guard ships with 16 built-in security rules that cover common attack vectors. Each rule can be configured and combined to match your security requirements.
+ast-guard ships with 15 built-in security rules that cover common attack vectors. Each rule can be configured and combined to match your security requirements.
 
 ## NoGlobalAccessRule
 
 Blocks access to dangerous global objects via member expressions.
 
 ```ts
-import { NoGlobalAccessRule } from 'ast-guard';
+import { NoGlobalAccessRule } from '@enclave-vm/ast';
 
 const rule = new NoGlobalAccessRule({
   blockedGlobals: ['window', 'process', 'global', 'globalThis'],
@@ -31,7 +31,7 @@ const rule = new NoGlobalAccessRule({
 Prevents user code from declaring identifiers with reserved prefixes.
 
 ```ts
-import { ReservedPrefixRule } from 'ast-guard';
+import { ReservedPrefixRule } from '@enclave-vm/ast';
 
 const rule = new ReservedPrefixRule({
   prefixes: ['__ag_', '__safe_'],
@@ -48,7 +48,7 @@ const rule = new ReservedPrefixRule({
 Protects critical call targets from being reassigned or shadowed.
 
 ```ts
-import { NoCallTargetAssignmentRule } from 'ast-guard';
+import { NoCallTargetAssignmentRule } from '@enclave-vm/ast';
 
 const rule = new NoCallTargetAssignmentRule({
   protectedTargets: ['callTool', '__safe_callTool'],
@@ -66,7 +66,7 @@ const rule = new NoCallTargetAssignmentRule({
 Detects Unicode-based attacks including Trojan Source and homoglyphs.
 
 ```ts
-import { UnicodeSecurityRule } from 'ast-guard';
+import { UnicodeSecurityRule } from '@enclave-vm/ast';
 
 const rule = new UnicodeSecurityRule({
   blockBidi: true,          // Block bidirectional text attacks
@@ -86,7 +86,7 @@ const rule = new UnicodeSecurityRule({
 Enforces static string literals for call targets.
 
 ```ts
-import { StaticCallTargetRule } from 'ast-guard';
+import { StaticCallTargetRule } from '@enclave-vm/ast';
 
 const rule = new StaticCallTargetRule({
   targetFunctions: ['callTool', '__safe_callTool'],
@@ -107,7 +107,7 @@ const rule = new StaticCallTargetRule({
 Blocks or analyzes regex literals for ReDoS vulnerabilities.
 
 ```ts
-import { NoRegexLiteralRule } from 'ast-guard';
+import { NoRegexLiteralRule } from '@enclave-vm/ast';
 
 // Block all regex (AgentScript preset)
 new NoRegexLiteralRule({ blockAll: true });
@@ -121,33 +121,12 @@ new NoRegexLiteralRule({
 });
 ```
 
-## ResourceExhaustionRule
-
-Detects AST patterns that could cause CPU or memory exhaustion.
-
-```ts
-import { ResourceExhaustionRule } from 'ast-guard';
-
-const rule = new ResourceExhaustionRule({
-  maxBigIntExponent: 10000,
-  maxArraySize: 1000000,
-  maxStringRepeat: 100000,
-  blockConstructorAccess: true,
-});
-```
-
-**Blocks:**
-- `2n ** 1000000n` - BigInt exponentiation
-- `new Array(10000000)` - Large array allocations
-- `'x'.repeat(10000000)` - String repeat exploits
-- Constructor property access chains
-
 ## DisallowedIdentifierRule
 
 Blocks specific identifier names.
 
 ```ts
-import { DisallowedIdentifierRule } from 'ast-guard';
+import { DisallowedIdentifierRule } from '@enclave-vm/ast';
 
 const rule = new DisallowedIdentifierRule({
   disallowed: ['eval', 'Function', 'process', 'require'],
@@ -159,7 +138,7 @@ const rule = new DisallowedIdentifierRule({
 Restricts which loop constructs are allowed.
 
 ```ts
-import { ForbiddenLoopRule } from 'ast-guard';
+import { ForbiddenLoopRule } from '@enclave-vm/ast';
 
 const rule = new ForbiddenLoopRule({
   allowFor: true,
@@ -175,7 +154,7 @@ const rule = new ForbiddenLoopRule({
 Ensures code contains required function calls.
 
 ```ts
-import { RequiredFunctionCallRule } from 'ast-guard';
+import { RequiredFunctionCallRule } from '@enclave-vm/ast';
 
 const rule = new RequiredFunctionCallRule({
   required: ['callTool'],
@@ -188,7 +167,7 @@ const rule = new RequiredFunctionCallRule({
 Rejects references to undeclared identifiers (whitelist mode).
 
 ```ts
-import { UnknownGlobalRule } from 'ast-guard';
+import { UnknownGlobalRule } from '@enclave-vm/ast';
 
 const rule = new UnknownGlobalRule({
   allowedGlobals: ['callTool', 'Math', 'JSON', 'Array', 'Object'],
@@ -201,7 +180,7 @@ const rule = new UnknownGlobalRule({
 Blocks eval and dynamic code execution.
 
 ```ts
-import { NoEvalRule } from 'ast-guard';
+import { NoEvalRule } from '@enclave-vm/ast';
 
 const rule = new NoEvalRule();
 ```
@@ -216,7 +195,7 @@ const rule = new NoEvalRule();
 Restricts async/await usage.
 
 ```ts
-import { NoAsyncRule } from 'ast-guard';
+import { NoAsyncRule } from '@enclave-vm/ast';
 
 const rule = new NoAsyncRule({
   allowTopLevelAwait: true,
@@ -229,7 +208,7 @@ const rule = new NoAsyncRule({
 Blocks user-defined functions (prevents recursion).
 
 ```ts
-import { NoUserDefinedFunctionsRule } from 'ast-guard';
+import { NoUserDefinedFunctionsRule } from '@enclave-vm/ast';
 
 const rule = new NoUserDefinedFunctionsRule({
   allowArrowFunctions: true, // For array methods
@@ -248,7 +227,7 @@ const rule = new NoUserDefinedFunctionsRule({
 Detects code after return/throw statements.
 
 ```ts
-import { UnreachableCodeRule } from 'ast-guard';
+import { UnreachableCodeRule } from '@enclave-vm/ast';
 
 const rule = new UnreachableCodeRule();
 ```
@@ -258,7 +237,7 @@ const rule = new UnreachableCodeRule();
 Validates function call arguments.
 
 ```ts
-import { CallArgumentValidationRule } from 'ast-guard';
+import { CallArgumentValidationRule } from '@enclave-vm/ast';
 
 const rule = new CallArgumentValidationRule({
   targetFunctions: ['callTool'],
