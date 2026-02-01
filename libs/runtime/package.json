@@ -1,6 +1,6 @@
 {
   "name": "@enclave-vm/runtime",
-  "version": "2.8.0",
+  "version": "2.10.0",
   "description": "Standalone runtime worker for EnclaveJS - deployable execution environment",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",
@@ -37,9 +37,9 @@
     "enclave-runtime": "./dist/cli.js"
   },
   "dependencies": {
-    "@enclave-vm/types": "2.8.0",
-    "@enclave-vm/stream": "2.8.0",
-    "@enclave-vm/core": "2.8.0"
+    "@enclave-vm/types": "2.10.0",
+    "@enclave-vm/stream": "2.10.0",
+    "@enclave-vm/core": "2.10.0"
   },
   "devDependencies": {
     "ws": "^8.0.0"
