@@ -335,7 +335,13 @@ export class ResourceExhaustionRule implements ValidationRule {
       if (arr.elements.length === 1 && arr.elements[0]?.type === 'Literal') {
         const value = String(arr.elements[0].value).toLowerCase();
         if (dangerousStrings.includes(value)) {
-          return true;
+          // Only flag actual coercion methods that convert array to string
+          if (
+            node.callee.property.type === 'Identifier' &&
+            (node.callee.property.name === 'toString' || node.callee.property.name === 'join')
+          ) {
+            return true;
+          }
         }
       }
     }

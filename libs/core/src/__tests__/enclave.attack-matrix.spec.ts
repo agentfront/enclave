@@ -1453,22 +1453,24 @@ describe('Enclave Attack Matrix', () => {
         };
       `;
 
-      const result = await enclave.run<{
-        attempts: Array<{ name: string; result?: string; error?: string; blocked?: boolean }>;
-        totalAttempts: number;
-      }>(code);
+      try {
+        const result = await enclave.run<{
+          attempts: Array<{ name: string; result?: string; error?: string; blocked?: boolean }>;
+          totalAttempts: number;
+        }>(code);
 
-      // CRITICAL ASSERTION: Host code must NEVER have executed
-      expect(hostCodeExecuted).toBe(false);
+        // CRITICAL ASSERTION: Host code must NEVER have executed
+        expect(hostCodeExecuted).toBe(false);
 
-      // If execution succeeded, verify no attempt actually triggered the sentinel
-      if (result.success && result.value) {
-        for (const attempt of result.value.attempts) {
-          expect(attempt.result).not.toBe('HOST_CODE_EXECUTED');
+        // If execution succeeded, verify no attempt actually triggered the sentinel
+        if (result.success && result.value) {
+          for (const attempt of result.value.attempts) {
+            expect(attempt.result).not.toBe('HOST_CODE_EXECUTED');
+          }
         }
+      } finally {
+        enclave.dispose();
       }
-
-      enclave.dispose();
     }, 20000);
 
     it('ATK-SOE-01: should block Object.prototype modification via stack overflow', async () => {

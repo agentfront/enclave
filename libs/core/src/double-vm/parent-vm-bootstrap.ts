@@ -1712,6 +1712,7 @@ ${stackTraceHardeningCode}
       '      return err;' +
       '    };' +
       '    WrappedCtor.prototype = OrigCtor.prototype;' +
+      '    try { Object.setPrototypeOf(WrappedCtor, OrigCtor); } catch (e) {}' +
       '    try { Object.freeze(WrappedCtor); } catch (e) {}' +
       '    return WrappedCtor;' +
       '  }' +
