@@ -1339,4 +1339,367 @@ describe('Enclave Attack Matrix', () => {
       enclave.dispose();
     });
   });
+
+  describe('Stack Overflow Prototype Chain Escape (ATK-SOE)', () => {
+    /**
+     * Tests for CVE-2023-29017 style attacks where stack overflow errors
+     * are exploited to traverse prototype chains and escape the sandbox.
+     *
+     * IMPORTANT: Full test suite is in: enclave.stack-overflow-escape.spec.ts
+     * These tests here are simplified versions for the attack matrix overview.
+     * The dedicated file provides comprehensive coverage including edge cases.
+     */
+
+    it('ATK-SOE-HOST: should never execute host code via escape attempts (sentinel test)', async () => {
+      // CRITICAL: This is the definitive test - if hostCodeExecuted becomes true,
+      // the sandbox has been compromised
+      let hostCodeExecuted = false;
+
+      const enclave = new Enclave({
+        timeout: 5000,
+        allowFunctionsInGlobals: true, // Required to inject sentinel function
+        globals: {
+          __sentinel__: {
+            trigger: () => {
+              hostCodeExecuted = true;
+              return 'HOST_CODE_EXECUTED';
+            },
+          },
+        },
+      });
+
+      // Attempt multiple escape vectors that try to call the sentinel
+      const code = `
+        const escapeAttempts = [];
+
+        // Helper to try calling sentinel via various paths
+        function tryEscape(name, fn) {
+          try {
+            const result = fn();
+            escapeAttempts.push({ name, result, success: true });
+          } catch (e) {
+            escapeAttempts.push({ name, error: e.name, blocked: true });
+          }
+        }
+
+        // Attempt 1: Direct stack overflow -> constructor.constructor
+        let stackOverflowError;
+        const overflow = () => {
+          try { overflow(); } catch (e) { stackOverflowError = e; }
+        };
+        overflow();
+
+        if (stackOverflowError) {
+          tryEscape('stack_overflow_ctor', () => {
+            const F = stackOverflowError.constructor.constructor;
+            if (typeof F === 'function') {
+              const fn = F('return __sentinel__.trigger()');
+              return fn();
+            }
+            return 'not_function';
+          });
+
+          tryEscape('stack_overflow_proto_chain', () => {
+            const proto = stackOverflowError.__proto__.__proto__.__proto__;
+            proto.escape = stackOverflowError.toString.constructor;
+            const fn = proto.escape('return __sentinel__.trigger()');
+            return fn();
+          });
+        }
+
+        // Attempt 2: Error.constructor.constructor
+        tryEscape('error_ctor', () => {
+          const F = new Error().constructor.constructor;
+          if (typeof F === 'function') {
+            const fn = F('return __sentinel__.trigger()');
+            return fn();
+          }
+          return 'not_function';
+        });
+
+        // Attempt 3: Function arrow expression
+        tryEscape('arrow_ctor', () => {
+          const F = (() => {}).constructor;
+          if (typeof F === 'function') {
+            const fn = F('return __sentinel__.trigger()');
+            return fn();
+          }
+          return 'not_function';
+        });
+
+        // Attempt 4: toString.constructor
+        tryEscape('toString_ctor', () => {
+          const F = Object.prototype.toString.constructor;
+          if (typeof F === 'function') {
+            const fn = F('return __sentinel__.trigger()');
+            return fn();
+          }
+          return 'not_function';
+        });
+
+        // Attempt 5: Array method constructor
+        tryEscape('array_method_ctor', () => {
+          const F = [].map.constructor;
+          if (typeof F === 'function') {
+            const fn = F('return __sentinel__.trigger()');
+            return fn();
+          }
+          return 'not_function';
+        });
+
+        return {
+          attempts: escapeAttempts,
+          totalAttempts: escapeAttempts.length
+        };
+      `;
+
+      const result = await enclave.run<{
+        attempts: Array<{ name: string; result?: string; error?: string; blocked?: boolean }>;
+        totalAttempts: number;
+      }>(code);
+
+      // CRITICAL ASSERTION: Host code must NEVER have executed
+      expect(hostCodeExecuted).toBe(false);
+
+      // If execution succeeded, verify no attempt actually triggered the sentinel
+      if (result.success && result.value) {
+        for (const attempt of result.value.attempts) {
+          expect(attempt.result).not.toBe('HOST_CODE_EXECUTED');
+        }
+      }
+
+      enclave.dispose();
+    }, 20000);
+
+    it('ATK-SOE-01: should block Object.prototype modification via stack overflow', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        let rootProt;
+        const a = () => {
+          try {
+            a();
+          } catch (e) {
+            rootProt = e["__proto__"]["__proto__"]["__proto__"];
+          }
+        };
+        a();
+
+        try {
+          rootProt["polluted"] = "pwned";
+          return "VULNERABLE";
+        } catch (e) {
+          return "PROTECTED: " + e.name;
+        }
+      `;
+
+      const result = await enclave.run(code);
+
+      // ALWAYS verify - never skip assertions on failure
+      if (result.success) {
+        expect(result.value).not.toBe('VULNERABLE');
+        expect(result.value).toMatch(/PROTECTED|TypeError/);
+      } else {
+        // Execution failed - verify it was due to security measures
+        expect(result.error).toBeDefined();
+        expect(
+          result.error?.code === 'VALIDATION_ERROR' ||
+            result.error?.message?.includes('blocked') ||
+            result.error?.message?.includes('not allowed') ||
+            result.error?.name === 'TypeError' ||
+            result.error?.name === 'EvalError',
+        ).toBe(true);
+      }
+
+      // Verify host is not polluted
+      const testObj: Record<string, unknown> = {};
+      expect(testObj['polluted']).toBeUndefined();
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-SOE-05: should not pollute host Object.prototype', async () => {
+      const hostProtoKeys = Object.keys(Object.prototype);
+
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        const a = () => {
+          try { a(); } catch (e) {
+            try { e.__proto__.__proto__.__proto__.hostPolluted = true; } catch (err) {}
+          }
+        };
+        a();
+        return 'done';
+      `;
+
+      await enclave.run(code);
+
+      // Verify host is unchanged
+      expect(Object.keys(Object.prototype)).toEqual(hostProtoKeys);
+      expect((Object.prototype as Record<string, unknown>)['hostPolluted']).toBeUndefined();
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-SOE-06: should block direct Function escape via e.constructor.constructor with sentinel', async () => {
+      // CRITICAL TEST: Set up a sentinel function in globals that should NEVER execute
+      let hostCodeExecuted = false;
+
+      const enclave = new Enclave({
+        timeout: 5000,
+        allowFunctionsInGlobals: true,
+        globals: {
+          __hostSentinel__: () => {
+            hostCodeExecuted = true;
+            return 'HOST_COMPROMISED';
+          },
+        },
+      });
+
+      const code = `
+        const results = [];
+
+        // Attempt 1: Stack overflow -> constructor.constructor -> call sentinel
+        let stackError;
+        const overflow = () => {
+          try { overflow(); } catch (e) { stackError = e; }
+        };
+        overflow();
+
+        if (stackError) {
+          try {
+            const F = stackError.constructor.constructor;
+            if (typeof F === 'function') {
+              const fn = F('return __hostSentinel__()');
+              const result = fn();
+              results.push({ attempt: 'stack_overflow_ctor', escaped: result === 'HOST_COMPROMISED', result });
+            } else {
+              results.push({ attempt: 'stack_overflow_ctor', blocked: true, reason: 'not_function' });
+            }
+          } catch (e) {
+            results.push({ attempt: 'stack_overflow_ctor', blocked: true, error: e.name });
+          }
+        }
+
+        // Attempt 2: Arrow function -> constructor -> call sentinel
+        try {
+          const F = (() => {}).constructor;
+          if (typeof F === 'function') {
+            const fn = F('return __hostSentinel__()');
+            const result = fn();
+            results.push({ attempt: 'arrow_ctor', escaped: result === 'HOST_COMPROMISED', result });
+          } else {
+            results.push({ attempt: 'arrow_ctor', blocked: true, reason: 'not_function' });
+          }
+        } catch (e) {
+          results.push({ attempt: 'arrow_ctor', blocked: true, error: e.name });
+        }
+
+        // Attempt 3: Error -> toString.constructor -> call sentinel
+        try {
+          const err = new Error('test');
+          const F = err.toString.constructor;
+          if (typeof F === 'function') {
+            const fn = F('return __hostSentinel__()');
+            const result = fn();
+            results.push({ attempt: 'toString_ctor', escaped: result === 'HOST_COMPROMISED', result });
+          } else {
+            results.push({ attempt: 'toString_ctor', blocked: true, reason: 'not_function' });
+          }
+        } catch (e) {
+          results.push({ attempt: 'toString_ctor', blocked: true, error: e.name });
+        }
+
+        return { results, attemptCount: results.length };
+      `;
+
+      const result = await enclave.run<{
+        results: Array<{ attempt: string; escaped?: boolean; blocked?: boolean; error?: string; result?: string }>;
+        attemptCount: number;
+      }>(code);
+
+      // CRITICAL ASSERTION: Host sentinel must NEVER have executed
+      expect(hostCodeExecuted).toBe(false);
+
+      // ALWAYS verify - never skip assertions
+      if (result.success && result.value) {
+        // None of the attempts should have escaped
+        for (const attempt of result.value.results) {
+          expect(attempt.escaped).not.toBe(true);
+          expect(attempt.result).not.toBe('HOST_COMPROMISED');
+        }
+      } else {
+        // Execution failed - verify it was due to security measures
+        expect(result.error).toBeDefined();
+        expect(
+          result.error?.code === 'VALIDATION_ERROR' ||
+            result.error?.message?.includes('blocked') ||
+            result.error?.name === 'TypeError' ||
+            result.error?.name === 'EvalError',
+        ).toBe(true);
+      }
+
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-SOE-07: should verify __proto__ shadowing works on all error types', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        const results = [];
+
+        // Test each error type
+        const errorTypes = [
+          { name: 'Error', create: () => new Error('test') },
+          { name: 'TypeError', create: () => new TypeError('test') },
+          { name: 'RangeError', create: () => new RangeError('test') },
+          { name: 'SyntaxError', create: () => new SyntaxError('test') },
+          { name: 'ReferenceError', create: () => new ReferenceError('test') },
+          { name: 'URIError', create: () => new URIError('test') },
+          { name: 'EvalError', create: () => new EvalError('test') },
+        ];
+
+        for (const { name, create } of errorTypes) {
+          try {
+            const err = create();
+            const proto = err.__proto__;
+            results.push({
+              errorType: name,
+              protoIsNull: proto === null,
+              protoValue: String(proto)
+            });
+          } catch (e) {
+            results.push({
+              errorType: name,
+              blocked: true,
+              error: e.name
+            });
+          }
+        }
+
+        return results;
+      `;
+
+      const result = await enclave.run<
+        Array<{
+          errorType: string;
+          protoIsNull?: boolean;
+          protoValue?: string;
+          blocked?: boolean;
+        }>
+      >(code);
+
+      // ALWAYS verify
+      if (result.success && Array.isArray(result.value)) {
+        // All error types should have __proto__ returning null
+        for (const r of result.value) {
+          if (!r.blocked) {
+            expect(r.protoIsNull).toBe(true);
+            expect(r.protoValue).toBe('null');
+          }
+        }
+      } else {
+        // Security failure is acceptable
+        expect(result.error).toBeDefined();
+      }
+
+      enclave.dispose();
+    }, 15000);
+  });
 });
