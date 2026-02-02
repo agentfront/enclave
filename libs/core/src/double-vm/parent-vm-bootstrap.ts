@@ -1534,8 +1534,110 @@ ${stackTraceHardeningCode}
   // Remove dangerous globals from inner VM (AFTER memory patching)
   ${sanitizeContextCode}
 
-  // Freeze built-in prototypes to prevent prototype pollution
-  // and cut off constructor chain access for sandbox escape prevention
+  // ============================================================
+  // PHASE 2 HARDENING: CVE-2023-29017 Stack Overflow Escape Defense
+  // ============================================================
+  //
+  // CRITICAL: Hardening MUST run BEFORE prototypes are frozen!
+  // Otherwise Object.defineProperty calls will silently fail on frozen prototypes.
+  //
+  // Defense-in-depth against prototype chain escape via stack overflow errors:
+  // 1. __proto__ shadowing to block prototype chain traversal
+  // 2. Legacy method blocking (__lookupGetter__, etc.)
+  // 3. Error constructor wrapping to secure V8-generated errors
+  // 4. Then freeze all prototypes to lock in hardening
+
+  // HARDENING 1: Shadow __proto__ on PARENT VM error prototypes with null
+  // This prevents e["__proto__"]["__proto__"] traversal attacks by making
+  // __proto__ return null instead of the actual prototype chain.
+  // MUST run before freeze!
+  (function() {
+    var errorProtos = [
+      Error.prototype,
+      TypeError.prototype,
+      RangeError.prototype,
+      SyntaxError.prototype,
+      ReferenceError.prototype,
+      URIError.prototype,
+      EvalError.prototype
+    ];
+    for (var i = 0; i < errorProtos.length; i++) {
+      // Shadow __proto__ with a null-returning getter
+      // This blocks: error["__proto__"]["__proto__"]["__proto__"] attacks
+      Object.defineProperty(errorProtos[i], '__proto__', {
+        get: function() { return null; },
+        set: function() { /* silently ignore */ },
+        configurable: false,
+        enumerable: false
+      });
+    }
+  })();
+
+  // HARDENING 2: Shadow __proto__ in INNER VM error prototypes
+  // MUST run before freeze!
+  (function() {
+    var shadowProtoCode =
+      '(function() {' +
+      '  var errorProtos = [' +
+      '    Error.prototype,' +
+      '    TypeError.prototype,' +
+      '    RangeError.prototype,' +
+      '    SyntaxError.prototype,' +
+      '    ReferenceError.prototype,' +
+      '    URIError.prototype,' +
+      '    EvalError.prototype' +
+      '  ];' +
+      '  for (var i = 0; i < errorProtos.length; i++) {' +
+      '    Object.defineProperty(errorProtos[i], "__proto__", {' +
+      '      get: function() { return null; },' +
+      '      set: function() {},' +
+      '      configurable: false,' +
+      '      enumerable: false' +
+      '    });' +
+      '  }' +
+      '})();';
+    var shadowScript = new vm.Script(shadowProtoCode);
+    shadowScript.runInContext(innerContext);
+  })();
+
+  // HARDENING 3: Block legacy prototype manipulation methods in PARENT VM
+  // These deprecated methods (__lookupGetter__, __lookupSetter__, __defineGetter__, __defineSetter__)
+  // can be used to bypass frozen prototype protections.
+  // MUST run before freeze!
+  (function() {
+    var legacyMethods = ['__lookupGetter__', '__lookupSetter__', '__defineGetter__', '__defineSetter__'];
+    for (var i = 0; i < legacyMethods.length; i++) {
+      Object.defineProperty(Object.prototype, legacyMethods[i], {
+        value: function() { return undefined; },
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+    }
+  })();
+
+  // HARDENING 4: Block legacy prototype methods in INNER VM
+  // MUST run before freeze!
+  (function() {
+    var blockLegacyCode =
+      '(function() {' +
+      '  var methods = ["__lookupGetter__", "__lookupSetter__", "__defineGetter__", "__defineSetter__"];' +
+      '  for (var i = 0; i < methods.length; i++) {' +
+      '    Object.defineProperty(Object.prototype, methods[i], {' +
+      '      value: function() { return undefined; },' +
+      '      writable: false,' +
+      '      configurable: false,' +
+      '      enumerable: false' +
+      '    });' +
+      '  }' +
+      '})();';
+    var blockScript = new vm.Script(blockLegacyCode);
+    blockScript.runInContext(innerContext);
+  })();
+
+  // ============================================================
+  // PROTOTYPE FREEZING: Lock in hardening by freezing all prototypes
+  // ============================================================
   //
   // We freeze prototypes in TWO places:
   // 1. PARENT VM prototypes - because SafeObject.prototype = Object.prototype uses parent's prototype
@@ -1557,6 +1659,8 @@ ${stackTraceHardeningCode}
   Object.freeze(RangeError.prototype);
   Object.freeze(SyntaxError.prototype);
   Object.freeze(ReferenceError.prototype);
+  Object.freeze(URIError.prototype);
+  Object.freeze(EvalError.prototype);
   Object.freeze(Promise.prototype);
 
   // Freeze INNER VM prototypes (used by literals like '', [], etc.)
@@ -1574,10 +1678,63 @@ ${stackTraceHardeningCode}
       'Object.freeze(RangeError.prototype);' +
       'Object.freeze(SyntaxError.prototype);' +
       'Object.freeze(ReferenceError.prototype);' +
+      'Object.freeze(URIError.prototype);' +
+      'Object.freeze(EvalError.prototype);' +
       'Object.freeze(Promise.prototype);';
     var freezeScript = new vm.Script(freezeCode);
     freezeScript.runInContext(innerContext);
   })();
+
+  // HARDENING 5: Wrap error constructors to freeze instances
+  // V8-generated errors (like stack overflow RangeError) are created internally,
+  // not via the constructor. But wrapping provides defense-in-depth for any
+  // errors that ARE created via constructors.
+  // NOTE: This can run after freeze because it replaces global constructors, not prototype properties
+  (function() {
+    var wrapErrorCode =
+      '(function() {' +
+      '  var origError = Error;' +
+      '  var origTypeError = TypeError;' +
+      '  var origRangeError = RangeError;' +
+      '  var origSyntaxError = SyntaxError;' +
+      '  var origReferenceError = ReferenceError;' +
+      '  var origEvalError = EvalError;' +
+      '  var origURIError = URIError;' +
+      '  function wrapErrorCtor(OrigCtor, name) {' +
+      '    var WrappedCtor = function(msg) {' +
+      '      var err;' +
+      '      if (new.target) {' +
+      '        err = new OrigCtor(msg);' +
+      '      } else {' +
+      '        err = OrigCtor(msg);' +
+      '      }' +
+      '      try { Object.freeze(err); } catch (e) {}' +
+      '      return err;' +
+      '    };' +
+      '    WrappedCtor.prototype = OrigCtor.prototype;' +
+      '    try { Object.setPrototypeOf(WrappedCtor, OrigCtor); } catch (e) {}' +
+      '    try { Object.freeze(WrappedCtor); } catch (e) {}' +
+      '    return WrappedCtor;' +
+      '  }' +
+      '  try { Error = wrapErrorCtor(origError, "Error"); } catch (e) {}' +
+      '  try { TypeError = wrapErrorCtor(origTypeError, "TypeError"); } catch (e) {}' +
+      '  try { RangeError = wrapErrorCtor(origRangeError, "RangeError"); } catch (e) {}' +
+      '  try { SyntaxError = wrapErrorCtor(origSyntaxError, "SyntaxError"); } catch (e) {}' +
+      '  try { ReferenceError = wrapErrorCtor(origReferenceError, "ReferenceError"); } catch (e) {}' +
+      '  try { EvalError = wrapErrorCtor(origEvalError, "EvalError"); } catch (e) {}' +
+      '  try { URIError = wrapErrorCtor(origURIError, "URIError"); } catch (e) {}' +
+      '})();';
+    try {
+      var wrapScript = new vm.Script(wrapErrorCode);
+      wrapScript.runInContext(innerContext);
+    } catch (e) { /* ignore */ }
+  })();
+
+  // NOTE: HARDENING 6 and 7 (Object.getPrototypeOf / Reflect.getPrototypeOf wrappers)
+  // were removed as they break legitimate internal functionality like __safe_template.
+  // The existing defenses (prototype freezing, __proto__ shadowing, error constructor
+  // wrapping, codeGeneration.strings=false) provide sufficient protection against
+  // the CVE-2023-29017 attack pattern.
 
   // Inject safe runtime functions (non-writable, non-configurable)
   // Wrap with secure proxy to block dangerous property access
@@ -1762,6 +1919,47 @@ ${stackTraceHardeningCode}
   // ============================================================
   // Execute User Code
   // ============================================================
+
+  // HARDENING 4: Runtime prototype verification before user code execution
+  // Verifies that critical prototypes are still frozen. If any have been
+  // unfrozen (which shouldn't be possible but defense-in-depth), abort.
+  (function() {
+    var criticalPrototypes = [
+      { name: 'Object.prototype', proto: Object.prototype },
+      { name: 'Array.prototype', proto: Array.prototype },
+      { name: 'Function.prototype', proto: Function.prototype },
+      { name: 'Error.prototype', proto: Error.prototype },
+      { name: 'RangeError.prototype', proto: RangeError.prototype }
+    ];
+    for (var i = 0; i < criticalPrototypes.length; i++) {
+      var item = criticalPrototypes[i];
+      if (!Object.isFrozen(item.proto)) {
+        throw new Error('SECURITY VIOLATION: ' + item.name + ' is not frozen. Aborting execution.');
+      }
+    }
+  })();
+
+  // HARDENING 5: Runtime verification in INNER VM
+  (function() {
+    var verifyCode =
+      '(function() {' +
+      '  var protos = [Object.prototype, Array.prototype, Error.prototype, RangeError.prototype];' +
+      '  for (var i = 0; i < protos.length; i++) {' +
+      '    if (!Object.isFrozen(protos[i])) {' +
+      '      throw new Error("SECURITY VIOLATION: Inner VM prototype not frozen");' +
+      '    }' +
+      '  }' +
+      '})();';
+    try {
+      var verifyScript = new vm.Script(verifyCode);
+      verifyScript.runInContext(innerContext);
+    } catch (e) {
+      if (e.message && e.message.indexOf('SECURITY VIOLATION') >= 0) {
+        throw e;
+      }
+      /* ignore other errors */
+    }
+  })();
 
   var userCode = ${JSON.stringify(userCode)};
   // IMPORTANT: For stack overflow errors (RangeError: Maximum call stack size exceeded),

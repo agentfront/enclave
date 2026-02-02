@@ -249,6 +249,20 @@ export class ResourceExhaustionRule implements ValidationRule {
             });
           }
         }
+
+        // Detect computed access via function calls that could produce dangerous strings
+        // e.g., obj[String(['constructor'])] or obj[['proto'].toString()]
+        // CVE-2023-29017 style bypass: String(['constructor']) coerces array to 'constructor'
+        if (node.computed && node.property.type === 'CallExpression') {
+          if (this.isSuspiciousCoercionCall(node.property)) {
+            context.report({
+              code: 'CONSTRUCTOR_ACCESS',
+              message:
+                'Computed property access via coercion function is not allowed (potential sandbox escape vector)',
+              location: this.getLocation(node),
+            });
+          }
+        }
       },
 
       // Detect suspicious variable assignments that build "constructor"
@@ -275,6 +289,68 @@ export class ResourceExhaustionRule implements ValidationRule {
   private isSuspiciousStringConcat(node: any): boolean {
     const result = this.evaluateStringConcat(node);
     return result === 'constructor' || result === 'prototype' || result === '__proto__';
+  }
+
+  /**
+   * Check if a call expression could be coercing a dangerous string
+   * Detects patterns like:
+   * - String(['constructor']) - array coercion
+   * - String.fromCharCode(...) - character code building
+   * - ['constructor'].toString() - array method coercion
+   * - ['constructor'].join('') - array join coercion
+   */
+  private isSuspiciousCoercionCall(node: any): boolean {
+    const dangerousStrings = ['constructor', '__proto__', 'prototype'];
+
+    // String(['constructor']) - String() called with array containing dangerous string
+    if (node.callee.type === 'Identifier' && node.callee.name === 'String') {
+      if (node.arguments.length === 1) {
+        const arg = node.arguments[0];
+        if (arg.type === 'ArrayExpression' && arg.elements.length === 1) {
+          const element = arg.elements[0];
+          if (element?.type === 'Literal' && typeof element.value === 'string') {
+            const value = element.value.toLowerCase();
+            if (dangerousStrings.includes(value)) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    // String.fromCharCode(...) or String['fromCharCode'](...) - always suspicious in computed property context
+    if (
+      node.callee.type === 'MemberExpression' &&
+      node.callee.object.type === 'Identifier' &&
+      node.callee.object.name === 'String'
+    ) {
+      const property = node.callee.property;
+      const isFromCharCode =
+        (property.type === 'Identifier' && property.name === 'fromCharCode') ||
+        ((property.type === 'Literal' || property.type === 'StringLiteral') && property.value === 'fromCharCode');
+      if (isFromCharCode) {
+        return true;
+      }
+    }
+
+    // ['constructor'].toString() or ['constructor'].join('')
+    if (node.callee.type === 'MemberExpression' && node.callee.object.type === 'ArrayExpression') {
+      const arr = node.callee.object;
+      if (arr.elements.length === 1 && arr.elements[0]?.type === 'Literal') {
+        const value = String(arr.elements[0].value).toLowerCase();
+        if (dangerousStrings.includes(value)) {
+          // Only flag actual coercion methods that convert array to string
+          if (
+            node.callee.property.type === 'Identifier' &&
+            (node.callee.property.name === 'toString' || node.callee.property.name === 'join')
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
   }
 
   /**
