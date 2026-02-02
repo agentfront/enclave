@@ -489,6 +489,7 @@ describe('Advanced Sandbox Escape Prevention', () => {
 
       // The key assertion: host sentinel should not have been called
       // (unless explicitly through the allowed globals path)
+      expect(hostCodeExecuted).toBe(false);
       expect(result).toBeDefined();
 
       enclave.dispose();

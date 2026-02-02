@@ -318,15 +318,19 @@ export class ResourceExhaustionRule implements ValidationRule {
       }
     }
 
-    // String.fromCharCode(...) - always suspicious in computed property context
+    // String.fromCharCode(...) or String['fromCharCode'](...) - always suspicious in computed property context
     if (
       node.callee.type === 'MemberExpression' &&
       node.callee.object.type === 'Identifier' &&
-      node.callee.object.name === 'String' &&
-      node.callee.property.type === 'Identifier' &&
-      node.callee.property.name === 'fromCharCode'
+      node.callee.object.name === 'String'
     ) {
-      return true;
+      const property = node.callee.property;
+      const isFromCharCode =
+        (property.type === 'Identifier' && property.name === 'fromCharCode') ||
+        ((property.type === 'Literal' || property.type === 'StringLiteral') && property.value === 'fromCharCode');
+      if (isFromCharCode) {
+        return true;
+      }
     }
 
     // ['constructor'].toString() or ['constructor'].join('')

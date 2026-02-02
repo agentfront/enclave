@@ -127,9 +127,19 @@ jobs:
             libs/*/dist
           key: build-${{ github.sha }}
 
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
       - name: Run ${{ matrix.name }} tests
         id: test
-        run: ${{ matrix.command }} 2>&1 | tee test-output.txt
+        shell: bash
+        run: |
+          set -o pipefail
+          COMMAND="${{ matrix.command }}"
+          if [ "${{ matrix.coverage }}" = "true" ]; then
+            COMMAND="$COMMAND --coverage"
+          fi
+          $COMMAND 2>&1 | tee test-output.txt
         continue-on-error: true
 
       - name: Log failed tests to summary
