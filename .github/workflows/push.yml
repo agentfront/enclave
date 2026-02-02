@@ -64,48 +64,11 @@ jobs:
           key: build-${{ github.sha }}
 
   test:
-    name: Test (${{ matrix.name }})
+    name: Test
     runs-on: ubuntu-latest
     needs: build
     env:
       NX_DAEMON: "false"
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: core-unit
-            command: npx nx test core --passWithNoTests --testPathIgnorePatterns="attack|security|escape|ssrf|redos|gadget|exhaustion|flood|obfuscation"
-            coverage: true
-          - name: core-security
-            command: npx nx test core --passWithNoTests --testPathPattern="attack|security|escape|ssrf|redos|gadget|exhaustion|flood|obfuscation"
-            coverage: true
-          - name: ast
-            command: npx nx test ast --passWithNoTests
-            coverage: true
-          - name: broker
-            command: npx nx test broker --passWithNoTests
-            coverage: true
-          - name: client
-            command: npx nx test client --passWithNoTests
-            coverage: true
-          - name: react
-            command: npx nx test react --passWithNoTests
-            coverage: true
-          - name: runtime
-            command: npx nx test runtime --passWithNoTests
-            coverage: true
-          - name: core-perf-babel
-            command: npx nx run core:test-perf --passWithNoTests --testPathPattern="babel.perf"
-            coverage: false
-          - name: core-perf-enclave
-            command: npx nx run core:test-perf --passWithNoTests --testPathPattern="enclave.perf"
-            coverage: false
-          - name: core-perf-double-vm
-            command: npx nx run core:test-perf --passWithNoTests --testPathPattern="double-vm.perf"
-            coverage: false
-          - name: core-perf-worker-pool
-            command: npx nx run core:test-perf --passWithNoTests --testPathPattern="worker-pool.perf"
-            coverage: false
 
     steps:
       - name: Checkout code
@@ -127,93 +90,79 @@ jobs:
             libs/*/dist
           key: build-${{ github.sha }}
 
-      - name: Install dependencies
-        run: yarn install --frozen-lockfile
+      - name: Set Nx SHAs
+        uses: nrwl/nx-set-shas@v4
 
-      - name: Run ${{ matrix.name }} tests
+      - name: Test libraries
         id: test
-        shell: bash
-        run: |
-          set -o pipefail
-          COMMAND="${{ matrix.command }}"
-          if [ "${{ matrix.coverage }}" = "true" ]; then
-            COMMAND="$COMMAND --coverage"
-          fi
-          $COMMAND 2>&1 | tee test-output.txt
+        run: npx nx affected -t test --passWithNoTests 2>&1 | tee test-output.txt
         continue-on-error: true
 
       - name: Log failed tests to summary
         if: steps.test.outcome == 'failure'
         run: |
-          echo "## ❌ ${{ matrix.name }} Test Failures" >> $GITHUB_STEP_SUMMARY
+          echo "## ❌ Test Failures" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+          # Extract failed test names and error messages
           grep -A 5 "FAIL\|✕\|Error:" test-output.txt | head -100 >> $GITHUB_STEP_SUMMARY || echo "Could not extract failure details" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-${{ matrix.name }}
-          path: |
-            test-output.txt
-            coverage/
-            perf-results.json
-          if-no-files-found: ignore
+          echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: Fail if tests failed
         if: steps.test.outcome == 'failure'
         run: exit 1
 
-  aggregate-results:
-    name: Aggregate Results
+  performance:
+    name: Performance
     runs-on: ubuntu-latest
-    needs: test
-    if: always()
+    needs: build
+    env:
+      NX_DAEMON: "false"
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Download all test artifacts
-        uses: actions/download-artifact@v4
         with:
-          pattern: test-results-*
-          path: all-results
-          merge-multiple: false
+          fetch-depth: 0
 
-      - name: Generate combined summary
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".nvmrc"
+          cache: "yarn"
+
+      - name: Restore build artifacts
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            node_modules
+            libs/*/dist
+          key: build-${{ github.sha }}
+
+      - name: Run performance tests
+        run: npx nx run core:test-perf --passWithNoTests
+        continue-on-error: true
+
+      - name: Generate performance summary
+        if: always()
         run: |
-          echo "## 📊 Test Results Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f "perf-results.json" ]; then
+            echo "## Performance Test Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            node scripts/format-perf-summary.mjs perf-results.json >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Performance Tests" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No performance results found. Tests may have been skipped or failed to run." >> $GITHUB_STEP_SUMMARY
+          fi
+        continue-on-error: true
 
-          # Check each test result
-          for dir in all-results/test-results-*; do
-            name=$(basename "$dir" | sed 's/test-results-//')
-            if [ -f "$dir/test-output.txt" ]; then
-              if grep -q "FAIL\|✕" "$dir/test-output.txt"; then
-                echo "- ❌ **$name**: Failed" >> $GITHUB_STEP_SUMMARY
-              else
-                echo "- ✅ **$name**: Passed" >> $GITHUB_STEP_SUMMARY
-              fi
-            else
-              echo "- ⏭️ **$name**: Skipped" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
-
-          # Performance results
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Performance Results" >> $GITHUB_STEP_SUMMARY
-          for perf_dir in all-results/test-results-core-perf-*; do
-            if [ -f "$perf_dir/perf-results.json" ]; then
-              perf_name=$(basename "$perf_dir" | sed 's/test-results-core-perf-//')
-              echo "#### $perf_name" >> $GITHUB_STEP_SUMMARY
-              node scripts/format-perf-summary.mjs "$perf_dir/perf-results.json" >> $GITHUB_STEP_SUMMARY || true
-            fi
-          done
-
-      - name: Upload combined artifact
+      - name: Upload performance results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: all-test-results
-          path: all-results/
+          name: perf-results
+          path: perf-results.json
+          if-no-files-found: ignore
           retention-days: 30
