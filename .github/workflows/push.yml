@@ -74,7 +74,10 @@ jobs:
       matrix:
         include:
           - name: core-unit
-            command: npx nx test core --passWithNoTests
+            command: npx nx test core --passWithNoTests --testPathIgnorePatterns="attack|security|escape|ssrf|redos|gadget|exhaustion|flood|obfuscation"
+            coverage: true
+          - name: core-security
+            command: npx nx test core --passWithNoTests --testPathPattern="attack|security|escape|ssrf|redos|gadget|exhaustion|flood|obfuscation"
             coverage: true
           - name: ast
             command: npx nx test ast --passWithNoTests
@@ -91,8 +94,17 @@ jobs:
           - name: runtime
             command: npx nx test runtime --passWithNoTests
             coverage: true
-          - name: core-perf
-            command: npx nx run core:test-perf --passWithNoTests
+          - name: core-perf-babel
+            command: npx nx run core:test-perf --passWithNoTests --testPathPattern="babel.perf"
+            coverage: false
+          - name: core-perf-enclave
+            command: npx nx run core:test-perf --passWithNoTests --testPathPattern="enclave.perf"
+            coverage: false
+          - name: core-perf-double-vm
+            command: npx nx run core:test-perf --passWithNoTests --testPathPattern="double-vm.perf"
+            coverage: false
+          - name: core-perf-worker-pool
+            command: npx nx run core:test-perf --passWithNoTests --testPathPattern="worker-pool.perf"
             coverage: false
 
     steps:
@@ -179,11 +191,15 @@ jobs:
           done
 
           # Performance results
-          if [ -f "all-results/test-results-core-perf/perf-results.json" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Performance Results" >> $GITHUB_STEP_SUMMARY
-            node scripts/format-perf-summary.mjs all-results/test-results-core-perf/perf-results.json >> $GITHUB_STEP_SUMMARY || true
-          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Performance Results" >> $GITHUB_STEP_SUMMARY
+          for perf_dir in all-results/test-results-core-perf-*; do
+            if [ -f "$perf_dir/perf-results.json" ]; then
+              perf_name=$(basename "$perf_dir" | sed 's/test-results-core-perf-//')
+              echo "#### $perf_name" >> $GITHUB_STEP_SUMMARY
+              node scripts/format-perf-summary.mjs "$perf_dir/perf-results.json" >> $GITHUB_STEP_SUMMARY || true
+            fi
+          done
 
       - name: Upload combined artifact
         uses: actions/upload-artifact@v4
