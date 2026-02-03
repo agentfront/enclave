@@ -38,6 +38,7 @@
       "dependsOn": ["^build", "build-worker-script"],
       "outputs": ["{options.outputPath}"],
       "options": {
+        "deleteOutputPath": false,
         "outputPath": "libs/core/dist",
         "main": "libs/core/src/index.ts",
         "tsConfig": "libs/core/tsconfig.lib.json",

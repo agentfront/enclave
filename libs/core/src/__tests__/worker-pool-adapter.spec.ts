@@ -394,7 +394,7 @@ describe('WorkerPoolAdapter', () => {
       expect(result.success).toBe(true);
       expect(result.value).toEqual({ value: 42 });
 
-      await enclave.dispose();
+      enclave.dispose();
     });
   });
 

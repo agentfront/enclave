@@ -333,7 +333,7 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
 
     // Wrap code in async IIFE to support top-level await
     // Must call __ag_main() if defined, as the enclave transforms code to wrap in async function __ag_main()
-    // Use string concatenation instead of template literals to avoid code injection patterns
+    // Use string concatenation for clarity; security is enforced by AST validation upstream
     const wrappedCode =
       '(async () => {\n' +
       msg.code +
