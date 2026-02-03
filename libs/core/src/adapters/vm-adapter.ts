@@ -1115,12 +1115,12 @@ export class VmAdapter implements SandboxAdapter {
       this.context = baseSandbox;
 
       // Wrap code in async IIFE to handle top-level await
-      const wrappedCode = `
-        (async () => {
-          ${code}
-          return typeof __ag_main === 'function' ? await __ag_main() : undefined;
-        })();
-      `;
+      // Use string concatenation instead of template literals to avoid code injection patterns
+      const wrappedCode =
+        '(async () => {\n' +
+        code +
+        '\nreturn typeof __ag_main === "function" ? await __ag_main() : undefined;\n' +
+        '})();';
 
       // Compile script
       const script = new vm.Script(wrappedCode, {
