@@ -46,6 +46,9 @@ export class WorkerPoolAdapter implements SandboxAdapter {
   private disposed = false;
   private initialized = false;
 
+  // Bound event handler for proper cleanup
+  private readonly boundMemoryExceededHandler = this.handleMemoryExceeded.bind(this);
+
   // Metrics
   private _totalExecutions = 0;
   private _successfulExecutions = 0;
@@ -71,7 +74,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     this.rateLimiter = createRateLimiter(this.config.maxMessagesPerSecond);
 
     // Set up memory monitor events
-    this.memoryMonitor.on('memoryExceeded', this.handleMemoryExceeded.bind(this));
+    this.memoryMonitor.on('memoryExceeded', this.boundMemoryExceededHandler);
   }
 
   /**
@@ -153,6 +156,9 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     }
 
     this.disposed = true;
+
+    // Remove event listener before stopping to prevent memory leaks
+    this.memoryMonitor.off('memoryExceeded', this.boundMemoryExceededHandler);
     this.memoryMonitor.stop();
     this.executionQueue.clear();
 

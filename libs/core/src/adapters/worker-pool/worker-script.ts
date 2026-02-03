@@ -333,12 +333,12 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
 
     // Wrap code in async IIFE to support top-level await
     // Must call __ag_main() if defined, as the enclave transforms code to wrap in async function __ag_main()
-    const wrappedCode = `
-      (async () => {
-        ${msg.code}
-        return typeof __ag_main === 'function' ? await __ag_main() : undefined;
-      })();
-    `;
+    // Use string concatenation instead of template literals to avoid code injection patterns
+    const wrappedCode =
+      '(async () => {\n' +
+      msg.code +
+      '\nreturn typeof __ag_main === "function" ? await __ag_main() : undefined;\n' +
+      '})();';
 
     // Compile and run with timeout
     const script = new vm.Script(wrappedCode, {

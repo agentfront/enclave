@@ -42,7 +42,7 @@
     "@enclave-vm/core": "2.10.0"
   },
   "devDependencies": {
-    "ws": "^8.0.0"
+    "ws": "^8.19.0"
   },
   "engines": {
     "node": ">=18.0.0"

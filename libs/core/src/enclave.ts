@@ -187,6 +187,7 @@ export class Enclave {
   private readonly referenceConfig?: ReferenceConfig;
   private readonly scoringGate?: ScoringGate;
   private readonly doubleVmConfig: DoubleVmConfig;
+  private readonly customGlobalNames: string[];
   private adapter?: SandboxAdapter;
 
   constructor(options: CreateEnclaveOptions = {}) {
@@ -291,12 +292,13 @@ export class Enclave {
 
     // Create validator with custom globals
     // Extract custom global names from the final globals (includes Babel if preset='babel')
-    const customGlobalNames = Object.keys(initialGlobals);
+    // Store for use in transformation (so custom globals aren't transformed to __safe_ prefix)
+    this.customGlobalNames = Object.keys(initialGlobals);
 
     // For each custom global, we need to whitelist both:
     // 1. The original name (customValue)
     // 2. The transformed name (__safe_customValue)
-    const customAllowedGlobals = customGlobalNames.flatMap((name) => [name, `__safe_${name}`]);
+    const customAllowedGlobals = this.customGlobalNames.flatMap((name) => [name, `__safe_${name}`]);
 
     // Create validator based on selected preset
     // Note: presetName is defined earlier (before config) for Babel global injection
@@ -388,6 +390,8 @@ export class Enclave {
           wrapInMain: needsWrapping,
           transformCallTool: true,
           transformLoops: true,
+          // Pass custom global names so they aren't transformed to __safe_ prefix
+          additionalIdentifiers: this.customGlobalNames,
         });
       }
 

@@ -38,7 +38,7 @@
     "@enclave-vm/types": "2.10.0",
     "@enclave-vm/stream": "2.10.0",
     "@enclave-vm/core": "2.10.0",
-    "minimatch": "^10.0.1",
-    "zod": "^4.1.13"
+    "minimatch": "^10.1.1",
+    "zod": "^4.3.6"
   }
 }
