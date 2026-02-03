@@ -13,6 +13,8 @@
 
 This project runs in production environments, and public disclosure of vulnerabilities before a fix is available could harm our users.
 
+**Note:** Package name on npm is @enclave-vm/core (formerly enclave-vm).
+
 ### How to Report
 
 Report security vulnerabilities via one of these private channels:
@@ -54,4 +56,19 @@ Key points:
 3. Response timeline commitments - sets expectations
 4. Safe harbor - encourages researchers to report without fear of legal action
 
-Note: Package name on npm is @enclave-vm/core (formerly enclave-vm).
+
+## Scope
+
+### In scope (authorized testing targets)
+- https://enclave.agentfront.dev (public demo / security testing sandbox)
+
+### Out of scope
+- Any other Frontegg/AgentFront environments, domains, APIs, or customer tenants not explicitly listed above
+- Attempts to access other users’ data, accounts, or tenants
+- Denial of Service (DoS), stress testing, or automated scanning that degrades availability
+
+### Rules of engagement
+- Use only test accounts/data you own or that we provide
+- Avoid privacy violations and data destruction
+- No persistence (no backdoors, no long-lived shells, no planting credentials)
+- Keep proof-of-concept minimal: demonstrate impact without accessing sensitive files (e.g., avoid reading /etc/passwd)
