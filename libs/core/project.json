@@ -6,6 +6,25 @@
   "tags": ["scope:publishable", "type:lib", "versioning:independent"],
   "implicitDependencies": ["ast"],
   "targets": {
+    "build-worker-script": {
+      "executor": "@nx/esbuild:esbuild",
+      "dependsOn": ["^build"],
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "libs/core/dist/src/adapters/worker-pool",
+        "main": "libs/core/src/adapters/worker-pool/worker-script.ts",
+        "tsConfig": "libs/core/tsconfig.lib.json",
+        "format": ["cjs"],
+        "declaration": false,
+        "bundle": true,
+        "thirdParty": false,
+        "platform": "node",
+        "esbuildOptions": {
+          "outExtension": { ".js": ".js" },
+          "external": ["@enclave-vm/types", "@enclave-vm/ast", "acorn", "acorn-walk", "astring"]
+        }
+      }
+    },
     "test-perf": {
       "executor": "@nx/jest:jest",
       "outputs": ["{workspaceRoot}/coverage/{projectRoot}"],
@@ -16,9 +35,10 @@
     },
     "build-cjs": {
       "executor": "@nx/esbuild:esbuild",
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "build-worker-script"],
       "outputs": ["{options.outputPath}"],
       "options": {
+        "deleteOutputPath": false,
         "outputPath": "libs/core/dist",
         "main": "libs/core/src/index.ts",
         "tsConfig": "libs/core/tsconfig.lib.json",
