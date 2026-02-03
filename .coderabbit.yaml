@@ -2,9 +2,10 @@
 reviews:
   profile: chill
   high_level_summary: true
-  base_branches:
-    - main
-    - release/*
+  auto_review:
+    base_branches:
+      - "main"
+      - "release/.*"
 
   path_instructions:
     - path: "apps/demo/**"

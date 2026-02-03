@@ -376,12 +376,7 @@ describe('WorkerPoolAdapter', () => {
   });
 
   describe('Custom Globals', () => {
-    // NOTE: Custom globals test is skipped because the AST guard rejects unknown identifiers
-    // even in PERMISSIVE mode. The worker pool adapter correctly serializes globals to the
-    // worker, but the Enclave's AST validation blocks access to unregistered globals.
-    // To use custom globals, they must be registered with the AST guard's allowed globals list.
-
-    it.skip('should inject custom globals', async () => {
+    it('should inject custom globals', async () => {
       const enclave = createWorkerEnclave({
         securityLevel: 'PERMISSIVE',
         globals: {
@@ -398,6 +393,8 @@ describe('WorkerPoolAdapter', () => {
 
       expect(result.success).toBe(true);
       expect(result.value).toEqual({ value: 42 });
+
+      enclave.dispose();
     });
   });
 
