@@ -71,7 +71,8 @@
                 "pages": [
                   "enclave/getting-started/welcome",
                   "enclave/getting-started/installation",
-                  "enclave/getting-started/quickstart"
+                  "enclave/getting-started/quickstart",
+                  "enclave/updates"
                 ]
               },
               {
@@ -155,13 +156,6 @@
                   "enclave/troubleshooting/common-errors",
                   "enclave/troubleshooting/debugging",
                   "enclave/troubleshooting/faq"
-                ]
-              },
-              {
-                "group": "Resources",
-                "icon": "circle-info",
-                "pages": [
-                  "enclave/updates"
                 ]
               }
             ]
