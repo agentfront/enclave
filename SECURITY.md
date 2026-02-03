@@ -18,7 +18,7 @@ This project runs in production environments, and public disclosure of vulnerabi
 Report security vulnerabilities via one of these private channels:
 
 1. **GitHub Security Advisories** (preferred): Use the "Report a vulnerability" button in the Security tab of this repository
-2. **Email**: david@frontegg.com (include "enclave-vm" in subject)
+2. **Email**: david@frontegg.com (include "@enclave-vm/core" in subject)
 
 ### What to Include
 
@@ -53,4 +53,5 @@ Key points:
 2. Clear "do not" statement - explicitly tell people not to use public issues
 3. Response timeline commitments - sets expectations
 4. Safe harbor - encourages researchers to report without fear of legal action
-5. Update the version table - yours shows 5.x but your repo is at 2.x
+
+Note: Package name on npm is @enclave-vm/core (formerly enclave-vm).
