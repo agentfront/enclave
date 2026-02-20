@@ -1,6 +1,6 @@
 {
   "name": "@enclave-vm/stream",
-  "version": "2.10.0",
+  "version": "2.11.0",
   "description": "Streaming protocol implementation for EnclaveJS runtime (NDJSON, encryption, reconnection)",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",
@@ -35,6 +35,6 @@
     }
   },
   "dependencies": {
-    "@enclave-vm/types": "2.10.0"
+    "@enclave-vm/types": "2.11.0"
   }
 }
