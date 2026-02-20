@@ -138,6 +138,28 @@ const validator = new JSAstValidator(createAgentScriptPreset({
 }));
 ```
 
+### Precedence Rules
+
+When `allowedGlobals` and `additionalDisallowedIdentifiers` are both provided, the following precedence applies:
+
+1. **`allowedGlobals` removes from the dangerous list** — If an identifier like `process` is normally blocked but you include it in `allowedGlobals`, it will be removed from the built-in dangerous identifiers blocklist and allowed.
+2. **`additionalDisallowedIdentifiers` always wins** — If an identifier appears in both `allowedGlobals` and `additionalDisallowedIdentifiers`, it remains **blocked**. This lets you grant broad access while force-blocking specific identifiers.
+
+```ts
+const validator = new JSAstValidator(createAgentScriptPreset({
+  allowedGlobals: ['callTool', 'process', 'safeApi', 'dangerousApi'],
+  additionalDisallowedIdentifiers: ['dangerousApi'],
+}));
+
+// 'process' — normally blocked, but allowedGlobals removes it → allowed
+// 'safeApi' — custom global, not in any blocklist → allowed
+// 'dangerousApi' — in allowedGlobals BUT also in additionalDisallowedIdentifiers → blocked
+```
+
+<Warning>
+  Be careful when adding normally-blocked identifiers like `process` or `eval` to `allowedGlobals`. Only do so when the sandbox runtime provides safe wrappers for these APIs.
+</Warning>
+
 ## Loop Configuration
 
 Control which loop types are allowed:
