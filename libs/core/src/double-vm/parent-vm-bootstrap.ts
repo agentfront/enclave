@@ -658,6 +658,7 @@ ${stackTraceHardeningCode}
     const hostAbortCheck = __host_abort_check__;
     const hostReportViolation = __host_reportViolation__;
     const hostConfig = __host_config__;
+    const hostMemoryTrack = typeof __host_memory_track__ === 'function' ? __host_memory_track__ : function(){};
     const toolBridgeMode = ${JSON.stringify(toolBridgeMode)};
     const toolBridgeMaxPayloadBytes = ${toolBridgeMaxPayloadBytes};
 
@@ -669,6 +670,7 @@ ${stackTraceHardeningCode}
     try { delete globalThis.__host_abort_check__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_reportViolation__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_config__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_memory_track__; } catch (e) { /* ignore */ }
 
     // Policy violation reporter (best-effort; host decides how to handle based on security level)
     function __ag_reportViolation(kind) {
@@ -1238,7 +1240,7 @@ ${stackTraceHardeningCode}
       if (!leftIsRef && !rightIsRef) {
         // Track memory if enabled
         if (memoryLimit > 0) {
-          __host_memory_track__(rightLen * 2); // UTF-16 encoding
+          hostMemoryTrack(rightLen * 2); // UTF-16 encoding
         }
         return left + right;
       }
@@ -1293,7 +1295,7 @@ ${stackTraceHardeningCode}
 
     // Track if result is a string
     if (typeof result === 'string' && memoryLimit > 0) {
-      __host_memory_track__(result.length * 2);
+      hostMemoryTrack(result.length * 2);
     }
 
     return result;
@@ -1382,7 +1384,7 @@ ${stackTraceHardeningCode}
       if (consoleStats.totalBytes > maxConsoleBytes) {
         throw createSafeError('Console output size limit exceeded (max: ' + maxConsoleBytes + ' bytes). This limit prevents I/O flood attacks.');
       }
-      method.apply(console, arguments);
+      method.call(console, output);
     };
   }
 
@@ -1443,9 +1445,9 @@ ${stackTraceHardeningCode}
       // First, inject the host memory tracking callback into innerContext
       // This allows the patched methods to track cumulative memory
       Object.defineProperty(innerContext, '__host_memory_track__', {
-        value: __host_memory_track__,
+        value: hostMemoryTrack,
         writable: false,
-        configurable: false,
+        configurable: true,
         enumerable: false
       });
 
@@ -1774,6 +1776,9 @@ ${stackTraceHardeningCode}
     innerRuntimeScript.runInContext(innerContext);
   } catch (e) { /* ignore */ }
 
+  // Defense-in-depth: Remove host callback from inner sandbox after all scripts have captured it
+  try { delete innerContext['__host_memory_track__']; } catch (e) { /* ignore */ }
+
   // Create a safe Object that blocks dangerous STATIC methods
   // Prevents ATK-DATA-02 (Serialization Hijack via defineProperty)
   // Note: __defineGetter__ etc. are on Object.prototype (instance methods), not static
@@ -1959,6 +1964,20 @@ ${stackTraceHardeningCode}
       }
       /* ignore other errors */
     }
+  })();
+
+  // Defense-in-depth: Neutralize dangerous static methods on the intrinsic Object constructor
+  // in the inner VM. SafeObject only replaces the global Object variable; the REAL intrinsic
+  // Object is still reachable via {}.constructor and retains getOwnPropertyDescriptors etc.
+  // NOTE: Only applied to inner VM - parent VM needs these for createSecureProxy/createSafeError.
+  (function() {
+    var neutralizeCode =
+      '(function() {' +
+      '  var RealObject = Object.getPrototypeOf({}).constructor;' +
+      '  var dangerous = ["getOwnPropertyDescriptors","getOwnPropertyDescriptor","defineProperty","defineProperties","setPrototypeOf"];' +
+      '  for (var i = 0; i < dangerous.length; i++) { try { delete RealObject[dangerous[i]]; } catch(e) {} }' +
+      '})();';
+    try { var s = new vm.Script(neutralizeCode); s.runInContext(innerContext); } catch(e) { /* defense-in-depth */ }
   })();
 
   var userCode = ${JSON.stringify(userCode)};

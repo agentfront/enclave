@@ -13,6 +13,24 @@ export interface DisallowedIdentifierOptions {
 }
 
 /**
+ * Recursively check if an ArrayExpression would coerce to a disallowed string.
+ * e.g. [['__proto__']] coerces to '__proto__' at runtime.
+ */
+function tryGetArrayCoercedString(node: any): string | null {
+  if (node.type !== 'ArrayExpression') return null;
+  if (!node.elements || node.elements.length !== 1) return null;
+  const element = node.elements[0];
+  if (!element) return null;
+  if (element.type === 'Literal' && typeof element.value === 'string') {
+    return element.value;
+  }
+  if (element.type === 'ArrayExpression') {
+    return tryGetArrayCoercedString(element);
+  }
+  return null;
+}
+
+/**
  * Rule that prevents usage of specific identifiers
  *
  * Useful for blocking access to dangerous globals or built-ins like:
@@ -69,6 +87,9 @@ export class DisallowedIdentifierRule implements ValidationRule {
           } else if (node.property.type === 'Literal' && typeof node.property.value === 'string') {
             // obj['constructor']
             propertyName = node.property.value;
+          } else if (node.computed && node.property.type === 'ArrayExpression') {
+            // obj[['constructor']] — array coerces to string at runtime
+            propertyName = tryGetArrayCoercedString(node.property) ?? undefined;
           }
         }
 

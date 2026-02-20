@@ -470,10 +470,16 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
     'ShadowRealm', // Escape via isolated execution
     'Iterator', // Iterator helpers can access prototype chain
     'AsyncIterator', // Async iterator helpers can access prototype chain
-
+  ];
+  // Filter out identifiers that are explicitly in allowedGlobals (e.g. user provided 'process' as a custom global)
+  // but preserve any additionalDisallowedIdentifiers (those always take precedence)
+  const allowedSet = new Set(allowedGlobals);
+  const additionalSet = new Set(options.additionalDisallowedIdentifiers || []);
+  const filteredDangerousIdentifiers = [
+    ...dangerousIdentifiers.filter((id) => !allowedSet.has(id) || additionalSet.has(id)),
     ...(options.additionalDisallowedIdentifiers || []),
   ];
-  rules.push(new DisallowedIdentifierRule({ disallowed: dangerousIdentifiers }));
+  rules.push(new DisallowedIdentifierRule({ disallowed: filteredDangerousIdentifiers }));
 
   // 7. Configure loop restrictions
   rules.push(
