@@ -340,6 +340,28 @@ const CODE_GENERATION_VIOLATION_DETECTOR_CODE = `
 const CODE_GENERATION_VIOLATION_DETECTOR_SCRIPT = new vm.Script(CODE_GENERATION_VIOLATION_DETECTOR_CODE);
 
 /**
+ * Neutralize dangerous static methods on the intrinsic Object constructor.
+ * SafeObject only replaces the global Object variable; the REAL intrinsic Object
+ * is still reachable via {}.constructor and retains getOwnPropertyDescriptors etc.
+ */
+const INTRINSIC_OBJECT_NEUTRALIZATION_CODE = `
+(function() {
+  var RealObject = Object.getPrototypeOf({}).constructor;
+  var dangerous = [
+    'getOwnPropertyDescriptors',
+    'getOwnPropertyDescriptor',
+    'defineProperty',
+    'defineProperties',
+    'setPrototypeOf'
+  ];
+  for (var i = 0; i < dangerous.length; i++) {
+    try { delete RealObject[dangerous[i]]; } catch (e) {}
+  }
+})();
+`;
+const INTRINSIC_OBJECT_NEUTRALIZATION_SCRIPT = new vm.Script(INTRINSIC_OBJECT_NEUTRALIZATION_CODE);
+
+/**
  * Protected identifier prefixes that cannot be modified from sandbox code
  * Security: Prevents runtime override attacks on safe functions
  */
@@ -404,8 +426,8 @@ function createSafeConsole(
         );
       }
 
-      // Safe to call the real console method
-      method(...args);
+      // Safe to call the real console method with pre-stringified output only
+      method(output);
     };
 
   return {
@@ -780,7 +802,7 @@ export class VmAdapter implements SandboxAdapter {
             memoryTracker.track(bytes);
           },
           writable: false,
-          configurable: false,
+          configurable: true,
           enumerable: false,
         });
 
@@ -888,6 +910,13 @@ export class VmAdapter implements SandboxAdapter {
           })();
         `);
         patchScript.runInContext(baseSandbox);
+
+        // Defense-in-depth: Remove host callback from sandbox global after capture
+        try {
+          delete (baseSandbox as any)['__host_memory_track__'];
+        } catch {
+          /* ignore */
+        }
       }
 
       // SECURITY HARDENING: prevent leaking host stack traces via error.stack inside the sandbox.
@@ -1099,8 +1128,16 @@ export class VmAdapter implements SandboxAdapter {
           ),
           writable: false,
           configurable: false,
-          enumerable: true,
+          enumerable: false,
         });
+      }
+
+      // Defense-in-depth: neutralize dangerous methods on the intrinsic Object constructor
+      // This must run AFTER all bootstrap/patching but BEFORE user code
+      try {
+        INTRINSIC_OBJECT_NEUTRALIZATION_SCRIPT.runInContext(baseSandbox);
+      } catch {
+        /* defense-in-depth */
       }
 
       // Wrap sandbox in protective Proxy to catch dynamic assignment attempts

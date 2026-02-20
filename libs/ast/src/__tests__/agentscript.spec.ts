@@ -1024,6 +1024,79 @@ describe('AgentScript Preset', () => {
       );
     });
 
+    it('should allow a normally-dangerous identifier when it is in allowedGlobals', async () => {
+      const code = `
+
+        async function __ag_main() {const info = process.env;
+        return info;
+
+        }
+      `;
+
+      const validator = new JSAstValidator(
+        createAgentScriptPreset({
+          allowedGlobals: ['callTool', 'process'],
+        }),
+      );
+
+      const result = await validator.validate(code);
+      expect(result.valid).toBe(true);
+    });
+
+    it('should block an identifier in additionalDisallowedIdentifiers even when in allowedGlobals', async () => {
+      const code = `
+
+        async function __ag_main() {const info = process.env;
+        return info;
+
+        }
+      `;
+
+      const validator = new JSAstValidator(
+        createAgentScriptPreset({
+          allowedGlobals: ['callTool', 'process'],
+          additionalDisallowedIdentifiers: ['process'],
+        }),
+      );
+
+      const result = await validator.validate(code);
+      expect(result.valid).toBe(false);
+      expect(result.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: 'DISALLOWED_IDENTIFIER',
+          }),
+        ]),
+      );
+    });
+
+    it('should block array-coerced access to a disallowed identifier', async () => {
+      const code = `
+
+        async function __ag_main() {const obj = {};
+        const val = obj[['process']];
+        return val;
+
+        }
+      `;
+
+      const validator = new JSAstValidator(
+        createAgentScriptPreset({
+          additionalDisallowedIdentifiers: ['process'],
+        }),
+      );
+
+      const result = await validator.validate(code);
+      expect(result.valid).toBe(false);
+      expect(result.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: 'DISALLOWED_IDENTIFIER',
+          }),
+        ]),
+      );
+    });
+
     it('should allow custom reserved prefixes', async () => {
       const code = `
         

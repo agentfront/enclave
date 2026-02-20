@@ -147,14 +147,34 @@ export interface AgentScriptOptions {
   securityLevel?: SecurityLevel | string;
 
   /**
-   * List of allowed global identifiers (APIs available to agent code)
+   * List of allowed global identifiers (APIs available to agent code).
    * If provided, overrides the securityLevel-based defaults.
+   *
+   * Identifiers in this list are also removed from the built-in dangerous
+   * identifiers blocklist, so a custom global like `process` won't be
+   * rejected by DisallowedIdentifierRule.
+   *
+   * Note: `additionalDisallowedIdentifiers` takes higher precedence —
+   * if the same identifier appears in both lists, it remains blocked.
+   *
    * Default: Based on securityLevel (see getAgentScriptGlobals)
    */
   allowedGlobals?: string[];
 
   /**
-   * Additional identifiers to block beyond the default dangerous set
+   * Additional identifiers to block beyond the default dangerous set.
+   *
+   * These always take precedence over `allowedGlobals`. If an identifier
+   * is listed here, it will be blocked even if it also appears in
+   * `allowedGlobals`.
+   *
+   * @example
+   * // Allow most custom globals but force-block `dangerousApi`:
+   * createAgentScriptPreset({
+   *   allowedGlobals: ['callTool', 'safeApi', 'dangerousApi'],
+   *   additionalDisallowedIdentifiers: ['dangerousApi'],
+   * });
+   * // Result: 'safeApi' is allowed, 'dangerousApi' is blocked.
    */
   additionalDisallowedIdentifiers?: string[];
 
@@ -470,10 +490,18 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
     'ShadowRealm', // Escape via isolated execution
     'Iterator', // Iterator helpers can access prototype chain
     'AsyncIterator', // Async iterator helpers can access prototype chain
-
-    ...(options.additionalDisallowedIdentifiers || []),
   ];
-  rules.push(new DisallowedIdentifierRule({ disallowed: dangerousIdentifiers }));
+  // Filter out identifiers that are explicitly in allowedGlobals (e.g. user provided 'process' as a custom global)
+  // but preserve any additionalDisallowedIdentifiers (those always take precedence)
+  const allowedSet = new Set(allowedGlobals);
+  const additionalSet = new Set(options.additionalDisallowedIdentifiers || []);
+  const filteredDangerousIdentifiers = [
+    ...new Set([
+      ...dangerousIdentifiers.filter((id) => !allowedSet.has(id) || additionalSet.has(id)),
+      ...(options.additionalDisallowedIdentifiers || []),
+    ]),
+  ];
+  rules.push(new DisallowedIdentifierRule({ disallowed: filteredDangerousIdentifiers }));
 
   // 7. Configure loop restrictions
   rules.push(

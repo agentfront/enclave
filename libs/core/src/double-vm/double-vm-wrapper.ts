@@ -396,7 +396,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
           }
         },
         writable: false,
-        configurable: false,
+        configurable: true,
       });
     } else {
       // No-op when memory tracking is disabled
@@ -404,7 +404,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
         // eslint-disable-next-line @typescript-eslint/no-empty-function
         value: () => {},
         writable: false,
-        configurable: false,
+        configurable: true,
       });
     }
 
