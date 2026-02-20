@@ -476,8 +476,10 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   const allowedSet = new Set(allowedGlobals);
   const additionalSet = new Set(options.additionalDisallowedIdentifiers || []);
   const filteredDangerousIdentifiers = [
-    ...dangerousIdentifiers.filter((id) => !allowedSet.has(id) || additionalSet.has(id)),
-    ...(options.additionalDisallowedIdentifiers || []),
+    ...new Set([
+      ...dangerousIdentifiers.filter((id) => !allowedSet.has(id) || additionalSet.has(id)),
+      ...(options.additionalDisallowedIdentifiers || []),
+    ]),
   ];
   rules.push(new DisallowedIdentifierRule({ disallowed: filteredDangerousIdentifiers }));
 
