@@ -510,10 +510,17 @@ jobs:
 
           echo "Found version bump commit: $VERSION_COMMIT"
 
+          git fetch origin "$DEFAULT_BRANCH"
+
+          # Skip if the version bump is already on the default branch
+          if git merge-base --is-ancestor "$VERSION_COMMIT" "origin/$DEFAULT_BRANCH"; then
+            echo "Version bump commit $VERSION_COMMIT is already on $DEFAULT_BRANCH — skipping cherry-pick"
+            exit 0
+          fi
+
           # Prepare cherry-pick branch
           CHERRY_BRANCH="cherry-pick/v${VERSION}-version-to-main"
 
-          git fetch origin "$DEFAULT_BRANCH"
           git checkout "$DEFAULT_BRANCH"
           git pull origin "$DEFAULT_BRANCH"
 
