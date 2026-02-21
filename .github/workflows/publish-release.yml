@@ -530,6 +530,13 @@ jobs:
 
           # Attempt cherry-pick
           if git cherry-pick "$VERSION_COMMIT" --no-commit; then
+            # Check if cherry-pick produced any changes (may be empty if already applied via a different commit)
+            if [ -z "$(git diff --cached --name-only)" ]; then
+              echo "Cherry-pick produced no changes — version bump already applied on $DEFAULT_BRANCH"
+              git reset HEAD 2>/dev/null || true
+              exit 0
+            fi
+
             git commit -m "$(cat <<EOF
           chore: sync version to $VERSION
 
@@ -562,6 +569,13 @@ jobs:
 
             echo "Cherry-pick PR created successfully"
           else
+            # Check if failure is due to empty cherry-pick (already applied) vs actual conflicts
+            if [ -z "$(git status --porcelain)" ]; then
+              echo "Cherry-pick is empty — version bump already applied on $DEFAULT_BRANCH"
+              git cherry-pick --abort 2>/dev/null || true
+              exit 0
+            fi
+
             git cherry-pick --abort || true
             echo "::warning::Cherry-pick had conflicts. Creating issue for manual resolution."
 
