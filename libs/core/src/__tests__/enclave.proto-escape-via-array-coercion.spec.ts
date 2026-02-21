@@ -650,4 +650,298 @@ describe('ATK-ARRCOERCE: Prototype Escape via Array Coercion', () => {
       enclave.dispose();
     }, 15000);
   });
+
+  // ── Section 7: Object toString/valueOf Coercion (ATK-ARRCOERCE-31 to 38) ──
+  describe('Section 7: Object toString/valueOf coercion bypass', () => {
+    it('ATK-ARRCOERCE-31: {toString: () => "__proto__"} direct key access', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        const proto = {}[{toString: () => '__proto__'}];
+        if (proto === null || proto === undefined) return 'blocked';
+        const ctor = proto[{toString: () => 'constructor'}];
+        return { type: typeof ctor };
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-32: method shorthand toString() { return "constructor" }', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        const proto = {}[{toString() { return '__proto__' }}];
+        if (proto === null || proto === undefined) return 'blocked';
+        const ctor = proto[{toString() { return 'constructor' }}];
+        return { type: typeof ctor };
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-33: valueOf-based coercion', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        const proto = {}[{valueOf: () => '__proto__'}];
+        if (proto === null || proto === undefined) return 'blocked';
+        return { type: typeof proto };
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-34: full escape chain via toString coercion', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        try {
+          const op = {}[{toString: () => '__proto__'}];
+          if (!op) return 'blocked_at_proto';
+          const ho = op[{toString: () => 'constructor'}];
+          if (!ho) return 'blocked_at_constructor';
+          const glob = ho.getOwnPropertyDescriptors(this);
+          return {
+            res: glob.__host_memory_track__.value[{toString: () => 'constructor'}]('return process')()
+              .getBuiltinModule('child_process')
+              .execSync('id')
+              .toString()
+              .split('\\n'),
+          };
+        } catch (e) {
+          return { blocked: true, error: e.message };
+        }
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-35: mixed array + object coercion', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        try {
+          const proto = {}[[{toString: () => '__proto__'}]];
+          if (!proto) return 'blocked_at_proto';
+          const ctor = proto[{toString: () => 'constructor'}];
+          return { type: typeof ctor };
+        } catch (e) {
+          return { blocked: true, error: e.message };
+        }
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-36: FunctionExpression syntax variant', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        try {
+          const proto = {}[{toString: function() { return '__proto__' }}];
+          if (!proto) return 'blocked_at_proto';
+          const ctor = proto[{toString: function() { return 'constructor' }}];
+          return { type: typeof ctor };
+        } catch (e) {
+          return { blocked: true, error: e.message };
+        }
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-37: toString coercion with STRICT security level', async () => {
+      const enclave = new Enclave({ securityLevel: 'STRICT', timeout: 5000 });
+      const code = `
+        const proto = {}[{toString: () => '__proto__'}];
+        if (proto === null || proto === undefined) return 'blocked';
+        const ctor = proto[{toString: () => 'constructor'}];
+        return { type: typeof ctor };
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-38: toString coercion with PERMISSIVE security level', async () => {
+      const enclave = new Enclave({ securityLevel: 'PERMISSIVE', timeout: 5000 });
+      const code = `
+        const proto = {}[{toString: () => '__proto__'}];
+        if (proto === null || proto === undefined) return 'blocked';
+        const ctor = proto[{toString: () => 'constructor'}];
+        return { type: typeof ctor };
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+  });
+
+  // ── Section 8: Computed-Key Bypass Vectors (ATK-ARRCOERCE-39 to 47) ────────
+  describe('Section 8: Computed-key bypass vectors', () => {
+    it('ATK-ARRCOERCE-39: template literal `__proto__` as computed key', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        const proto = {}\`__proto__\`;
+        if (proto === null || proto === undefined) return 'blocked';
+        return { type: typeof proto };
+      `
+        .replace('{}`', '[`')
+        .replace('`]', '`]')
+        .replace('{}`__proto__`', '[`__proto__`]');
+      // Use string building to avoid template literal parsing issues in test
+      const safeCode =
+        'const proto = {}[`__proto__`]; if (proto === null || proto === undefined) return "blocked"; return { type: typeof proto };';
+      const result = await enclave.run(safeCode);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-40: conditional expression true ? "__proto__" : "x"', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        const proto = {}[true ? '__proto__' : 'x'];
+        if (proto === null || proto === undefined) return 'blocked';
+        const ctor = proto[true ? 'constructor' : 'y'];
+        return { type: typeof ctor };
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-41: sequence expression (0, "__proto__")', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        const proto = {}[(0, '__proto__')];
+        if (proto === null || proto === undefined) return 'blocked';
+        const ctor = proto[(0, 'constructor')];
+        return { type: typeof ctor };
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-42: assignment expression x = "__proto__"', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        let x;
+        const proto = {}[x = '__proto__'];
+        if (proto === null || proto === undefined) return 'blocked';
+        const ctor = proto[x = 'constructor'];
+        return { type: typeof ctor };
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-43: logical OR "" || "__proto__"', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        const proto = {}['' || '__proto__'];
+        if (proto === null || proto === undefined) return 'blocked';
+        const ctor = proto['' || 'constructor'];
+        return { type: typeof ctor };
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-44: full escape chain using template literal coercion', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = [
+        'try {',
+        '  const op = {}[`__proto__`];',
+        '  if (!op) return "blocked_at_proto";',
+        '  const ho = op[`constructor`];',
+        '  if (!ho) return "blocked_at_constructor";',
+        '  const glob = ho.getOwnPropertyDescriptors(this);',
+        '  return {',
+        '    res: glob.__host_memory_track__.value[`constructor`]("return process")()',
+        '      .getBuiltinModule("child_process")',
+        '      .execSync("id")',
+        '      .toString()',
+        '      .split("\\n"),',
+        '  };',
+        '} catch (e) {',
+        '  return { blocked: true, error: e.message };',
+        '}',
+      ].join('\n');
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-45: full escape chain using conditional coercion', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        try {
+          const op = {}[true ? '__proto__' : 'x'];
+          if (!op) return 'blocked_at_proto';
+          const ho = op[true ? 'constructor' : 'y'];
+          if (!ho) return 'blocked_at_constructor';
+          const glob = ho.getOwnPropertyDescriptors(this);
+          return {
+            res: glob.__host_memory_track__.value[true ? 'constructor' : 'z']('return process')()
+              .getBuiltinModule('child_process')
+              .execSync('id')
+              .toString()
+              .split('\\n'),
+          };
+        } catch (e) {
+          return { blocked: true, error: e.message };
+        }
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-46: getter-based toString coercion', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = `
+        try {
+          const proto = {}[{get toString(){ return () => '__proto__' }}];
+          if (!proto) return 'blocked_at_proto';
+          const ctor = proto[{get toString(){ return () => 'constructor' }}];
+          return { type: typeof ctor };
+        } catch (e) {
+          return { blocked: true, error: e.message };
+        }
+      `;
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+
+    it('ATK-ARRCOERCE-47: mixed vectors (template + conditional + sequence)', async () => {
+      const enclave = new Enclave({ timeout: 5000 });
+      const code = [
+        'try {',
+        '  const op = {}[`__proto__`];',
+        '  if (!op) return "blocked_at_proto";',
+        '  const ho = op[true ? "constructor" : "x"];',
+        '  if (!ho) return "blocked_at_constructor";',
+        '  const glob = ho.getOwnPropertyDescriptors(this);',
+        '  const trackDesc = glob.__host_memory_track__;',
+        '  if (!trackDesc || typeof trackDesc.value !== "function") return "no_memory_track";',
+        '  const F = trackDesc.value[(0, "constructor")];',
+        '  const fn = F("return process");',
+        '  const proc = fn();',
+        '  return {',
+        '    res: proc.getBuiltinModule("child_process")',
+        '      .execSync("id").toString().split("\\n"),',
+        '  };',
+        '} catch (e) {',
+        '  return { blocked: true, error: e.message };',
+        '}',
+      ].join('\n');
+      const result = await enclave.run(code);
+      assertNoEscape(result);
+      enclave.dispose();
+    }, 15000);
+  });
 });

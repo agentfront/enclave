@@ -1,6 +1,7 @@
 import type { ValidationRule, ValidationContext } from '../interfaces';
 import { ValidationSeverity } from '../interfaces';
 import * as walk from 'acorn-walk';
+import { tryGetStaticComputedKeys } from './coercion-utils';
 
 /**
  * Configuration options for NoGlobalAccessRule
@@ -112,7 +113,8 @@ export class NoGlobalAccessRule implements ValidationRule {
         if (
           node.property &&
           ((node.property.type === 'Identifier' && node.property.name === 'constructor') ||
-            (node.property.type === 'Literal' && node.property.value === 'constructor'))
+            (node.property.type === 'Literal' && node.property.value === 'constructor') ||
+            (node.computed && tryGetStaticComputedKeys(node.property).includes('constructor')))
         ) {
           report({
             code: 'NO_CONSTRUCTOR_ACCESS',

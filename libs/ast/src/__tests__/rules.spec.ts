@@ -35,6 +35,214 @@ describe('Validation Rules', () => {
       expect(result.valid).toBe(true);
     });
 
+    it('should detect object with toString arrow returning disallowed identifier', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate('obj[{toString: () => "constructor"}]', {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should detect object with toString method shorthand returning disallowed identifier', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate('obj[{toString() { return "constructor" }}]', {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should detect object with valueOf arrow returning disallowed identifier', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['__proto__'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate('obj[{valueOf: () => "__proto__"}]', {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('__proto__');
+    });
+
+    it('should detect object with toString function expression returning disallowed identifier', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['prototype'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate('obj[{toString: function() { return "prototype" }}]', {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('prototype');
+    });
+
+    it('should detect object inside array coercion', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate('obj[[{toString: () => "constructor"}]]', {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should not false positive on safe objects without toString/valueOf', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor', '__proto__'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate('obj[{foo: "bar"}]', {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(true);
+    });
+
+    it('should not false positive on toString returning non-disallowed string', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor', '__proto__'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate('obj[{toString: () => "safe"}]', {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(true);
+    });
+
+    it('should detect template literal key', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate('obj[`constructor`]', {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should detect conditional expression (consequent)', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate("obj[true ? 'constructor' : 'x']", {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should detect conditional expression (alternate)', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate("obj[false ? 'x' : 'constructor']", {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should detect sequence expression', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate("obj[(0, 'constructor')]", {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should detect assignment expression as computed key', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate("let x; obj[x = 'constructor']", {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should detect logical OR expression', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate("obj['' || 'constructor']", {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should detect logical AND expression', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate("obj['constructor' && 'constructor']", {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should detect nullish coalescing expression', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate("obj[null ?? 'constructor']", {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should detect getter-based toString coercion', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate("obj[{get toString(){ return () => 'constructor' }}]", {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should allow template literal with expressions (not statically resolvable)', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate("obj[`${'con'}structor`]", {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(true);
+    });
+
+    it('should allow safe template literal', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate('obj[`safe`]', {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(true);
+    });
+
     it('should use custom message template', async () => {
       const rule = new DisallowedIdentifierRule({
         disallowed: ['eval'],
