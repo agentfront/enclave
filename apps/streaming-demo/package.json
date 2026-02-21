@@ -11,10 +11,10 @@
     "runtime": "ts-node src/runtime-server.ts"
   },
   "dependencies": {
-    "@enclave-vm/broker": "2.10.0",
-    "@enclave-vm/client": "2.10.0",
-    "@enclave-vm/types": "2.10.0",
-    "@enclave-vm/core": "2.10.0",
+    "@enclave-vm/broker": "2.11.0",
+    "@enclave-vm/client": "2.11.0",
+    "@enclave-vm/types": "2.11.0",
+    "@enclave-vm/core": "2.11.0",
     "express": "^4.21.0",
     "zod": "^3.24.0"
   },

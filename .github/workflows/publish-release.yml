@@ -268,6 +268,37 @@ jobs:
           echo "Setting version $VERSION for all libs"
           npx nx release version "$VERSION" --git-commit=false --git-tag=false
 
+      - name: Update demo app dependency versions
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "Updating @enclave-vm/* dependencies in apps to $VERSION"
+          for pkg in apps/*/package.json; do
+            [ -f "$pkg" ] || continue
+            # Update any @enclave-vm/* dependency versions
+            node -e "
+              const fs = require('fs');
+              const p = JSON.parse(fs.readFileSync('$pkg', 'utf8'));
+              let changed = false;
+              for (const section of ['dependencies', 'devDependencies', 'peerDependencies']) {
+                if (!p[section]) continue;
+                for (const [name, ver] of Object.entries(p[section])) {
+                  if (name.startsWith('@enclave-vm/') && ver !== '$VERSION') {
+                    p[section][name] = '$VERSION';
+                    changed = true;
+                  }
+                }
+              }
+              if (changed) {
+                fs.writeFileSync('$pkg', JSON.stringify(p, null, 2) + '\n');
+                console.log('Updated: $pkg');
+              } else {
+                console.log('No changes: $pkg');
+              }
+            "
+          done
+
       - name: Commit version bump
         if: ${{ inputs.dry_run != true }}
         run: |
