@@ -16,14 +16,84 @@ export function extractReturnLiteralString(block: any): string | null {
   const body = block.body;
   if (!Array.isArray(body)) return null;
 
+  let returnCount = 0;
+  let returnArg: any = null;
   for (const stmt of body) {
-    if (stmt.type === 'ReturnStatement' && stmt.argument) {
-      if (stmt.argument.type === 'Literal' && typeof stmt.argument.value === 'string') {
-        return stmt.argument.value;
+    if (stmt.type === 'ReturnStatement') {
+      returnCount++;
+      if (returnCount === 1 && stmt.argument) {
+        returnArg = stmt.argument;
       }
-      return null;
     }
   }
+
+  if (returnCount !== 1 || !returnArg) return null;
+  if (returnArg.type === 'Literal' && typeof returnArg.value === 'string') {
+    return returnArg.value;
+  }
+  return null;
+}
+
+/**
+ * Resolve a single coercion property (toString or valueOf) to its string value.
+ *
+ * Handles:
+ * - ArrowFunctionExpression with expression body: `() => 'x'`
+ * - ArrowFunctionExpression with block body: `() => { return 'x' }`
+ * - FunctionExpression / method shorthand: `function() { return 'x' }`
+ * - Getter returning a function: `get toString() { return () => 'x' }`
+ */
+function resolveCoercionProperty(prop: any): string | null {
+  const value = prop.value;
+  if (!value) return null;
+
+  // ArrowFunctionExpression with expression body: () => 'x'
+  if (value.type === 'ArrowFunctionExpression') {
+    if (value.expression && value.body) {
+      if (value.body.type === 'Literal' && typeof value.body.value === 'string') {
+        return value.body.value;
+      }
+    } else if (value.body && value.body.type === 'BlockStatement') {
+      const result = extractReturnLiteralString(value.body);
+      if (result !== null) return result;
+    }
+  }
+
+  // FunctionExpression or method shorthand: function() { return 'x' }
+  if (value.type === 'FunctionExpression') {
+    if (value.body && value.body.type === 'BlockStatement') {
+      const result = extractReturnLiteralString(value.body);
+      if (result !== null) return result;
+    }
+  }
+
+  // Getter: { get toString() { return () => 'x' } }
+  // The getter returns a function; JS calls the getter then calls the returned function.
+  if (prop.kind === 'get' && value.type === 'FunctionExpression') {
+    if (value.body && value.body.type === 'BlockStatement') {
+      for (const stmt of value.body.body) {
+        if (stmt.type === 'ReturnStatement' && stmt.argument) {
+          const ret = stmt.argument;
+          if (ret.type === 'ArrowFunctionExpression') {
+            if (ret.expression && ret.body?.type === 'Literal' && typeof ret.body.value === 'string') {
+              return ret.body.value;
+            }
+            if (ret.body?.type === 'BlockStatement') {
+              const inner = extractReturnLiteralString(ret.body);
+              if (inner !== null) return inner;
+            }
+          }
+          if (ret.type === 'FunctionExpression') {
+            if (ret.body?.type === 'BlockStatement') {
+              const inner = extractReturnLiteralString(ret.body);
+              if (inner !== null) return inner;
+            }
+          }
+        }
+      }
+    }
+  }
+
   return null;
 }
 
@@ -31,12 +101,16 @@ export function extractReturnLiteralString(block: any): string | null {
  * Try to statically determine the coerced string value of an ObjectExpression
  * that defines a `toString` or `valueOf` method returning a string literal.
  *
+ * Respects ECMAScript ToPrimitive string-hint precedence: toString is resolved
+ * first; valueOf is used only as a fallback.
+ *
  * Covers:
  * - `{ toString: () => 'x' }`            (ArrowFunctionExpression, expression body)
  * - `{ toString: () => { return 'x' } }` (ArrowFunctionExpression, block body)
  * - `{ toString() { return 'x' } }`      (method shorthand / FunctionExpression)
  * - `{ toString: function() { return 'x' } }` (FunctionExpression)
- * - Same patterns with `valueOf`
+ * - `{ get toString() { return () => 'x' } }` (Getter returning function)
+ * - Same patterns with `valueOf` (lower priority)
  *
  * Returns the resolved string or `null` if it cannot be determined.
  */
@@ -44,10 +118,13 @@ export function tryGetObjectCoercedString(node: any): string | null {
   if (node.type !== 'ObjectExpression') return null;
   if (!node.properties || node.properties.length === 0) return null;
 
+  // Collect toString and valueOf properties without resolving yet
+  let toStringProp: any = null;
+  let valueOfProp: any = null;
+
   for (const prop of node.properties) {
     if (prop.type !== 'Property') continue;
 
-    // Get the property key name
     let keyName: string | null = null;
     if (prop.key.type === 'Identifier') {
       keyName = prop.key.name;
@@ -55,62 +132,23 @@ export function tryGetObjectCoercedString(node: any): string | null {
       keyName = prop.key.value;
     }
 
-    if (keyName !== 'toString' && keyName !== 'valueOf') continue;
-
-    const value = prop.value;
-    if (!value) continue;
-
-    // ArrowFunctionExpression with expression body: () => 'x'
-    if (value.type === 'ArrowFunctionExpression') {
-      if (value.expression && value.body) {
-        // expression body — the body IS the expression
-        if (value.body.type === 'Literal' && typeof value.body.value === 'string') {
-          return value.body.value;
-        }
-      } else if (value.body && value.body.type === 'BlockStatement') {
-        // block body — look for return statement
-        const result = extractReturnLiteralString(value.body);
-        if (result !== null) return result;
-      }
+    if (keyName === 'toString') {
+      toStringProp = prop;
+    } else if (keyName === 'valueOf') {
+      valueOfProp = prop;
     }
+  }
 
-    // FunctionExpression or method shorthand: function() { return 'x' }
-    if (value.type === 'FunctionExpression') {
-      if (value.body && value.body.type === 'BlockStatement') {
-        const result = extractReturnLiteralString(value.body);
-        if (result !== null) return result;
-      }
-    }
+  // Resolve toString first (ToPrimitive string-hint precedence)
+  if (toStringProp) {
+    const result = resolveCoercionProperty(toStringProp);
+    if (result !== null) return result;
+  }
 
-    // Getter: { get toString() { return () => 'x' } }
-    // The getter returns a function; JS calls the getter then calls the returned function.
-    if (prop.kind === 'get' && value.type === 'FunctionExpression') {
-      if (value.body && value.body.type === 'BlockStatement') {
-        for (const stmt of value.body.body) {
-          if (stmt.type === 'ReturnStatement' && stmt.argument) {
-            const ret = stmt.argument;
-            // Getter returns an arrow: get toString() { return () => 'x' }
-            if (ret.type === 'ArrowFunctionExpression') {
-              if (ret.expression && ret.body?.type === 'Literal' && typeof ret.body.value === 'string') {
-                return ret.body.value;
-              }
-              if (ret.body?.type === 'BlockStatement') {
-                const inner = extractReturnLiteralString(ret.body);
-                if (inner !== null) return inner;
-              }
-            }
-            // Getter returns a function expression: get toString() { return function() { return 'x' } }
-            if (ret.type === 'FunctionExpression') {
-              if (ret.body?.type === 'BlockStatement') {
-                const inner = extractReturnLiteralString(ret.body);
-                if (inner !== null) return inner;
-              }
-            }
-            break;
-          }
-        }
-      }
-    }
+  // Fall back to valueOf
+  if (valueOfProp) {
+    const result = resolveCoercionProperty(valueOfProp);
+    if (result !== null) return result;
   }
 
   return null;
