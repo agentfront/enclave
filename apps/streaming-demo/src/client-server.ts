@@ -64,7 +64,8 @@ async function pipeNdjsonWithAbort(options: NdjsonPipeOptions): Promise<NdjsonPi
   let aborted = false;
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
-  // Handle client disconnect
+  // Handle client disconnect (only listen on res, not req — req 'close' fires
+  // prematurely in Node 20+ once the request body is consumed by express.json())
   const onClose = () => {
     aborted = true;
     controller.abort();
@@ -72,7 +73,6 @@ async function pipeNdjsonWithAbort(options: NdjsonPipeOptions): Promise<NdjsonPi
       void reader.cancel();
     }
   };
-  req.on('close', onClose);
   res.on('close', onClose);
 
   try {
@@ -136,7 +136,6 @@ async function pipeNdjsonWithAbort(options: NdjsonPipeOptions): Promise<NdjsonPi
 
     return { lastEvent, aborted };
   } finally {
-    req.off('close', onClose);
     res.off('close', onClose);
     if (reader) {
       void reader.cancel();
@@ -173,6 +172,9 @@ async function handleEmbeddedExecute(req: Request, res: Response): Promise<void>
 
     if (aborted) {
       console.log(`\x1b[34m[Client → Embedded]\x1b[0m Aborted`);
+      if (res.writable) {
+        res.end();
+      }
       return;
     }
 
@@ -191,6 +193,9 @@ async function handleEmbeddedExecute(req: Request, res: Response): Promise<void>
   } catch (error) {
     if ((error as Error).name === 'AbortError') {
       console.log(`\x1b[34m[Client → Embedded]\x1b[0m Aborted`);
+      if (res.writable) {
+        res.end();
+      }
       return;
     }
     console.error(`\x1b[31m[Client → Embedded error]\x1b[0m`, error);
@@ -232,6 +237,9 @@ app.post('/api/execute/lambda', async (req: Request, res: Response) => {
 
     if (aborted) {
       console.log(`\x1b[34m[Client → Broker → Lambda]\x1b[0m Aborted`);
+      if (res.writable) {
+        res.end();
+      }
       return;
     }
 
@@ -250,6 +258,9 @@ app.post('/api/execute/lambda', async (req: Request, res: Response) => {
   } catch (error) {
     if ((error as Error).name === 'AbortError') {
       console.log(`\x1b[34m[Client → Broker → Lambda]\x1b[0m Aborted`);
+      if (res.writable) {
+        res.end();
+      }
       return;
     }
     console.error(`\x1b[31m[Client → Broker → Lambda error]\x1b[0m`, error);

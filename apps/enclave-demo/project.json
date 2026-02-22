@@ -14,9 +14,9 @@
       }
     },
     "serve": {
-      "executor": "@nx/js:node",
+      "executor": "nx:run-commands",
       "options": {
-        "buildTarget": "enclave-demo:build"
+        "command": "npx tsx apps/enclave-demo/src/main.ts"
       }
     },
     "test": {

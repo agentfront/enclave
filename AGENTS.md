@@ -20,7 +20,8 @@ yarn format:check     # verify formatting
 
 nx build ast-guard    # build a single project
 nx test enclave-vm    # test a single project
-nx serve enclave-demo # run a demo app
+npx nx serve enclave-demo  # CLI demo: sandbox features
+npx nx demo streaming-demo # Web demo: 3-server streaming architecture (localhost:4100)
 ```
 
 Optional: `nx local-registry enclave` starts a local Verdaccio registry for publish testing.

@@ -135,19 +135,27 @@ See [README-ARCHITECTURE.md](./README-ARCHITECTURE.md) for detailed architecture
 - Reference sidecar & auto-ref
 - Security & encryption
 
-## Demo
+## Demos
 
-Run the streaming demo locally:
+### Enclave Demo (basic sandbox)
+
+```bash
+npx nx serve enclave-demo
+```
+
+A CLI script that demonstrates core sandbox features: arithmetic, loops, tool calls, and security blocking of disallowed operations.
+
+### Streaming Demo (full architecture)
 
 ```bash
 npx nx demo streaming-demo
 ```
 
-This starts 3 servers demonstrating the secure architecture:
+Starts a 3-server architecture with a web UI, covering embedded, lambda, and direct execution modes:
 
-- **Client** (port 4100) - Web UI
-- **Broker** (port 4101) - Tool execution & session management
-- **Runtime** (port 4102) - Sandboxed code execution
+- **Client** (port 4100) — Web UI
+- **Broker** (port 4101) — Tool execution & session management
+- **Runtime** (port 4102) — Sandboxed code execution
 
 **[Read the full documentation →](https://agentfront.dev/docs/guides/enclave)**
 

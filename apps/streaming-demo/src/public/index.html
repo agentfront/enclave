@@ -420,6 +420,7 @@ return { result: x + y, calculation: x + ' + ' + y };`,
         setStatus('running', `Running (${currentMode})...`);
 
         let eventCount = 0;
+        let gotResult = false;
 
         try {
           const response = await fetch(`/api/execute/${currentMode}`, {
@@ -448,8 +449,10 @@ return { result: x + y, calculation: x + ' + ' + y };`,
                 document.getElementById('eventCount').textContent = eventCount + ' events';
 
                 if (event.type === 'client_result') {
+                  gotResult = true;
                   displayResult(event.result);
                 } else if (event.type === 'client_error') {
+                  gotResult = true;
                   resultDiv.innerHTML = '<span class="result-error">Error: ' + event.error + '</span>';
                   setStatus('error', 'Error');
                 } else {
@@ -465,6 +468,10 @@ return { result: x + y, calculation: x + ' + ' + y };`,
           setStatus('error', 'Error');
         } finally {
           runBtn.disabled = false;
+          if (!gotResult) {
+            setStatus('error', 'Stream ended without result');
+            resultDiv.innerHTML = '<span class="result-error">Stream ended without receiving a result</span>';
+          }
         }
       }
 
