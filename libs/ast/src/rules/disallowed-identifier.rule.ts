@@ -1,6 +1,7 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
 import { RuleConfigurationError } from '../errors';
+import { tryGetStaticComputedKeys } from './coercion-utils';
 
 /**
  * Options for DisallowedIdentifierRule
@@ -10,24 +11,6 @@ export interface DisallowedIdentifierOptions {
   disallowed: string[];
   /** Custom message template (use {identifier} placeholder) */
   messageTemplate?: string;
-}
-
-/**
- * Recursively check if an ArrayExpression would coerce to a disallowed string.
- * e.g. [['__proto__']] coerces to '__proto__' at runtime.
- */
-function tryGetArrayCoercedString(node: any): string | null {
-  if (node.type !== 'ArrayExpression') return null;
-  if (!node.elements || node.elements.length !== 1) return null;
-  const element = node.elements[0];
-  if (!element) return null;
-  if (element.type === 'Literal' && typeof element.value === 'string') {
-    return element.value;
-  }
-  if (element.type === 'ArrayExpression') {
-    return tryGetArrayCoercedString(element);
-  }
-  return null;
 }
 
 /**
@@ -78,33 +61,38 @@ export class DisallowedIdentifierRule implements ValidationRule {
       MemberExpression: (node: any) => {
         // Check property name in member expressions
         // e.g., obj.constructor or obj['constructor']
-        let propertyName: string | undefined;
+        if (!node.property) return;
 
-        if (node.property) {
-          if (node.property.type === 'Identifier' && !node.computed) {
-            // obj.constructor
-            propertyName = node.property.name;
-          } else if (node.property.type === 'Literal' && typeof node.property.value === 'string') {
-            // obj['constructor']
-            propertyName = node.property.value;
-          } else if (node.computed && node.property.type === 'ArrayExpression') {
-            // obj[['constructor']] — array coerces to string at runtime
-            propertyName = tryGetArrayCoercedString(node.property) ?? undefined;
+        if (node.property.type === 'Identifier' && !node.computed) {
+          // obj.constructor
+          const name = node.property.name;
+          if (disallowedSet.has(name)) {
+            context.report({
+              code: 'DISALLOWED_IDENTIFIER',
+              message: messageTemplate.replace('{identifier}', name),
+              location: node.property.loc
+                ? { line: node.property.loc.start.line, column: node.property.loc.start.column }
+                : undefined,
+              data: { identifier: name },
+            });
           }
-        }
-
-        if (propertyName && disallowedSet.has(propertyName)) {
-          context.report({
-            code: 'DISALLOWED_IDENTIFIER',
-            message: messageTemplate.replace('{identifier}', propertyName),
-            location: node.property.loc
-              ? {
-                  line: node.property.loc.start.line,
-                  column: node.property.loc.start.column,
-                }
-              : undefined,
-            data: { identifier: propertyName },
-          });
+        } else if (node.computed) {
+          // Handle all computed key coercion vectors:
+          // literals, arrays, objects, template literals, conditionals, sequences, etc.
+          const keys = tryGetStaticComputedKeys(node.property);
+          for (const key of keys) {
+            if (disallowedSet.has(key)) {
+              context.report({
+                code: 'DISALLOWED_IDENTIFIER',
+                message: messageTemplate.replace('{identifier}', key),
+                location: node.property.loc
+                  ? { line: node.property.loc.start.line, column: node.property.loc.start.column }
+                  : undefined,
+                data: { identifier: key },
+              });
+              break; // one report per node is enough
+            }
+          }
         }
       },
     });
