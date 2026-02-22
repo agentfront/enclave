@@ -89,7 +89,6 @@ function resolveCoercionProperty(prop: any): string | null {
               if (inner !== null) return inner;
             }
           }
-          break;
         }
       }
     }
@@ -133,9 +132,9 @@ export function tryGetObjectCoercedString(node: any): string | null {
       keyName = prop.key.value;
     }
 
-    if (keyName === 'toString' && !toStringProp) {
+    if (keyName === 'toString') {
       toStringProp = prop;
-    } else if (keyName === 'valueOf' && !valueOfProp) {
+    } else if (keyName === 'valueOf') {
       valueOfProp = prop;
     }
   }

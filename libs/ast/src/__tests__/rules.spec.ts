@@ -233,6 +233,33 @@ describe('Validation Rules', () => {
       expect(result.valid).toBe(true);
     });
 
+    it('should detect duplicate toString where last occurrence wins', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate('obj[{toString: () => "safe", toString: () => "constructor"}]', {
+        rules: { 'disallowed-identifier': true },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
+    it('should detect multi-return getter with disallowed identifier in later return', async () => {
+      const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
+      const validator = new JSAstValidator([rule]);
+
+      const result = await validator.validate(
+        "obj[{get toString(){ if(true) return () => 'x'; return () => 'constructor' }}]",
+        {
+          rules: { 'disallowed-identifier': true },
+        },
+      );
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('DISALLOWED_IDENTIFIER');
+      expect(result.issues[0].data?.['identifier']).toBe('constructor');
+    });
+
     it('should allow safe template literal', async () => {
       const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
       const validator = new JSAstValidator([rule]);
