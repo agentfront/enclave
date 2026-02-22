@@ -1,6 +1,6 @@
 {
   "name": "@enclave-vm/react",
-  "version": "2.11.0",
+  "version": "2.11.1",
   "description": "React hooks and components for the EnclaveJS streaming runtime",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",
@@ -34,7 +34,7 @@
     }
   },
   "dependencies": {
-    "@enclave-vm/client": "2.11.0"
+    "@enclave-vm/client": "2.11.1"
   },
   "peerDependencies": {
     "react": ">=18.0.0"
