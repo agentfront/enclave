@@ -781,18 +781,9 @@ describe('ATK-ARRCOERCE: Prototype Escape via Array Coercion', () => {
   describe('Section 8: Computed-key bypass vectors', () => {
     it('ATK-ARRCOERCE-39: template literal `__proto__` as computed key', async () => {
       const enclave = new Enclave({ timeout: 5000 });
-      const code = `
-        const proto = {}\`__proto__\`;
-        if (proto === null || proto === undefined) return 'blocked';
-        return { type: typeof proto };
-      `
-        .replace('{}`', '[`')
-        .replace('`]', '`]')
-        .replace('{}`__proto__`', '[`__proto__`]');
-      // Use string building to avoid template literal parsing issues in test
-      const safeCode =
+      const code =
         'const proto = {}[`__proto__`]; if (proto === null || proto === undefined) return "blocked"; return { type: typeof proto };';
-      const result = await enclave.run(safeCode);
+      const result = await enclave.run(code);
       assertNoEscape(result);
       enclave.dispose();
     }, 15000);
