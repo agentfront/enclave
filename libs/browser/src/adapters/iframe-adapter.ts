@@ -60,6 +60,8 @@ export interface IframeExecutionContext {
 export class IframeAdapter {
   private outerIframe: HTMLIFrameElement | null = null;
   private disposed = false;
+  private executing = false;
+  private pendingSettle: ((result: ExecutionResult<unknown>) => void) | null = null;
 
   /**
    * Execute code in the double iframe sandbox
@@ -68,6 +70,10 @@ export class IframeAdapter {
     if (this.disposed) {
       throw new Error('IframeAdapter has been disposed');
     }
+    if (this.executing) {
+      throw new Error('IframeAdapter: concurrent execution not supported');
+    }
+    this.executing = true;
 
     const requestId = generateId();
     const startTime = Date.now();
@@ -105,14 +111,19 @@ export class IframeAdapter {
       const settle = (result: ExecutionResult<T>) => {
         if (settled) return;
         settled = true;
+        this.executing = false;
+        this.pendingSettle = null;
         cleanup();
         resolve(result);
       };
+
+      this.pendingSettle = settle as (result: ExecutionResult<unknown>) => void;
 
       // Set up message listener
       messageHandler = (event: MessageEvent) => {
         const data = event.data;
         if (!isEnclaveMessage(data)) return;
+        if (event.source !== this.outerIframe?.contentWindow) return;
 
         if (isToolCallMessage(data) && data.requestId === requestId) {
           // Tool call from the sandbox - relay to toolHandler
@@ -153,15 +164,15 @@ export class IframeAdapter {
                 result: safeResult,
               });
             } catch (error: unknown) {
-              const err = error as Error;
+              const err = error instanceof Error ? error : new Error(typeof error === 'string' ? error : String(error));
               this.sendToOuter({
                 __enclave_msg__: true,
                 type: 'tool-response',
                 requestId,
                 callId,
                 error: {
-                  name: err.name || 'Error',
-                  message: err.message || 'Tool call failed',
+                  name: err.name,
+                  message: err.message,
                 },
               });
             }
@@ -206,10 +217,19 @@ export class IframeAdapter {
           }
         } else if (isConsoleMessage(data) && data.requestId === requestId) {
           // Console output - relay to host console
-          const allowedLevels = ['log', 'warn', 'error', 'info'] as const;
-          const level = data.level;
-          if (allowedLevels.includes(level as (typeof allowedLevels)[number])) {
-            console[level as (typeof allowedLevels)[number]]('[Enclave]', ...data.args);
+          switch (data.level) {
+            case 'log':
+              console.log('[Enclave]', ...data.args);
+              break;
+            case 'warn':
+              console.warn('[Enclave]', ...data.args);
+              break;
+            case 'error':
+              console.error('[Enclave]', ...data.args);
+              break;
+            case 'info':
+              console.info('[Enclave]', ...data.args);
+              break;
           }
         } else if (isReadyMessage(data)) {
           // Outer iframe is ready - no action needed, inner will auto-execute
@@ -283,6 +303,8 @@ export class IframeAdapter {
   private sendToOuter(msg: Record<string, unknown>): void {
     if (this.outerIframe && this.outerIframe.contentWindow) {
       try {
+        // '*' is required: srcdoc iframes have a null origin, so no specific targetOrigin can be used.
+        // Re-evaluate if loading strategy changes to blob URLs or a known origin.
         this.outerIframe.contentWindow.postMessage(msg, '*');
       } catch {
         // Iframe may have been removed
@@ -300,10 +322,23 @@ export class IframeAdapter {
       requestId,
     });
 
-    // Hard kill
-    if (this.outerIframe && this.outerIframe.parentNode) {
-      this.outerIframe.parentNode.removeChild(this.outerIframe);
-      this.outerIframe = null;
+    // Settle the pending promise with an AbortError so it doesn't hang until timeout
+    if (this.pendingSettle) {
+      this.pendingSettle({
+        success: false,
+        error: {
+          name: 'AbortError',
+          message: 'Execution was aborted',
+          code: 'EXECUTION_ABORTED',
+        },
+        stats: {
+          duration: 0,
+          toolCallCount: 0,
+          iterationCount: 0,
+          startTime: 0,
+          endTime: 0,
+        },
+      });
     }
   }
 

@@ -323,6 +323,10 @@ body {
   color: var(--warning);
 }
 
+.status-initializing {
+  color: var(--warning);
+}
+
 .status-error {
   color: var(--error);
 }

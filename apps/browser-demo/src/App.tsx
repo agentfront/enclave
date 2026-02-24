@@ -43,8 +43,8 @@ export function App() {
     setConsoleEntries([]);
     setStats(null);
 
-    startCapture();
     try {
+      startCapture();
       const execResult = await run(code);
       setResult(execResult);
       if (execResult.stats) {
@@ -55,15 +55,16 @@ export function App() {
         });
       }
     } catch (err) {
+      const zeroStats = { duration: 0, toolCallCount: 0, iterationCount: 0 };
       setResult({
         success: false,
         error: {
           name: 'AppError',
           message: err instanceof Error ? err.message : String(err),
         },
-        stats: { duration: 0, toolCallCount: 0, iterationCount: 0 },
+        stats: zeroStats,
       });
-      setStats({ duration: 0, toolCallCount: 0, iterationCount: 0 });
+      setStats(zeroStats);
     } finally {
       const captured = stopCapture();
       setConsoleEntries(captured);

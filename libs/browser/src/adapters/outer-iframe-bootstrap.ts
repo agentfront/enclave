@@ -195,8 +195,12 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
     if (!data || data.__enclave_msg__ !== true) return;
     if (completed) return;
 
+    var fromInner = (innerFrame && event.source === innerFrame.contentWindow);
+    var fromHost = (event.source === window.parent);
+
     // Messages from inner iframe (tool-call, result, console)
     if (data.type === 'tool-call') {
+      if (!fromInner) return;
       // Validate before forwarding to host
       try {
         // Double sanitize args
@@ -234,6 +238,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
       }
     }
     else if (data.type === 'result') {
+      if (!fromInner) return;
       // Forward execution result to host
       completed = true;
       sendToHost({
@@ -245,6 +250,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
       });
     }
     else if (data.type === 'console') {
+      if (!fromInner) return;
       // Forward console output to host
       sendToHost({
         type: 'console',
@@ -253,6 +259,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
       });
     }
     else if (data.type === 'tool-response') {
+      if (!fromHost) return;
       // Message from host - forward tool response to inner
       sendToInner({
         type: 'tool-response',
@@ -262,6 +269,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
       });
     }
     else if (data.type === 'abort') {
+      if (!fromHost) return;
       // Abort from host - forward to inner and destroy it
       aborted = true;
       sendToInner({ type: 'abort' });
@@ -322,10 +330,43 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
 }
 
 /**
+ * Dangerous patterns that should not appear in detectBody.
+ * Duplicated from libs/core/src/double-vm/suspicious-patterns.ts
+ * because the browser package does not depend on core.
+ */
+const DANGEROUS_BODY_PATTERNS = [
+  /\bfunction\s+[a-zA-Z_$][a-zA-Z0-9_$]*\s*\(/g, // Named function declarations
+  /\bclass\s+[a-zA-Z_$]/g, // Class declarations
+  /\brequire\s*\(/g, // CommonJS require
+  /\bimport\s*\(/g, // Dynamic import
+  /\bimport\s+/g, // Static import
+  /\bglobal\b/g, // Global object
+  /\bglobalThis\b/g, // GlobalThis object
+  /\bprocess\b/g, // Node.js process
+];
+
+function validateDetectBody(detectBody: string, patternId: string): void {
+  for (const pattern of DANGEROUS_BODY_PATTERNS) {
+    pattern.lastIndex = 0;
+    if (pattern.test(detectBody)) {
+      throw new Error(
+        `Pattern "${patternId}": detectBody contains potentially dangerous code. ` +
+          `Custom patterns should only contain detection logic, not function declarations, ` +
+          `imports, or global object access.`,
+      );
+    }
+  }
+}
+
+/**
  * Generate code for pattern detectors
  */
 function generatePatternDetectors(patterns: SerializableSuspiciousPattern[]): string {
   if (patterns.length === 0) return '[]';
+
+  for (const p of patterns) {
+    validateDetectBody(p.detectBody, p.id);
+  }
 
   const patternDefs = patterns
     .map(

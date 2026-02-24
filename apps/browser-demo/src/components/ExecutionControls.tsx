@@ -9,7 +9,7 @@ interface ExecutionControlsProps {
 export function ExecutionControls({ onRun, running, ready, enclaveLoading, enclaveError }: ExecutionControlsProps) {
   const canRun = ready && !running;
 
-  const status = enclaveLoading ? 'loading' : enclaveError ? 'error' : ready ? 'ready' : 'loading';
+  const status = enclaveLoading ? 'loading' : enclaveError ? 'error' : ready ? 'ready' : 'initializing';
 
   const statusText = enclaveLoading
     ? 'Loading enclave...'
