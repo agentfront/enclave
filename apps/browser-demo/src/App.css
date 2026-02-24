@@ -1,0 +1,475 @@
+/* ── Reset & Base ── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #1a1a2e;
+  --bg-panel: #16213e;
+  --bg-input: #0f172a;
+  --bg-hover: #1e3a5f;
+  --text: #eee;
+  --text-dim: #94a3b8;
+  --accent: #4fc3f7;
+  --accent-hover: #81d4fa;
+  --success: #81c784;
+  --warning: #ffb74d;
+  --error: #ef5350;
+  --border: #334155;
+  --radius: 6px;
+}
+
+html,
+body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+#root {
+  height: 100%;
+}
+
+/* ── App Layout ── */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 16px 24px;
+}
+
+.app-header {
+  text-align: center;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.app-header h1 {
+  font-size: 1.5rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.app-subtitle {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.app-main {
+  display: grid;
+  grid-template-columns: 240px 1fr 360px;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Panels ── */
+.left-panel,
+.right-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.center-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+/* ── Section Label ── */
+.section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+/* ── Security Picker ── */
+.security-picker {
+  background: var(--bg-panel);
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.segmented-buttons {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.seg-btn {
+  flex: 1;
+  padding: 6px 2px;
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.seg-btn:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.seg-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.seg-btn.active {
+  background: var(--accent);
+  color: #000;
+  font-weight: 700;
+}
+
+.seg-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.security-desc {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  margin-top: 6px;
+}
+
+/* ── Tool Config ── */
+.tool-config {
+  background: var(--bg-panel);
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: normal;
+  cursor: pointer;
+}
+
+.toggle-label input[type='checkbox'] {
+  accent-color: var(--accent);
+}
+
+.tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.tool-item {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  background: var(--bg-input);
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.tool-item code {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.tool-desc {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+}
+
+/* ── Examples ── */
+.examples {
+  background: var(--bg-panel);
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.example-group {
+  margin-bottom: 8px;
+}
+
+.example-category {
+  display: block;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+  letter-spacing: 0.05em;
+}
+
+.example-btn {
+  display: inline-block;
+  padding: 3px 8px;
+  margin: 2px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.72rem;
+  transition: all 0.15s;
+}
+
+.example-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.example-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Code Editor ── */
+.code-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.code-textarea {
+  flex: 1;
+  min-height: 200px;
+  padding: 12px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  resize: none;
+  outline: none;
+  tab-size: 2;
+}
+
+.code-textarea:focus {
+  border-color: var(--accent);
+}
+
+.code-textarea:disabled {
+  opacity: 0.6;
+}
+
+/* ── Execution Controls ── */
+.execution-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.run-btn {
+  padding: 8px 32px;
+  background: var(--accent);
+  color: #000;
+  border: none;
+  border-radius: var(--radius);
+  font-weight: 700;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.run-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.run-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.status-indicator {
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.status-ready {
+  color: var(--success);
+}
+
+.status-loading {
+  color: var(--warning);
+}
+
+.status-error {
+  color: var(--error);
+}
+
+/* ── Result Display ── */
+.result-display {
+  background: var(--bg-panel);
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.result-empty,
+.console-empty,
+.stats-empty {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+.result-content {
+  padding: 8px;
+  border-radius: 4px;
+}
+
+.result-success {
+  border-left: 3px solid var(--success);
+  background: rgba(129, 199, 132, 0.08);
+}
+
+.result-error {
+  border-left: 3px solid var(--error);
+  background: rgba(239, 83, 80, 0.08);
+}
+
+.result-error-name {
+  color: var(--error);
+  font-weight: 700;
+  font-size: 0.85rem;
+  margin-bottom: 4px;
+}
+
+.result-pre {
+  font-family: 'SF Mono', 'Fira Code', Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+/* ── Console Output ── */
+.console-output {
+  background: var(--bg-panel);
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.console-entries {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.console-entry {
+  display: flex;
+  gap: 8px;
+  padding: 3px 6px;
+  font-family: 'SF Mono', 'Fira Code', Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.4);
+}
+
+.console-level {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.console-msg {
+  word-break: break-word;
+}
+
+.console-log .console-level {
+  color: var(--text-dim);
+}
+
+.console-info .console-level {
+  color: var(--accent);
+}
+
+.console-warn .console-level {
+  color: var(--warning);
+}
+
+.console-error .console-level {
+  color: var(--error);
+}
+
+/* ── Stats Panel ── */
+.stats-panel {
+  background: var(--bg-panel);
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px;
+  background: var(--bg-input);
+  border-radius: 4px;
+}
+
+.stat-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  letter-spacing: 0.03em;
+}
+
+.stat-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--accent);
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+}
+
+/* ── Responsive ── */
+@media (max-width: 960px) {
+  .app-main {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+
+  .left-panel,
+  .right-panel {
+    overflow-y: visible;
+  }
+
+  .code-textarea {
+    min-height: 150px;
+  }
+}

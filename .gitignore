@@ -98,3 +98,8 @@ docs/docs.backup.json
 
 **/.cache/
 perf-results.json
+
+# Playwright
+test-results/
+playwright-report/
+libs/browser/e2e/fixtures/enclave-browser-bundle.mjs
