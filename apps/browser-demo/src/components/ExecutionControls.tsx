@@ -9,20 +9,22 @@ interface ExecutionControlsProps {
 export function ExecutionControls({ onRun, running, ready, enclaveLoading, enclaveError }: ExecutionControlsProps) {
   const canRun = ready && !running;
 
+  const status = enclaveLoading ? 'loading' : enclaveError ? 'error' : ready ? 'ready' : 'loading';
+
+  const statusText = enclaveLoading
+    ? 'Loading enclave...'
+    : enclaveError
+      ? `Error: ${enclaveError}`
+      : ready
+        ? 'Ready'
+        : 'Initializing...';
+
   return (
     <div className="execution-controls">
       <button className="run-btn" onClick={onRun} disabled={!canRun}>
         {running ? 'Running...' : 'Run'}
       </button>
-      <span className={`status-indicator ${ready ? 'status-ready' : enclaveError ? 'status-error' : 'status-loading'}`}>
-        {enclaveLoading
-          ? 'Loading enclave...'
-          : enclaveError
-            ? `Error: ${enclaveError}`
-            : ready
-              ? 'Ready'
-              : 'Initializing...'}
-      </span>
+      <span className={`status-indicator status-${status}`}>{statusText}</span>
     </div>
   );
 }

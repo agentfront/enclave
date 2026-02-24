@@ -10,6 +10,15 @@ export function useConsoleCapture() {
   const originalsRef = useRef<Record<ConsoleLevel, (...args: unknown[]) => void> | null>(null);
 
   const startCapture = useCallback(() => {
+    // If already capturing, restore originals first to avoid losing real console references
+    if (originalsRef.current) {
+      const levels: ConsoleLevel[] = ['log', 'info', 'warn', 'error'];
+      for (const level of levels) {
+        console[level] = originalsRef.current[level];
+      }
+      originalsRef.current = null;
+    }
+
     entriesRef.current = [];
 
     const levels: ConsoleLevel[] = ['log', 'info', 'warn', 'error'];

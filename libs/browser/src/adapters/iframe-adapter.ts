@@ -206,9 +206,10 @@ export class IframeAdapter {
           }
         } else if (isConsoleMessage(data) && data.requestId === requestId) {
           // Console output - relay to host console
-          const method = data.level as 'log' | 'warn' | 'error' | 'info';
-          if (typeof console[method] === 'function') {
-            console[method]('[Enclave]', ...data.args);
+          const allowedLevels = ['log', 'warn', 'error', 'info'] as const;
+          const level = data.level;
+          if (allowedLevels.includes(level as (typeof allowedLevels)[number])) {
+            console[level as (typeof allowedLevels)[number]]('[Enclave]', ...data.args);
           }
         } else if (isReadyMessage(data)) {
           // Outer iframe is ready - no action needed, inner will auto-execute

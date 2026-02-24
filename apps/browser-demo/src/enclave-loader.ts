@@ -5,10 +5,11 @@
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let cached: any = null;
+let cached: Promise<any> | null = null;
 
 export async function loadEnclaveModule() {
-  if (cached) return cached;
-  cached = await import('../vendor/enclave-browser-bundle.mjs');
+  if (!cached) {
+    cached = import('../vendor/enclave-browser-bundle.mjs');
+  }
   return cached;
 }

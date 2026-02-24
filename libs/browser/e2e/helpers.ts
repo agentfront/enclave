@@ -32,11 +32,18 @@ export async function runInEnclave(page: Page, code: string, opts: RunOptions = 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const EB = (window as any).EnclaveBrowser;
       const enclave = new EB.BrowserEnclave(opts);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return enclave.run(code).then((result: any) => {
-        enclave.dispose();
-        return result;
-      });
+      return enclave.run(code).then(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (result: any) => {
+          enclave.dispose();
+          return result;
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (err: any) => {
+          enclave.dispose();
+          throw err;
+        },
+      );
     },
     { code, opts },
   );
@@ -62,11 +69,18 @@ export async function runWithToolHandler(page: Page, code: string, handlerBody: 
       ) => Promise<unknown>;
       const asyncHandler = (name: string, args: Record<string, unknown>) => Promise.resolve(handler(name, args));
       const enclave = new EB.BrowserEnclave({ ...opts, toolHandler: asyncHandler });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return enclave.run(code).then((result: any) => {
-        enclave.dispose();
-        return result;
-      });
+      return enclave.run(code).then(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (result: any) => {
+          enclave.dispose();
+          return result;
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (err: any) => {
+          enclave.dispose();
+          throw err;
+        },
+      );
     },
     { code, handlerBody, opts },
   );

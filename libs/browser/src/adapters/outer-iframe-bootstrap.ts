@@ -138,6 +138,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
 
     // Whitelist check
     if (validationConfig.validateOperationNames && typeof allowedOperationPattern !== 'undefined') {
+      allowedOperationPattern.lastIndex = 0;
       if (!allowedOperationPattern.test(operationName)) {
         throw createSafeError('Operation "' + operationName + '" does not match allowed pattern');
       }
@@ -146,6 +147,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
     // Blacklist check
     if (typeof blockedOperationPatterns !== 'undefined') {
       for (var i = 0; i < blockedOperationPatterns.length; i++) {
+        blockedOperationPatterns[i].lastIndex = 0;
         if (blockedOperationPatterns[i].test(operationName)) {
           throw createSafeError('Operation "' + operationName + '" matches blocked pattern');
         }

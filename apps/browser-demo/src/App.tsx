@@ -46,8 +46,6 @@ export function App() {
     startCapture();
     try {
       const execResult = await run(code);
-      const captured = stopCapture();
-      setConsoleEntries(captured);
       setResult(execResult);
       if (execResult.stats) {
         setStats({
@@ -57,7 +55,6 @@ export function App() {
         });
       }
     } catch (err) {
-      stopCapture();
       setResult({
         success: false,
         error: {
@@ -66,7 +63,10 @@ export function App() {
         },
         stats: { duration: 0, toolCallCount: 0, iterationCount: 0 },
       });
+      setStats({ duration: 0, toolCallCount: 0, iterationCount: 0 });
     } finally {
+      const captured = stopCapture();
+      setConsoleEntries(captured);
       setRunning(false);
     }
   }, [ready, running, code, run, startCapture, stopCapture]);

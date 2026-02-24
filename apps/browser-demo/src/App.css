@@ -369,7 +369,7 @@ body {
   font-family: 'SF Mono', 'Fira Code', Menlo, Consolas, monospace;
   font-size: 0.8rem;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   margin: 0;
 }
 
@@ -401,7 +401,7 @@ body {
 }
 
 .console-msg {
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .console-log .console-level {

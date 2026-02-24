@@ -9,13 +9,13 @@ interface ToolHandlerConfigProps {
 export function ToolHandlerConfig({ enabled, onToggle, disabled }: ToolHandlerConfigProps) {
   return (
     <div className="tool-config">
-      <label className="section-label">
+      <div className="section-label">
         Tool Handler
         <label className="toggle-label">
           <input type="checkbox" checked={enabled} onChange={(e) => onToggle(e.target.checked)} disabled={disabled} />
           <span>{enabled ? 'Enabled' : 'Disabled'}</span>
         </label>
-      </label>
+      </div>
       {enabled && (
         <div className="tool-list">
           {mockTools.map((tool) => (

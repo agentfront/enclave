@@ -1,9 +1,9 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 export default function globalSetup() {
   const bundleScript = path.resolve(__dirname, 'build-test-bundle.mjs');
-  execSync(`node ${bundleScript}`, {
+  execFileSync('node', [bundleScript], {
     cwd: path.resolve(__dirname, '..'),
     stdio: 'inherit',
   });
