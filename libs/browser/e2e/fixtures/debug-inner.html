@@ -89,11 +89,7 @@
 
               if (blockedPropertiesSet.has(propName)) {
                 if (isNonConfigurable) return Reflect.get(target, property, receiver);
-                if (true) {
-                  throw createSafeError("Security violation: Access to '" + propName + "' is blocked.");
-                } else {
-                  return undefined;
-                }
+                throw createSafeError("Security violation: Access to '" + propName + "' is blocked.");
               }
 
               var value = Reflect.get(target, property, receiver);
@@ -109,11 +105,7 @@
             set: function (target, property, value, receiver) {
               var propName = String(property);
               if (blockedPropertiesSet.has(propName)) {
-                if (true) {
-                  throw createSafeError("Security violation: Setting '" + propName + "' is blocked.");
-                } else {
-                  return false;
-                }
+                throw createSafeError("Security violation: Setting '" + propName + "' is blocked.");
               }
               return Reflect.set(target, property, value, receiver);
             },
@@ -143,6 +135,7 @@
         window.addEventListener('message', function (event) {
           var data = event.data;
           if (!data || data.__enclave_msg__ !== true) return;
+          if (data.requestId && data.requestId !== requestId) return;
 
           if (data.type === 'tool-response') {
             var pending = pendingToolCalls[data.callId];
@@ -411,32 +404,6 @@
           }
         })();
 
-        // Freeze all prototypes
-        (function () {
-          var protos = [
-            Object.prototype,
-            Array.prototype,
-            Function.prototype,
-            String.prototype,
-            Number.prototype,
-            Boolean.prototype,
-            Date.prototype,
-            Error.prototype,
-            TypeError.prototype,
-            RangeError.prototype,
-            SyntaxError.prototype,
-            ReferenceError.prototype,
-            URIError.prototype,
-            EvalError.prototype,
-            Promise.prototype,
-          ];
-          for (var i = 0; i < protos.length; i++) {
-            try {
-              Object.freeze(protos[i]);
-            } catch (e) {}
-          }
-        })();
-
         // Memory-safe prototype patches
         (function () {
           var ml = 1048576;
@@ -506,6 +473,32 @@
               configurable: false,
             });
           } catch (e) {}
+        })();
+
+        // Freeze all prototypes
+        (function () {
+          var protos = [
+            Object.prototype,
+            Array.prototype,
+            Function.prototype,
+            String.prototype,
+            Number.prototype,
+            Boolean.prototype,
+            Date.prototype,
+            Error.prototype,
+            TypeError.prototype,
+            RangeError.prototype,
+            SyntaxError.prototype,
+            ReferenceError.prototype,
+            URIError.prototype,
+            EvalError.prototype,
+            Promise.prototype,
+          ];
+          for (var i = 0; i < protos.length; i++) {
+            try {
+              Object.freeze(protos[i]);
+            } catch (e) {}
+          }
         })();
 
         // ============================================================
@@ -613,6 +606,8 @@
           })(blockedObjMethods[bm]);
         }
 
+        var _defineProperty = Object.defineProperty;
+
         // Neutralize dangerous static methods on intrinsic Object
         (function () {
           var RealObject = Object.getPrototypeOf({}).constructor;
@@ -683,7 +678,7 @@
         for (var gKey in safeGlobals) {
           if (safeGlobals.hasOwnProperty(gKey)) {
             try {
-              Object.defineProperty(window, gKey, {
+              _defineProperty(window, gKey, {
                 value: safeGlobals[gKey],
                 writable: false,
                 configurable: false,

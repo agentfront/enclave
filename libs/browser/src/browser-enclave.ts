@@ -311,6 +311,9 @@ export class BrowserEnclave {
         doubleIframeConfig: this.doubleIframeConfig,
         secureProxyConfig: this.config.secureProxyConfig,
         blockedProperties: serializedConfig.blockedProperties,
+        // TODO: Custom SuspiciousPattern[] from config are not currently serialized and
+        // injected. Proper support would require an API that accepts
+        // SerializableSuspiciousPattern[] (string bodies) or a serialization bridge.
         suspiciousPatterns: DEFAULT_SERIALIZED_PATTERNS,
         validationConfig,
       };
@@ -422,7 +425,10 @@ export class BrowserEnclave {
       parentValidation: {
         ...DEFAULT_DOUBLE_IFRAME_CONFIG.parentValidation,
         ...options.parentValidation,
-        suspiciousPatterns: [...(options.parentValidation?.suspiciousPatterns ?? [])],
+        suspiciousPatterns: [
+          ...DEFAULT_DOUBLE_IFRAME_CONFIG.parentValidation.suspiciousPatterns,
+          ...(options.parentValidation?.suspiciousPatterns ?? []),
+        ],
       },
     };
   }

@@ -58,7 +58,7 @@ export function App() {
       setResult({
         success: false,
         error: {
-          name: 'AppError',
+          name: err instanceof Error ? err.name : 'AppError',
           message: err instanceof Error ? err.message : String(err),
         },
         stats: zeroStats,

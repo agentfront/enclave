@@ -282,6 +282,11 @@ body {
   border-color: var(--accent);
 }
 
+.code-textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .code-textarea:disabled {
   opacity: 0.6;
 }

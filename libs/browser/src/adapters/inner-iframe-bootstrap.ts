@@ -79,6 +79,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   var _getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
   var _ReflectGet = typeof Reflect !== 'undefined' ? Reflect.get : function(t,p) { return t[p]; };
   var _ReflectSet = typeof Reflect !== 'undefined' ? Reflect.set : function(t,p,v) { t[p]=v; return true; };
+  var _Proxy = typeof Proxy !== 'undefined' ? Proxy : undefined;
 
   var blockedPropertiesSet = new Set(${blockedProperties});
   var proxyCache = new WeakMap();
@@ -89,7 +90,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) return obj;
     if (proxyCache.has(obj)) return proxyCache.get(obj);
 
-    var proxy = new Proxy(obj, {
+    var proxy = new _Proxy(obj, {
       get: function(target, property, receiver) {
         var propName = String(property);
         var descriptor = _getOwnPropertyDescriptor(target, property);
@@ -101,10 +102,10 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 
         if (blockedPropertiesSet.has(propName)) {
           if (isNonConfigurable) return _ReflectGet(target, property, receiver);
-          if (${throwOnBlocked}) {
-            throw createSafeError("Security violation: Access to '" + propName + "' is blocked.");
-          } else {
-            return undefined;
+          ${
+            throwOnBlocked
+              ? `throw createSafeError("Security violation: Access to '" + propName + "' is blocked.");`
+              : `return undefined;`
           }
         }
 
@@ -121,10 +122,10 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
       set: function(target, property, value, receiver) {
         var propName = String(property);
         if (blockedPropertiesSet.has(propName)) {
-          if (${throwOnBlocked}) {
-            throw createSafeError("Security violation: Setting '" + propName + "' is blocked.");
-          } else {
-            return false;
+          ${
+            throwOnBlocked
+              ? `throw createSafeError("Security violation: Setting '" + propName + "' is blocked.");`
+              : `return false;`
           }
         }
         return _ReflectSet(target, property, value, receiver);
@@ -151,6 +152,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   window.addEventListener('message', function(event) {
     var data = event.data;
     if (!data || data.__enclave_msg__ !== true) return;
+    if (data.requestId && data.requestId !== requestId) return;
 
     if (data.type === 'tool-response') {
       var pending = pendingToolCalls[data.callId];
@@ -386,21 +388,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     }
   })();
 
-  // Freeze all prototypes
-  (function() {
-    var protos = [
-      Object.prototype, Array.prototype, Function.prototype,
-      String.prototype, Number.prototype, Boolean.prototype,
-      Date.prototype, Error.prototype, TypeError.prototype,
-      RangeError.prototype, SyntaxError.prototype, ReferenceError.prototype,
-      URIError.prototype, EvalError.prototype, Promise.prototype
-    ];
-    for (var i = 0; i < protos.length; i++) {
-      try { Object.freeze(protos[i]); } catch(e) {}
-    }
-  })();
-
-  // Memory-safe prototype patches
+  // Memory-safe prototype patches (must run BEFORE freeze)
   (function() {
     var ml = ${memoryLimit};
     if (ml <= 0) return;
@@ -455,6 +443,20 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
         return origFill.call(this, value, start, end);
       }, writable: false, configurable: false });
     } catch(e) {}
+  })();
+
+  // Freeze all prototypes
+  (function() {
+    var protos = [
+      Object.prototype, Array.prototype, Function.prototype,
+      String.prototype, Number.prototype, Boolean.prototype,
+      Date.prototype, Error.prototype, TypeError.prototype,
+      RangeError.prototype, SyntaxError.prototype, ReferenceError.prototype,
+      URIError.prototype, EvalError.prototype, Promise.prototype
+    ];
+    for (var i = 0; i < protos.length; i++) {
+      try { Object.freeze(protos[i]); } catch(e) {}
+    }
   })();
 
   // ============================================================
