@@ -215,7 +215,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
         operationHistory.push({
           operationName: data.toolName,
           timestamp: Date.now(),
-          argKeys: Object.keys(sanitizedArgs)
+          argKeys: sanitizedArgs && typeof sanitizedArgs === 'object' ? Object.keys(sanitizedArgs) : []
         });
 
         // Forward validated tool call to host

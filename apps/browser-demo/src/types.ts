@@ -27,3 +27,10 @@ export interface ExecutionStats {
   toolCallCount: number;
   iterationCount: number;
 }
+
+export interface DemoExecutionResult {
+  success: boolean;
+  value?: unknown;
+  error?: { name: string; message: string; code?: string };
+  stats?: ExecutionStats;
+}

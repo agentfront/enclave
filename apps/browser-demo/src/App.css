@@ -127,7 +127,9 @@ body {
   cursor: pointer;
   font-size: 0.7rem;
   font-weight: 500;
-  transition: all 0.15s;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
 }
 
 .seg-btn:not(:last-child) {
@@ -237,7 +239,9 @@ body {
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.72rem;
-  transition: all 0.15s;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
 }
 
 .example-btn:hover:not(:disabled) {
@@ -298,7 +302,7 @@ body {
   font-weight: 700;
   font-size: 0.9rem;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background-color 0.15s;
 }
 
 .run-btn:hover:not(:disabled) {

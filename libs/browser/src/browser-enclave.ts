@@ -87,7 +87,7 @@ const DEFAULT_SERIALIZED_PATTERNS: SerializableSuspiciousPattern[] = [
       });
       var threshold = 30;
       try {
-        if (typeof validationConfig !== 'undefined' && validationConfig) {
+        if (typeof validationConfig !== 'undefined') {
           threshold = (validationConfig.rapidEnumerationOverrides && validationConfig.rapidEnumerationOverrides[operationName])
             || validationConfig.rapidEnumerationThreshold || 30;
         }

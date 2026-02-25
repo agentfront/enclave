@@ -103,8 +103,9 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
           if (isNonConfigurable) return _ReflectGet(target, property, receiver);
           if (${throwOnBlocked}) {
             throw createSafeError("Security violation: Access to '" + propName + "' is blocked.");
+          } else {
+            return undefined;
           }
-          return undefined;
         }
 
         var value = _ReflectGet(target, property, receiver);
@@ -122,8 +123,9 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
         if (blockedPropertiesSet.has(propName)) {
           if (${throwOnBlocked}) {
             throw createSafeError("Security violation: Setting '" + propName + "' is blocked.");
+          } else {
+            return false;
           }
-          return false;
         }
         return _ReflectSet(target, property, value, receiver);
       },
@@ -592,8 +594,6 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   // ============================================================
   // Execute User Code
   // ============================================================
-  var userCode = ${JSON.stringify(userCode)};
-
   (async function() {
     // Shadow non-deletable browser globals so user code sees undefined
     var document = undefined;

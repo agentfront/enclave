@@ -1,6 +1,7 @@
+import type { DemoExecutionResult } from '../types';
+
 interface ResultDisplayProps {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  result: any | null;
+  result: DemoExecutionResult | null;
 }
 
 function formatValue(value: unknown): string {

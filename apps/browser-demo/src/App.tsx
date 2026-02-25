@@ -10,15 +10,14 @@ import { ExecutionControls } from './components/ExecutionControls';
 import { ConsoleOutput } from './components/ConsoleOutput';
 import { ResultDisplay } from './components/ResultDisplay';
 import { StatsPanel } from './components/StatsPanel';
-import type { SecurityLevel, ConsoleEntry, ExecutionStats } from './types';
+import type { SecurityLevel, ConsoleEntry, ExecutionStats, DemoExecutionResult } from './types';
 
 export function App() {
   const [code, setCode] = useState('return 2 + 2;');
   const [securityLevel, setSecurityLevel] = useState<SecurityLevel>('STANDARD');
   const [toolsEnabled, setToolsEnabled] = useState(false);
   const [running, setRunning] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<DemoExecutionResult | null>(null);
   const [consoleEntries, setConsoleEntries] = useState<ConsoleEntry[]>([]);
   const [stats, setStats] = useState<ExecutionStats | null>(null);
 

@@ -62,6 +62,7 @@ export class IframeAdapter {
   private disposed = false;
   private executing = false;
   private pendingSettle: ((result: ExecutionResult<unknown>) => void) | null = null;
+  private currentExecutionStart = 0;
 
   /**
    * Execute code in the double iframe sandbox
@@ -77,6 +78,7 @@ export class IframeAdapter {
 
     const requestId = generateId();
     const startTime = Date.now();
+    this.currentExecutionStart = startTime;
 
     // Default stats
     const defaultStats: ExecutionStats = {
@@ -279,7 +281,7 @@ export class IframeAdapter {
 
         document.body.appendChild(this.outerIframe);
       } catch (error: unknown) {
-        const err = error as Error;
+        const err = error instanceof Error ? error : new Error(typeof error === 'string' ? error : String(error));
         settle({
           success: false,
           error: {
@@ -332,11 +334,11 @@ export class IframeAdapter {
           code: 'EXECUTION_ABORTED',
         },
         stats: {
-          duration: 0,
+          duration: this.currentExecutionStart ? Date.now() - this.currentExecutionStart : 0,
           toolCallCount: 0,
           iterationCount: 0,
-          startTime: 0,
-          endTime: 0,
+          startTime: this.currentExecutionStart,
+          endTime: Date.now(),
         },
       });
     }
@@ -347,6 +349,23 @@ export class IframeAdapter {
    */
   dispose(): void {
     this.disposed = true;
+    if (this.pendingSettle) {
+      this.pendingSettle({
+        success: false,
+        error: {
+          name: 'DisposedError',
+          message: 'IframeAdapter was disposed during execution',
+          code: 'ADAPTER_DISPOSED',
+        },
+        stats: {
+          duration: this.currentExecutionStart ? Date.now() - this.currentExecutionStart : 0,
+          toolCallCount: 0,
+          iterationCount: 0,
+          startTime: this.currentExecutionStart,
+          endTime: Date.now(),
+        },
+      });
+    }
     if (this.outerIframe && this.outerIframe.parentNode) {
       this.outerIframe.parentNode.removeChild(this.outerIframe);
       this.outerIframe = null;
