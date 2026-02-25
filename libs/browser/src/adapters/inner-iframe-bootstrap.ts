@@ -10,7 +10,7 @@
  * @packageDocumentation
  */
 
-import { buildIframeHtml } from './iframe-html-builder';
+import { buildIframeHtml, safeJsonStringify } from './iframe-html-builder';
 import type { SerializedIframeConfig } from '../types';
 
 export interface InnerIframeBootstrapOptions {
@@ -30,7 +30,7 @@ export function generateInnerIframeHtml(options: InnerIframeBootstrapOptions): s
 }
 
 function generateInnerIframeScript(userCode: string, config: SerializedIframeConfig, requestId: string): string {
-  const blockedProperties = JSON.stringify(config.blockedProperties);
+  const blockedProperties = safeJsonStringify(config.blockedProperties);
   const throwOnBlocked = config.throwOnBlocked;
   const maxIterations = config.maxIterations;
   const maxToolCalls = config.maxToolCalls;
@@ -41,7 +41,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   return `
 "use strict";
 (function() {
-  var requestId = ${JSON.stringify(requestId)};
+  var requestId = ${safeJsonStringify(requestId)};
   var aborted = false;
   var startTime = Date.now();
   var toolCallCount = 0;
@@ -150,6 +150,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 
   // Listen for messages from outer iframe
   window.addEventListener('message', function(event) {
+    if (event.source !== window.parent) return;
     var data = event.data;
     if (!data || data.__enclave_msg__ !== true) return;
     if (data.requestId !== requestId) return;
@@ -166,6 +167,14 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
       }
     } else if (data.type === 'abort') {
       aborted = true;
+      var pendingKeys = Object.keys(pendingToolCalls);
+      for (var pk = 0; pk < pendingKeys.length; pk++) {
+        var p = pendingToolCalls[pendingKeys[pk]];
+        if (p && p.reject) {
+          try { p.reject(createSafeError('Execution aborted', 'AbortError')); } catch(e) {}
+        }
+      }
+      pendingToolCalls = {};
     }
   });
 
@@ -462,7 +471,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   // ============================================================
   // Remove Dangerous Globals
   // ============================================================
-  var dangerousGlobals = ${JSON.stringify(getDangerousGlobals(config.securityLevel))};
+  var dangerousGlobals = ${safeJsonStringify(getDangerousGlobals(config.securityLevel))};
   for (var dg = 0; dg < dangerousGlobals.length; dg++) {
     try { delete window[dangerousGlobals[dg]]; } catch(e) {
       try { window[dangerousGlobals[dg]] = undefined; } catch(e2) {}
@@ -572,7 +581,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   };
 
   // Inject custom globals if provided
-  var customGlobals = ${JSON.stringify(config.globals || {})};
+  var customGlobals = ${safeJsonStringify(config.globals || {})};
   for (var cgKey in customGlobals) {
     if (customGlobals.hasOwnProperty(cgKey)) {
       safeGlobals[cgKey] = createSecureProxy(customGlobals[cgKey]);

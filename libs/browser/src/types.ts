@@ -297,6 +297,14 @@ export interface BrowserEnclaveOptions {
   doubleIframe?: Partial<DoubleIframeConfig>;
 
   /**
+   * Custom serializable suspicious patterns for the outer iframe validation layer.
+   * These are string-based (SerializableSuspiciousPattern[]) and are injected directly
+   * into the outer iframe script. For function-based patterns (SuspiciousPattern[]),
+   * use doubleIframe.parentValidation.suspiciousPatterns instead.
+   */
+  customSerializablePatterns?: SerializableSuspiciousPattern[];
+
+  /**
    * Maximum console output bytes
    */
   maxConsoleOutputBytes?: number;

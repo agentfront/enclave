@@ -181,6 +181,7 @@ export class BrowserEnclave {
     secureProxyConfig: SecureProxyLevelConfig;
   };
   private readonly doubleIframeConfig: DoubleIframeConfig;
+  private readonly customSerializablePatterns: SerializableSuspiciousPattern[];
 
   constructor(options: BrowserEnclaveOptions = {}) {
     this.securityLevel = options.securityLevel ?? DEFAULT_SECURITY_LEVEL;
@@ -228,6 +229,9 @@ export class BrowserEnclave {
     // Config flags
     this.validateCode = options.validate !== false;
     this.transformCode = options.transform !== false;
+
+    // Store custom serializable patterns
+    this.customSerializablePatterns = options.customSerializablePatterns ?? [];
 
     // Build double iframe config
     this.doubleIframeConfig = this.buildDoubleIframeConfig(options.doubleIframe);
@@ -319,10 +323,11 @@ export class BrowserEnclave {
         doubleIframeConfig: this.doubleIframeConfig,
         secureProxyConfig: this.config.secureProxyConfig,
         blockedProperties: serializedConfig.blockedProperties,
-        // TODO: Custom SuspiciousPattern[] from config are not currently serialized and
-        // injected. Proper support would require an API that accepts
-        // SerializableSuspiciousPattern[] (string bodies) or a serialization bridge.
-        suspiciousPatterns: DEFAULT_SERIALIZED_PATTERNS,
+        // Function-based SuspiciousPattern[] from parentValidation are not serialized here;
+        // they require a serialization bridge (see serializePatterns in @enclave-vm/core).
+        // String-based SerializableSuspiciousPattern[] from customSerializablePatterns are
+        // appended directly since they are already in serializable form.
+        suspiciousPatterns: [...DEFAULT_SERIALIZED_PATTERNS, ...this.customSerializablePatterns],
         validationConfig,
       };
 
@@ -424,7 +429,14 @@ export class BrowserEnclave {
    */
   private buildDoubleIframeConfig(options?: Partial<DoubleIframeConfig>): DoubleIframeConfig {
     if (!options) {
-      return { ...DEFAULT_DOUBLE_IFRAME_CONFIG };
+      return {
+        ...DEFAULT_DOUBLE_IFRAME_CONFIG,
+        parentValidation: {
+          ...DEFAULT_DOUBLE_IFRAME_CONFIG.parentValidation,
+          suspiciousPatterns: [...DEFAULT_DOUBLE_IFRAME_CONFIG.parentValidation.suspiciousPatterns],
+          rapidEnumerationOverrides: { ...DEFAULT_DOUBLE_IFRAME_CONFIG.parentValidation.rapidEnumerationOverrides },
+        },
+      };
     }
 
     return {

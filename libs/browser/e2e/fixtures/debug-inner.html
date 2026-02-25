@@ -133,6 +133,7 @@
 
         // Listen for messages from outer iframe
         window.addEventListener('message', function (event) {
+          if (event.source !== window.parent) return;
           var data = event.data;
           if (!data || data.__enclave_msg__ !== true) return;
           if (data.requestId !== requestId) return;
@@ -149,6 +150,16 @@
             }
           } else if (data.type === 'abort') {
             aborted = true;
+            var pendingKeys = Object.keys(pendingToolCalls);
+            for (var pk = 0; pk < pendingKeys.length; pk++) {
+              var p = pendingToolCalls[pendingKeys[pk]];
+              if (p && p.reject) {
+                try {
+                  p.reject(createSafeError('Execution aborted', 'AbortError'));
+                } catch (e) {}
+              }
+            }
+            pendingToolCalls = {};
           }
         });
 

@@ -61,6 +61,16 @@ function escapeHtml(str: string): string {
 }
 
 /**
+ * JSON.stringify with HTML-safe escaping for embedding in <script> tags.
+ *
+ * Prevents `</script>` breakout and `<!--` HTML comment injection
+ * from any JSON-serialized value.
+ */
+export function safeJsonStringify(value: unknown): string {
+  return JSON.stringify(value).replace(/<\//g, '<\\/').replace(/<!--/g, '<\\!--');
+}
+
+/**
  * Escape a string for safe embedding inside a JavaScript string literal
  * within an HTML <script> tag.
  *

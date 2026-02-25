@@ -272,6 +272,8 @@ const DANGEROUS_BODY_PATTERNS = [
   /\bglobal\b/g, // Global object
   /\bglobalThis\b/g, // GlobalThis object
   /\bprocess\b/g, // Node.js process
+  /<\/script/gi, // Script tag breakout
+  /<!--/g, // HTML comment injection
 ];
 
 /**

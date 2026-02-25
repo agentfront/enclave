@@ -17,7 +17,7 @@
  * @packageDocumentation
  */
 
-import { buildIframeHtml } from './iframe-html-builder';
+import { buildIframeHtml, safeJsonStringify } from './iframe-html-builder';
 import { generateInnerIframeHtml } from './inner-iframe-bootstrap';
 import type { SerializedIframeConfig, SerializableSuspiciousPattern } from '../types';
 
@@ -62,7 +62,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
   return `
 "use strict";
 (function() {
-  var requestId = ${JSON.stringify(requestId)};
+  var requestId = ${safeJsonStringify(requestId)};
   var aborted = false;
   var completed = false;
 
@@ -80,7 +80,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
   // ============================================================
   // Validation Configuration
   // ============================================================
-  var validationConfig = ${JSON.stringify({
+  var validationConfig = ${safeJsonStringify({
     validateOperationNames: validationConfig.validateOperationNames,
     maxOperationsPerSecond: validationConfig.maxOperationsPerSecond,
     blockSuspiciousSequences: validationConfig.blockSuspiciousSequences,
@@ -90,7 +90,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
 
   ${
     validationConfig.allowedOperationPatternSource
-      ? `var allowedOperationPattern = new RegExp(${JSON.stringify(validationConfig.allowedOperationPatternSource)}, ${JSON.stringify(validationConfig.allowedOperationPatternFlags || '')});`
+      ? `var allowedOperationPattern = new RegExp(${safeJsonStringify(validationConfig.allowedOperationPatternSource)}, ${safeJsonStringify(validationConfig.allowedOperationPatternFlags || '')});`
       : ''
   }
 
@@ -99,7 +99,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
       ? `var blockedOperationPatterns = [${validationConfig.blockedOperationPatternSources
           .map(
             (src, i) =>
-              `new RegExp(${JSON.stringify(src)}, ${JSON.stringify(validationConfig.blockedOperationPatternFlags?.[i] || '')})`,
+              `new RegExp(${safeJsonStringify(src)}, ${safeJsonStringify(validationConfig.blockedOperationPatternFlags?.[i] || '')})`,
           )
           .join(',')}];`
       : ''
@@ -344,6 +344,8 @@ const DANGEROUS_BODY_PATTERNS = [
   /\bglobal\b/g, // Global object
   /\bglobalThis\b/g, // GlobalThis object
   /\bprocess\b/g, // Node.js process
+  /<\/script/gi, // Script tag breakout
+  /<!--/g, // HTML comment injection
 ];
 
 function validateDetectBody(detectBody: string, patternId: string): void {
@@ -372,7 +374,7 @@ function generatePatternDetectors(patterns: SerializableSuspiciousPattern[]): st
   const patternDefs = patterns
     .map(
       (p) =>
-        `{ id: ${JSON.stringify(p.id)}, description: ${JSON.stringify(p.description)}, detect: function(operationName, args, history) { ${p.detectBody} } }`,
+        `{ id: ${safeJsonStringify(p.id)}, description: ${safeJsonStringify(p.description)}, detect: function(operationName, args, history) { ${p.detectBody} } }`,
     )
     .join(',\n    ');
 

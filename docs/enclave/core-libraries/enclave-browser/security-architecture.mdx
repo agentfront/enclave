@@ -151,7 +151,7 @@ User code runs through transformed wrappers that enforce resource limits:
 | `__safe_forOf` | For-of loops with iteration limits (generator-based) |
 | `__safe_concat` | Safe string/number concatenation |
 | `__safe_template` | Safe template literal handling |
-| `parallel(fns)` | Parallel execution with max 100 concurrent operations |
+| `parallel(fns)` | Parallel execution of up to 100 total operations with configurable concurrency (default 10, max 20) |
 | `console` | Console relay with call count and byte limits |
 
 All loop wrappers share a global iteration counter and check for abort signals on every iteration.
