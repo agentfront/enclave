@@ -1,0 +1,131 @@
+---
+title: 'Overview'
+description: 'Secure JavaScript execution in the browser using double iframe isolation — no server required'
+---
+
+`@enclave-vm/browser` brings Enclave's defense-in-depth security model to the browser. Instead of Node.js VM contexts, it uses a **double iframe architecture** with CSP isolation, prototype freezing, and secure proxies to safely execute untrusted and LLM-generated code entirely client-side.
+
+<CardGroup cols={3}>
+  <Card title="AST Validation" icon="shield-check">
+    Block dangerous constructs before execution using ast-guard's AgentScript preset
+  </Card>
+  <Card title="Code Transformation" icon="arrows-rotate">
+    Automatically transform code for safe execution with proxied functions and loop limits
+  </Card>
+  <Card title="Double Iframe Sandbox" icon="browser">
+    Execute in nested iframe isolation with CSP, sandbox attributes, and secure proxies
+  </Card>
+</CardGroup>
+
+## When to Use Browser Enclave
+
+- **Client-side AI code execution** — Run LLM-generated code in the browser without a server round-trip
+- **No server required** — All sandboxing happens in the browser via iframe isolation
+- **Interactive code playgrounds** — Build code editors with live execution and tool integration
+- **Edge and offline scenarios** — Execute sandboxed code without network connectivity
+- **Rapid prototyping** — Let users experiment with AgentScript in the browser
+
+## Browser vs Node.js
+
+| Feature | `@enclave-vm/core` | `@enclave-vm/browser` |
+|---------|--------------------|-----------------------|
+| **Runtime** | Node.js (`vm` module) | Browser (iframe `srcdoc`) |
+| **Isolation** | Double VM nesting | Double iframe nesting |
+| **Network blocking** | VM context restriction | CSP `default-src 'none'` |
+| **Eval blocking** | `codeGeneration: { strings: false }` | CSP blocks `eval`/`Function` |
+| **Worker pool** | `worker_threads` adapter | Not available |
+| **AI scoring gate** | Supported | Not available |
+| **Reference sidecar** | Supported | Not available |
+| **Memory tracking** | V8 heap stats | Soft estimation (String/Array hooks) |
+| **AST validation** | Same (`@enclave-vm/ast`) | Same (`@enclave-vm/ast`) |
+| **Code transformation** | Same (AgentScript) | Same (AgentScript) |
+| **Security levels** | Same 4 levels | Same 4 levels |
+| **Tool system** | Same `callTool()` API | Same `callTool()` API |
+
+## Installation
+
+```bash
+npm install @enclave-vm/browser
+```
+
+## Quick Start
+
+```ts
+import { BrowserEnclave } from '@enclave-vm/browser';
+
+// Create an enclave with a tool handler
+const enclave = new BrowserEnclave({
+  securityLevel: 'STANDARD',
+  timeout: 10000,
+  maxToolCalls: 50,
+  toolHandler: async (toolName, args) => {
+    const response = await fetch(`/api/tools/${toolName}`, {
+      method: 'POST',
+      body: JSON.stringify(args),
+    });
+    return response.json();
+  },
+});
+
+// Execute AgentScript code
+const result = await enclave.run(`
+  const users = await callTool('users:list', { limit: 10 });
+  const active = users.filter(u => u.active);
+  return active.length;
+`);
+
+if (result.success) {
+  console.log('Result:', result.value);
+  console.log('Duration:', result.stats.duration, 'ms');
+} else {
+  console.error('Error:', result.error.message);
+}
+
+// Clean up
+enclave.dispose();
+```
+
+## Execution Results
+
+Every call to `run()` returns a structured result with success/error status and execution statistics:
+
+```ts
+interface ExecutionResult<T> {
+  success: boolean;
+  value?: T;              // Result value (if success)
+  error?: {               // Error details (if failed)
+    name: string;
+    message: string;
+    code?: string;
+    stack?: string;
+    data?: Record<string, unknown>;
+  };
+  stats: {
+    duration: number;      // Execution time in ms
+    toolCallCount: number; // Number of tool calls made
+    iterationCount: number; // Number of loop iterations
+    startTime: number;     // Epoch timestamp
+    endTime: number;       // Epoch timestamp
+  };
+}
+```
+
+## Error Codes
+
+| Code | Meaning | Action |
+|------|---------|--------|
+| `VALIDATION_ERROR` | AST validation failed | Fix the code — blocked construct used |
+| `EXECUTION_TIMEOUT` | Execution exceeded timeout | Optimize or increase timeout |
+| `MAX_TOOL_CALLS` | Tool call limit exceeded | Reduce tool calls or increase limit |
+| `MAX_ITERATIONS` | Loop iteration limit exceeded | Reduce loops or increase limit |
+| `IFRAME_CREATE_FAILED` | Failed to create sandbox iframe | Check browser compatibility |
+| `EXECUTION_ABORTED` | Execution was manually aborted | Expected when calling `abort()` |
+| `ADAPTER_DISPOSED` | Adapter was disposed during execution | Avoid disposing during execution |
+| `ENCLAVE_ERROR` | Unexpected internal error | Check error message for details |
+
+## Related
+
+- [Security Architecture](/core-libraries/enclave-browser/security-architecture) - Double iframe isolation model
+- [Configuration](/core-libraries/enclave-browser/configuration) - All configuration options
+- [React Integration](/core-libraries/enclave-browser/react-integration) - Hooks and component patterns
+- [@enclave-vm/core Overview](/core-libraries/enclave-vm/overview) - Node.js sandbox

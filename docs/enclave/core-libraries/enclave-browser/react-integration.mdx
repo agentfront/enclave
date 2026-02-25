@@ -1,0 +1,411 @@
+---
+title: 'React Integration'
+description: 'React hooks, component patterns, and bundling considerations for @enclave-vm/browser'
+---
+
+`@enclave-vm/browser` integrates naturally with React applications. This guide covers hook patterns for lifecycle management, console capture, tool handler wiring, and a complete playground example.
+
+## Basic Hook Pattern
+
+The `useEnclave` hook manages the enclave lifecycle — dynamic import, initialization, re-creation on config changes, and cleanup on unmount:
+
+```tsx
+import { useState, useEffect, useRef, useCallback } from 'react';
+import type { BrowserEnclave, ExecutionResult, SecurityLevel } from '@enclave-vm/browser';
+
+interface UseEnclaveOptions {
+  securityLevel: SecurityLevel;
+  toolHandler?: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+}
+
+export function useEnclave({ securityLevel, toolHandler }: UseEnclaveOptions) {
+  const [ready, setReady] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const enclaveRef = useRef<BrowserEnclave | null>(null);
+  const toolHandlerRef = useRef(toolHandler);
+  toolHandlerRef.current = toolHandler;
+
+  useEffect(() => {
+    let disposed = false;
+
+    async function init() {
+      setLoading(true);
+      setReady(false);
+      setError(null);
+
+      // Dispose previous instance
+      if (enclaveRef.current) {
+        enclaveRef.current.dispose();
+        enclaveRef.current = null;
+      }
+
+      try {
+        // Dynamic import for code splitting
+        const { BrowserEnclave } = await import('@enclave-vm/browser');
+        if (disposed) return;
+
+        enclaveRef.current = new BrowserEnclave({
+          securityLevel,
+          toolHandler: toolHandlerRef.current,
+        });
+        setReady(true);
+      } catch (err) {
+        if (!disposed) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (!disposed) setLoading(false);
+      }
+    }
+
+    init();
+
+    return () => {
+      disposed = true;
+      if (enclaveRef.current) {
+        enclaveRef.current.dispose();
+        enclaveRef.current = null;
+      }
+    };
+  }, [securityLevel]);
+
+  const run = useCallback(async <T = unknown>(code: string): Promise<ExecutionResult<T>> => {
+    if (!enclaveRef.current) {
+      throw new Error('Enclave not ready');
+    }
+    return enclaveRef.current.run<T>(code);
+  }, []);
+
+  return { ready, loading, error, run };
+}
+```
+
+Key points:
+- **Dynamic import** keeps `@enclave-vm/browser` out of the initial bundle
+- **Ref for toolHandler** avoids re-creating the enclave when the handler identity changes
+- **Cleanup on unmount** calls `dispose()` to remove sandbox iframes
+- **Re-creates on `securityLevel` change** to apply new security configuration
+
+## Using the Hook
+
+```tsx
+function CodeRunner() {
+  const [code, setCode] = useState('return 1 + 1');
+  const [result, setResult] = useState<string>('');
+  const { ready, loading, error, run } = useEnclave({
+    securityLevel: 'STANDARD',
+  });
+
+  const handleRun = async () => {
+    if (!ready) return;
+    const res = await run(code);
+    if (res.success) {
+      setResult(`Result: ${JSON.stringify(res.value)} (${res.stats.duration}ms)`);
+    } else {
+      setResult(`Error: ${res.error?.message}`);
+    }
+  };
+
+  if (loading) return <div>Loading enclave...</div>;
+  if (error) return <div>Failed to load: {error}</div>;
+
+  return (
+    <div>
+      <textarea value={code} onChange={e => setCode(e.target.value)} />
+      <button onClick={handleRun} disabled={!ready}>Run</button>
+      <pre>{result}</pre>
+    </div>
+  );
+}
+```
+
+## Console Capture
+
+Sandbox console output is relayed to the host's `console` with an `[Enclave]` prefix. The `useConsoleCapture` hook intercepts these messages:
+
+```tsx
+import { useRef, useCallback } from 'react';
+
+type ConsoleLevel = 'log' | 'info' | 'warn' | 'error';
+
+interface ConsoleEntry {
+  id: number;
+  level: ConsoleLevel;
+  args: unknown[];
+  timestamp: number;
+}
+
+let nextId = 0;
+
+export function useConsoleCapture() {
+  const entriesRef = useRef<ConsoleEntry[]>([]);
+  const originalsRef = useRef<Record<ConsoleLevel, (...args: unknown[]) => void> | null>(null);
+
+  const startCapture = useCallback(() => {
+    // Restore previous originals if already capturing
+    if (originalsRef.current) {
+      for (const level of ['log', 'info', 'warn', 'error'] as ConsoleLevel[]) {
+        console[level] = originalsRef.current[level];
+      }
+    }
+
+    entriesRef.current = [];
+    const originals = {} as Record<ConsoleLevel, (...args: unknown[]) => void>;
+
+    for (const level of ['log', 'info', 'warn', 'error'] as ConsoleLevel[]) {
+      originals[level] = console[level].bind(console);
+      console[level] = (...args: unknown[]) => {
+        originals[level](...args); // Always pass through
+        if (args[0] === '[Enclave]') {
+          entriesRef.current.push({
+            id: nextId++,
+            level,
+            args: args.slice(1), // Remove prefix
+            timestamp: Date.now(),
+          });
+        }
+      };
+    }
+
+    originalsRef.current = originals;
+  }, []);
+
+  const stopCapture = useCallback((): ConsoleEntry[] => {
+    if (originalsRef.current) {
+      for (const level of ['log', 'info', 'warn', 'error'] as ConsoleLevel[]) {
+        console[level] = originalsRef.current[level];
+      }
+      originalsRef.current = null;
+    }
+    return [...entriesRef.current];
+  }, []);
+
+  return { startCapture, stopCapture };
+}
+```
+
+Usage with the enclave hook:
+
+```tsx
+const { run } = useEnclave({ securityLevel: 'STANDARD' });
+const { startCapture, stopCapture } = useConsoleCapture();
+
+const handleRun = async () => {
+  startCapture();
+  const result = await run('console.log("hello from sandbox"); return 42;');
+  const entries = stopCapture();
+  // entries[0].args = ['hello from sandbox']
+};
+```
+
+## With Tool Handlers
+
+Wire up tool handlers that connect sandbox code to your application:
+
+```tsx
+function ToolExample() {
+  const toolHandler = useCallback(async (name: string, args: Record<string, unknown>) => {
+    switch (name) {
+      case 'users:list':
+        return { items: [{ id: 1, name: 'Alice', active: true }] };
+      case 'users:get':
+        return { id: args.id, name: 'Alice', active: true };
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  }, []);
+
+  const { ready, run } = useEnclave({
+    securityLevel: 'SECURE',
+    toolHandler,
+  });
+
+  const handleRun = async () => {
+    const result = await run(`
+      const users = await callTool('users:list', { limit: 10 });
+      return users.items.filter(u => u.active).length;
+    `);
+    console.log(result.value); // 1
+  };
+
+  return <button onClick={handleRun} disabled={!ready}>Run with tools</button>;
+}
+```
+
+## Security Level Picker
+
+A small component for switching security levels:
+
+```tsx
+import type { SecurityLevel } from '@enclave-vm/browser';
+
+const LEVELS: { value: SecurityLevel; label: string; description: string }[] = [
+  { value: 'STRICT', label: 'Strict', description: '5s timeout, 10 tool calls' },
+  { value: 'SECURE', label: 'Secure', description: '15s timeout, 50 tool calls' },
+  { value: 'STANDARD', label: 'Standard', description: '30s timeout, 100 tool calls' },
+  { value: 'PERMISSIVE', label: 'Permissive', description: '60s timeout, 1000 tool calls' },
+];
+
+function SecurityLevelPicker({
+  value,
+  onChange,
+}: {
+  value: SecurityLevel;
+  onChange: (level: SecurityLevel) => void;
+}) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value as SecurityLevel)}>
+      {LEVELS.map(level => (
+        <option key={level.value} value={level.value}>
+          {level.label} — {level.description}
+        </option>
+      ))}
+    </select>
+  );
+}
+```
+
+## Bundling Considerations
+
+- **ESM only**: `@enclave-vm/browser` is distributed as ESM. Ensure your bundler supports `import()`.
+- **Dynamic import**: Use `import('@enclave-vm/browser')` for code splitting. The library includes `@enclave-vm/ast` which adds to bundle size — dynamic import keeps it off the critical path.
+- **No Node.js dependencies**: The browser package has no `vm`, `worker_threads`, or other Node.js module dependencies.
+- **Dependencies**: Requires `@enclave-vm/ast` (for AST validation and code transformation) and `zod` (for message schema validation).
+
+## Browser Compatibility
+
+| Feature Required | Chrome | Firefox | Safari | Edge |
+|-----------------|--------|---------|--------|------|
+| `iframe srcdoc` | 20+ | 25+ | 6+ | 79+ |
+| `iframe sandbox` | 4+ | 17+ | 5+ | 79+ |
+| `postMessage` | 1+ | 6+ | 4+ | 79+ |
+| `Proxy` | 49+ | 18+ | 10+ | 79+ |
+| `TextEncoder` | 38+ | 18+ | 10.1+ | 79+ |
+| `crypto.randomUUID` | 92+ | 95+ | 15.4+ | 92+ |
+
+**Minimum recommended versions**: Chrome 67+, Firefox 63+, Safari 13+, Edge 79+
+
+<Note>
+  `crypto.randomUUID` has a built-in fallback using `Date.now()` for older browsers, so it is not a hard requirement.
+</Note>
+
+## Complete Example: Code Playground
+
+A full working example combining all patterns:
+
+```tsx
+import { useState, useCallback } from 'react';
+import type { SecurityLevel, ExecutionResult } from '@enclave-vm/browser';
+
+// Import hooks (see patterns above)
+import { useEnclave } from './hooks/use-enclave';
+import { useConsoleCapture } from './hooks/use-console-capture';
+
+function CodePlayground() {
+  const [code, setCode] = useState(`
+const data = await callTool('data:fetch', { query: 'active users' });
+console.log('Fetched', data.length, 'records');
+const sorted = data.sort((a, b) => b.score - a.score);
+return sorted.slice(0, 5);
+  `.trim());
+
+  const [securityLevel, setSecurityLevel] = useState<SecurityLevel>('STANDARD');
+  const [result, setResult] = useState<ExecutionResult | null>(null);
+  const [consoleOutput, setConsoleOutput] = useState<string[]>([]);
+  const [running, setRunning] = useState(false);
+
+  const toolHandler = useCallback(async (name: string, args: Record<string, unknown>) => {
+    // Simulate tool execution
+    if (name === 'data:fetch') {
+      return [
+        { name: 'Alice', score: 95 },
+        { name: 'Bob', score: 87 },
+        { name: 'Charlie', score: 92 },
+      ];
+    }
+    throw new Error(`Unknown tool: ${name}`);
+  }, []);
+
+  const { ready, loading, error, run } = useEnclave({ securityLevel, toolHandler });
+  const { startCapture, stopCapture } = useConsoleCapture();
+
+  const handleRun = async () => {
+    if (!ready || running) return;
+    setRunning(true);
+    setResult(null);
+    setConsoleOutput([]);
+
+    try {
+      startCapture();
+      const res = await run(code);
+      const entries = stopCapture();
+
+      setResult(res);
+      setConsoleOutput(entries.map(e => `[${e.level}] ${e.args.join(' ')}`));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div>
+      <div>
+        <label>Security Level: </label>
+        <select
+          value={securityLevel}
+          onChange={e => setSecurityLevel(e.target.value as SecurityLevel)}
+        >
+          <option value="STRICT">Strict</option>
+          <option value="SECURE">Secure</option>
+          <option value="STANDARD">Standard</option>
+          <option value="PERMISSIVE">Permissive</option>
+        </select>
+      </div>
+
+      <textarea
+        value={code}
+        onChange={e => setCode(e.target.value)}
+        rows={10}
+        style={{ width: '100%', fontFamily: 'monospace' }}
+      />
+
+      <button onClick={handleRun} disabled={!ready || running}>
+        {running ? 'Running...' : 'Run Code'}
+      </button>
+
+      {loading && <p>Loading enclave...</p>}
+      {error && <p style={{ color: 'red' }}>Error: {error}</p>}
+
+      {consoleOutput.length > 0 && (
+        <div>
+          <h3>Console</h3>
+          <pre>{consoleOutput.join('\n')}</pre>
+        </div>
+      )}
+
+      {result && (
+        <div>
+          <h3>{result.success ? 'Result' : 'Error'}</h3>
+          <pre>
+            {result.success
+              ? JSON.stringify(result.value, null, 2)
+              : result.error?.message}
+          </pre>
+          <p>
+            Duration: {result.stats.duration}ms |
+            Tool calls: {result.stats.toolCallCount} |
+            Iterations: {result.stats.iterationCount}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+## Related
+
+- [Overview](/core-libraries/enclave-browser/overview) - Getting started with browser enclave
+- [Configuration](/core-libraries/enclave-browser/configuration) - All configuration options
+- [EnclaveJS React](/enclavejs/react) - React bindings for streaming

@@ -1,0 +1,183 @@
+---
+title: 'Configuration'
+description: 'Complete configuration reference for @enclave-vm/browser'
+---
+
+This page documents all configuration options for `@enclave-vm/browser`.
+
+## Quick Example
+
+```ts
+import { BrowserEnclave } from '@enclave-vm/browser';
+
+const enclave = new BrowserEnclave({
+  // Security level preset
+  securityLevel: 'SECURE',
+
+  // Core limits
+  timeout: 10000,
+  maxToolCalls: 50,
+  maxIterations: 5000,
+  memoryLimit: 2 * 1024 * 1024, // 2MB
+
+  // Tool handler
+  toolHandler: async (name, args) => {
+    return executeToolSafely(name, args);
+  },
+
+  // Additional options
+  globals: { context: { userId: 'user-123' } },
+  validate: true,
+  transform: true,
+});
+```
+
+## Core Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `securityLevel` | string | `'STANDARD'` | Preset: `STRICT`, `SECURE`, `STANDARD`, `PERMISSIVE` |
+| `preset` | string | `'agentscript'` | AST preset: `agentscript`, `strict`, `secure`, `standard`, `permissive` |
+| `timeout` | number | varies | Maximum execution time in milliseconds |
+| `maxToolCalls` | number | varies | Maximum tool calls per execution |
+| `maxIterations` | number | varies | Maximum loop iterations (per loop) |
+| `memoryLimit` | number | 1048576 | Memory limit in bytes (soft tracking) |
+| `toolHandler` | function | - | Async function that handles `callTool()` invocations |
+| `globals` | object | - | Additional globals available in the sandbox (JSON-serializable only) |
+| `validate` | boolean | `true` | Validate code with ast-guard before execution |
+| `transform` | boolean | `true` | Transform code before execution (AgentScript wrappers) |
+| `allowFunctionsInGlobals` | boolean | varies | Whether to allow functions in custom globals |
+
+## Console Limits
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxConsoleOutputBytes` | number | varies | Maximum total console output in bytes |
+| `maxConsoleCalls` | number | varies | Maximum number of console calls |
+
+## Security Level Comparison
+
+All "varies" defaults above depend on the selected security level:
+
+| Setting | STRICT | SECURE | STANDARD | PERMISSIVE |
+|---------|--------|--------|----------|------------|
+| `timeout` | 5000 | 15000 | 30000 | 60000 |
+| `maxIterations` | 1000 | 5000 | 10000 | 100000 |
+| `maxToolCalls` | 10 | 50 | 100 | 1000 |
+| `maxConsoleOutputBytes` | 64KB | 256KB | 1MB | 10MB |
+| `maxConsoleCalls` | 100 | 500 | 1000 | 10000 |
+| `maxSanitizeDepth` | 5 | 10 | 20 | 50 |
+| `maxSanitizeProperties` | 50 | 100 | 500 | 1000 |
+| `sanitizeStackTraces` | true | true | false | false |
+| `blockTimingAPIs` | true | false | false | false |
+| `allowUnboundedLoops` | false | false | true | true |
+| `unicodeSecurityCheck` | true | true | false | false |
+| `allowFunctionsInGlobals` | false | false | false | true |
+| `secureProxy.blockConstructor` | true | true | true | false |
+| `secureProxy.blockPrototype` | true | true | true | true |
+| `secureProxy.blockLegacyAccessors` | true | true | true | true |
+| `secureProxy.proxyMaxDepth` | 5 | 10 | 15 | 20 |
+| `secureProxy.throwOnBlocked` | true | true | true | false |
+
+## Secure Proxy Configuration
+
+Override proxy behavior for the current security level:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `secureProxyConfig.blockConstructor` | boolean | varies | Block access to `.constructor` |
+| `secureProxyConfig.blockPrototype` | boolean | varies | Block access to `.__proto__` and `.prototype` |
+| `secureProxyConfig.blockLegacyAccessors` | boolean | varies | Block `__defineGetter__`, `__defineSetter__`, etc. |
+| `secureProxyConfig.proxyMaxDepth` | number | varies | Maximum nesting depth for proxy wrapping |
+| `secureProxyConfig.throwOnBlocked` | boolean | varies | Throw error vs return `undefined` on blocked access |
+
+```ts
+const enclave = new BrowserEnclave({
+  securityLevel: 'STANDARD',
+  secureProxyConfig: {
+    throwOnBlocked: false, // Return undefined instead of throwing
+    proxyMaxDepth: 5,      // Limit proxy nesting
+  },
+});
+```
+
+## Double Iframe Configuration
+
+Configure the outer iframe security barrier:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `doubleIframe.enabled` | boolean | `true` | Enable double iframe isolation |
+| `doubleIframe.parentTimeoutBuffer` | number | `1000` | Extra timeout for outer iframe (ms) |
+| `doubleIframe.parentValidation.validateOperationNames` | boolean | `true` | Validate tool names |
+| `doubleIframe.parentValidation.allowedOperationPattern` | RegExp | - | Whitelist pattern for tool names |
+| `doubleIframe.parentValidation.blockedOperationPatterns` | RegExp[] | - | Blacklist patterns for tool names |
+| `doubleIframe.parentValidation.maxOperationsPerSecond` | number | `100` | Rate limit for tool calls |
+| `doubleIframe.parentValidation.blockSuspiciousSequences` | boolean | `true` | Detect multi-step attack patterns |
+| `doubleIframe.parentValidation.rapidEnumerationThreshold` | number | `30` | Same-operation repetition threshold |
+| `doubleIframe.parentValidation.rapidEnumerationOverrides` | object | `{}` | Per-operation threshold overrides |
+| `doubleIframe.parentValidation.suspiciousPatterns` | array | `[]` | Custom detection patterns |
+
+```ts
+const enclave = new BrowserEnclave({
+  doubleIframe: {
+    enabled: true,
+    parentTimeoutBuffer: 2000,
+    parentValidation: {
+      validateOperationNames: true,
+      allowedOperationPattern: /^[a-z]+:[a-z]+$/i,
+      blockedOperationPatterns: [/^admin:/i, /^system:/i],
+      maxOperationsPerSecond: 50,
+      blockSuspiciousSequences: true,
+    },
+  },
+});
+```
+
+### Built-in Suspicious Patterns
+
+These patterns are detected automatically when `blockSuspiciousSequences` is enabled:
+
+| Pattern | Description |
+|---------|-------------|
+| `EXFIL_LIST_SEND` | List/query operation followed by send/export |
+| `RAPID_ENUMERATION` | Same operation repeated beyond threshold in 5s window |
+| `CREDENTIAL_EXFIL` | Credential access followed by external operation |
+| `BULK_OPERATION` | Bulk/batch/mass/dump operations or unlimited queries |
+| `DELETE_AFTER_ACCESS` | Delete operation after data read (potential cover-up) |
+
+## Custom Globals
+
+Inject read-only data into the sandbox. Only JSON-serializable values are supported — functions cannot cross the iframe boundary.
+
+```ts
+const enclave = new BrowserEnclave({
+  globals: {
+    // These work (JSON-serializable)
+    config: { apiVersion: 'v2', maxRetries: 3 },
+    userId: 'user-123',
+    features: ['search', 'export'],
+
+    // These are silently skipped (not serializable)
+    // handler: () => {},       // function
+    // element: document.body,  // DOM node
+  },
+});
+
+// In sandboxed code:
+// const version = config.apiVersion; // 'v2'
+// const id = userId;                 // 'user-123'
+```
+
+<Warning>
+  Custom globals are only supported with the `agentscript` preset (the default). Using globals with other presets will throw an error.
+</Warning>
+
+Each custom global is also available with a `__safe_` prefix (e.g., `config` and `__safe_config`), matching the pattern used by AgentScript's code transformation.
+
+## Related
+
+- [Overview](/core-libraries/enclave-browser/overview) - Getting started
+- [Security Architecture](/core-libraries/enclave-browser/security-architecture) - Isolation model details
+- [@enclave-vm/core Configuration](/core-libraries/enclave-vm/configuration) - Node.js configuration reference
+- [Security Levels](/core-libraries/enclave-vm/security-levels) - Security preset details
