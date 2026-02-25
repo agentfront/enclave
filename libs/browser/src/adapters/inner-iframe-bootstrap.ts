@@ -152,7 +152,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   window.addEventListener('message', function(event) {
     var data = event.data;
     if (!data || data.__enclave_msg__ !== true) return;
-    if (data.requestId && data.requestId !== requestId) return;
+    if (data.requestId !== requestId) return;
 
     if (data.type === 'tool-response') {
       var pending = pendingToolCalls[data.callId];
@@ -660,7 +660,9 @@ function generateUserCodeExecution(userCode: string): string {
   // The user code has already been transformed by @enclave-vm/ast
   // and contains __ag_main() function definition.
   // We embed it directly - it runs in the same script context.
-  return userCode;
+  // Escape closing script tags to prevent HTML parser breakout
+  // when embedded via buildIframeHtml's <script>${content}</script>
+  return userCode.replace(/<\//g, '<\\/');
 }
 
 /**

@@ -215,6 +215,14 @@ export class BrowserEnclave {
 
     // Create validator
     const presetName: AstPreset = options.preset ?? 'agentscript';
+
+    if (this.customGlobalNames.length > 0 && presetName !== 'agentscript') {
+      throw new Error(
+        "Custom globals are only supported with the 'agentscript' preset. " +
+          'Remove globals or switch to preset: "agentscript".',
+      );
+    }
+
     this.validator = this.createValidator(presetName, customAllowedGlobals);
 
     // Config flags

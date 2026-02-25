@@ -197,7 +197,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
 
     var fromInner = (innerFrame && event.source === innerFrame.contentWindow);
     var fromHost = (event.source === window.parent);
-    if (data.requestId && data.requestId !== requestId) return;
+    if (data.requestId !== requestId) return;
 
     // Messages from inner iframe (tool-call, result, console)
     if (data.type === 'tool-call') {

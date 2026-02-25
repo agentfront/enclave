@@ -35,12 +35,16 @@ export function App() {
 
   const { startCapture, stopCapture } = useConsoleCapture();
 
-  const handleRun = useCallback(async () => {
-    if (!ready || running) return;
-    setRunning(true);
+  const resetExecutionState = useCallback(() => {
     setResult(null);
     setConsoleEntries([]);
     setStats(null);
+  }, []);
+
+  const handleRun = useCallback(async () => {
+    if (!ready || running) return;
+    setRunning(true);
+    resetExecutionState();
 
     try {
       startCapture();
@@ -65,18 +69,24 @@ export function App() {
       });
       setStats(zeroStats);
     } finally {
-      const captured = stopCapture();
+      let captured: ConsoleEntry[] = [];
+      try {
+        captured = stopCapture();
+      } catch (_err) {
+        /* stopCapture failure should not block UI reset */
+      }
       setConsoleEntries(captured);
       setRunning(false);
     }
-  }, [ready, running, code, run, startCapture, stopCapture]);
+  }, [ready, running, code, run, startCapture, stopCapture, resetExecutionState]);
 
-  const handleExampleSelect = useCallback((exampleCode: string) => {
-    setCode(exampleCode);
-    setResult(null);
-    setConsoleEntries([]);
-    setStats(null);
-  }, []);
+  const handleExampleSelect = useCallback(
+    (exampleCode: string) => {
+      setCode(exampleCode);
+      resetExecutionState();
+    },
+    [resetExecutionState],
+  );
 
   return (
     <div className="app">

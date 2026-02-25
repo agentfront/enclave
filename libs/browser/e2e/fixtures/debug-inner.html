@@ -135,7 +135,7 @@
         window.addEventListener('message', function (event) {
           var data = event.data;
           if (!data || data.__enclave_msg__ !== true) return;
-          if (data.requestId && data.requestId !== requestId) return;
+          if (data.requestId !== requestId) return;
 
           if (data.type === 'tool-response') {
             var pending = pendingToolCalls[data.callId];
@@ -407,7 +407,6 @@
         // Memory-safe prototype patches
         (function () {
           var ml = 1048576;
-          if (ml <= 0) return;
           var totalTracked = 0;
           function track(bytes) {
             totalTracked += bytes;
@@ -539,8 +538,6 @@
           'indexedDB',
           'caches',
           'navigator',
-          'location',
-          'document',
           'open',
           'close',
           'alert',
@@ -692,6 +689,9 @@
         // Execute User Code
         // ============================================================
         (async function () {
+          // Shadow non-deletable browser globals so user code sees undefined
+          var document = undefined;
+
           try {
             // The transformed code defines __ag_main as a function declaration.
             // We embed it directly — CSP 'unsafe-inline' allows inline scripts
