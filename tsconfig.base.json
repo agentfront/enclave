@@ -28,7 +28,8 @@
       "@enclave-vm/broker": ["libs/broker/src/index.ts"],
       "@enclave-vm/client": ["libs/client/src/index.ts"],
       "@enclave-vm/react": ["libs/react/src/index.ts"],
-      "@enclave-vm/runtime": ["libs/runtime/src/index.ts"]
+      "@enclave-vm/runtime": ["libs/runtime/src/index.ts"],
+      "@enclave-vm/browser": ["libs/browser/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"]

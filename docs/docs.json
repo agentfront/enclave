@@ -101,6 +101,16 @@
                 ]
               },
               {
+                "group": "@enclave-vm/browser",
+                "icon": "browser",
+                "pages": [
+                  "enclave/core-libraries/enclave-browser/overview",
+                  "enclave/core-libraries/enclave-browser/security-architecture",
+                  "enclave/core-libraries/enclave-browser/configuration",
+                  "enclave/core-libraries/enclave-browser/react-integration"
+                ]
+              },
+              {
                 "group": "@enclave-vm/ast",
                 "icon": "shield-check",
                 "pages": [

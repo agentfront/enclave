@@ -1,0 +1,44 @@
+{
+  "name": "@enclave-vm/browser",
+  "version": "2.11.0",
+  "description": "Browser sandbox runtime for secure JavaScript code execution using double iframe isolation",
+  "author": "AgentFront <info@agentfront.dev>",
+  "homepage": "https://github.com/agentfront/enclave",
+  "license": "Apache-2.0",
+  "keywords": [
+    "sandbox",
+    "iframe",
+    "enclave",
+    "enclave-vm",
+    "agentscript",
+    "llm",
+    "javascript",
+    "execution",
+    "security",
+    "browser"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentfront/enclave.git"
+  },
+  "bugs": {
+    "url": "https://github.com/agentfront/enclave/issues"
+  },
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "dependencies": {
+    "@enclave-vm/ast": "2.11.0",
+    "acorn": "8.15.0",
+    "astring": "1.9.0",
+    "zod": "^4.3.6"
+  }
+}

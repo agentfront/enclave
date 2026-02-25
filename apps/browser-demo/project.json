@@ -1,0 +1,28 @@
+{
+  "name": "browser-demo",
+  "sourceRoot": "apps/browser-demo/src",
+  "projectType": "application",
+  "targets": {
+    "prebuild": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node apps/browser-demo/scripts/build-enclave-bundle.mjs"
+      }
+    },
+    "serve": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["prebuild"],
+      "options": {
+        "command": "npx vite --config apps/browser-demo/vite.config.ts"
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["prebuild"],
+      "options": {
+        "command": "npx vite build --config apps/browser-demo/vite.config.ts"
+      },
+      "outputs": ["{workspaceRoot}/dist/apps/browser-demo"]
+    }
+  }
+}
