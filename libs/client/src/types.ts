@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import type { SessionId, StreamEvent, SessionLimits } from '@enclave-vm/types';
+import type { SessionId, StreamEvent, SessionLimits, ErrorPayload, ToolProgressPhase } from '@enclave-vm/types';
 
 /**
  * Client configuration
@@ -124,12 +124,12 @@ export interface SessionEventHandlers {
   /**
    * Called when a partial result arrives
    */
-  onPartialResult?: (path: string[], data?: unknown, error?: unknown, hasNext?: boolean) => void;
+  onPartialResult?: (path: string[], data?: unknown, error?: ErrorPayload, hasNext?: boolean) => void;
 
   /**
    * Called when tool progress is reported
    */
-  onToolProgress?: (callId: string, phase: string, elapsedMs: number) => void;
+  onToolProgress?: (callId: string, phase: ToolProgressPhase, elapsedMs: number) => void;
 
   /**
    * Called when deadline is exceeded

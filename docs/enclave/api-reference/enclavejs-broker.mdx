@@ -193,6 +193,93 @@ Submit tool execution result.
 }
 ```
 
+### GET /code/actions
+
+Returns the current action catalog derived from connected OpenAPI sources.
+
+**Response:**
+```ts
+interface CatalogResponse {
+  /** Available actions from all connected OpenAPI sources */
+  actions: CatalogAction[];
+  /** Connected OpenAPI service descriptors */
+  services: CatalogService[];
+  /** Catalog version — changes when actions are added or removed */
+  version: string;
+}
+
+interface CatalogAction {
+  /** Tool name (e.g., "user-service_listUsers") */
+  name: string;
+  /** Human-readable description from the OpenAPI spec */
+  description?: string;
+  /** JSON Schema for the tool's input parameters */
+  inputSchema?: Record<string, unknown>;
+  /** Name of the service this action belongs to */
+  service: string;
+  /** Tags from the OpenAPI operation */
+  tags?: string[];
+  /** Whether the operation is deprecated */
+  deprecated?: boolean;
+}
+
+interface CatalogService {
+  /** Service name (from OpenApiSourceConfig.name) */
+  name: string;
+  /** Internal spec URL */
+  specUrl: string;
+  /** ISO 8601 timestamp of the last successful spec poll */
+  lastUpdated: string;
+  /** Number of actions from this service */
+  actionCount: number;
+}
+```
+
+**Version semantics:** The `version` field is a deterministic hash of all source spec hashes. It changes whenever an OpenAPI spec is polled with additions or removals. Consumers can compare version strings to detect catalog changes.
+
+**Example:**
+```bash
+curl http://localhost:3001/code/actions
+```
+
+```json
+{
+  "actions": [
+    {
+      "name": "user-service_listUsers",
+      "description": "List all users",
+      "service": "user-service"
+    },
+    {
+      "name": "user-service_getUser",
+      "description": "Get user by ID",
+      "service": "user-service"
+    }
+  ],
+  "services": [
+    {
+      "name": "user-service",
+      "specUrl": "",
+      "lastUpdated": "2026-03-31T12:00:00.000Z",
+      "actionCount": 2
+    }
+  ],
+  "version": "a1b2c3d4..."
+}
+```
+
+**Wiring:** Use `CatalogHandler` to register this route:
+```ts
+import { CatalogHandler } from '@enclave-vm/broker';
+
+const catalog = new CatalogHandler(toolRegistry, openApiSources);
+for (const route of catalog.getRoutes()) {
+  app[route.method.toLowerCase()](route.path, route.handler);
+}
+```
+
+The types `CatalogAction`, `CatalogService`, `CatalogResponse`, and `CatalogHandler` are all exported from the `@enclave-vm/broker` package.
+
 ### GET /health
 
 Health check endpoint.

@@ -116,8 +116,11 @@ export class CatalogHandler {
       });
     }
 
-    // Version is a hash of all source hashes
-    const versionParts = this.sources.map((s) => s.getStats().specHash).join(':');
+    // Version is a deterministic hash of all source hashes (sorted for stability)
+    const versionParts = this.sources
+      .map((s) => s.getStats().specHash)
+      .sort()
+      .join(':');
     const version = versionParts || 'empty';
 
     return { actions, services, version };

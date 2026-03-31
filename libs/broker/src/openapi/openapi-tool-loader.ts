@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
+import { sha256Hex } from './hash-utils';
 import type { ToolDefinition, ToolContext } from '../tool-registry';
 
 /**
@@ -72,10 +72,10 @@ export class OpenApiToolLoader {
   private readonly options: LoaderOptions;
   private readonly auth?: UpstreamAuth;
 
-  private constructor(spec: Record<string, unknown>, options: LoaderOptions = {}, auth?: UpstreamAuth) {
+  private constructor(spec: Record<string, unknown>, hash: string, options: LoaderOptions = {}, auth?: UpstreamAuth) {
     this.options = options;
     this.auth = auth;
-    this.specHash = createHash('sha256').update(JSON.stringify(spec)).digest('hex');
+    this.specHash = hash;
     this.loadFromSpec(spec);
   }
 
@@ -103,7 +103,8 @@ export class OpenApiToolLoader {
       throw new Error(`Failed to fetch OpenAPI spec from ${url}: ${response.status}`);
     }
     const spec = (await response.json()) as Record<string, unknown>;
-    return new OpenApiToolLoader(spec, { ...options, baseUrl: options?.baseUrl ?? new URL(url).origin }, auth);
+    const hash = await sha256Hex(JSON.stringify(spec));
+    return new OpenApiToolLoader(spec, hash, { ...options, baseUrl: options?.baseUrl ?? new URL(url).origin }, auth);
   }
 
   /**
@@ -114,7 +115,8 @@ export class OpenApiToolLoader {
     options?: LoaderOptions,
     auth?: UpstreamAuth,
   ): Promise<OpenApiToolLoader> {
-    return new OpenApiToolLoader(spec, options, auth);
+    const hash = await sha256Hex(JSON.stringify(spec));
+    return new OpenApiToolLoader(spec, hash, options, auth);
   }
 
   /**
@@ -217,10 +219,11 @@ export class OpenApiToolLoader {
   private buildArgsSchema(op: ParsedOperation): z.ZodType {
     const shape: Record<string, z.ZodType> = {};
 
-    // Add parameters
+    // Add parameters with OpenAPI type mapping
     if (op.parameters) {
       for (const param of op.parameters) {
-        shape[param.name] = param.required ? z.string() : z.string().optional();
+        const baseType = this.mapOpenApiType(param.schema);
+        shape[param.name] = param.required ? baseType : baseType.optional();
       }
     }
 
@@ -232,6 +235,34 @@ export class OpenApiToolLoader {
     }
 
     return Object.keys(shape).length > 0 ? z.object(shape) : z.record(z.string(), z.unknown());
+  }
+
+  /**
+   * Map an OpenAPI schema type to the corresponding Zod type.
+   */
+  private mapOpenApiType(schema?: Record<string, unknown>): z.ZodType {
+    if (!schema || !schema['type']) return z.string();
+
+    const type = schema['type'] as string;
+    const enumValues = schema['enum'] as string[] | undefined;
+
+    switch (type) {
+      case 'integer':
+        return z.number().int();
+      case 'number':
+        return z.number();
+      case 'boolean':
+        return z.boolean();
+      case 'array':
+        return z.array(this.mapOpenApiType(schema['items'] as Record<string, unknown> | undefined));
+      case 'string':
+        if (enumValues && enumValues.length > 0) {
+          return z.enum(enumValues as [string, ...string[]]);
+        }
+        return z.string();
+      default:
+        return z.string();
+    }
   }
 
   /**
@@ -267,9 +298,10 @@ export class OpenApiToolLoader {
         url += `?${queryString}`;
       }
 
-      // Build request headers
+      // Build request headers (only set Content-Type for methods with a body)
+      const hasBody = ['post', 'put', 'patch'].includes(op.method) && params['body'] != null;
       const requestHeaders: Record<string, string> = {
-        'Content-Type': 'application/json',
+        ...(hasBody && { 'Content-Type': 'application/json' }),
         ...headers,
       };
 
@@ -304,8 +336,7 @@ export class OpenApiToolLoader {
         signal: context.signal,
       };
 
-      // Add body for methods that support it
-      if (['post', 'put', 'patch'].includes(op.method) && params['body']) {
+      if (hasBody) {
         fetchOptions.body = JSON.stringify(params['body']);
       }
 

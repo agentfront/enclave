@@ -8,7 +8,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { createHash } from 'node:crypto';
+import { sha256Hex } from './hash-utils';
 
 /**
  * Change detection strategy.
@@ -243,7 +243,7 @@ export class OpenApiSpecPoller extends EventEmitter {
 
       if (this._stopped) return;
 
-      const hash = createHash('sha256').update(body).digest('hex');
+      const hash = await sha256Hex(body);
 
       if (this.lastHash && this.lastHash === hash) {
         this.emit('unchanged');

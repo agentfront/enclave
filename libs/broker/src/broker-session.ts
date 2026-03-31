@@ -231,17 +231,22 @@ export class BrokerSession {
         stdoutBytes: this.stdoutBytes,
       };
 
-      // If session was cancelled while running, let the catch path handle it
+      // Session was cancelled/terminated while enclave was running
       if (this.isTerminal()) {
+        const cancelError = {
+          code: this._deadlineExceeded ? 'DEADLINE_EXCEEDED' : 'SESSION_CANCELLED',
+          message: 'Session was cancelled',
+        };
+        this.emitter.emitFinalError(cancelError, eventStats);
         result = {
           success: false,
-          error: { message: 'Session was cancelled', name: 'Error', code: 'SESSION_CANCELLED' },
+          error: { message: cancelError.message, name: 'Error', code: cancelError.code },
           stats,
           finalState: 'cancelled',
         };
       } else if (enclaveResult.success) {
         this._state = 'completed';
-        this.emitter.emitFinalSuccess(enclaveResult.value, eventStats);
+        this.emitter.emitFinalSuccess(enclaveResult.value, eventStats, this.getPartialErrors());
         result = {
           success: true,
           value: enclaveResult.value,
@@ -254,7 +259,7 @@ export class BrokerSession {
           code: enclaveResult.error?.code ?? 'EXECUTION_ERROR',
           message: enclaveResult.error?.message ?? 'Execution failed',
         };
-        this.emitter.emitFinalError(errorInfo, eventStats);
+        this.emitter.emitFinalError(errorInfo, eventStats, this.getPartialErrors());
         result = {
           success: false,
           error: {
@@ -299,7 +304,7 @@ export class BrokerSession {
           : ((err as Error & { code?: string }).code ?? 'EXECUTION_ERROR'),
         message: err.message,
       };
-      this.emitter.emitFinalError(errorInfo, eventStats);
+      this.emitter.emitFinalError(errorInfo, eventStats, this.getPartialErrors());
       result = {
         success: false,
         error: {
@@ -417,14 +422,13 @@ export class BrokerSession {
   }
 
   /**
-   * Create a custom event with proper base fields.
-   * Uses the emitter's current seq (no auto-increment for custom events).
+   * Create a custom event with proper base fields and unique sequence number.
    */
   private makeCustomEvent(type: string, payload: Record<string, unknown>): StreamEvent {
     return {
       protocolVersion: PROTOCOL_VERSION,
       sessionId: this.sessionId,
-      seq: this.seq,
+      seq: this.emitter.nextSeq(),
       type,
       payload,
     } as unknown as StreamEvent;
@@ -467,6 +471,7 @@ export class BrokerSession {
           toolCallCount: this.toolCallCount,
           stdoutBytes: this.stdoutBytes,
         },
+        this.getPartialErrors(),
       );
     }
   }
