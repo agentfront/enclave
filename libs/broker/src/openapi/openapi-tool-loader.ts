@@ -104,7 +104,23 @@ export class OpenApiToolLoader {
     }
     const spec = (await response.json()) as Record<string, unknown>;
     const hash = await sha256Hex(JSON.stringify(spec));
-    return new OpenApiToolLoader(spec, hash, { ...options, baseUrl: options?.baseUrl ?? new URL(url).origin }, auth);
+
+    // Resolve baseUrl: explicit option > spec.servers[0].url > fetch origin
+    let resolvedBaseUrl = options?.baseUrl;
+    if (!resolvedBaseUrl) {
+      const servers = spec['servers'] as Array<{ url?: string }> | undefined;
+      if (servers?.[0]?.url) {
+        try {
+          resolvedBaseUrl = new URL(servers[0].url, url).origin + new URL(servers[0].url, url).pathname;
+        } catch {
+          resolvedBaseUrl = new URL(url).origin;
+        }
+      } else {
+        resolvedBaseUrl = new URL(url).origin;
+      }
+    }
+
+    return new OpenApiToolLoader(spec, hash, { ...options, baseUrl: resolvedBaseUrl }, auth);
   }
 
   /**
@@ -192,18 +208,25 @@ export class OpenApiToolLoader {
     const httpMethods = ['get', 'post', 'put', 'delete', 'patch', 'head', 'options'];
 
     for (const [path, pathItem] of Object.entries(paths)) {
+      const pathParams = (pathItem['parameters'] as ParsedOperation['parameters']) ?? [];
+
       for (const method of httpMethods) {
         const operation = pathItem[method] as Record<string, unknown> | undefined;
         if (!operation) continue;
 
         const operationId = (operation['operationId'] as string) || `${method}_${path.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+        // Merge path-level and operation-level parameters; operation-level overrides by (name, in)
+        const opParams = (operation['parameters'] as ParsedOperation['parameters']) ?? [];
+        const merged = this.mergeParameters(pathParams, opParams);
+
         operations.push({
           operationId,
           method,
           path,
           summary: operation['summary'] as string | undefined,
           description: operation['description'] as string | undefined,
-          parameters: operation['parameters'] as ParsedOperation['parameters'],
+          parameters: merged.length > 0 ? merged : undefined,
           requestBody: operation['requestBody'] as ParsedOperation['requestBody'],
           deprecated: operation['deprecated'] as boolean | undefined,
         });
@@ -211,6 +234,24 @@ export class OpenApiToolLoader {
     }
 
     return operations;
+  }
+
+  /**
+   * Merge path-level and operation-level parameters, de-duplicating by (name, in).
+   * Operation-level entries override path-level ones.
+   */
+  private mergeParameters(
+    pathParams: NonNullable<ParsedOperation['parameters']>,
+    opParams: NonNullable<ParsedOperation['parameters']>,
+  ): NonNullable<ParsedOperation['parameters']> {
+    const seen = new Map<string, (typeof opParams)[0]>();
+    for (const p of pathParams) {
+      seen.set(`${p.in}:${p.name}`, p);
+    }
+    for (const p of opParams) {
+      seen.set(`${p.in}:${p.name}`, p);
+    }
+    return [...seen.values()];
   }
 
   /**
@@ -227,11 +268,13 @@ export class OpenApiToolLoader {
       }
     }
 
-    // Add request body as 'body' parameter
-    if (op.requestBody) {
-      shape['body'] = op.requestBody.required
-        ? z.record(z.string(), z.unknown())
-        : z.record(z.string(), z.unknown()).optional();
+    // Add request body as 'body' parameter, inspecting content media type
+    if (op.requestBody?.content) {
+      const bodySchema = this.buildBodySchema(op.requestBody.content);
+      shape['body'] = op.requestBody.required ? bodySchema : bodySchema.optional();
+    } else if (op.requestBody) {
+      const fallback = z.record(z.string(), z.unknown());
+      shape['body'] = op.requestBody.required ? fallback : fallback.optional();
     }
 
     return Object.keys(shape).length > 0 ? z.object(shape) : z.record(z.string(), z.unknown());
@@ -263,6 +306,33 @@ export class OpenApiToolLoader {
       default:
         return z.string();
     }
+  }
+
+  /**
+   * Build a Zod schema for the request body based on the media type.
+   */
+  private buildBodySchema(content: Record<string, { schema?: Record<string, unknown> }>): z.ZodType {
+    // Prefer JSON media types
+    const jsonKey = Object.keys(content).find((k) => k.includes('json'));
+    if (jsonKey) {
+      const schema = content[jsonKey].schema;
+      if (schema) return this.mapOpenApiType(schema);
+      return z.record(z.string(), z.unknown());
+    }
+
+    // Form data
+    if (content['application/x-www-form-urlencoded'] || content['multipart/form-data']) {
+      return z.record(z.string(), z.unknown());
+    }
+
+    // Plain text
+    const textKey = Object.keys(content).find((k) => k.startsWith('text/'));
+    if (textKey) {
+      return z.string();
+    }
+
+    // Fallback
+    return z.record(z.string(), z.unknown());
   }
 
   /**

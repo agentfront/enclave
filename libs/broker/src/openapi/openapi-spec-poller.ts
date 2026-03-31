@@ -83,7 +83,8 @@ export class OpenApiSpecPoller extends EventEmitter {
   private consecutiveFailures = 0;
   private isPolling = false;
   private wasUnhealthy = false;
-  private _stopped = false;
+  /** Per-run abort controller — aborted on stop(), recreated on start() */
+  private _runAbort: AbortController = new AbortController();
   private _fetchController: AbortController | null = null;
 
   constructor(config: OpenApiPollerConfig) {
@@ -104,13 +105,14 @@ export class OpenApiSpecPoller extends EventEmitter {
    */
   start(): void {
     if (this.intervalTimer) return;
-    this._stopped = false;
+    this._runAbort = new AbortController();
+    const runSignal = this._runAbort.signal;
 
     // Initial poll
-    this.poll().catch(() => undefined);
+    this.pollWithSignal(runSignal).catch(() => undefined);
 
     this.intervalTimer = setInterval(() => {
-      this.poll().catch(() => undefined);
+      this.pollWithSignal(runSignal).catch(() => undefined);
     }, this.config.intervalMs);
   }
 
@@ -118,7 +120,7 @@ export class OpenApiSpecPoller extends EventEmitter {
    * Stop polling.
    */
   stop(): void {
-    this._stopped = true;
+    this._runAbort.abort();
     if (this._fetchController) {
       this._fetchController.abort();
       this._fetchController = null;
@@ -147,25 +149,29 @@ export class OpenApiSpecPoller extends EventEmitter {
    * Perform a single poll cycle.
    */
   async poll(): Promise<void> {
+    return this.pollWithSignal(this._runAbort.signal);
+  }
+
+  private async pollWithSignal(runSignal: AbortSignal): Promise<void> {
     if (this.isPolling) return;
     this.isPolling = true;
 
     try {
-      await this.fetchWithRetry();
+      await this.fetchWithRetry(runSignal);
     } finally {
       this.isPolling = false;
     }
   }
 
-  private async fetchWithRetry(): Promise<void> {
+  private async fetchWithRetry(runSignal: AbortSignal): Promise<void> {
     const { maxRetries, initialDelayMs, maxDelayMs, backoffMultiplier } = this.config.retry;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      if (this._stopped) return;
+      if (runSignal.aborted) return;
 
       try {
-        await this.doFetch();
-        if (this._stopped) return;
+        await this.doFetch(runSignal);
+        if (runSignal.aborted) return;
         // Success — reset failure counter and emit recovered if applicable
         if (this.consecutiveFailures > 0) {
           this.consecutiveFailures = 0;
@@ -176,7 +182,7 @@ export class OpenApiSpecPoller extends EventEmitter {
         }
         return;
       } catch (error) {
-        if (this._stopped) return;
+        if (runSignal.aborted) return;
 
         if (attempt === maxRetries) {
           this.consecutiveFailures++;
@@ -189,15 +195,22 @@ export class OpenApiSpecPoller extends EventEmitter {
           return;
         }
 
-        // Wait before retrying
+        // Wait before retrying (abortable)
         const delay = Math.min(initialDelayMs * Math.pow(backoffMultiplier, attempt), maxDelayMs);
-        await new Promise((r) => setTimeout(r, delay));
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, delay);
+          const onAbort = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+          runSignal.addEventListener('abort', onAbort, { once: true });
+        });
       }
     }
   }
 
-  private async doFetch(): Promise<void> {
-    if (this._stopped) return;
+  private async doFetch(runSignal: AbortSignal): Promise<void> {
+    if (runSignal.aborted) return;
 
     const headers: Record<string, string> = { ...this.config.headers };
 
@@ -221,7 +234,7 @@ export class OpenApiSpecPoller extends EventEmitter {
         signal: controller.signal,
       });
 
-      if (this._stopped) return;
+      if (runSignal.aborted) return;
 
       // HTTP 304: Not Modified
       if (response.status === 304) {
@@ -241,7 +254,7 @@ export class OpenApiSpecPoller extends EventEmitter {
 
       const body = await response.text();
 
-      if (this._stopped) return;
+      if (runSignal.aborted) return;
 
       const hash = await sha256Hex(body);
 

@@ -177,7 +177,7 @@ export class BrokerSession {
           { code: 'DEADLINE_EXCEEDED', message: 'Deadline exceeded before execution' },
           { durationMs: elapsed, toolCallCount: 0, stdoutBytes: 0 },
         );
-        return {
+        const finalResult: SessionFinalResult = {
           success: false,
           error: {
             message: 'Deadline exceeded before execution',
@@ -193,6 +193,8 @@ export class BrokerSession {
           },
           finalState: 'failed',
         };
+        this.executionPromise = Promise.resolve(finalResult);
+        return finalResult;
       }
     }
 
@@ -237,7 +239,7 @@ export class BrokerSession {
           code: this._deadlineExceeded ? 'DEADLINE_EXCEEDED' : 'SESSION_CANCELLED',
           message: 'Session was cancelled',
         };
-        this.emitter.emitFinalError(cancelError, eventStats);
+        this.emitter.emitFinalError(cancelError, eventStats, this.getPartialErrors());
         result = {
           success: false,
           error: { message: cancelError.message, name: 'Error', code: cancelError.code },
@@ -382,13 +384,31 @@ export class BrokerSession {
     // Emit initial progress
     this.emitToolProgress(callId, 'connecting', 0);
 
-    // Guard: reject if session deadline has already passed
+    // Compute per-tool timeout, capped by remaining session budget
+    let toolTimeout = this.limits.perToolDeadlineMs;
     if (this.limits.deadlineMs > 0) {
       const elapsed = Date.now() - this.createdAt;
       const remaining = this.limits.deadlineMs - elapsed;
       if (remaining <= 0) {
-        throw new Error('Deadline exceeded before tool execution');
+        this._deadlineExceeded = true;
+        const err = new Error('Deadline exceeded before tool execution');
+        (err as Error & { code?: string }).code = 'DEADLINE_EXCEEDED';
+        throw err;
       }
+      toolTimeout = Math.min(toolTimeout, remaining);
+    }
+
+    // Create per-tool AbortController that races the session signal and a timer
+    const toolAbort = new AbortController();
+    let toolTimer: ReturnType<typeof setTimeout> | null = null;
+    if (toolTimeout > 0) {
+      toolTimer = setTimeout(() => toolAbort.abort(), toolTimeout);
+    }
+    // Propagate session-level abort to per-tool controller
+    const onSessionAbort = () => toolAbort.abort();
+    this.abortController.signal.addEventListener('abort', onSessionAbort);
+    if (this.abortController.signal.aborted) {
+      toolAbort.abort();
     }
 
     // Execute through registry
@@ -396,13 +416,19 @@ export class BrokerSession {
       sessionId: this.sessionId,
       callId,
       secrets: {}, // Resolved by registry
-      signal: this.abortController.signal,
+      signal: toolAbort.signal,
     };
 
     // Emit processing progress
     this.emitToolProgress(callId, 'processing', Date.now() - toolStartTime);
 
-    const result = await this.toolRegistry.execute(toolName, args, context);
+    let result;
+    try {
+      result = await this.toolRegistry.execute(toolName, args, context);
+    } finally {
+      if (toolTimer) clearTimeout(toolTimer);
+      this.abortController.signal.removeEventListener('abort', onSessionAbort);
+    }
 
     // Emit tool result event
     this.emitter.emitToolResultApplied(callId);
@@ -473,6 +499,22 @@ export class BrokerSession {
         },
         this.getPartialErrors(),
       );
+      this.executionPromise = Promise.resolve({
+        success: false,
+        error: {
+          message: reason ?? 'Session was cancelled',
+          name: 'Error',
+          code: 'SESSION_CANCELLED',
+        },
+        stats: {
+          duration: Date.now() - this.createdAt,
+          toolCallCount: this.toolCallCount,
+          iterationCount: 0,
+          startTime: this.createdAt,
+          endTime: Date.now(),
+        },
+        finalState: 'cancelled',
+      });
     }
   }
 
