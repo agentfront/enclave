@@ -64,6 +64,7 @@ export class OpenApiSource extends EventEmitter {
   private specHash = '';
   private health: SourceHealthStatus = 'unknown';
   private disposed = false;
+  private _syncLock: Promise<void> = Promise.resolve();
 
   constructor(toolRegistry: ToolRegistry, config: OpenApiSourceConfig) {
     super();
@@ -83,14 +84,16 @@ export class OpenApiSource extends EventEmitter {
     // Start polling
     this.poller = new OpenApiSpecPoller(this.config);
 
-    this.poller.on('changed', async (spec: string) => {
-      try {
-        const parsed = JSON.parse(spec) as Record<string, unknown>;
-        await this.syncTools(parsed);
-        this.health = 'healthy';
-      } catch (error) {
-        this.emit('error', error instanceof Error ? error : new Error(String(error)));
-      }
+    this.poller.on('changed', (spec: string) => {
+      this._syncLock = this._syncLock.then(async () => {
+        try {
+          const parsed = JSON.parse(spec) as Record<string, unknown>;
+          await this.syncTools(parsed);
+          this.health = 'healthy';
+        } catch (error) {
+          this.emit('error', error instanceof Error ? error : new Error(String(error)));
+        }
+      });
     });
 
     this.poller.on('unhealthy', (failures: number) => {
@@ -130,12 +133,14 @@ export class OpenApiSource extends EventEmitter {
       {
         ...this.config.loaderOptions,
         baseUrl: this.config.baseUrl,
+        sourceName: this.config.name,
       },
       this.config.auth,
     );
 
     const tools = loader.getTools();
     const newToolNames = loader.getToolNames();
+    const oldToolNames = this.previousToolNames;
 
     // Register all tools
     for (const tool of tools) {
@@ -147,7 +152,7 @@ export class OpenApiSource extends EventEmitter {
     }
 
     // Remove tools that no longer exist
-    for (const name of this.previousToolNames) {
+    for (const name of oldToolNames) {
       if (!newToolNames.has(name)) {
         this.toolRegistry.unregister(name);
       }
@@ -158,11 +163,23 @@ export class OpenApiSource extends EventEmitter {
     this.lastUpdate = new Date().toISOString();
     this.health = 'healthy';
 
+    // Compute diff against the old set (before overwrite)
+    const added = [...newToolNames].filter((n) => !oldToolNames.has(n));
+    const removed = [...oldToolNames].filter((n) => !newToolNames.has(n));
+
     this.emit('toolsUpdated', {
-      added: [...newToolNames].filter((n) => !this.previousToolNames.has(n)),
-      removed: [],
-      updated: [...newToolNames],
+      added,
+      removed,
+      updated: [...newToolNames].filter((n) => oldToolNames.has(n)),
     });
+
+    if (added.length > 0 || removed.length > 0) {
+      this.emit('catalogChanged', {
+        version: this.specHash,
+        addedActions: added,
+        removedActions: removed,
+      });
+    }
   }
 
   /**
@@ -174,6 +191,7 @@ export class OpenApiSource extends EventEmitter {
       {
         ...this.config.loaderOptions,
         baseUrl: this.config.baseUrl,
+        sourceName: this.config.name,
       },
       this.config.auth,
     );
@@ -219,6 +237,13 @@ export class OpenApiSource extends EventEmitter {
         removedActions: removed,
       });
     }
+  }
+
+  /**
+   * Get the set of tool names managed by this source.
+   */
+  getToolNames(): Set<string> {
+    return new Set(this.previousToolNames);
   }
 
   /**

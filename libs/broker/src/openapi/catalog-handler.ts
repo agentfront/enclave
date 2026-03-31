@@ -87,15 +87,20 @@ export class CatalogHandler {
     const actions: CatalogAction[] = [];
     const services: CatalogService[] = [];
 
-    // Build service info from OpenAPI sources
+    // Build tool→service mapping and service info from OpenAPI sources
+    const toolToService = new Map<string, string>();
     for (const source of this.sources) {
       const stats = source.getStats();
+      const serviceName = source.getName();
       services.push({
-        name: source.getName(),
+        name: serviceName,
         specUrl: '', // URL is internal to the source
         lastUpdated: stats.lastUpdate,
         actionCount: stats.toolCount,
       });
+      for (const toolName of source.getToolNames()) {
+        toolToService.set(toolName, serviceName);
+      }
     }
 
     // Build actions from tool registry
@@ -107,7 +112,7 @@ export class CatalogHandler {
       actions.push({
         name: tool.name,
         description: tool.description,
-        service: this.findServiceForTool(name),
+        service: toolToService.get(name) ?? 'default',
       });
     }
 
@@ -116,18 +121,5 @@ export class CatalogHandler {
     const version = versionParts || 'empty';
 
     return { actions, services, version };
-  }
-
-  /**
-   * Find which service a tool belongs to.
-   */
-  private findServiceForTool(toolName: string): string {
-    for (const source of this.sources) {
-      const stats = source.getStats();
-      if (stats.toolCount > 0) {
-        return source.getName();
-      }
-    }
-    return 'default';
   }
 }

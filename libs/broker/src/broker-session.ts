@@ -66,6 +66,7 @@ export class BrokerSession {
   private stdoutBytes = 0;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  private _deadlineExceeded = false;
   private readonly partialErrors: ErrorPayload[] = [];
 
   constructor(toolRegistry: ToolRegistry, config: BrokerSessionConfig = {}) {
@@ -154,19 +155,45 @@ export class BrokerSession {
       }, heartbeatMs);
     }
 
-    // Set up deadline timer if configured
+    // Set up deadline timer if configured (compute remaining from createdAt epoch)
     const deadlineMs = this.limits.deadlineMs;
     if (deadlineMs > 0) {
-      this.deadlineTimer = setTimeout(() => {
+      const remaining = deadlineMs - (Date.now() - this.createdAt);
+      if (remaining > 0) {
+        this.deadlineTimer = setTimeout(() => {
+          this._deadlineExceeded = true;
+          this.cancel(`Deadline exceeded: ${deadlineMs}ms budget`);
+        }, remaining);
+      } else {
+        // Deadline already passed before execution started
+        this._deadlineExceeded = true;
+        this.stopHeartbeat();
+        this._state = 'failed';
         const elapsed = Date.now() - this.createdAt;
         this.emitter.emit(
-          this.makeCustomEvent(EventType.DeadlineExceeded, {
-            elapsedMs: elapsed,
-            budgetMs: deadlineMs,
-          }),
+          this.makeCustomEvent(EventType.DeadlineExceeded, { elapsedMs: elapsed, budgetMs: deadlineMs }),
         );
-        this.cancel(`Deadline exceeded: ${elapsed}ms > ${deadlineMs}ms`);
-      }, deadlineMs);
+        this.emitter.emitFinalError(
+          { code: 'DEADLINE_EXCEEDED', message: 'Deadline exceeded before execution' },
+          { durationMs: elapsed, toolCallCount: 0, stdoutBytes: 0 },
+        );
+        return {
+          success: false,
+          error: {
+            message: 'Deadline exceeded before execution',
+            name: 'Error',
+            code: 'DEADLINE_EXCEEDED',
+          },
+          stats: {
+            duration: elapsed,
+            toolCallCount: 0,
+            iterationCount: 0,
+            startTime: this.createdAt,
+            endTime: Date.now(),
+          },
+          finalState: 'failed',
+        };
+      }
     }
 
     // Transition to running
@@ -198,14 +225,23 @@ export class BrokerSession {
 
       const endTime = Date.now();
       const stats = this.buildStats(startTime, endTime);
+      const eventStats = {
+        durationMs: stats.duration,
+        toolCallCount: this.toolCallCount,
+        stdoutBytes: this.stdoutBytes,
+      };
 
-      if (enclaveResult.success) {
+      // If session was cancelled while running, let the catch path handle it
+      if (this.isTerminal()) {
+        result = {
+          success: false,
+          error: { message: 'Session was cancelled', name: 'Error', code: 'SESSION_CANCELLED' },
+          stats,
+          finalState: 'cancelled',
+        };
+      } else if (enclaveResult.success) {
         this._state = 'completed';
-        this.emitter.emitFinalSuccess(enclaveResult.value, {
-          durationMs: stats.duration,
-          toolCallCount: this.toolCallCount,
-          stdoutBytes: this.stdoutBytes,
-        });
+        this.emitter.emitFinalSuccess(enclaveResult.value, eventStats);
         result = {
           success: true,
           value: enclaveResult.value,
@@ -218,11 +254,7 @@ export class BrokerSession {
           code: enclaveResult.error?.code ?? 'EXECUTION_ERROR',
           message: enclaveResult.error?.message ?? 'Execution failed',
         };
-        this.emitter.emitFinalError(errorInfo, {
-          durationMs: stats.duration,
-          toolCallCount: this.toolCallCount,
-          stdoutBytes: this.stdoutBytes,
-        });
+        this.emitter.emitFinalError(errorInfo, eventStats);
         result = {
           success: false,
           error: {
@@ -238,17 +270,36 @@ export class BrokerSession {
       const endTime = Date.now();
       const stats = this.buildStats(startTime, endTime);
       const err = error instanceof Error ? error : new Error(String(error));
-
-      this._state = 'failed';
-      const errorInfo = {
-        code: (err as Error & { code?: string }).code ?? 'EXECUTION_ERROR',
-        message: err.message,
-      };
-      this.emitter.emitFinalError(errorInfo, {
+      const eventStats = {
         durationMs: stats.duration,
         toolCallCount: this.toolCallCount,
         stdoutBytes: this.stdoutBytes,
-      });
+      };
+
+      // Emit deadline exceeded if that's why we were cancelled
+      if (this._deadlineExceeded) {
+        this.emitter.emit(
+          this.makeCustomEvent(EventType.DeadlineExceeded, {
+            elapsedMs: Date.now() - this.createdAt,
+            budgetMs: this.limits.deadlineMs,
+          }),
+        );
+      }
+
+      if (!this.isTerminal()) {
+        this._state = 'failed';
+      }
+
+      const isCancelled = this._state === 'cancelled';
+      const errorInfo = {
+        code: isCancelled
+          ? this._deadlineExceeded
+            ? 'DEADLINE_EXCEEDED'
+            : 'SESSION_CANCELLED'
+          : ((err as Error & { code?: string }).code ?? 'EXECUTION_ERROR'),
+        message: err.message,
+      };
+      this.emitter.emitFinalError(errorInfo, eventStats);
       result = {
         success: false,
         error: {
@@ -257,7 +308,7 @@ export class BrokerSession {
           code: errorInfo.code,
         },
         stats,
-        finalState: 'failed',
+        finalState: isCancelled ? 'cancelled' : 'failed',
       };
     } finally {
       this.stopHeartbeat();
@@ -326,15 +377,13 @@ export class BrokerSession {
     // Emit initial progress
     this.emitToolProgress(callId, 'connecting', 0);
 
-    // Calculate per-tool deadline based on remaining budget
-    let toolTimeout = this.limits.perToolDeadlineMs;
+    // Guard: reject if session deadline has already passed
     if (this.limits.deadlineMs > 0) {
       const elapsed = Date.now() - this.createdAt;
       const remaining = this.limits.deadlineMs - elapsed;
       if (remaining <= 0) {
         throw new Error('Deadline exceeded before tool execution');
       }
-      toolTimeout = Math.min(toolTimeout, remaining);
     }
 
     // Execute through registry
@@ -407,16 +456,19 @@ export class BrokerSession {
     this.abortController.abort();
     this._state = 'cancelled';
 
-    this.emitter.emitError('SESSION_CANCELLED', reason ?? 'Session was cancelled', false);
-
-    this.emitter.emitFinalError(
-      { code: 'SESSION_CANCELLED', message: reason ?? 'Session was cancelled' },
-      {
-        durationMs: Date.now() - this.createdAt,
-        toolCallCount: this.toolCallCount,
-        stdoutBytes: this.stdoutBytes,
-      },
-    );
+    // When execution is running, runExecution() will emit the final event
+    // after catching the abort. Only emit directly if no execution is in progress.
+    if (!this.executionPromise) {
+      this.emitter.emitError('SESSION_CANCELLED', reason ?? 'Session was cancelled', false);
+      this.emitter.emitFinalError(
+        { code: 'SESSION_CANCELLED', message: reason ?? 'Session was cancelled' },
+        {
+          durationMs: Date.now() - this.createdAt,
+          toolCallCount: this.toolCallCount,
+          stdoutBytes: this.stdoutBytes,
+        },
+      );
+    }
   }
 
   /**

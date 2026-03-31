@@ -83,6 +83,8 @@ export class OpenApiSpecPoller extends EventEmitter {
   private consecutiveFailures = 0;
   private isPolling = false;
   private wasUnhealthy = false;
+  private _stopped = false;
+  private _fetchController: AbortController | null = null;
 
   constructor(config: OpenApiPollerConfig) {
     super();
@@ -102,6 +104,7 @@ export class OpenApiSpecPoller extends EventEmitter {
    */
   start(): void {
     if (this.intervalTimer) return;
+    this._stopped = false;
 
     // Initial poll
     this.poll().catch(() => undefined);
@@ -115,6 +118,11 @@ export class OpenApiSpecPoller extends EventEmitter {
    * Stop polling.
    */
   stop(): void {
+    this._stopped = true;
+    if (this._fetchController) {
+      this._fetchController.abort();
+      this._fetchController = null;
+    }
     if (this.intervalTimer) {
       clearInterval(this.intervalTimer);
       this.intervalTimer = null;
@@ -153,8 +161,11 @@ export class OpenApiSpecPoller extends EventEmitter {
     const { maxRetries, initialDelayMs, maxDelayMs, backoffMultiplier } = this.config.retry;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (this._stopped) return;
+
       try {
         await this.doFetch();
+        if (this._stopped) return;
         // Success — reset failure counter and emit recovered if applicable
         if (this.consecutiveFailures > 0) {
           this.consecutiveFailures = 0;
@@ -165,6 +176,8 @@ export class OpenApiSpecPoller extends EventEmitter {
         }
         return;
       } catch (error) {
+        if (this._stopped) return;
+
         if (attempt === maxRetries) {
           this.consecutiveFailures++;
           this.emit('error', error instanceof Error ? error : new Error(String(error)));
@@ -184,6 +197,8 @@ export class OpenApiSpecPoller extends EventEmitter {
   }
 
   private async doFetch(): Promise<void> {
+    if (this._stopped) return;
+
     const headers: Record<string, string> = { ...this.config.headers };
 
     // Add conditional request headers
@@ -197,6 +212,7 @@ export class OpenApiSpecPoller extends EventEmitter {
     }
 
     const controller = new AbortController();
+    this._fetchController = controller;
     const timeout = setTimeout(() => controller.abort(), this.config.fetchTimeoutMs);
 
     try {
@@ -204,6 +220,8 @@ export class OpenApiSpecPoller extends EventEmitter {
         headers,
         signal: controller.signal,
       });
+
+      if (this._stopped) return;
 
       // HTTP 304: Not Modified
       if (response.status === 304) {
@@ -222,6 +240,9 @@ export class OpenApiSpecPoller extends EventEmitter {
       if (lastModified) this.lastModified = lastModified;
 
       const body = await response.text();
+
+      if (this._stopped) return;
+
       const hash = createHash('sha256').update(body).digest('hex');
 
       if (this.lastHash && this.lastHash === hash) {
@@ -233,6 +254,9 @@ export class OpenApiSpecPoller extends EventEmitter {
       this.emit('changed', body, hash);
     } finally {
       clearTimeout(timeout);
+      if (this._fetchController === controller) {
+        this._fetchController = null;
+      }
     }
   }
 

@@ -27,6 +27,8 @@ export interface LoaderOptions {
   excludeOperations?: string[];
   /** Default timeout per API call in ms @default 30000 */
   perToolDeadlineMs?: number;
+  /** Source/service name prefix for default tool names (prevents collisions across sources) */
+  sourceName?: string;
 }
 
 /**
@@ -81,7 +83,22 @@ export class OpenApiToolLoader {
    * Create a loader from a URL.
    */
   static async fromURL(url: string, options?: LoaderOptions, auth?: UpstreamAuth): Promise<OpenApiToolLoader> {
-    const response = await fetch(url);
+    const headers: Record<string, string> = { ...options?.headers };
+    if (auth) {
+      switch (auth.type) {
+        case 'bearer':
+          if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+          break;
+        case 'api-key':
+          if (auth.token) headers[auth.header ?? 'X-API-Key'] = auth.token;
+          break;
+        case 'basic':
+          if (auth.token) headers['Authorization'] = `Basic ${auth.token}`;
+          break;
+      }
+    }
+
+    const response = await fetch(url, { headers });
     if (!response.ok) {
       throw new Error(`Failed to fetch OpenAPI spec from ${url}: ${response.status}`);
     }
@@ -140,9 +157,12 @@ export class OpenApiToolLoader {
         continue;
       }
 
+      const baseName = op.operationId || `${op.method}_${op.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
       const toolName = this.options.namingStrategy
         ? this.options.namingStrategy(op.method, op.path, op.operationId)
-        : op.operationId || `${op.method}_${op.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        : this.options.sourceName
+          ? `${this.options.sourceName}_${baseName}`
+          : baseName;
 
       const argsSchema = this.buildArgsSchema(op);
       const timeout = this.options.perToolDeadlineMs ?? 30000;
@@ -290,6 +310,20 @@ export class OpenApiToolLoader {
       }
 
       const response = await fetch(url, fetchOptions);
+
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') ?? '';
+        let body: string;
+        try {
+          body = contentType.includes('application/json')
+            ? JSON.stringify(await response.json())
+            : await response.text();
+        } catch {
+          body = '';
+        }
+        throw new Error(`HTTP ${response.status} ${response.statusText}: ${body}`);
+      }
+
       const contentType = response.headers.get('content-type') ?? '';
 
       if (contentType.includes('application/json')) {
