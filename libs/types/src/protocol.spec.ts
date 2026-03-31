@@ -18,7 +18,7 @@ import {
 describe('Protocol', () => {
   describe('Constants', () => {
     it('should have correct protocol version', () => {
-      expect(PROTOCOL_VERSION).toBe(1);
+      expect(PROTOCOL_VERSION).toBe(2);
     });
 
     it('should have correct ID prefixes', () => {

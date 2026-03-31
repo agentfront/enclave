@@ -6,8 +6,8 @@
  * @packageDocumentation
  */
 
-import type { SessionId, StreamEvent, SessionLimits } from '@enclave-vm/types';
-import { generateSessionId, generateCallId, DEFAULT_SESSION_LIMITS } from '@enclave-vm/types';
+import type { SessionId, StreamEvent, SessionLimits, ErrorPayload } from '@enclave-vm/types';
+import { generateSessionId, generateCallId, DEFAULT_SESSION_LIMITS, EventType, PROTOCOL_VERSION } from '@enclave-vm/types';
 import { SessionEmitter, createSessionEmitter, Enclave } from '@enclave-vm/core';
 import type { SessionStateValue, SessionFinalResult, CreateEnclaveOptions, ExecutionStats } from '@enclave-vm/core';
 import type { ToolRegistry, ToolContext } from './tool-registry';
@@ -59,6 +59,8 @@ export class BrokerSession {
   private toolCallCount = 0;
   private stdoutBytes = 0;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly partialErrors: ErrorPayload[] = [];
 
   constructor(toolRegistry: ToolRegistry, config: BrokerSessionConfig = {}) {
     this.sessionId = config.sessionId ?? generateSessionId();
@@ -144,6 +146,18 @@ export class BrokerSession {
           this.emitter.emitHeartbeat();
         }
       }, heartbeatMs);
+    }
+
+    // Set up deadline timer if configured
+    const deadlineMs = this.limits.deadlineMs;
+    if (deadlineMs > 0) {
+      this.deadlineTimer = setTimeout(() => {
+        const elapsed = Date.now() - this.createdAt;
+        this.emitter.emit(this.makeCustomEvent(EventType.DeadlineExceeded, {
+          elapsedMs: elapsed, budgetMs: deadlineMs,
+        }));
+        this.cancel(`Deadline exceeded: ${elapsed}ms > ${deadlineMs}ms`);
+      }, deadlineMs);
     }
 
     // Transition to running
@@ -238,9 +252,49 @@ export class BrokerSession {
       };
     } finally {
       this.stopHeartbeat();
+      this.stopDeadline();
     }
 
     return result;
+  }
+
+  /**
+   * Emit a tool progress event.
+   */
+  emitToolProgress(
+    callId: string,
+    phase: 'connecting' | 'sending' | 'receiving' | 'processing',
+    elapsedMs: number,
+    bytesReceived?: number,
+    totalBytes?: number,
+  ): void {
+    this.emitter.emit(this.makeCustomEvent(EventType.ToolProgress, {
+      callId, phase, elapsedMs, bytesReceived, totalBytes,
+    }));
+  }
+
+  /**
+   * Emit a partial result event.
+   */
+  emitPartialResult(
+    path: string[],
+    data?: unknown,
+    error?: ErrorPayload,
+    hasNext = true,
+  ): void {
+    if (error) {
+      this.partialErrors.push(error);
+    }
+    this.emitter.emit(this.makeCustomEvent(EventType.PartialResult, {
+      path, data, error, hasNext,
+    }));
+  }
+
+  /**
+   * Get accumulated partial errors.
+   */
+  getPartialErrors(): ErrorPayload[] {
+    return [...this.partialErrors];
   }
 
   /**
@@ -248,10 +302,25 @@ export class BrokerSession {
    */
   private async executeTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
     const callId = generateCallId();
+    const toolStartTime = Date.now();
 
     // Emit tool call event
     this.emitter.emitToolCall(callId, toolName, args);
     this.toolCallCount++;
+
+    // Emit initial progress
+    this.emitToolProgress(callId, 'connecting', 0);
+
+    // Calculate per-tool deadline based on remaining budget
+    let toolTimeout = this.limits.perToolDeadlineMs;
+    if (this.limits.deadlineMs > 0) {
+      const elapsed = Date.now() - this.createdAt;
+      const remaining = this.limits.deadlineMs - elapsed;
+      if (remaining <= 0) {
+        throw new Error('Deadline exceeded before tool execution');
+      }
+      toolTimeout = Math.min(toolTimeout, remaining);
+    }
 
     // Execute through registry
     const context: ToolContext = {
@@ -261,6 +330,9 @@ export class BrokerSession {
       signal: this.abortController.signal,
     };
 
+    // Emit processing progress
+    this.emitToolProgress(callId, 'processing', Date.now() - toolStartTime);
+
     const result = await this.toolRegistry.execute(toolName, args, context);
 
     // Emit tool result event
@@ -269,10 +341,29 @@ export class BrokerSession {
     if (result.success) {
       return result.value;
     } else {
+      // Check cancelOnFirstError
+      if (this.limits.cancelOnFirstError) {
+        this.abortController.abort();
+      }
+
       const error = new Error(result.error?.message ?? 'Tool call failed');
       (error as Error & { code?: string }).code = result.error?.code;
       throw error;
     }
+  }
+
+  /**
+   * Create a custom event with proper base fields.
+   * Uses the emitter's current seq (no auto-increment for custom events).
+   */
+  private makeCustomEvent(type: string, payload: Record<string, unknown>): StreamEvent {
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      sessionId: this.sessionId,
+      seq: this.seq,
+      type,
+      payload,
+    } as unknown as StreamEvent;
   }
 
   /**
@@ -297,6 +388,7 @@ export class BrokerSession {
     }
 
     this.stopHeartbeat();
+    this.stopDeadline();
     this.abortController.abort();
     this._state = 'cancelled';
 
@@ -361,10 +453,21 @@ export class BrokerSession {
   }
 
   /**
+   * Stop deadline timer
+   */
+  private stopDeadline(): void {
+    if (this.deadlineTimer) {
+      clearTimeout(this.deadlineTimer);
+      this.deadlineTimer = null;
+    }
+  }
+
+  /**
    * Dispose of the session and its resources
    */
   dispose(): void {
     this.stopHeartbeat();
+    this.stopDeadline();
     this.abortController.abort();
     this.enclave.dispose();
   }

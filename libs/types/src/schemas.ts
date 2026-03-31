@@ -22,9 +22,9 @@ import { SupportedCurve, EncryptionAlgorithm, KeyDerivation, EncryptionMode } fr
 // ============================================================================
 
 /**
- * Protocol version schema.
+ * Protocol version schema (accepts v1 and v2).
  */
-export const ProtocolVersionSchema = z.literal(PROTOCOL_VERSION);
+export const ProtocolVersionSchema = z.union([z.literal(PROTOCOL_VERSION), z.literal(1)]);
 
 /**
  * Session ID schema.
@@ -95,6 +95,9 @@ export const SessionLimitsSchema = z.object({
   maxToolResultBytes: z.number().int().positive().optional(),
   toolTimeoutMs: z.number().int().positive().optional(),
   heartbeatIntervalMs: z.number().int().positive().optional(),
+  deadlineMs: z.number().int().nonnegative().optional(),
+  perToolDeadlineMs: z.number().int().positive().optional(),
+  cancelOnFirstError: z.boolean().optional(),
 });
 
 /**
@@ -184,12 +187,33 @@ export const SessionStatsSchema = z.object({
 });
 
 /**
+ * Error detail schema.
+ */
+export const ErrorDetailSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('retry_info'), retryDelayMs: z.number().nonnegative() }),
+  z.object({ type: z.literal('upstream_info'), statusCode: z.number().int(), url: z.string() }),
+  z.object({ type: z.literal('validation_info'), field: z.string(), reason: z.string() }),
+  z.object({ type: z.literal('quota_info'), limit: z.number().nonnegative(), used: z.number().nonnegative() }),
+]);
+
+/**
+ * Error payload schema (rich error model).
+ */
+export const ErrorPayloadSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+  path: z.array(z.string()).optional(),
+  details: z.array(ErrorDetailSchema).optional(),
+});
+
+/**
  * Final payload schema.
  */
 export const FinalPayloadSchema = z.object({
   ok: z.boolean(),
   result: z.unknown().optional(),
   error: ErrorInfoSchema.optional(),
+  errors: z.array(ErrorPayloadSchema).optional(),
   stats: SessionStatsSchema.optional(),
 });
 
@@ -278,6 +302,81 @@ export const ErrorEventSchema = BaseEventSchema.extend({
 });
 
 /**
+ * Partial result payload schema.
+ */
+export const PartialResultPayloadSchema = z.object({
+  path: z.array(z.string()),
+  data: z.unknown().optional(),
+  error: ErrorPayloadSchema.optional(),
+  hasNext: z.boolean(),
+});
+
+/**
+ * Partial result event schema.
+ */
+export const PartialResultEventSchema = BaseEventSchema.extend({
+  type: z.literal(EventType.PartialResult),
+  payload: PartialResultPayloadSchema,
+});
+
+/**
+ * Tool progress phase schema.
+ */
+export const ToolProgressPhaseSchema = z.enum(['connecting', 'sending', 'receiving', 'processing']);
+
+/**
+ * Tool progress payload schema.
+ */
+export const ToolProgressPayloadSchema = z.object({
+  callId: CallIdSchema,
+  phase: ToolProgressPhaseSchema,
+  bytesReceived: z.number().int().nonnegative().optional(),
+  totalBytes: z.number().int().nonnegative().optional(),
+  elapsedMs: z.number().nonnegative(),
+});
+
+/**
+ * Tool progress event schema.
+ */
+export const ToolProgressEventSchema = BaseEventSchema.extend({
+  type: z.literal(EventType.ToolProgress),
+  payload: ToolProgressPayloadSchema,
+});
+
+/**
+ * Deadline exceeded payload schema.
+ */
+export const DeadlineExceededPayloadSchema = z.object({
+  elapsedMs: z.number().nonnegative(),
+  budgetMs: z.number().positive(),
+});
+
+/**
+ * Deadline exceeded event schema.
+ */
+export const DeadlineExceededEventSchema = BaseEventSchema.extend({
+  type: z.literal(EventType.DeadlineExceeded),
+  payload: DeadlineExceededPayloadSchema,
+});
+
+/**
+ * Catalog changed payload schema.
+ */
+export const CatalogChangedPayloadSchema = z.object({
+  version: z.string().min(1),
+  addedActions: z.array(z.string()),
+  removedActions: z.array(z.string()),
+});
+
+/**
+ * Catalog changed event schema.
+ */
+export const CatalogChangedEventSchema = BaseEventSchema.extend({
+  type: z.literal(EventType.CatalogChanged),
+  payload: CatalogChangedPayloadSchema,
+});
+
+/**
  * Stream event union schema.
  */
 export const StreamEventSchema = z.discriminatedUnion('type', [
@@ -289,6 +388,10 @@ export const StreamEventSchema = z.discriminatedUnion('type', [
   FinalEventSchema,
   HeartbeatEventSchema,
   ErrorEventSchema,
+  PartialResultEventSchema,
+  ToolProgressEventSchema,
+  DeadlineExceededEventSchema,
+  CatalogChangedEventSchema,
 ]);
 
 // ============================================================================

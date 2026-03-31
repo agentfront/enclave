@@ -45,3 +45,26 @@ export type {
 // Event Filtering
 export { EventFilter, createEventFilter, createTypeFilter, createContentFilter } from './event-filter';
 export type { EventFilterOptions } from './event-filter';
+
+// OpenAPI Integration
+export {
+  OpenApiSpecPoller,
+  OpenApiToolLoader,
+  OpenApiSource,
+  CatalogHandler,
+} from './openapi';
+export type {
+  OpenApiPollerConfig,
+  ChangeDetectionMode,
+  PollerRetryConfig,
+  OpenApiPollerEvents,
+  LoaderOptions,
+  UpstreamAuth,
+  OpenApiSourceConfig,
+  OpenApiSourceStats,
+  ToolsUpdatedEvent,
+  SourceHealthStatus,
+  CatalogAction,
+  CatalogService,
+  CatalogResponse,
+} from './openapi';

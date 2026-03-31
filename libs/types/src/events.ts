@@ -6,6 +6,34 @@
 
 import type { ProtocolVersion, SessionId, CallId, ErrorInfo, LogLevel } from './protocol.js';
 
+// ============================================================================
+// Rich Error Types (inspired by gRPC google.rpc.Status)
+// ============================================================================
+
+/**
+ * Typed error details for structured error reporting.
+ */
+export type ErrorDetail =
+  | { type: 'retry_info'; retryDelayMs: number }
+  | { type: 'upstream_info'; statusCode: number; url: string }
+  | { type: 'validation_info'; field: string; reason: string }
+  | { type: 'quota_info'; limit: number; used: number };
+
+/**
+ * Rich error payload following gRPC error model.
+ * Supports per-path errors with typed details.
+ */
+export interface ErrorPayload {
+  /** Machine-readable error code (e.g., 'TOOL_TIMEOUT', 'VALIDATION_ERROR') */
+  code: string;
+  /** Human-readable error message */
+  message: string;
+  /** Path to the failing operation (like GraphQL path) */
+  path?: string[];
+  /** Typed error details for programmatic handling */
+  details?: ErrorDetail[];
+}
+
 /**
  * Base event structure shared by all stream events.
  */
@@ -40,6 +68,14 @@ export const EventType = {
   Error: 'error',
   /** Encrypted envelope (wraps other events) */
   Encrypted: 'enc',
+  /** Partial result (GraphQL-inspired, data+errors coexist) */
+  PartialResult: 'partial_result',
+  /** Tool execution progress */
+  ToolProgress: 'tool_progress',
+  /** Deadline exceeded for execution */
+  DeadlineExceeded: 'deadline_exceeded',
+  /** Action catalog changed (for long-lived connections) */
+  CatalogChanged: 'catalog_changed',
 } as const;
 
 export type EventType = (typeof EventType)[keyof typeof EventType];
@@ -179,14 +215,17 @@ export interface ToolResultAppliedEvent extends BaseEvent {
 
 /**
  * Final event payload.
+ * Supports mixed results (GraphQL-inspired): data and errors can coexist.
  */
 export interface FinalPayload {
-  /** Whether execution completed successfully */
+  /** Whether all operations completed successfully */
   ok: boolean;
-  /** Execution result (if ok is true) */
+  /** Execution result (full aggregated result) */
   result?: unknown;
-  /** Error information (if ok is false) */
+  /** Error information (if ok is false, legacy single error) */
   error?: ErrorInfo;
+  /** Per-path errors (GraphQL-style errors array) */
+  errors?: ErrorPayload[];
   /** Execution statistics */
   stats?: SessionStats;
 }
@@ -259,6 +298,118 @@ export interface ErrorEvent extends BaseEvent {
 }
 
 // ============================================================================
+// Partial Result Event (GraphQL-inspired)
+// ============================================================================
+
+/**
+ * Partial result event payload.
+ * When code fans out to multiple APIs, results arrive incrementally.
+ */
+export interface PartialResultPayload {
+  /** Path to where this result slots in (like GraphQL path) */
+  path: string[];
+  /** The partial data (if this path succeeded) */
+  data?: unknown;
+  /** The error for this path (if this path failed) */
+  error?: ErrorPayload;
+  /** Whether more partial results are coming */
+  hasNext: boolean;
+}
+
+/**
+ * Partial result event.
+ * Emitted when individual parts of a fan-out execution complete.
+ */
+export interface PartialResultEvent extends BaseEvent {
+  type: typeof EventType.PartialResult;
+  payload: PartialResultPayload;
+}
+
+// ============================================================================
+// Tool Progress Event (gRPC server streaming inspired)
+// ============================================================================
+
+/**
+ * Tool progress phase.
+ */
+export type ToolProgressPhase = 'connecting' | 'sending' | 'receiving' | 'processing';
+
+/**
+ * Tool progress event payload.
+ * Reports progress for long-running tool calls.
+ */
+export interface ToolProgressPayload {
+  /** Call ID of the tool call */
+  callId: CallId;
+  /** Current phase of execution */
+  phase: ToolProgressPhase;
+  /** Bytes received so far */
+  bytesReceived?: number;
+  /** Total bytes expected (if Content-Length known) */
+  totalBytes?: number;
+  /** Elapsed time in milliseconds */
+  elapsedMs: number;
+}
+
+/**
+ * Tool progress event.
+ * Emitted during long-running tool calls to report progress.
+ */
+export interface ToolProgressEvent extends BaseEvent {
+  type: typeof EventType.ToolProgress;
+  payload: ToolProgressPayload;
+}
+
+// ============================================================================
+// Deadline Exceeded Event (gRPC-inspired)
+// ============================================================================
+
+/**
+ * Deadline exceeded event payload.
+ */
+export interface DeadlineExceededPayload {
+  /** Total elapsed time in milliseconds */
+  elapsedMs: number;
+  /** The deadline budget that was exceeded in milliseconds */
+  budgetMs: number;
+}
+
+/**
+ * Deadline exceeded event.
+ * Emitted when execution exceeds the configured deadline.
+ */
+export interface DeadlineExceededEvent extends BaseEvent {
+  type: typeof EventType.DeadlineExceeded;
+  payload: DeadlineExceededPayload;
+}
+
+// ============================================================================
+// Catalog Changed Event
+// ============================================================================
+
+/**
+ * Catalog changed event payload.
+ * Notifies clients that the available action catalog has changed.
+ */
+export interface CatalogChangedPayload {
+  /** New catalog version hash */
+  version: string;
+  /** Names of newly added actions */
+  addedActions: string[];
+  /** Names of removed actions */
+  removedActions: string[];
+}
+
+/**
+ * Catalog changed event.
+ * Emitted when the action catalog is updated (tools added/removed via OpenAPI polling).
+ */
+export interface CatalogChangedEvent extends BaseEvent {
+  type: typeof EventType.CatalogChanged;
+  payload: CatalogChangedPayload;
+}
+
+// ============================================================================
 // Stream Event Union
 // ============================================================================
 
@@ -273,7 +424,11 @@ export type StreamEvent =
   | ToolResultAppliedEvent
   | FinalEvent
   | HeartbeatEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | PartialResultEvent
+  | ToolProgressEvent
+  | DeadlineExceededEvent
+  | CatalogChangedEvent;
 
 /**
  * Get the event type from a stream event.
@@ -336,6 +491,34 @@ export function isHeartbeatEvent(event: StreamEvent): event is HeartbeatEvent {
  */
 export function isErrorEvent(event: StreamEvent): event is ErrorEvent {
   return event.type === EventType.Error;
+}
+
+/**
+ * Type guard for partial result event.
+ */
+export function isPartialResultEvent(event: StreamEvent): event is PartialResultEvent {
+  return event.type === EventType.PartialResult;
+}
+
+/**
+ * Type guard for tool progress event.
+ */
+export function isToolProgressEvent(event: StreamEvent): event is ToolProgressEvent {
+  return event.type === EventType.ToolProgress;
+}
+
+/**
+ * Type guard for deadline exceeded event.
+ */
+export function isDeadlineExceededEvent(event: StreamEvent): event is DeadlineExceededEvent {
+  return event.type === EventType.DeadlineExceeded;
+}
+
+/**
+ * Type guard for catalog changed event.
+ */
+export function isCatalogChangedEvent(event: StreamEvent): event is CatalogChangedEvent {
+  return event.type === EventType.CatalogChanged;
 }
 
 // ============================================================================
