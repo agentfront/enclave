@@ -70,11 +70,7 @@ export class OpenApiToolLoader {
   private readonly options: LoaderOptions;
   private readonly auth?: UpstreamAuth;
 
-  private constructor(
-    spec: Record<string, unknown>,
-    options: LoaderOptions = {},
-    auth?: UpstreamAuth,
-  ) {
+  private constructor(spec: Record<string, unknown>, options: LoaderOptions = {}, auth?: UpstreamAuth) {
     this.options = options;
     this.auth = auth;
     this.specHash = createHash('sha256').update(JSON.stringify(spec)).digest('hex');

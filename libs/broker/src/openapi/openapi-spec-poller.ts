@@ -104,10 +104,10 @@ export class OpenApiSpecPoller extends EventEmitter {
     if (this.intervalTimer) return;
 
     // Initial poll
-    this.poll().catch(() => {});
+    this.poll().catch(() => undefined);
 
     this.intervalTimer = setInterval(() => {
-      this.poll().catch(() => {});
+      this.poll().catch(() => undefined);
     }, this.config.intervalMs);
   }
 

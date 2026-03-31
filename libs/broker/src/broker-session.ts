@@ -7,7 +7,13 @@
  */
 
 import type { SessionId, StreamEvent, SessionLimits, ErrorPayload } from '@enclave-vm/types';
-import { generateSessionId, generateCallId, DEFAULT_SESSION_LIMITS, EventType, PROTOCOL_VERSION } from '@enclave-vm/types';
+import {
+  generateSessionId,
+  generateCallId,
+  DEFAULT_SESSION_LIMITS,
+  EventType,
+  PROTOCOL_VERSION,
+} from '@enclave-vm/types';
 import { SessionEmitter, createSessionEmitter, Enclave } from '@enclave-vm/core';
 import type { SessionStateValue, SessionFinalResult, CreateEnclaveOptions, ExecutionStats } from '@enclave-vm/core';
 import type { ToolRegistry, ToolContext } from './tool-registry';
@@ -153,9 +159,12 @@ export class BrokerSession {
     if (deadlineMs > 0) {
       this.deadlineTimer = setTimeout(() => {
         const elapsed = Date.now() - this.createdAt;
-        this.emitter.emit(this.makeCustomEvent(EventType.DeadlineExceeded, {
-          elapsedMs: elapsed, budgetMs: deadlineMs,
-        }));
+        this.emitter.emit(
+          this.makeCustomEvent(EventType.DeadlineExceeded, {
+            elapsedMs: elapsed,
+            budgetMs: deadlineMs,
+          }),
+        );
         this.cancel(`Deadline exceeded: ${elapsed}ms > ${deadlineMs}ms`);
       }, deadlineMs);
     }
@@ -268,26 +277,32 @@ export class BrokerSession {
     bytesReceived?: number,
     totalBytes?: number,
   ): void {
-    this.emitter.emit(this.makeCustomEvent(EventType.ToolProgress, {
-      callId, phase, elapsedMs, bytesReceived, totalBytes,
-    }));
+    this.emitter.emit(
+      this.makeCustomEvent(EventType.ToolProgress, {
+        callId,
+        phase,
+        elapsedMs,
+        bytesReceived,
+        totalBytes,
+      }),
+    );
   }
 
   /**
    * Emit a partial result event.
    */
-  emitPartialResult(
-    path: string[],
-    data?: unknown,
-    error?: ErrorPayload,
-    hasNext = true,
-  ): void {
+  emitPartialResult(path: string[], data?: unknown, error?: ErrorPayload, hasNext = true): void {
     if (error) {
       this.partialErrors.push(error);
     }
-    this.emitter.emit(this.makeCustomEvent(EventType.PartialResult, {
-      path, data, error, hasNext,
-    }));
+    this.emitter.emit(
+      this.makeCustomEvent(EventType.PartialResult, {
+        path,
+        data,
+        error,
+        hasNext,
+      }),
+    );
   }
 
   /**

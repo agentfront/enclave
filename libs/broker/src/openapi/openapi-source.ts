@@ -60,8 +60,8 @@ export class OpenApiSource extends EventEmitter {
   private readonly config: OpenApiSourceConfig;
   private poller: OpenApiSpecPoller | null = null;
   private previousToolNames: Set<string> = new Set();
-  private lastUpdate: string = '';
-  private specHash: string = '';
+  private lastUpdate = '';
+  private specHash = '';
   private health: SourceHealthStatus = 'unknown';
   private disposed = false;
 
@@ -169,10 +169,14 @@ export class OpenApiSource extends EventEmitter {
    * Sync tools based on a new spec (diff-based update).
    */
   private async syncTools(spec: Record<string, unknown>): Promise<void> {
-    const loader = await OpenApiToolLoader.fromSpec(spec, {
-      ...this.config.loaderOptions,
-      baseUrl: this.config.baseUrl,
-    }, this.config.auth);
+    const loader = await OpenApiToolLoader.fromSpec(
+      spec,
+      {
+        ...this.config.loaderOptions,
+        baseUrl: this.config.baseUrl,
+      },
+      this.config.auth,
+    );
 
     const newTools = loader.getTools();
     const newToolNames = loader.getToolNames();
