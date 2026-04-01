@@ -17,6 +17,10 @@ import {
   isToolResultAppliedEvent,
   isHeartbeatEvent,
   isErrorEvent,
+  isPartialResultEvent,
+  isToolProgressEvent,
+  isDeadlineExceededEvent,
+  isCatalogChangedEvent,
 } from '@enclave-vm/types';
 import { parseNdjsonStream, ReconnectionStateMachine, HeartbeatMonitor } from '@enclave-vm/stream';
 
@@ -406,6 +410,23 @@ export class EnclaveClient {
       session.handlers.onHeartbeat?.();
     } else if (isErrorEvent(event)) {
       session.handlers.onError?.(event.payload.code ?? 'UNKNOWN', event.payload.message);
+    } else if (isPartialResultEvent(event)) {
+      session.handlers.onPartialResult?.(
+        event.payload.path,
+        event.payload.data,
+        event.payload.error,
+        event.payload.hasNext,
+      );
+    } else if (isToolProgressEvent(event)) {
+      session.handlers.onToolProgress?.(event.payload.callId, event.payload.phase, event.payload.elapsedMs);
+    } else if (isDeadlineExceededEvent(event)) {
+      session.handlers.onDeadlineExceeded?.(event.payload.elapsedMs, event.payload.budgetMs);
+    } else if (isCatalogChangedEvent(event)) {
+      session.handlers.onCatalogChanged?.(
+        event.payload.version,
+        event.payload.addedActions,
+        event.payload.removedActions,
+      );
     } else if (isFinalEvent(event)) {
       this.handleFinalEvent(session, event);
     }
@@ -436,6 +457,15 @@ export class EnclaveClient {
         code: event.payload.error?.code,
         message: event.payload.error?.message ?? 'Unknown error',
       };
+    }
+
+    // Preserve per-path errors
+    if (event.payload.errors?.length) {
+      result.errors = event.payload.errors.map((e) => ({
+        code: e.code,
+        message: e.message,
+        path: e.path,
+      }));
     }
 
     this.completeSession(session.sessionId, result);

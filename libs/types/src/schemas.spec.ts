@@ -172,7 +172,7 @@ describe('Schemas', () => {
 
     it('should reject invalid session creation requests', () => {
       expect(parseCreateSessionRequest({ code: '' }).success).toBe(false);
-      expect(parseCreateSessionRequest({ protocolVersion: 2, code: 'test' }).success).toBe(false);
+      expect(parseCreateSessionRequest({ protocolVersion: 99, code: 'test' }).success).toBe(false);
     });
   });
 });

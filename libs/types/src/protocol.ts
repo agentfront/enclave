@@ -6,14 +6,20 @@
 
 /**
  * Current protocol version.
- * Increment when making breaking changes to the wire format.
+ * v2: Added partial_result, tool_progress, deadline_exceeded, catalog_changed events,
+ *     ErrorPayload/ErrorDetail types, deadline/cancellation session config.
  */
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
+
+/**
+ * Previous protocol version for backward compatibility.
+ */
+export const PROTOCOL_VERSION_V1 = 1 as const;
 
 /**
  * Protocol version type for type-safe versioning.
  */
-export type ProtocolVersion = typeof PROTOCOL_VERSION;
+export type ProtocolVersion = typeof PROTOCOL_VERSION | typeof PROTOCOL_VERSION_V1;
 
 /**
  * Session ID prefix for identification and debugging.
@@ -126,6 +132,27 @@ export interface SessionLimits {
    * @default 15000 (15 seconds)
    */
   heartbeatIntervalMs?: number;
+
+  /**
+   * Absolute deadline for entire execution in milliseconds.
+   * When exceeded, a deadline_exceeded event is emitted and execution is cancelled.
+   * @default undefined (no deadline)
+   */
+  deadlineMs?: number;
+
+  /**
+   * Default per-tool timeout in milliseconds (overridable per tool via ToolConfig).
+   * Inherits the remaining execution budget when deadlineMs is set.
+   * @default 30000 (30 seconds)
+   */
+  perToolDeadlineMs?: number;
+
+  /**
+   * Whether to abort remaining tool calls on first failure.
+   * When true, the session cancels all pending tool calls on the first error.
+   * @default false
+   */
+  cancelOnFirstError?: boolean;
 }
 
 /**
@@ -138,6 +165,9 @@ export const DEFAULT_SESSION_LIMITS: Required<SessionLimits> = {
   maxToolResultBytes: 5242880,
   toolTimeoutMs: 30000,
   heartbeatIntervalMs: 15000,
+  deadlineMs: 0,
+  perToolDeadlineMs: 30000,
+  cancelOnFirstError: false,
 };
 
 /**

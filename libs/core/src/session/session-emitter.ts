@@ -22,6 +22,7 @@ import type {
   CallId,
   LogPayload,
   ErrorInfo,
+  ErrorPayload,
 } from '@enclave-vm/types';
 import { PROTOCOL_VERSION, EventType, LogLevel } from '@enclave-vm/types';
 import type { SessionEventEmitter } from '../session-types';
@@ -87,6 +88,13 @@ export class SessionEmitter implements SessionEventEmitter {
    */
   getSeq(): number {
     return this.seq;
+  }
+
+  /**
+   * Advance and return the next sequence number.
+   */
+  nextSeq(): number {
+    return ++this.seq;
   }
 
   /**
@@ -212,7 +220,7 @@ export class SessionEmitter implements SessionEventEmitter {
   /**
    * Create and emit a final event (success)
    */
-  emitFinalSuccess(result: unknown, stats: SessionStats): FinalEvent {
+  emitFinalSuccess(result: unknown, stats: SessionStats, errors?: ErrorPayload[]): FinalEvent {
     const event: FinalEvent = {
       protocolVersion: PROTOCOL_VERSION,
       sessionId: this.sessionId,
@@ -221,6 +229,7 @@ export class SessionEmitter implements SessionEventEmitter {
       payload: {
         ok: true,
         result,
+        ...(errors && errors.length > 0 && { errors }),
         stats,
       },
     };
@@ -231,7 +240,7 @@ export class SessionEmitter implements SessionEventEmitter {
   /**
    * Create and emit a final event (failure)
    */
-  emitFinalError(error: ErrorInfo, stats: SessionStats): FinalEvent {
+  emitFinalError(error: ErrorInfo, stats: SessionStats, errors?: ErrorPayload[]): FinalEvent {
     const event: FinalEvent = {
       protocolVersion: PROTOCOL_VERSION,
       sessionId: this.sessionId,
@@ -240,6 +249,7 @@ export class SessionEmitter implements SessionEventEmitter {
       payload: {
         ok: false,
         error,
+        ...(errors && errors.length > 0 && { errors }),
         stats,
       },
     };

@@ -9,6 +9,7 @@
 // Protocol exports
 export {
   PROTOCOL_VERSION,
+  PROTOCOL_VERSION_V1,
   SESSION_ID_PREFIX,
   CALL_ID_PREFIX,
   REF_ID_PREFIX,
@@ -49,6 +50,10 @@ export {
   isFinalEvent,
   isHeartbeatEvent,
   isErrorEvent,
+  isPartialResultEvent,
+  isToolProgressEvent,
+  isDeadlineExceededEvent,
+  isCatalogChangedEvent,
 } from './events.js';
 
 export type {
@@ -77,6 +82,17 @@ export type {
   CancelPayload,
   CancelMessage,
   RuntimeChannelMessage,
+  ErrorPayload,
+  ErrorDetail,
+  PartialResultPayload,
+  PartialResultEvent,
+  ToolProgressPhase,
+  ToolProgressPayload,
+  ToolProgressEvent,
+  DeadlineExceededPayload,
+  DeadlineExceededEvent,
+  CatalogChangedPayload,
+  CatalogChangedEvent,
 } from './events.js';
 
 // Encryption exports
@@ -138,6 +154,18 @@ export {
   FinalEventSchema,
   HeartbeatEventSchema,
   ErrorEventSchema,
+  // New v2 event schemas
+  ErrorDetailSchema,
+  ErrorPayloadSchema,
+  PartialResultPayloadSchema,
+  PartialResultEventSchema,
+  ToolProgressPhaseSchema,
+  ToolProgressPayloadSchema,
+  ToolProgressEventSchema,
+  DeadlineExceededPayloadSchema,
+  DeadlineExceededEventSchema,
+  CatalogChangedPayloadSchema,
+  CatalogChangedEventSchema,
   StreamEventSchema,
   // Encryption schemas
   SupportedCurveSchema,

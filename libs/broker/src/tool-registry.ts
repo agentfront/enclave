@@ -150,6 +150,20 @@ export class ToolRegistry {
   }
 
   /**
+   * Replace an existing tool with a new definition.
+   * If the tool doesn't exist, it registers it as new.
+   */
+  replace<TArgs = unknown, TResult = unknown>(definition: ToolDefinition<TArgs, TResult>): void {
+    this.tools.delete(definition.name);
+
+    const argsSchema = definition.argsSchema ?? z.record(z.string(), z.unknown());
+    this.tools.set(definition.name, {
+      definition: definition as ToolDefinition,
+      argsSchema,
+    });
+  }
+
+  /**
    * Check if a tool is registered
    */
   has(name: string): boolean {

@@ -14,6 +14,8 @@ import { SessionManager, createSessionManager } from './session-manager';
 import type { SessionManagerConfig, SessionInfo } from './session-manager';
 import { BrokerSession } from './broker-session';
 import type { BrokerSessionConfig } from './broker-session';
+import { OpenApiSource } from './openapi/openapi-source';
+import type { OpenApiSourceConfig } from './openapi/openapi-source';
 
 /**
  * Broker configuration
@@ -83,6 +85,7 @@ export class Broker {
   private readonly toolRegistry: ToolRegistry;
   private readonly sessionManager: SessionManager;
   private readonly config: BrokerConfig;
+  private readonly openApiSources: OpenApiSource[] = [];
   private disposed = false;
 
   constructor(config: BrokerConfig = {}) {
@@ -161,6 +164,43 @@ export class Broker {
    */
   removeTool(name: string): boolean {
     return this.toolRegistry.unregister(name);
+  }
+
+  // ============================================================================
+  // OpenAPI Sources
+  // ============================================================================
+
+  /**
+   * Register an OpenAPI source for automatic tool generation and polling.
+   *
+   * @param config - OpenAPI source configuration
+   * @returns The created OpenApiSource instance
+   *
+   * @example
+   * ```typescript
+   * const source = broker.openapi({
+   *   name: 'user-service',
+   *   url: 'https://api.example.com/openapi.json',
+   *   baseUrl: 'https://api.example.com',
+   *   intervalMs: 60000,
+   *   auth: { type: 'bearer', token: process.env.API_TOKEN },
+   * });
+   *
+   * await source.start();
+   * ```
+   */
+  openapi(config: OpenApiSourceConfig): OpenApiSource {
+    this.ensureNotDisposed();
+    const source = new OpenApiSource(this.toolRegistry, config);
+    this.openApiSources.push(source);
+    return source;
+  }
+
+  /**
+   * Get all registered OpenAPI sources.
+   */
+  getOpenApiSources(): readonly OpenApiSource[] {
+    return this.openApiSources;
   }
 
   // ============================================================================
@@ -332,6 +372,13 @@ export class Broker {
     }
 
     this.disposed = true;
+
+    // Dispose OpenAPI sources
+    for (const source of this.openApiSources) {
+      source.dispose();
+    }
+    this.openApiSources.length = 0;
+
     await this.sessionManager.dispose();
     this.toolRegistry.clear();
     this.toolRegistry.clearSecrets();
