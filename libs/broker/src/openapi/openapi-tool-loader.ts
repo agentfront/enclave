@@ -132,7 +132,29 @@ export class OpenApiToolLoader {
     auth?: UpstreamAuth,
   ): Promise<OpenApiToolLoader> {
     const hash = await sha256Hex(JSON.stringify(spec));
-    return new OpenApiToolLoader(spec, hash, options, auth);
+
+    // Resolve baseUrl from spec.servers when not explicitly provided
+    let resolvedBaseUrl = options?.baseUrl;
+    if (!resolvedBaseUrl) {
+      const servers = spec['servers'] as Array<{ url?: string }> | undefined;
+      if (servers?.[0]?.url) {
+        try {
+          const serverUrl = new URL(servers[0].url);
+          resolvedBaseUrl = serverUrl.origin + serverUrl.pathname;
+        } catch {
+          throw new Error(
+            `Cannot resolve relative server URL "${servers[0].url}" without a source URL. Use fromURL() or provide an explicit baseUrl option.`,
+          );
+        }
+      }
+    }
+
+    return new OpenApiToolLoader(
+      spec,
+      hash,
+      resolvedBaseUrl ? { ...options, baseUrl: resolvedBaseUrl } : options,
+      auth,
+    );
   }
 
   /**
@@ -182,7 +204,7 @@ export class OpenApiToolLoader {
           ? `${this.options.sourceName}_${baseName}`
           : baseName;
 
-      const argsSchema = this.buildArgsSchema(op);
+      const { schema: argsSchema, bodyMediaType } = this.buildArgsSchema(op);
       const timeout = this.options.perToolDeadlineMs ?? 30000;
 
       const tool: ToolDefinition = {
@@ -192,7 +214,7 @@ export class OpenApiToolLoader {
         config: {
           timeout,
         },
-        handler: this.createHandler(op, baseUrl),
+        handler: this.createHandler(op, baseUrl, bodyMediaType),
       };
 
       this.tools.push(tool);
@@ -257,8 +279,9 @@ export class OpenApiToolLoader {
   /**
    * Build a Zod args schema from an OpenAPI operation.
    */
-  private buildArgsSchema(op: ParsedOperation): z.ZodType {
+  private buildArgsSchema(op: ParsedOperation): { schema: z.ZodType; bodyMediaType?: string } {
     const shape: Record<string, z.ZodType> = {};
+    let bodyMediaType: string | undefined;
 
     // Add parameters with OpenAPI type mapping
     if (op.parameters) {
@@ -270,21 +293,23 @@ export class OpenApiToolLoader {
 
     // Add request body as 'body' parameter, inspecting content media type
     if (op.requestBody?.content) {
-      const bodySchema = this.buildBodySchema(op.requestBody.content);
+      const { schema: bodySchema, mediaType } = this.buildBodySchema(op.requestBody.content);
       shape['body'] = op.requestBody.required ? bodySchema : bodySchema.optional();
+      bodyMediaType = mediaType;
     } else if (op.requestBody) {
       const fallback = z.record(z.string(), z.unknown());
       shape['body'] = op.requestBody.required ? fallback : fallback.optional();
     }
 
-    return Object.keys(shape).length > 0 ? z.object(shape) : z.record(z.string(), z.unknown());
+    const schema = Object.keys(shape).length > 0 ? z.object(shape) : z.record(z.string(), z.unknown());
+    return { schema, bodyMediaType };
   }
 
   /**
    * Map an OpenAPI schema type to the corresponding Zod type.
    */
   private mapOpenApiType(schema?: Record<string, unknown>): z.ZodType {
-    if (!schema || !schema['type']) return z.string();
+    if (!schema || !schema['type']) return z.unknown();
 
     const type = schema['type'] as string;
     const enumValues = schema['enum'] as string[] | undefined;
@@ -298,47 +323,56 @@ export class OpenApiToolLoader {
         return z.boolean();
       case 'array':
         return z.array(this.mapOpenApiType(schema['items'] as Record<string, unknown> | undefined));
+      case 'object':
+        return z.record(z.string(), z.unknown());
       case 'string':
         if (enumValues && enumValues.length > 0) {
           return z.enum(enumValues as [string, ...string[]]);
         }
         return z.string();
       default:
-        return z.string();
+        return z.unknown();
     }
   }
 
   /**
    * Build a Zod schema for the request body based on the media type.
+   * Returns both the schema and the chosen media type for correct serialization.
    */
-  private buildBodySchema(content: Record<string, { schema?: Record<string, unknown> }>): z.ZodType {
+  private buildBodySchema(content: Record<string, { schema?: Record<string, unknown> }>): {
+    schema: z.ZodType;
+    mediaType: string;
+  } {
     // Prefer JSON media types
     const jsonKey = Object.keys(content).find((k) => k.includes('json'));
     if (jsonKey) {
       const schema = content[jsonKey].schema;
-      if (schema) return this.mapOpenApiType(schema);
-      return z.record(z.string(), z.unknown());
+      if (schema) return { schema: this.mapOpenApiType(schema), mediaType: jsonKey };
+      return { schema: z.record(z.string(), z.unknown()), mediaType: jsonKey };
     }
 
     // Form data
-    if (content['application/x-www-form-urlencoded'] || content['multipart/form-data']) {
-      return z.record(z.string(), z.unknown());
+    if (content['application/x-www-form-urlencoded']) {
+      return { schema: z.record(z.string(), z.unknown()), mediaType: 'application/x-www-form-urlencoded' };
+    }
+    if (content['multipart/form-data']) {
+      return { schema: z.record(z.string(), z.unknown()), mediaType: 'multipart/form-data' };
     }
 
     // Plain text
     const textKey = Object.keys(content).find((k) => k.startsWith('text/'));
     if (textKey) {
-      return z.string();
+      return { schema: z.string(), mediaType: textKey };
     }
 
     // Fallback
-    return z.record(z.string(), z.unknown());
+    return { schema: z.record(z.string(), z.unknown()), mediaType: 'application/json' };
   }
 
   /**
    * Create a handler function for an OpenAPI operation.
    */
-  private createHandler(op: ParsedOperation, baseUrl: string): ToolDefinition['handler'] {
+  private createHandler(op: ParsedOperation, baseUrl: string, bodyMediaType?: string): ToolDefinition['handler'] {
     const auth = this.auth;
     const headers = this.options.headers ?? {};
 
@@ -370,8 +404,11 @@ export class OpenApiToolLoader {
 
       // Build request headers (only set Content-Type for methods with a body)
       const hasBody = ['post', 'put', 'patch'].includes(op.method) && params['body'] != null;
+      const resolvedMediaType = bodyMediaType ?? 'application/json';
+      const isMultipart = resolvedMediaType === 'multipart/form-data';
       const requestHeaders: Record<string, string> = {
-        ...(hasBody && { 'Content-Type': 'application/json' }),
+        // Omit Content-Type for multipart/form-data to let the runtime set the boundary
+        ...(hasBody && !isMultipart && { 'Content-Type': resolvedMediaType }),
         ...headers,
       };
 
@@ -390,10 +427,16 @@ export class OpenApiToolLoader {
         }
       }
 
-      // Add header parameters
+      // Add header parameters (skip protected auth headers to prevent credential overwrite)
+      const protectedHeaders = new Set<string>();
+      if (auth) {
+        if (auth.type === 'bearer' || auth.type === 'basic') protectedHeaders.add('authorization');
+        if (auth.type === 'api-key') protectedHeaders.add((auth.header ?? 'X-API-Key').toLowerCase());
+      }
       if (op.parameters) {
         for (const param of op.parameters) {
           if (param.in === 'header' && params[param.name] !== undefined) {
+            if (protectedHeaders.has(param.name.toLowerCase())) continue;
             requestHeaders[param.name] = String(params[param.name]);
           }
         }
@@ -407,7 +450,22 @@ export class OpenApiToolLoader {
       };
 
       if (hasBody) {
-        fetchOptions.body = JSON.stringify(params['body']);
+        if (resolvedMediaType.includes('json')) {
+          fetchOptions.body = JSON.stringify(params['body']);
+        } else if (resolvedMediaType === 'application/x-www-form-urlencoded') {
+          fetchOptions.body = new URLSearchParams(params['body'] as Record<string, string>).toString();
+        } else if (resolvedMediaType === 'multipart/form-data') {
+          const formData = new FormData();
+          const bodyObj = params['body'] as Record<string, unknown>;
+          for (const [key, value] of Object.entries(bodyObj)) {
+            formData.append(key, value instanceof Blob ? value : String(value));
+          }
+          fetchOptions.body = formData;
+        } else if (resolvedMediaType.startsWith('text/')) {
+          fetchOptions.body = String(params['body']);
+        } else {
+          fetchOptions.body = JSON.stringify(params['body']);
+        }
       }
 
       const response = await fetch(url, fetchOptions);

@@ -235,16 +235,24 @@ export class BrokerSession {
 
       // Session was cancelled/terminated while enclave was running
       if (this.isTerminal()) {
+        if (this._deadlineExceeded) {
+          this.emitter.emit(
+            this.makeCustomEvent(EventType.DeadlineExceeded, {
+              elapsedMs: Date.now() - this.createdAt,
+              budgetMs: this.limits.deadlineMs,
+            }),
+          );
+        }
         const cancelError = {
           code: this._deadlineExceeded ? 'DEADLINE_EXCEEDED' : 'SESSION_CANCELLED',
-          message: 'Session was cancelled',
+          message: this._deadlineExceeded ? 'Deadline exceeded' : 'Session was cancelled',
         };
         this.emitter.emitFinalError(cancelError, eventStats, this.getPartialErrors());
         result = {
           success: false,
           error: { message: cancelError.message, name: 'Error', code: cancelError.code },
           stats,
-          finalState: 'cancelled',
+          finalState: this._deadlineExceeded ? 'failed' : 'cancelled',
         };
       } else if (enclaveResult.success) {
         this._state = 'completed';
@@ -377,6 +385,18 @@ export class BrokerSession {
     const callId = generateCallId();
     const toolStartTime = Date.now();
 
+    // Check session deadline before emitting any events
+    if (this.limits.deadlineMs > 0) {
+      const elapsed = Date.now() - this.createdAt;
+      const remaining = this.limits.deadlineMs - elapsed;
+      if (remaining <= 0) {
+        this._deadlineExceeded = true;
+        const err = new Error('Deadline exceeded before tool execution');
+        (err as Error & { code?: string }).code = 'DEADLINE_EXCEEDED';
+        throw err;
+      }
+    }
+
     // Emit tool call event
     this.emitter.emitToolCall(callId, toolName, args);
     this.toolCallCount++;
@@ -387,14 +407,7 @@ export class BrokerSession {
     // Compute per-tool timeout, capped by remaining session budget
     let toolTimeout = this.limits.perToolDeadlineMs;
     if (this.limits.deadlineMs > 0) {
-      const elapsed = Date.now() - this.createdAt;
-      const remaining = this.limits.deadlineMs - elapsed;
-      if (remaining <= 0) {
-        this._deadlineExceeded = true;
-        const err = new Error('Deadline exceeded before tool execution');
-        (err as Error & { code?: string }).code = 'DEADLINE_EXCEEDED';
-        throw err;
-      }
+      const remaining = this.limits.deadlineMs - (Date.now() - this.createdAt);
       toolTimeout = Math.min(toolTimeout, remaining);
     }
 

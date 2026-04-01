@@ -198,11 +198,14 @@ export class OpenApiSpecPoller extends EventEmitter {
         // Wait before retrying (abortable)
         const delay = Math.min(initialDelayMs * Math.pow(backoffMultiplier, attempt), maxDelayMs);
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, delay);
           const onAbort = () => {
             clearTimeout(timer);
             resolve();
           };
+          const timer = setTimeout(() => {
+            runSignal.removeEventListener('abort', onAbort);
+            resolve();
+          }, delay);
           runSignal.addEventListener('abort', onAbort, { once: true });
         });
       }
@@ -246,11 +249,9 @@ export class OpenApiSpecPoller extends EventEmitter {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      // Store ETag and Last-Modified for next request
+      // Read response headers (defer storing until body is fully processed)
       const etag = response.headers.get('etag');
       const lastModified = response.headers.get('last-modified');
-      if (etag) this.lastEtag = etag;
-      if (lastModified) this.lastModified = lastModified;
 
       const body = await response.text();
 
@@ -260,11 +261,17 @@ export class OpenApiSpecPoller extends EventEmitter {
 
       if (this.lastHash && this.lastHash === hash) {
         this.emit('unchanged');
+        if (etag) this.lastEtag = etag;
+        if (lastModified) this.lastModified = lastModified;
         return;
       }
 
       this.lastHash = hash;
       this.emit('changed', body, hash);
+
+      // Store headers only after successful body processing
+      if (etag) this.lastEtag = etag;
+      if (lastModified) this.lastModified = lastModified;
     } finally {
       clearTimeout(timeout);
       if (this._fetchController === controller) {
