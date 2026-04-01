@@ -217,6 +217,13 @@ export class OpenApiToolLoader {
         handler: this.createHandler(op, baseUrl, bodyMediaType),
       };
 
+      if (this.toolNames.has(toolName)) {
+        throw new Error(
+          `Duplicate tool name "${toolName}" generated for ${op.method.toUpperCase()} ${op.path}` +
+            ` (operationId: ${op.operationId}). Use a custom namingStrategy or sourceName to disambiguate.`,
+        );
+      }
+
       this.tools.push(tool);
       this.toolNames.add(toolName);
     }
@@ -306,6 +313,24 @@ export class OpenApiToolLoader {
   }
 
   /**
+   * Serialize a parameter value for use in URLs/headers.
+   * Arrays and objects are JSON-stringified; primitives use String().
+   */
+  private static serializeParam(value: unknown): string {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'object') return JSON.stringify(value);
+    return String(value);
+  }
+
+  /**
+   * Check if a content-type string represents a JSON media type.
+   * Matches 'application/json' and structured syntax suffix '+json' (RFC 6838).
+   */
+  private static isJsonContentType(contentType: string): boolean {
+    return contentType.includes('application/json') || contentType.includes('+json');
+  }
+
+  /**
    * Map an OpenAPI schema type to the corresponding Zod type.
    */
   private mapOpenApiType(schema?: Record<string, unknown>): z.ZodType {
@@ -380,7 +405,8 @@ export class OpenApiToolLoader {
       const params = args as Record<string, unknown>;
 
       // Build URL with path parameters
-      let url = `${baseUrl}${op.path}`;
+      const normalizedBase = baseUrl.replace(/\/+$/, '');
+      let url = `${normalizedBase}${op.path.startsWith('/') ? op.path : '/' + op.path}`;
       const queryParams: Record<string, string> = {};
 
       if (op.parameters) {
@@ -389,9 +415,9 @@ export class OpenApiToolLoader {
           if (value === undefined) continue;
 
           if (param.in === 'path') {
-            url = url.replace(`{${param.name}}`, encodeURIComponent(String(value)));
+            url = url.replace(`{${param.name}}`, encodeURIComponent(OpenApiToolLoader.serializeParam(value)));
           } else if (param.in === 'query') {
-            queryParams[param.name] = String(value);
+            queryParams[param.name] = OpenApiToolLoader.serializeParam(value);
           }
         }
       }
@@ -403,7 +429,10 @@ export class OpenApiToolLoader {
       }
 
       // Build request headers (only set Content-Type for methods with a body)
-      const hasBody = ['post', 'put', 'patch'].includes(op.method) && params['body'] != null;
+      const hasBody =
+        (['post', 'put', 'patch', 'delete'].includes(op.method) || op.requestBody != null) &&
+        Object.prototype.hasOwnProperty.call(params, 'body') &&
+        params['body'] != null;
       const resolvedMediaType = bodyMediaType ?? 'application/json';
       const isMultipart = resolvedMediaType === 'multipart/form-data';
       const requestHeaders: Record<string, string> = {
@@ -437,7 +466,7 @@ export class OpenApiToolLoader {
         for (const param of op.parameters) {
           if (param.in === 'header' && params[param.name] !== undefined) {
             if (protectedHeaders.has(param.name.toLowerCase())) continue;
-            requestHeaders[param.name] = String(params[param.name]);
+            requestHeaders[param.name] = OpenApiToolLoader.serializeParam(params[param.name]);
           }
         }
       }
@@ -450,7 +479,7 @@ export class OpenApiToolLoader {
       };
 
       if (hasBody) {
-        if (resolvedMediaType.includes('json')) {
+        if (OpenApiToolLoader.isJsonContentType(resolvedMediaType)) {
           fetchOptions.body = JSON.stringify(params['body']);
         } else if (resolvedMediaType === 'application/x-www-form-urlencoded') {
           fetchOptions.body = new URLSearchParams(params['body'] as Record<string, string>).toString();
@@ -474,7 +503,7 @@ export class OpenApiToolLoader {
         const contentType = response.headers.get('content-type') ?? '';
         let body: string;
         try {
-          body = contentType.includes('application/json')
+          body = OpenApiToolLoader.isJsonContentType(contentType)
             ? JSON.stringify(await response.json())
             : await response.text();
         } catch {
@@ -485,7 +514,7 @@ export class OpenApiToolLoader {
 
       const contentType = response.headers.get('content-type') ?? '';
 
-      if (contentType.includes('application/json')) {
+      if (OpenApiToolLoader.isJsonContentType(contentType)) {
         return response.json();
       }
       return response.text();

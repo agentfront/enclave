@@ -55,7 +55,7 @@ export interface OpenApiPollerConfig {
 export interface OpenApiPollerEvents {
   changed: [spec: string, hash: string];
   unchanged: [];
-  error: [error: Error];
+  pollError: [error: Error];
   unhealthy: [consecutiveFailures: number];
   recovered: [];
 }
@@ -86,6 +86,7 @@ export class OpenApiSpecPoller extends EventEmitter {
   /** Per-run abort controller — aborted on stop(), recreated on start() */
   private _runAbort: AbortController = new AbortController();
   private _fetchController: AbortController | null = null;
+  private _activePoll: Promise<void> | null = null;
 
   constructor(config: OpenApiPollerConfig) {
     super();
@@ -108,11 +109,21 @@ export class OpenApiSpecPoller extends EventEmitter {
     this._runAbort = new AbortController();
     const runSignal = this._runAbort.signal;
 
-    // Initial poll
-    this.pollWithSignal(runSignal).catch(() => undefined);
+    // If a previous poll is still settling after stop(), chain the initial
+    // poll so it runs once the old one completes instead of being dropped.
+    const pendingPoll = this._activePoll;
+    if (pendingPoll) {
+      pendingPoll.finally(() => {
+        if (!runSignal.aborted) {
+          this._activePoll = this.pollWithSignal(runSignal).catch(() => undefined);
+        }
+      });
+    } else {
+      this._activePoll = this.pollWithSignal(runSignal).catch(() => undefined);
+    }
 
     this.intervalTimer = setInterval(() => {
-      this.pollWithSignal(runSignal).catch(() => undefined);
+      this._activePoll = this.pollWithSignal(runSignal).catch(() => undefined);
     }, this.config.intervalMs);
   }
 
@@ -160,6 +171,7 @@ export class OpenApiSpecPoller extends EventEmitter {
       await this.fetchWithRetry(runSignal);
     } finally {
       this.isPolling = false;
+      this._activePoll = null;
     }
   }
 
@@ -186,7 +198,7 @@ export class OpenApiSpecPoller extends EventEmitter {
 
         if (attempt === maxRetries) {
           this.consecutiveFailures++;
-          this.emit('error', error instanceof Error ? error : new Error(String(error)));
+          this.emit('pollError', error instanceof Error ? error : new Error(String(error)));
 
           if (this.consecutiveFailures >= this.config.unhealthyThreshold && !this.wasUnhealthy) {
             this.wasUnhealthy = true;
@@ -259,6 +271,8 @@ export class OpenApiSpecPoller extends EventEmitter {
 
       const hash = await sha256Hex(body);
 
+      if (runSignal.aborted) return;
+
       if (this.lastHash && this.lastHash === hash) {
         this.emit('unchanged');
         if (etag) this.lastEtag = etag;
@@ -266,8 +280,8 @@ export class OpenApiSpecPoller extends EventEmitter {
         return;
       }
 
-      this.lastHash = hash;
       this.emit('changed', body, hash);
+      this.lastHash = hash;
 
       // Store headers only after successful body processing
       if (etag) this.lastEtag = etag;

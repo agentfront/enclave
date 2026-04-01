@@ -106,7 +106,7 @@ export class OpenApiSource extends EventEmitter {
       this.emit('recovered');
     });
 
-    this.poller.on('error', (error: Error) => {
+    this.poller.on('pollError', (error: Error) => {
       this.emit('error', error);
     });
 
