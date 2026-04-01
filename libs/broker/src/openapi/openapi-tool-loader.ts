@@ -405,7 +405,8 @@ export class OpenApiToolLoader {
       const params = args as Record<string, unknown>;
 
       // Build URL with path parameters
-      const normalizedBase = baseUrl.replace(/\/+$/, '');
+      let normalizedBase = baseUrl;
+      while (normalizedBase.endsWith('/')) normalizedBase = normalizedBase.slice(0, -1);
       let url = `${normalizedBase}${op.path.startsWith('/') ? op.path : '/' + op.path}`;
       const queryParams: Record<string, string> = {};
 
