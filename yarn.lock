@@ -1122,62 +1122,6 @@
   dependencies:
     tslib "^2.4.0"
 
-"@enclave-vm/ast@2.12.0":
-  version "2.12.0"
-  resolved "https://registry.yarnpkg.com/@enclave-vm/ast/-/ast-2.12.0.tgz#8b095246337f8b7e6810f72a56f62e04e14995e5"
-  integrity sha512-SZo4eFPzFwhYlTOQy0hSOsf7++VSi9XtPBaR/1ljA9HOAoTU2kzBaptExKpfKbQmqbZ69/cmdGrwSCS3lDkSiQ==
-  dependencies:
-    "@types/estree" "1.0.8"
-    acorn "8.15.0"
-    acorn-walk "8.3.4"
-    astring "1.9.0"
-
-"@enclave-vm/broker@2.12.0":
-  version "2.12.0"
-  resolved "https://registry.yarnpkg.com/@enclave-vm/broker/-/broker-2.12.0.tgz#0f7c56d4534da310899cde29bea4245d937ed355"
-  integrity sha512-Su8bcSVJIEg0I5iGiHPZwuIrnG1qPfrGSuwJuqPxAqa9GMCfPgQHk0K+c+W9jb2dzSqYeT8lCKWvdKCzDEMFqg==
-  dependencies:
-    "@enclave-vm/core" "2.12.0"
-    "@enclave-vm/stream" "2.12.0"
-    "@enclave-vm/types" "2.12.0"
-    minimatch "^10.1.1"
-    zod "^4.3.6"
-
-"@enclave-vm/client@2.12.0":
-  version "2.12.0"
-  resolved "https://registry.yarnpkg.com/@enclave-vm/client/-/client-2.12.0.tgz#d38fd7991fb011f47c740e2737232378a01bdc38"
-  integrity sha512-kNjcsj+OrD9SaXAJghwEv5c4E4JmswrnZLSqsrFFvvyKS1ZyDtFBKNKlzJ+Rs7ygIX8V6c+fG7PsRHDlPUV1aA==
-  dependencies:
-    "@enclave-vm/stream" "2.12.0"
-    "@enclave-vm/types" "2.12.0"
-
-"@enclave-vm/core@2.12.0":
-  version "2.12.0"
-  resolved "https://registry.yarnpkg.com/@enclave-vm/core/-/core-2.12.0.tgz#7726a5d6f717330633cb7c2d5c77c575cf320f75"
-  integrity sha512-v7uciTJWrjtO+ZuUDHy4Osu6XVPYdGvBTOisqRSn2Px3ZVHcOzelCKBOgMH8jwKKhz00/ANzJ6P2SuatfLbuKQ==
-  dependencies:
-    "@babel/standalone" "^7.29.0"
-    "@enclave-vm/ast" "2.12.0"
-    "@enclave-vm/types" "2.12.0"
-    acorn "8.15.0"
-    acorn-walk "8.3.4"
-    astring "1.9.0"
-    zod "^4.3.6"
-
-"@enclave-vm/stream@2.12.0":
-  version "2.12.0"
-  resolved "https://registry.yarnpkg.com/@enclave-vm/stream/-/stream-2.12.0.tgz#56b2427b11d151164d256a7bf9e1e9b5171ba92b"
-  integrity sha512-bwjRFsOLQAl5dUJcuzHjmD4Q24nL1BRP4GxdtJqSoOw9pnWD/EDgcybnHtOoNbaG5AYTiXyIv1mEODqE3zlOhg==
-  dependencies:
-    "@enclave-vm/types" "2.12.0"
-
-"@enclave-vm/types@2.12.0":
-  version "2.12.0"
-  resolved "https://registry.yarnpkg.com/@enclave-vm/types/-/types-2.12.0.tgz#571b0851ad7c6ac1b661bcea8a923c0fa63c4781"
-  integrity sha512-/AQ78OQKmjt3OtvXe0iFkZtwV8TzP93VOo+vU4qfYYxj6e4XgVUgWhmUtpBWzq3xaL4UHKAhcBC7CAdBGHKiNw==
-  dependencies:
-    zod "^4.3.6"
-
 "@esbuild/aix-ppc64@0.25.12":
   version "0.25.12"
   resolved "https://registry.yarnpkg.com/@esbuild/aix-ppc64/-/aix-ppc64-0.25.12.tgz#80fcbe36130e58b7670511e888b8e88a259ed76c"
@@ -7312,7 +7256,7 @@ minimalistic-assert@^1.0.0:
   resolved "https://registry.yarnpkg.com/minimalistic-assert/-/minimalistic-assert-1.0.1.tgz#2e194de044626d4a10e7f7fbc00ce73e83e4d5c7"
   integrity sha512-UtJcAD4yEaGtjPezWuO9wC4nwUnVH/8/Im3yEHQP4b67cXlD/Qr9hdITCU1xDbSEXg2XKNaP8jsReV7vQd00/A==
 
-minimatch@10.1.1, minimatch@^10.1.1:
+minimatch@10.1.1:
   version "10.1.1"
   resolved "https://registry.yarnpkg.com/minimatch/-/minimatch-10.1.1.tgz#e6e61b9b0c1dcab116b5a7d1458e8b6ae9e73a55"
   integrity sha512-enIvLvRAFZYXJzkCYG5RKmPfrFArdLv+R+lbQ53BmIMLIry74bjKzX6iHAm8WYamJkhSSEabrWN5D97XnKObjQ==
