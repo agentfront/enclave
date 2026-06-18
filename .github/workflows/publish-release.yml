@@ -71,18 +71,14 @@ jobs:
           echo "Branch: $BRANCH"
           echo "Release line: $RELEASE_LINE"
 
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Setup Node + Yarn
+        uses: ./.github/actions/setup-node-yarn
         with:
           node-version-file: ".nvmrc"
-          cache: "yarn"
           registry-url: "https://registry.npmjs.org/"
 
       - name: Update npm CLI for trusted publishing
         run: npm install -g npm@latest
-
-      - name: Install dependencies
-        run: yarn install --frozen-lockfile
 
       - name: Compute version
         id: version
@@ -512,16 +508,11 @@ jobs:
             echo "Skipping: v$VERSION is not the latest (v$LATEST is newer)"
           fi
 
-      - name: Setup Node
+      - name: Setup Node + Yarn
         if: steps.check.outputs.is_latest == 'true'
-        uses: actions/setup-node@v6
+        uses: ./.github/actions/setup-node-yarn
         with:
           node-version-file: ".nvmrc"
-          cache: "yarn"
-
-      - name: Install dependencies
-        if: steps.check.outputs.is_latest == 'true'
-        run: yarn install --frozen-lockfile
 
       - name: Configure git
         if: steps.check.outputs.is_latest == 'true'

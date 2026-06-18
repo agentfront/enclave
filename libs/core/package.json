@@ -35,12 +35,19 @@
       "import": "./dist/esm/index.mjs",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./worker": {
+      "development": "./src/worker.ts",
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/esm/worker.mjs",
+      "require": "./dist/worker.js",
+      "default": "./dist/worker.js"
     }
   },
   "dependencies": {
     "@babel/standalone": "^7.29.0",
-    "@enclave-vm/types": "2.13.0",
     "@enclave-vm/ast": "2.13.0",
+    "@enclave-vm/types": "2.13.0",
     "acorn": "8.15.0",
     "acorn-walk": "8.3.4",
     "astring": "1.9.0",

@@ -40,10 +40,10 @@
     }
   },
   "dependencies": {
+    "@types/estree": "1.0.8",
     "acorn": "8.15.0",
     "acorn-walk": "8.3.4",
-    "astring": "1.9.0",
-    "@types/estree": "1.0.8"
+    "astring": "1.9.0"
   },
   "devDependencies": {
     "typescript": "^5.9.3"
