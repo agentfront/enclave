@@ -2,6 +2,7 @@
   "name": "@enclave-vm/source",
   "version": "1.0.0",
   "license": "Apache-2.0",
+  "packageManager": "yarn@4.14.1",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -79,15 +80,27 @@
     "includedScripts": []
   },
   "resolutions": {
-    "qs": "^6.14.2",
+    "qs": "^6.15.2",
     "node-forge": "^1.4.0",
     "glob": "^10.5.0",
     "jws": "^3.2.3",
     "mdast-util-to-hast": "^13.2.1",
-    "js-yaml": "^4.1.1",
     "handlebars": "^4.7.9",
     "flatted": "^3.4.2",
     "serialize-javascript": "^7.0.0",
-    "immutable": "^5.1.5"
+    "immutable": "^5.1.5",
+    "axios": "^1.16.0",
+    "shell-quote": "^1.8.4",
+    "vite": "^6.4.3",
+    "@babel/plugin-transform-modules-systemjs": "^7.29.4",
+    "tmp": "^0.2.6",
+    "svgo": "^3.3.3",
+    "fast-uri": "^3.1.2",
+    "follow-redirects": "^1.16.0",
+    "webpack-dev-server": "^5.2.5",
+    "minimatch@npm:10.1.1": "10.2.5",
+    "minimatch@npm:3.1.2": "3.1.5",
+    "picomatch@npm:4.0.2": "4.0.4",
+    "@isaacs/brace-expansion": "^5.0.1"
   }
 }

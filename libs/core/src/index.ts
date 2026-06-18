@@ -137,6 +137,13 @@ export {
   isCompositeHandle,
 } from './sidecar';
 
+// Interpreter Adapter — dependency-free, runtime-agnostic execute path (no
+// QuickJS / WASM / node:vm); the worker-safe sandbox.
+export { InterpreterAdapter } from './adapters/interpreter-adapter';
+export type { InterpreterAdapterOptions } from './adapters/interpreter-adapter';
+export { Interpreter, InterpreterError, StepLimitError } from './interpreter/interpreter';
+export type { InterpreterOptions } from './interpreter/interpreter';
+
 // Worker Pool Adapter (OS-level memory isolation)
 export {
   // Main adapter
