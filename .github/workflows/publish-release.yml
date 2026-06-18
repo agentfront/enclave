@@ -572,8 +572,10 @@ jobs:
           echo "Running version sync to ensure all packages are at $VERSION..."
           node scripts/sync-versions.mjs "$VERSION"
 
-          # Update yarn.lock to reflect dependency version changes
-          yarn install
+          # Update yarn.lock to reflect dependency version changes.
+          # --no-immutable is required: Yarn 4 enables immutable installs by
+          # default in CI, but this step intentionally rewrites yarn.lock.
+          yarn install --no-immutable
 
           # Stage all version-related changes
           git add libs/*/package.json apps/*/package.json yarn.lock
