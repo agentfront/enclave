@@ -41,6 +41,7 @@
         "deleteOutputPath": false,
         "outputPath": "libs/core/dist",
         "main": "libs/core/src/index.ts",
+        "additionalEntryPoints": ["libs/core/src/worker.ts"],
         "tsConfig": "libs/core/tsconfig.lib.json",
         "format": ["cjs"],
         "declaration": true,
@@ -72,6 +73,7 @@
       "options": {
         "outputPath": "libs/core/dist/esm",
         "main": "libs/core/src/index.ts",
+        "additionalEntryPoints": ["libs/core/src/worker.ts"],
         "tsConfig": "libs/core/tsconfig.lib.json",
         "format": ["esm"],
         "declaration": false,
