@@ -67,8 +67,7 @@ export class InterpreterAdapter implements SandboxAdapter {
 
     // Wall-clock timeout drives the AbortSignal the interpreter checks per step.
     const timeout = context.config.timeout;
-    const timer =
-      timeout && timeout > 0 ? setTimeout(() => context.abortController.abort(), timeout) : undefined;
+    const timer = timeout && timeout > 0 ? setTimeout(() => context.abortController.abort(), timeout) : undefined;
 
     const interpreter = new Interpreter({
       globals,
