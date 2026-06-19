@@ -283,7 +283,10 @@ export class Interpreter {
   }
 
   // ── Expressions ──────────────────────────────────────────────────────────--
-  private async evalExpr(node: ESTree.Expression | ESTree.Pattern | ESTree.PrivateIdentifier, scope: Scope): Promise<unknown> {
+  private async evalExpr(
+    node: ESTree.Expression | ESTree.Pattern | ESTree.PrivateIdentifier,
+    scope: Scope,
+  ): Promise<unknown> {
     this.tick();
     switch (node.type) {
       case 'Literal':
@@ -467,7 +470,8 @@ export class Interpreter {
       // Cap string-amplifying ops whose allocation the step budget can't see.
       if (typeof m.object === 'string' && (m.key === 'repeat' || m.key === 'padStart' || m.key === 'padEnd')) {
         const n = Number(args[0]);
-        const produced = m.key === 'repeat' ? m.object.length * (n > 0 ? n : 0) : Math.max(m.object.length, n > 0 ? n : 0);
+        const produced =
+          m.key === 'repeat' ? m.object.length * (n > 0 ? n : 0) : Math.max(m.object.length, n > 0 ? n : 0);
         if (produced > MAX_STRING_OP_LENGTH) {
           throw new InterpreterError(
             `String '${m.key}' would produce ${produced} chars, exceeding the ${MAX_STRING_OP_LENGTH} limit`,

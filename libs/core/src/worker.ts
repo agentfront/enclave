@@ -18,10 +18,4 @@ export { InterpreterAdapter } from './adapters/interpreter-adapter';
 export type { InterpreterAdapterOptions } from './adapters/interpreter-adapter';
 export { Interpreter, InterpreterError, StepLimitError } from './interpreter/interpreter';
 export type { InterpreterOptions } from './interpreter/interpreter';
-export type {
-  ExecutionContext,
-  ExecutionResult,
-  ExecutionError,
-  ExecutionStats,
-  ToolHandler,
-} from './types';
+export type { ExecutionContext, ExecutionResult, ExecutionError, ExecutionStats, ToolHandler } from './types';
