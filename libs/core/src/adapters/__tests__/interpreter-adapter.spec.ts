@@ -2,7 +2,9 @@ import { InterpreterAdapter } from '../interpreter-adapter';
 import type { ExecutionContext, ToolHandler } from '../../types';
 
 /** Minimal ExecutionContext for the fields the adapter reads. */
-function makeContext(overrides: { maxToolCalls?: number; timeout?: number; toolHandler?: ToolHandler } = {}): ExecutionContext {
+function makeContext(
+  overrides: { maxToolCalls?: number; timeout?: number; toolHandler?: ToolHandler } = {},
+): ExecutionContext {
   return {
     config: {
       maxToolCalls: overrides.maxToolCalls ?? 50,

@@ -76,6 +76,16 @@ jobs:
         with:
           node-version-file: ".nvmrc"
           registry-url: "https://registry.npmjs.org/"
+          # Do NOT run an immutable install here: this is a long-lived,
+          # auto-incrementing release branch. Its committed yarn.lock may lag the
+          # bumped package.json versions, and this job rewrites the lock anyway.
+          # An immutable install would fail before the version-bump/sync steps run.
+          install: "false"
+
+      - name: Install dependencies
+        # Mutable install: installs deps for nx/build AND self-heals any lockfile
+        # drift left by a previous release before this run bumps the version.
+        run: yarn install --no-immutable
 
       - name: Update npm CLI for trusted publishing
         run: npm install -g npm@latest
