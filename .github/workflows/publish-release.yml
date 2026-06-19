@@ -295,6 +295,15 @@ jobs:
             "
           done
 
+      - name: Sync lockfile to bumped versions
+        if: ${{ inputs.dry_run != true }}
+        # Regenerate yarn.lock so it matches the just-bumped package.json versions
+        # and prunes orphaned old-version entries. Without this the committed
+        # lockfile drifts, and the next `yarn install --immutable` (e.g. this job's
+        # setup step on the following release) fails with:
+        # "The lockfile would have been modified by this install, which is forbidden."
+        run: yarn install --no-immutable
+
       - name: Commit version bump
         if: ${{ inputs.dry_run != true }}
         run: |
