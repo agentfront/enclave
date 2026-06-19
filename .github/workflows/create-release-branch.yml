@@ -163,6 +163,14 @@ jobs:
             echo "Updated $ROOT_CHANGELOG"
           fi
 
+      - name: Sync lockfile to bumped versions
+        shell: bash
+        # Regenerate yarn.lock so the new release branch is committed with a
+        # lockfile that matches the bumped package.json versions. Otherwise the
+        # first `yarn install --immutable` (CI / publish setup) on this branch
+        # fails: "The lockfile would have been modified by this install...".
+        run: yarn install --no-immutable
+
       - name: Commit changes
         shell: bash
         run: |
