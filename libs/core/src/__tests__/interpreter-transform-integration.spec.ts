@@ -21,7 +21,10 @@ import type { ExecutionContext, ToolHandler } from '../types';
 /** The transform config required for the interpreter target. */
 const INTERPRETER_TRANSFORM = { transformLoops: false } as const;
 
-function makeContext(toolHandler?: ToolHandler, overrides: { maxToolCalls?: number; timeout?: number } = {}): ExecutionContext {
+function makeContext(
+  toolHandler?: ToolHandler,
+  overrides: { maxToolCalls?: number; timeout?: number } = {},
+): ExecutionContext {
   return {
     config: { maxToolCalls: overrides.maxToolCalls ?? 20, timeout: overrides.timeout ?? 8000 },
     stats: { duration: 0, toolCallCount: 0, iterationCount: 0, startTime: 0 },
@@ -74,7 +77,10 @@ describe('AgentScript transform + Interpreter (worker codecall path)', () => {
   });
 
   it('blocks prototype-escape regardless of transform (secure by construction)', async () => {
-    const transformed = transformAgentScript("return ({}).constructor.constructor('return 1')();", INTERPRETER_TRANSFORM);
+    const transformed = transformAgentScript(
+      "return ({}).constructor.constructor('return 1')();",
+      INTERPRETER_TRANSFORM,
+    );
     const res = await new InterpreterAdapter().execute(transformed, makeContext(handler));
     expect(res.success).toBe(false);
     expect(res.error?.message).toMatch(/constructor/i);

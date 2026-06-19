@@ -1758,6 +1758,7 @@ __metadata:
     "@babel/standalone": "npm:^7.29.0"
     "@enclave-vm/ast": "npm:2.14.0"
     "@enclave-vm/types": "npm:2.14.0"
+    "@types/estree": "npm:1.0.8"
     acorn: "npm:8.15.0"
     acorn-walk: "npm:8.3.4"
     astring: "npm:1.9.0"
