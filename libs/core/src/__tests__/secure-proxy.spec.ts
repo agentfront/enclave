@@ -187,6 +187,24 @@ describe('SecureProxy', () => {
       expect(inner.constructor).toBeUndefined();
     });
 
+    it('should proxy instances created via a wrapped constructor (construct trap)', () => {
+      // Without a construct trap, `new (wrappedCtor)()` returns a RAW object whose prototype
+      // chain reaches the host Function constructor — the same escape class the apply trap
+      // closes for calls.
+      class Widget {
+        value = 42;
+      }
+      const WrappedWidget = createSecureProxy(Widget) as typeof Widget;
+
+      const instance = new WrappedWidget();
+
+      // Normal access still works through the barrier.
+      expect(instance.value).toBe(42);
+      // The created instance is wrapped: dangerous access is blocked and the chain is hidden.
+      expect((instance as { constructor?: unknown }).constructor).toBeUndefined();
+      expect(Object.getPrototypeOf(instance)).toBeNull();
+    });
+
     it('should respect maxDepth option', () => {
       const deepObj: any = { level: 0 };
       let current = deepObj;

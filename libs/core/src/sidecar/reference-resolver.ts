@@ -12,6 +12,37 @@ import { ReferenceSidecar } from './reference-sidecar';
 import { ReferenceConfig, isReferenceId } from './reference-config';
 
 /**
+ * Captured host intrinsics + safe array iteration.
+ *
+ * SECURITY (same class as GHSA-6mpw-63xj-mghh): the resolver runs in the HOST realm and, on
+ * the single-VM path (safe-runtime), receives raw callTool `args` that are NOT JSON-sanitized
+ * first, so `args` may contain an attacker `Proxy` array. We must never invoke an array method
+ * *looked up on such a value* — `value.map(cb)` / `value.some(cb)` / `value.reduce(cb)` would
+ * hand our host callback to a `.map`/`.some`/`.reduce` trap, which can reach `cb.constructor`
+ * (host `Function`) for RCE. Enumerate by index via `Reflect.get` instead. (`Object.values`/
+ * `Object.entries` are safe: they are host intrinsics that return a genuine array, so the
+ * subsequent `.some`/`.reduce` runs on a trusted array, not the untrusted value.)
+ */
+const ReflectGet = Reflect.get;
+const NumberIsFinite = Number.isFinite;
+const MathFloor = Math.floor;
+
+/** Own length of an array-like untrusted value, read once via Reflect.get; never coerced. */
+function untrustedLength(value: unknown): number {
+  const rawLen = ReflectGet(value as object, 'length');
+  return typeof rawLen === 'number' && NumberIsFinite(rawLen) && rawLen >= 0 ? MathFloor(rawLen) : 0;
+}
+
+/** Index read on an untrusted value that tolerates a throwing getter/trap. */
+function untrustedAt(value: unknown, index: number): unknown {
+  try {
+    return ReflectGet(value as object, index);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Error thrown when resolution limits are exceeded
  */
 export class ResolutionLimitError extends Error {
@@ -106,11 +137,16 @@ export class ReferenceResolver {
       return size;
     }
 
-    // Handle composite handles
+    // Handle composite handles.
+    // SECURITY: iterate __parts by index (never .reduce on the untrusted value) — see header.
     if (isCompositeHandle(value)) {
-      return value.__parts.reduce((sum, part) => {
-        return sum + this.predictExpandedSize(part, depth + 1);
-      }, 0);
+      const parts = value.__parts as unknown;
+      const len = untrustedLength(parts);
+      let sum = 0;
+      for (let i = 0; i < len; i++) {
+        sum += this.predictExpandedSize(untrustedAt(parts, i), depth + 1);
+      }
+      return sum;
     }
 
     // Handle strings (not references)
@@ -118,11 +154,14 @@ export class ReferenceResolver {
       return Buffer.byteLength(value, 'utf-8');
     }
 
-    // Handle arrays
+    // Handle arrays (iterate by index — never .reduce on the untrusted value)
     if (Array.isArray(value)) {
-      return value.reduce((sum, item) => {
-        return sum + this.predictExpandedSize(item, depth + 1);
-      }, 0);
+      const len = untrustedLength(value);
+      let sum = 0;
+      for (let i = 0; i < len; i++) {
+        sum += this.predictExpandedSize(untrustedAt(value, i), depth + 1);
+      }
+      return sum;
     }
 
     // Handle objects
@@ -197,12 +236,17 @@ export class ReferenceResolver {
       return value;
     }
 
-    // Handle arrays
+    // Handle arrays (iterate by index — never .map on the untrusted value)
     if (Array.isArray(value)) {
-      return value.map((item) => this.resolve(item, depth + 1));
+      const len = untrustedLength(value);
+      const out: unknown[] = [];
+      for (let i = 0; i < len; i++) {
+        out[i] = this.resolve(untrustedAt(value, i), depth + 1);
+      }
+      return out;
     }
 
-    // Handle objects
+    // Handle objects (Object.entries returns a genuine array — safe to iterate)
     if (value !== null && typeof value === 'object') {
       const resolved: Record<string, unknown> = Object.create(null);
       for (const [key, val] of Object.entries(value)) {
@@ -219,17 +263,21 @@ export class ReferenceResolver {
    * Resolve a composite handle by concatenating its parts
    */
   private resolveComposite(handle: CompositeHandle, depth: number): string {
-    const parts: string[] = [];
+    const out: string[] = [];
 
-    for (const part of handle.__parts) {
-      const resolved = this.resolve(part, depth + 1);
+    // SECURITY: iterate __parts by index rather than for..of, so an attacker Proxy cannot
+    // supply a malicious iterator (which could loop unboundedly or is otherwise untrusted).
+    const source = handle.__parts as unknown;
+    const len = untrustedLength(source);
+    for (let i = 0; i < len; i++) {
+      const resolved = this.resolve(untrustedAt(source, i), depth + 1);
       if (typeof resolved !== 'string') {
         throw new Error(`Composite part resolved to non-string: ${typeof resolved}`);
       }
-      parts.push(resolved);
+      out.push(resolved);
     }
 
-    return parts.join('');
+    return out.join('');
   }
 
   /**
@@ -248,10 +296,18 @@ export class ReferenceResolver {
       return true;
     }
 
+    // Arrays: iterate by index — never .some on the untrusted value.
     if (Array.isArray(value)) {
-      return value.some((item) => this.containsReferences(item, depth + 1));
+      const len = untrustedLength(value);
+      for (let i = 0; i < len; i++) {
+        if (this.containsReferences(untrustedAt(value, i), depth + 1)) {
+          return true;
+        }
+      }
+      return false;
     }
 
+    // Objects: Object.values returns a genuine array — safe to .some over.
     if (value !== null && typeof value === 'object') {
       return Object.values(value).some((val) => this.containsReferences(val, depth + 1));
     }

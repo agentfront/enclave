@@ -48,6 +48,33 @@ export interface SanitizeOptions {
 const DANGEROUS_KEYS = new Set(['__proto__', 'constructor']);
 
 /**
+ * Captured host intrinsics.
+ *
+ * SECURITY (GHSA-6mpw-63xj-mghh): the value being sanitized is untrusted and may be an
+ * attacker-controlled `Proxy`. We must never (a) invoke a *method looked up on that value*
+ * — e.g. `value.map(cb)` — because a `get` trap can substitute its own implementation and
+ * receive our host callback (`cb.constructor` === host `Function` -> RCE), nor (b) trust a
+ * property the value returns (e.g. `.length`) for control-flow/limits.
+ *
+ * By binding these intrinsics once at module load (in the trusted host realm) and invoking
+ * them via `Reflect.apply` with the untrusted value as the *receiver*, the genuine builtin
+ * runs instead of any attacker-supplied method. Data reads go through `Reflect.get`, whose
+ * result is always recursively sanitized and never used to look up further behaviour.
+ */
+const ReflectApply = Reflect.apply;
+const ReflectGet = Reflect.get;
+const ArrayIsArray = Array.isArray;
+const ObjectKeys = Object.keys;
+const ObjectCreate = Object.create;
+const NumberIsFinite = Number.isFinite;
+const MathFloor = Math.floor;
+const MapProtoEntries = Map.prototype.entries;
+const SetProtoValues = Set.prototype.values;
+const DateProtoGetTime = Date.prototype.getTime;
+const DateProtoToISOString = Date.prototype.toISOString;
+const RegExpProtoToString = RegExp.prototype.toString;
+
+/**
  * Property counter for tracking total properties across recursive calls
  */
 interface PropertyCounter {
@@ -156,46 +183,85 @@ export function sanitizeValue(
   }
 
   // Handle arrays
-  if (Array.isArray(value)) {
-    context.propCount.count += value.length;
+  //
+  // SECURITY (GHSA-6mpw-63xj-mghh): `value` may be an attacker Proxy that only passes
+  // `Array.isArray` (a Proxy over an array target). We must NOT call `value.map(cb)` — a
+  // `get` trap on `map` would receive our host callback and reach `cb.constructor` (host
+  // `Function`) for RCE. Instead read the length ONCE via `Reflect.get` (so a stateful
+  // length trap can't bypass the property-count limit and then blow up the copy loop) and
+  // copy element-by-element into a fresh host array. The genuine array builtins are never
+  // looked up on the untrusted value.
+  if (ArrayIsArray(value)) {
+    const rawLen = ReflectGet(value, 'length');
+    // Only trust a real numeric length; anything else (undefined/NaN/object from a trap)
+    // is treated as an empty array rather than coerced (coercion would run attacker code).
+    const len = typeof rawLen === 'number' && NumberIsFinite(rawLen) && rawLen >= 0 ? MathFloor(rawLen) : 0;
+
+    context.propCount.count += len;
     if (context.propCount.count > maxProperties) {
       throw new Error(`Tool handler return value exceeds maximum properties (${maxProperties}).`);
     }
-    return value.map((item) => sanitizeValue(item, options, depth + 1, context));
+
+    const result: unknown[] = [];
+    for (let i = 0; i < len; i++) {
+      let item: unknown;
+      try {
+        item = ReflectGet(value, i);
+      } catch {
+        // A throwing index getter (proxy trap) is treated as an absent element.
+        item = undefined;
+      }
+      result[i] = sanitizeValue(item, options, depth + 1, context);
+    }
+    return result;
   }
 
-  // Handle Date objects
+  // Handle Date objects.
+  // SECURITY: read the timestamp via the captured Date.prototype.getTime (Reflect.apply),
+  // never `value.getTime()`, so a Proxy that merely passes `instanceof Date` cannot supply
+  // its own method. On a non-Date receiver the genuine builtin throws (fails closed).
   if (value instanceof Date) {
+    const time = ReflectApply(DateProtoGetTime, value, []) as number;
     if (allowDates) {
       // Return a new Date to prevent reference sharing
-      return new Date(value.getTime());
+      return new Date(time);
     }
     // Convert to ISO string if dates not allowed
-    return value.toISOString();
+    return ReflectApply(DateProtoToISOString, value, []) as string;
   }
 
   // Handle Error objects
   if (value instanceof Error) {
+    // Read via Reflect.get and coerce to strings so a hostile getter cannot smuggle a
+    // non-string (e.g. an unsanitized object) into the output.
+    const rawName = ReflectGet(value, 'name');
+    const rawMessage = ReflectGet(value, 'message');
+    const name = typeof rawName === 'string' ? rawName : 'Error';
+    const message = typeof rawMessage === 'string' ? rawMessage : '';
     if (allowErrors) {
       // Convert to plain object with safe properties only
       return {
-        name: value.name,
-        message: value.message,
+        name,
+        message,
         // Do NOT include stack trace - could leak host information
       };
     }
-    return { error: value.message };
+    return { error: message };
   }
 
-  // Handle RegExp objects (convert to string)
+  // Handle RegExp objects (convert to string via the captured RegExp.prototype.toString)
   if (value instanceof RegExp) {
-    return value.toString();
+    return ReflectApply(RegExpProtoToString, value, []) as string;
   }
 
-  // Handle Map objects
+  // Handle Map objects.
+  // SECURITY: enumerate with the captured Map.prototype.entries (Reflect.apply) rather than
+  // `value.entries()`, so an attacker Proxy that passes `instanceof Map` cannot hijack the
+  // iteration. The returned iterator is a genuine host Map Iterator, safe to `for..of`.
   if (value instanceof Map) {
-    const sanitizedMap: Record<string, unknown> = Object.create(null);
-    for (const [key, val] of value.entries()) {
+    const sanitizedMap: Record<string, unknown> = ObjectCreate(null);
+    const entries = ReflectApply(MapProtoEntries, value, []) as IterableIterator<[unknown, unknown]>;
+    for (const [key, val] of entries) {
       if (typeof key !== 'string') continue; // Only string keys
       if (DANGEROUS_KEYS.has(key)) continue; // Skip dangerous keys
       context.propCount.count++;
@@ -204,20 +270,26 @@ export function sanitizeValue(
     return sanitizedMap;
   }
 
-  // Handle Set objects (convert to array)
+  // Handle Set objects (convert to array).
+  // SECURITY: enumerate with the captured Set.prototype.values (Reflect.apply), not
+  // `Array.from(value)` / the value's own iterator, so a fake Set proxy cannot hijack it.
   if (value instanceof Set) {
-    const arr = Array.from(value);
-    context.propCount.count += arr.length;
-    return arr.map((item) => sanitizeValue(item, options, depth + 1, context));
+    const iter = ReflectApply(SetProtoValues, value, []) as IterableIterator<unknown>;
+    const result: unknown[] = [];
+    for (const item of iter) {
+      context.propCount.count++;
+      result.push(sanitizeValue(item, options, depth + 1, context));
+    }
+    return result;
   }
 
   // Handle plain objects
   if (type === 'object') {
     // Create null-prototype object to prevent prototype chain attacks
-    const sanitized: Record<string, unknown> = Object.create(null);
+    const sanitized: Record<string, unknown> = ObjectCreate(null);
 
-    // Get own enumerable string keys only
-    const keys = Object.keys(value as Record<string, unknown>);
+    // Get own enumerable string keys only (Object.keys never hands a callback to the value)
+    const keys = ObjectKeys(value as Record<string, unknown>);
     context.propCount.count += keys.length;
 
     if (context.propCount.count > maxProperties) {
@@ -230,10 +302,11 @@ export function sanitizeValue(
         continue;
       }
 
-      // Try to access the property (may throw if getter trap)
+      // Try to access the property (may throw if getter trap). Use Reflect.get so the read
+      // cannot be redirected by a shadowed accessor on the value.
       let propValue: unknown;
       try {
-        propValue = (value as Record<string, unknown>)[key];
+        propValue = ReflectGet(value as object, key);
       } catch {
         // Skip properties that throw on access (likely getter traps)
         continue;

@@ -671,6 +671,23 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
 
         return result;
       },
+
+      // Intercept constructor calls to proxy the created instance. Without this, code such as
+      // `new (wrappedCtor)()` would return a RAW object whose prototype chain reaches the
+      // host Function constructor — the same escape class the apply trap closes for calls.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Proxy handler signature requires any for compatibility
+      construct(target: any, argArray: any[], newTarget: any): any {
+        // When invoked as `new (proxy)(...)`, newTarget is the proxy itself; reading its
+        // blocked `.prototype` would fail, so fall back to the original constructor.
+        const instance = Reflect.construct(target, argArray, newTarget === proxy ? target : newTarget);
+
+        // Proxy the instance so the created object stays behind the security barrier.
+        if (isProxyable(instance)) {
+          return proxyWithDepth(instance, depth + 1);
+        }
+
+        return instance;
+      },
     });
 
     // Cache the proxy with config key
