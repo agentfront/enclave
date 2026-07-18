@@ -10,6 +10,54 @@
 import { MessageValidationError, MessageSizeError } from './errors';
 
 /**
+ * Captured host intrinsics.
+ *
+ * SECURITY (same class as GHSA-6mpw-63xj-mghh): `sanitizeObject` runs on values crossing the
+ * worker/sandbox boundary (e.g. `worker-script` sanitizes the live execution result with it).
+ * That value may be an attacker-controlled `Proxy`, so we must never invoke a method *looked
+ * up on it* — `value.map(cb)` would hand our host callback to a `.map` trap, which can reach
+ * `cb.constructor` (host `Function`) for RCE. Enumerate arrays by index via `Reflect.get`
+ * instead, using the genuine builtins captured once here in the trusted realm.
+ */
+const ReflectGet = Reflect.get;
+const ArrayIsArray = Array.isArray;
+const NumberIsFinite = Number.isFinite;
+const MathFloor = Math.floor;
+
+/**
+ * Hard cap on the number of elements copied from a single untrusted array. An attacker Proxy
+ * can report an enormous `length` (e.g. 1e9) with cheap index traps; without this bound the
+ * copy loop below would iterate/allocate unboundedly (DoS). Legitimate deserialized data is
+ * far below this limit (and further bounded by the message size limit).
+ */
+const MAX_ARRAY_LENGTH = 1_000_000;
+
+/**
+ * Copy an array-like untrusted value into a fresh host array without invoking any method on
+ * it. Length is read once via Reflect.get; a non-numeric/negative length yields an empty
+ * array (never coerced, which could run attacker code). Lengths exceeding MAX_ARRAY_LENGTH
+ * are rejected before any allocation.
+ */
+function mapArraySafely(value: unknown, sanitizeItem: (item: unknown) => unknown): unknown[] {
+  const rawLen = ReflectGet(value as object, 'length');
+  const len = typeof rawLen === 'number' && NumberIsFinite(rawLen) && rawLen >= 0 ? MathFloor(rawLen) : 0;
+  if (len > MAX_ARRAY_LENGTH) {
+    throw new MessageValidationError(`Array exceeds maximum length of ${MAX_ARRAY_LENGTH}`);
+  }
+  const out: unknown[] = [];
+  for (let i = 0; i < len; i++) {
+    let item: unknown;
+    try {
+      item = ReflectGet(value as object, i);
+    } catch {
+      item = undefined;
+    }
+    out[i] = sanitizeItem(item);
+  }
+  return out;
+}
+
+/**
  * Keys that are dangerous to include in deserialized objects
  */
 const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -75,8 +123,8 @@ function sanitizeObjectWithDepthCheck(value: unknown, depth: number): unknown {
     return value;
   }
 
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeObjectWithDepthCheck(item, depth + 1));
+  if (ArrayIsArray(value)) {
+    return mapArraySafely(value, (item) => sanitizeObjectWithDepthCheck(item, depth + 1));
   }
 
   // Create a null-prototype object
@@ -137,8 +185,8 @@ export function sanitizeObject(value: unknown, depth = 0): unknown {
     return value;
   }
 
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeObject(item, depth + 1));
+  if (ArrayIsArray(value)) {
+    return mapArraySafely(value, (item) => sanitizeObject(item, depth + 1));
   }
 
   // Create a null-prototype object

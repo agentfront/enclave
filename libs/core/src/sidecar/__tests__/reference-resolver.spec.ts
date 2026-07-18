@@ -270,6 +270,93 @@ describe('ReferenceResolver', () => {
       expect(result.key).toBe('prefix-data-suffix');
     });
   });
+
+  // The resolver runs in the HOST realm and, on the single-VM path, receives raw (not
+  // JSON-sanitized) callTool args. Those may contain an attacker Proxy array, so the resolver
+  // must never invoke an array method (.map/.some/.reduce) *looked up on the value* — a trap
+  // would receive the host callback and reach `cb.constructor` (host Function) for RCE.
+  // (Same class as GHSA-6mpw-63xj-mghh.)
+  describe('host-callback-leak hardening (untrusted Proxy args)', () => {
+    function trappedArray(elements: unknown[]): unknown[] {
+      return new Proxy(elements, {
+        get(target, key, receiver) {
+          if (key === 'map' || key === 'some' || key === 'reduce' || key === 'forEach') {
+            return () => {
+              throw new Error('PWNED: array method trap was invoked');
+            };
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      });
+    }
+
+    it('resolve() does not consult a .map trap on an attacker Proxy array', () => {
+      const refId = sidecar.store('secret-data', 'extraction');
+      const evil = trappedArray([refId, 'plain']);
+
+      const resolved = resolver.resolve(evil) as unknown[];
+
+      expect(resolved).toEqual(['secret-data', 'plain']);
+    });
+
+    it('containsReferences() does not consult a .some trap on an attacker Proxy array', () => {
+      const refId = sidecar.store('data', 'extraction');
+
+      expect(resolver.containsReferences(trappedArray([refId]))).toBe(true);
+      expect(resolver.containsReferences(trappedArray(['no', 'refs']))).toBe(false);
+    });
+
+    it('predictExpandedSize() does not consult a .reduce trap on an attacker Proxy array', () => {
+      const refId = sidecar.store('x'.repeat(50), 'extraction');
+      const evil = trappedArray([refId, 'abc']);
+
+      // 50 (resolved ref) + 3 (plain string) — computed without touching the trap.
+      expect(resolver.predictExpandedSize(evil)).toBe(50 + Buffer.byteLength('abc'));
+    });
+
+    it('resolves a nested attacker Proxy array reached via a plain object wrapper', () => {
+      const refId = sidecar.store('deep', 'extraction');
+      const wrapper = { list: trappedArray([refId]) };
+
+      expect(resolver.containsReferences(wrapper)).toBe(true);
+      const resolved = resolver.resolve(wrapper) as { list: unknown[] };
+      expect(resolved.list).toEqual(['deep']);
+    });
+
+    it('handles a composite handle whose __parts is an attacker Proxy array', () => {
+      const ref1 = sidecar.store('Hello', 'extraction');
+      const ref2 = sidecar.store('World', 'extraction');
+      const handle = {
+        __type: 'composite',
+        __operation: 'concat',
+        __parts: trappedArray([ref1, ' ', ref2]),
+        __estimatedSize: 0,
+      };
+
+      // predictExpandedSize sums the parts by index — no .reduce trap on __parts.
+      expect(resolver.predictExpandedSize(handle)).toBe(
+        Buffer.byteLength('Hello') + Buffer.byteLength(' ') + Buffer.byteLength('World'),
+      );
+
+      // resolveComposite resolves the referenced parts by index — no iterator trap on __parts.
+      expect(resolver.resolve(handle)).toBe('Hello World');
+    });
+
+    it('rejects an untrusted array whose reported length exceeds the traversal cap', () => {
+      // A cheap Proxy that only fakes a huge length must not drive an unbounded loop.
+      const huge = new Proxy([] as unknown[], {
+        get(target, key, receiver) {
+          if (key === 'length') {
+            return 5_000_000;
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      });
+
+      expect(() => resolver.resolve(huge)).toThrow(/traversal limit/i);
+      expect(() => resolver.predictExpandedSize(huge)).toThrow(/traversal limit/i);
+    });
+  });
 });
 
 describe('isCompositeHandle', () => {

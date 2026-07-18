@@ -972,10 +972,34 @@ ${stackTraceHardeningCode}
       getPrototypeOf: function(target) {
         // Return null to hide prototype chain
         return null;
+      },
+      // SECURITY (GHSA-grmc-r8vw-226r): the get trap re-wraps values obtained via property
+      // ACCESS, but function-call results cross the same trust boundary and must be wrapped
+      // too. Without an apply trap, calling a wrapped function (for example the then method
+      // of the secure Promise returned by callTool) falls through to the default call and
+      // returns a RAW host object; the sandbox can then walk its prototype chain
+      // (Promise.prototype up to Function) to reach the host Function constructor for RCE.
+      // Results are re-wrapped at a FRESH depth (0) so a chain of calls such as
+      // then().then() cannot inflate depth past the recursion cap and leak an unwrapped value.
+      apply: function(target, thisArg, args) {
+        return createSecureProxy(Reflect.apply(target, thisArg, args), 0);
       }
+      // NOTE: intentionally NO construct trap here (unlike the standalone secure-proxy used
+      // for single-VM mode). Every constructor reachable from sandbox code resolves to an
+      // inner-VM or parent-VM intrinsic, and BOTH of those realms run with code generation
+      // from strings disabled, so a 'new X()' result cannot reach a usable Function
+      // constructor. The only code-generation-enabled realm (the host) is reached solely via
+      // host return values (callTool), which is an apply-path and is covered above. Wrapping
+      // construct results would additionally break the proxy invariant for the frozen (non-
+      // extensible) Error objects the harness throws (getPrototypeOf must not report null for
+      // a non-extensible target), masking legitimate errors.
     });
 
     proxyCache.set(obj, proxy);
+    // Idempotency: re-wrapping an already-secure proxy must return it unchanged, so an apply
+    // result that is itself already a secure proxy is not double-wrapped (which would nest
+    // proxies and inflate depth toward the recursion cap).
+    proxyCache.set(proxy, proxy);
     return proxy;
   }
 
@@ -1353,10 +1377,20 @@ ${stackTraceHardeningCode}
     if (typeof fn !== 'function') {
       throw createSafeError('parallel() requires a callback function as second argument', 'TypeError');
     }
-    if (items.length > 100) {
+    // SECURITY: items may be an attacker Proxy that only passes Array.isArray. Read the length
+    // ONCE and build the promise list by index rather than items.map(fn), so a .map trap can
+    // neither be handed our callback nor use a stateful length to slip past the 100-item cap.
+    var len = items.length;
+    if (typeof len !== 'number' || !isFinite(len) || len < 0) len = 0;
+    len = Math.floor(len);
+    if (len > 100) {
       throw createSafeError('parallel() is limited to 100 items');
     }
-    return await Promise.all(items.map(fn));
+    var promises = [];
+    for (var i = 0; i < len; i++) {
+      promises[i] = fn(items[i], i, items);
+    }
+    return await Promise.all(promises);
   }
 
   /**

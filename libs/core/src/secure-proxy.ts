@@ -311,6 +311,16 @@ const proxyCache = new WeakMap<object, Map<string, object>>();
 const proxySet = new WeakSet<object>();
 
 /**
+ * Reverse map from a secure proxy back to the exact object it wraps.
+ *
+ * Used to unwrap the `this` receiver when a proxied method is invoked: `proxy.method()`
+ * calls `method` with `thisArg === proxy`, but a Proxy does not carry the class's private
+ * (`#field`) brand, so such methods would throw. Unwrapping to the original target restores
+ * correct `this` (and private-field access) while the method's return value is still wrapped.
+ */
+const proxyToTarget = new WeakMap<object, object>();
+
+/**
  * Generate a cache key from all SecureProxyOptions that affect proxy behavior
  * This ensures different options create different proxies for the same target
  *
@@ -661,8 +671,20 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
       // Intercept function calls to proxy return values
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Proxy handler signature requires any for compatibility
       apply(target: any, thisArg: any, argArray: any[]): any {
+        // Preserve the ORIGINAL instance as `this`. When the sandbox calls `proxy.method()`,
+        // thisArg is our proxy; running the method with the proxy as `this` breaks methods
+        // that read `#private` fields (a Proxy lacks the class's private brand). Unwrap a
+        // known secure proxy back to its wrapped target before invoking the method. This only
+        // affects proxies WE created, and the method's return value is still wrapped below.
+        const unwrappedThis =
+          thisArg !== null &&
+          (typeof thisArg === 'object' || typeof thisArg === 'function') &&
+          proxyToTarget.has(thisArg)
+            ? proxyToTarget.get(thisArg)
+            : thisArg;
+
         // Call the original function
-        const result = Reflect.apply(target, thisArg, argArray);
+        const result = Reflect.apply(target, unwrappedThis, argArray);
 
         // Proxy the return value if it's an object or function
         if (isProxyable(result)) {
@@ -670,6 +692,23 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         }
 
         return result;
+      },
+
+      // Intercept constructor calls to proxy the created instance. Without this, code such as
+      // `new (wrappedCtor)()` would return a RAW object whose prototype chain reaches the
+      // host Function constructor — the same escape class the apply trap closes for calls.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Proxy handler signature requires any for compatibility
+      construct(target: any, argArray: any[], newTarget: any): any {
+        // When invoked as `new (proxy)(...)`, newTarget is the proxy itself; reading its
+        // blocked `.prototype` would fail, so fall back to the original constructor.
+        const instance = Reflect.construct(target, argArray, newTarget === proxy ? target : newTarget);
+
+        // Proxy the instance so the created object stays behind the security barrier.
+        if (isProxyable(instance)) {
+          return proxyWithDepth(instance, depth + 1);
+        }
+
+        return instance;
       },
     });
 
@@ -683,6 +722,8 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
 
     // Track the proxy in the WeakSet for isSecureProxy checks
     proxySet.add(proxy);
+    // Record proxy -> target so method calls can restore the original `this` (see apply trap).
+    proxyToTarget.set(proxy, obj);
 
     return proxy;
   }

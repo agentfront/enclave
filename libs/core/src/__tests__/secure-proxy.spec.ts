@@ -187,6 +187,46 @@ describe('SecureProxy', () => {
       expect(inner.constructor).toBeUndefined();
     });
 
+    it('should proxy instances created via a wrapped constructor (construct trap)', () => {
+      // Without a construct trap, `new (wrappedCtor)()` returns a RAW object whose prototype
+      // chain reaches the host Function constructor — the same escape class the apply trap
+      // closes for calls.
+      class Widget {
+        value = 42;
+      }
+      const WrappedWidget = createSecureProxy(Widget) as typeof Widget;
+
+      const instance = new WrappedWidget();
+
+      // Normal access still works through the barrier.
+      expect(instance.value).toBe(42);
+      // The created instance is wrapped: dangerous access is blocked and the chain is hidden.
+      expect((instance as { constructor?: unknown }).constructor).toBeUndefined();
+      expect(Object.getPrototypeOf(instance)).toBeNull();
+    });
+
+    it('preserves the original instance as `this` so methods can read #private fields', () => {
+      // A method invoked on the wrapped instance runs with the proxy as its receiver by
+      // default; a Proxy lacks the class's private brand, so `this.#field` would throw
+      // ("Cannot read private member ... from an object whose class did not declare it").
+      // The apply trap unwraps `this` back to the real instance to keep methods working.
+      class Counter {
+        #n = 41;
+        inc(): number {
+          return ++this.#n;
+        }
+        read(): number {
+          return this.#n;
+        }
+      }
+      const Wrapped = createSecureProxy(Counter) as typeof Counter;
+      const instance = new Wrapped();
+
+      expect(instance.inc()).toBe(42);
+      expect(instance.inc()).toBe(43);
+      expect(instance.read()).toBe(43);
+    });
+
     it('should respect maxDepth option', () => {
       const deepObj: any = { level: 0 };
       let current = deepObj;
