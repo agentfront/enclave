@@ -322,6 +322,40 @@ describe('ReferenceResolver', () => {
       const resolved = resolver.resolve(wrapper) as { list: unknown[] };
       expect(resolved.list).toEqual(['deep']);
     });
+
+    it('handles a composite handle whose __parts is an attacker Proxy array', () => {
+      const ref1 = sidecar.store('Hello', 'extraction');
+      const ref2 = sidecar.store('World', 'extraction');
+      const handle = {
+        __type: 'composite',
+        __operation: 'concat',
+        __parts: trappedArray([ref1, ' ', ref2]),
+        __estimatedSize: 0,
+      };
+
+      // predictExpandedSize sums the parts by index — no .reduce trap on __parts.
+      expect(resolver.predictExpandedSize(handle)).toBe(
+        Buffer.byteLength('Hello') + Buffer.byteLength(' ') + Buffer.byteLength('World'),
+      );
+
+      // resolveComposite resolves the referenced parts by index — no iterator trap on __parts.
+      expect(resolver.resolve(handle)).toBe('Hello World');
+    });
+
+    it('rejects an untrusted array whose reported length exceeds the traversal cap', () => {
+      // A cheap Proxy that only fakes a huge length must not drive an unbounded loop.
+      const huge = new Proxy([] as unknown[], {
+        get(target, key, receiver) {
+          if (key === 'length') {
+            return 5_000_000;
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      });
+
+      expect(() => resolver.resolve(huge)).toThrow(/traversal limit/i);
+      expect(() => resolver.predictExpandedSize(huge)).toThrow(/traversal limit/i);
+    });
   });
 });
 

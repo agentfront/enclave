@@ -126,6 +126,20 @@ describe('GHSA-6mpw-63xj-mghh: value-sanitizer return-value callback leak', () =
       expect(out).toEqual([1, 2]);
     });
 
+    it('the worker-pool sanitizer rejects an array whose reported length is excessive (DoS)', () => {
+      // A cheap Proxy that fakes an enormous length must not drive an unbounded copy loop.
+      const huge = new Proxy([] as unknown[], {
+        get(target, key, receiver) {
+          if (key === 'length') {
+            return 5_000_000;
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      });
+
+      expect(() => sanitizeObject(huge)).toThrow(/maximum length/i);
+    });
+
     it('reads array length exactly once and still enforces the property limit (DoS-safe)', () => {
       let lengthReads = 0;
       const evil = new Proxy([] as unknown[], {

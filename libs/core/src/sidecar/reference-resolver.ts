@@ -27,10 +27,34 @@ const ReflectGet = Reflect.get;
 const NumberIsFinite = Number.isFinite;
 const MathFloor = Math.floor;
 
-/** Own length of an array-like untrusted value, read once via Reflect.get; never coerced. */
+/**
+ * Hard cap on how many elements a single untrusted array/composite is traversed for. An
+ * attacker Proxy can report an enormous `length` (e.g. 1e9) with cheap index traps; without
+ * this bound the index loops in resolve()/predictExpandedSize()/containsReferences() would
+ * iterate (and, in resolve(), allocate) unboundedly (DoS). Legitimate callTool args are far
+ * below this limit and further bounded upstream by the payload size limit.
+ */
+const MAX_TRAVERSAL_LENGTH = 1_000_000;
+
+/**
+ * Own length of an array-like untrusted value, read once via Reflect.get; never coerced.
+ * A length beyond MAX_TRAVERSAL_LENGTH is rejected (fail-closed) before any traversal.
+ */
 function untrustedLength(value: unknown): number {
   const rawLen = ReflectGet(value as object, 'length');
-  return typeof rawLen === 'number' && NumberIsFinite(rawLen) && rawLen >= 0 ? MathFloor(rawLen) : 0;
+  if (typeof rawLen !== 'number' || !NumberIsFinite(rawLen) || rawLen < 0) {
+    return 0;
+  }
+  const len = MathFloor(rawLen);
+  if (len > MAX_TRAVERSAL_LENGTH) {
+    throw new ResolutionLimitError(
+      `Array length ${len} exceeds maximum traversal limit (${MAX_TRAVERSAL_LENGTH})`,
+      'MAX_TRAVERSAL_LENGTH',
+      MAX_TRAVERSAL_LENGTH,
+      len,
+    );
+  }
+  return len;
 }
 
 /** Index read on an untrusted value that tolerates a throwing getter/trap. */

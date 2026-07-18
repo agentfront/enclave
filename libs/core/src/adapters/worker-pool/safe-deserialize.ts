@@ -25,13 +25,25 @@ const NumberIsFinite = Number.isFinite;
 const MathFloor = Math.floor;
 
 /**
+ * Hard cap on the number of elements copied from a single untrusted array. An attacker Proxy
+ * can report an enormous `length` (e.g. 1e9) with cheap index traps; without this bound the
+ * copy loop below would iterate/allocate unboundedly (DoS). Legitimate deserialized data is
+ * far below this limit (and further bounded by the message size limit).
+ */
+const MAX_ARRAY_LENGTH = 1_000_000;
+
+/**
  * Copy an array-like untrusted value into a fresh host array without invoking any method on
  * it. Length is read once via Reflect.get; a non-numeric/negative length yields an empty
- * array (never coerced, which could run attacker code).
+ * array (never coerced, which could run attacker code). Lengths exceeding MAX_ARRAY_LENGTH
+ * are rejected before any allocation.
  */
 function mapArraySafely(value: unknown, sanitizeItem: (item: unknown) => unknown): unknown[] {
   const rawLen = ReflectGet(value as object, 'length');
   const len = typeof rawLen === 'number' && NumberIsFinite(rawLen) && rawLen >= 0 ? MathFloor(rawLen) : 0;
+  if (len > MAX_ARRAY_LENGTH) {
+    throw new MessageValidationError(`Array exceeds maximum length of ${MAX_ARRAY_LENGTH}`);
+  }
   const out: unknown[] = [];
   for (let i = 0; i < len; i++) {
     let item: unknown;
