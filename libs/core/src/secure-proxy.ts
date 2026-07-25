@@ -490,25 +490,32 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         // Convert symbol to string for checking
         const propName = typeof property === 'symbol' ? property.toString() : property;
 
-        // Check if property is non-configurable (proxy invariant requires returning actual value)
+        // A non-configurable, non-writable data property must be reported with its exact
+        // value (proxy invariant), so it can neither be wrapped nor hidden. Primitives are
+        // inert and safe to hand back — this covers constants such as Math.PI and hardened
+        // slots pinned to undefined. An object or function cannot be handed back: it would
+        // cross the barrier unwrapped and its prototype chain reaches the host Function
+        // constructor, so deny the read instead. Throwing always satisfies the invariant.
         const descriptor = Object.getOwnPropertyDescriptor(target, property);
-        const isNonConfigurable = descriptor && !descriptor.configurable;
+        if (descriptor && !descriptor.configurable && descriptor.writable === false && 'value' in descriptor) {
+          const exactValue: unknown = descriptor.value;
+          if (exactValue !== null && (typeof exactValue === 'object' || typeof exactValue === 'function')) {
+            throw createSafeError(
+              `Security violation: Access to '${String(propName)}' is blocked. ` +
+                `This property cannot be exposed without breaking the sandbox barrier.`,
+              'SecurityError',
+            );
+          }
+          return exactValue;
+        }
 
-        // Block dangerous properties (but respect proxy invariants)
+        // Block dangerous properties. Every descriptor shape that would force the trap's
+        // return value has been handled above, so denying here is invariant-safe.
         if (typeof propName === 'string' && blockedSet.has(propName)) {
           if (options.onBlocked) {
             options.onBlocked(target, propName);
           }
 
-          // For non-configurable, non-writable properties, JavaScript proxy invariants require
-          // returning the EXACT same object reference. We cannot proxy the return value.
-          // This is a fundamental JS limitation for built-in properties like Array.prototype.
-          if (isNonConfigurable && descriptor && !descriptor.writable) {
-            // Must return exact value to satisfy invariant
-            return Reflect.get(target, property, receiver);
-          }
-
-          // For configurable properties, throw or return undefined
           if (throwOnBlocked) {
             throw createSafeError(
               `Security violation: Access to '${propName}' is blocked. ` +
@@ -523,11 +530,6 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         if (typeof target === 'function' && typeof propName === 'string' && FUNCTION_BLOCKED_PROPERTIES.has(propName)) {
           if (options.onBlocked) {
             options.onBlocked(target, propName);
-          }
-
-          // Same invariant handling for non-configurable, non-writable properties
-          if (isNonConfigurable && descriptor && !descriptor.writable) {
-            return Reflect.get(target, property, receiver);
           }
 
           if (throwOnBlocked) {
