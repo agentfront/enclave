@@ -197,6 +197,18 @@ When the rate limit is exceeded, subsequent calls are blocked until the rate dro
 4. **Audit Trail** - Operation history for forensics
 5. **Defense in Depth** - Additional layer beyond AST validation
 
+## Host Value Boundary
+
+Custom `globals`, and everything reachable from what they return, are wrapped in a membrane that blocks `constructor`, `prototype`, and `__proto__`. One descriptor shape cannot be wrapped: a JavaScript `get` trap is required to report the exact value of a non-configurable, non-writable own data property, so such a property can be neither wrapped nor hidden.
+
+For host-owned values the membrane therefore refuses that read with a `SecurityError` whenever the pinned value is an object or a function — returning the reference would place an unwrapped host object graph within reach of sandboxed code, and that graph's prototype chain leads to the host `Function` constructor. Pinned **primitives** are still reported as-is, so numeric constants and slots pinned to `undefined` read normally.
+
+Values owned by the sandbox's own realms keep the exact-value behavior. Their intrinsics run with code generation from strings disabled, and `new Array()` and `instanceof` both depend on reading a pinned `prototype`.
+
+The practical consequence for embedders: sandboxed code should receive only plain serialized data, never live host objects. A structurally cloned or JSON-projected value has no pinned members and reads normally, whereas a Zod schema pins `_zod` and every class pins `prototype`.
+
+The exported `createSecureProxy()` helper applies the same rule and always treats its target as host-owned.
+
 ## Performance Considerations
 
 The Double VM adds minimal overhead:

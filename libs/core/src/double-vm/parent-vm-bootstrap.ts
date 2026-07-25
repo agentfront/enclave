@@ -832,8 +832,10 @@ ${stackTraceHardeningCode}
   // Reference ID pattern for detecting sidecar references
   const refIdPattern = /^__REF_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}__$/i;
 
-  // Proxy cache to avoid infinite recursion and duplicate wrapping
+  // Proxy caches to avoid infinite recursion and duplicate wrapping. Host-owned values are
+  // cached separately from realm-owned ones because the two use different blocking rules.
   const proxyCache = new WeakMap();
+  const hostProxyCache = new WeakMap();
 
   /**
    * Create a secure proxy that blocks access to dangerous properties
@@ -842,9 +844,15 @@ ${stackTraceHardeningCode}
    * IMPORTANT: Must respect JavaScript proxy invariants:
    * - Non-configurable properties must return their actual value
    * - Non-configurable non-writable properties cannot be hidden
+   *
+   * The host flag marks a value that originates in the HOST realm (custom globals and
+   * everything reachable from what they return). The host realm is the only one with code
+   * generation from strings enabled, so a raw reference that escapes from it is remote code
+   * execution; such a subtree refuses the reads a realm-owned object is allowed to answer.
    */
-  function createSecureProxy(obj, depth) {
+  function createSecureProxy(obj, depth, host) {
     if (depth === undefined) depth = 0;
+    host = host === true;
     if (depth > 10) return obj; // Max depth to prevent infinite recursion
 
     // Skip primitives and null
@@ -853,8 +861,9 @@ ${stackTraceHardeningCode}
     }
 
     // Check cache
-    if (proxyCache.has(obj)) {
-      return proxyCache.get(obj);
+    var cache = host ? hostProxyCache : proxyCache;
+    if (cache.has(obj)) {
+      return cache.get(obj);
     }
 
     var proxy = new Proxy(obj, {
@@ -869,14 +878,27 @@ ${stackTraceHardeningCode}
         // the proxy must return the exact same value (cannot wrap/bind/proxy it).
         // This matters for hardened properties like Error.prepareStackTrace.
         if (descriptor && isNonConfigurable && 'value' in descriptor && descriptor.writable === false) {
-          return descriptor.value;
+          var exactValue = descriptor.value;
+          // On a host-owned value the exact reference cannot be handed over: it would cross
+          // the barrier unwrapped and its prototype chain reaches the host Function
+          // constructor. Primitives stay safe to report, so only object/function values are
+          // refused, and throwing satisfies the invariant that wrapping would break.
+          if (host && exactValue !== null && (typeof exactValue === 'object' || typeof exactValue === 'function')) {
+            throw createSafeError(
+              "Security violation: Access to '" + propName + "' is blocked. " +
+              "This property cannot be exposed without breaking the sandbox barrier."
+            );
+          }
+          return exactValue;
         }
 
         // Block dangerous properties - but respect proxy invariants
         if (blockedPropertiesSet.has(propName)) {
           // For non-configurable properties, we MUST return the actual value
-          // (JavaScript proxy invariant - can't hide non-configurable properties)
-          if (isNonConfigurable) {
+          // (JavaScript proxy invariant - can't hide non-configurable properties).
+          // Host-owned values instead deny the read: every descriptor shape that could force
+          // the trap's result was handled above, so returning undefined is invariant-safe.
+          if (isNonConfigurable && !host) {
             return Reflect.get(target, property, receiver);
           }
           if (throwOnBlocked) {
@@ -894,13 +916,13 @@ ${stackTraceHardeningCode}
         // Then recursively proxy the bound function to block constructor access
         if (typeof value === 'function') {
           var boundMethod = value.bind(target);
-          return createSecureProxy(boundMethod, depth + 1);
+          return createSecureProxy(boundMethod, depth + 1, host);
         }
 
         // Recursively proxy nested objects to maintain security barrier
         // This prevents attacks like: process.env.__proto__.constructor
         if (value !== null && typeof value === 'object') {
-          return createSecureProxy(value, depth + 1);
+          return createSecureProxy(value, depth + 1, host);
         }
 
         return value;
@@ -982,7 +1004,7 @@ ${stackTraceHardeningCode}
       // Results are re-wrapped at a FRESH depth (0) so a chain of calls such as
       // then().then() cannot inflate depth past the recursion cap and leak an unwrapped value.
       apply: function(target, thisArg, args) {
-        return createSecureProxy(Reflect.apply(target, thisArg, args), 0);
+        return createSecureProxy(Reflect.apply(target, thisArg, args), 0, host);
       }
       // NOTE: intentionally NO construct trap here (unlike the standalone secure-proxy used
       // for single-VM mode). Every constructor reachable from sandbox code resolves to an
@@ -995,11 +1017,11 @@ ${stackTraceHardeningCode}
       // a non-extensible target), masking legitimate errors.
     });
 
-    proxyCache.set(obj, proxy);
+    cache.set(obj, proxy);
     // Idempotency: re-wrapping an already-secure proxy must return it unchanged, so an apply
     // result that is itself already a secure proxy is not double-wrapped (which would nest
     // proxies and inflate depth toward the recursion cap).
-    proxyCache.set(proxy, proxy);
+    cache.set(proxy, proxy);
     return proxy;
   }
 
@@ -1934,10 +1956,13 @@ ${stackTraceHardeningCode}
   // Add user-provided globals if any (also wrapped with secure proxy and non-writable)
   // SECURITY: Use enumerable: false to prevent Object.assign({}, this) from copying globals
   // This blocks Vector 380 (Bridge-Serialized State Reflection) attack
+  // Custom globals are HOST-realm values, so they are wrapped in host mode: the whole
+  // subtree reachable through them (including whatever their calls return) refuses to hand
+  // back a raw reference, even for descriptor shapes where a realm-owned object may.
   if (hostConfig.globals) {
     for (var uKey in hostConfig.globals) {
       if (hostConfig.globals.hasOwnProperty(uKey)) {
-        var wrappedGlobal = createSecureProxy(hostConfig.globals[uKey]);
+        var wrappedGlobal = createSecureProxy(hostConfig.globals[uKey], 0, true);
         Object.defineProperty(innerContext, uKey, {
           value: wrappedGlobal,
           writable: false,
