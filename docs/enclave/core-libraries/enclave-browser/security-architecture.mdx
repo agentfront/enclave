@@ -136,6 +136,12 @@ Every global object exposed to user code is wrapped in a `Proxy` that blocks acc
 
 The proxy behavior is configurable per security level. At `STRICT` and `SECURE` levels, accessing blocked properties throws an error. At `PERMISSIVE`, it returns `undefined`.
 
+#### Pinned properties
+
+A JavaScript `get` trap must report the exact value of a non-configurable, non-writable own data property, so the proxy can neither wrap nor hide one. Primitives in that position are reported as-is — this covers constants such as `Math.PI` and hardened slots pinned to `undefined`. An **object or function** in that position is refused with a `SecurityError` regardless of `throwOnBlocked`, because returning the reference would put an unwrapped object graph in reach of sandboxed code, and that graph's prototype chain leads to a `Function` constructor.
+
+This matters for host values that pin object-valued internals: a Zod schema pins `_zod` this way, and every class pins `prototype`. Hand sandboxed code plain serialized data rather than live host objects — a structurally cloned or JSON-projected value has no pinned members and reads normally.
+
 Additionally, dangerous static methods on `Object` are neutralized: `defineProperty`, `defineProperties`, `setPrototypeOf`, `getOwnPropertyDescriptor`, and `getOwnPropertyDescriptors`.
 
 ### Layer 7: Safe Runtime Wrappers

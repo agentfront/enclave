@@ -284,13 +284,25 @@ describe('custom-global results must not leak a raw host object via a pinned pro
     }
   }
 
+  // Disposal must happen even when an assertion throws, otherwise a failing test leaves its
+  // worker pool alive and jest hangs on the surviving handles.
+  const created: Enclave[] = [];
+
+  afterEach(() => {
+    while (created.length > 0) {
+      created.pop()?.dispose();
+    }
+  });
+
   function enclaveWithHostGlobals(globals: Record<string, unknown>): Enclave {
-    return new Enclave({
+    const enclave = new Enclave({
       securityLevel: 'STANDARD',
       toolHandler: async () => ({ ok: true }),
       allowFunctionsInGlobals: true,
       globals,
     });
+    created.push(enclave);
+    return enclave;
   }
 
   it('blocks the reported PoC (pinned property → host Function → execSync)', async () => {
@@ -308,8 +320,9 @@ describe('custom-global results must not leak a raw host object via a pinned pro
     `;
     const result = await enclave.run(code);
     assertNoRce(result);
+    // The run must fail at the membrane, not somewhere incidental further down the chain.
     expect(result.success).toBe(false);
-    enclave.dispose();
+    expect(result.error?.message).toMatch(/Access to '_zod' is blocked/);
   });
 
   it('refuses the pinned property itself rather than returning a raw reference', async () => {
@@ -328,7 +341,6 @@ describe('custom-global results must not leak a raw host object via a pinned pro
     const result = await enclave.run(code);
     expect(result.success).toBe(true);
     expect(result.value).toEqual({ denied: expect.stringMatching(/blocked/i) });
-    enclave.dispose();
   });
 
   it('stays strict through nested reads and chained calls', async () => {
@@ -349,7 +361,6 @@ describe('custom-global results must not leak a raw host object via a pinned pro
     const result = await enclave.run(code);
     expect(result.success).toBe(true);
     expect(result.value).toEqual({ denied: expect.stringMatching(/blocked/i) });
-    enclave.dispose();
   });
 
   it('still exposes primitive-valued pinned properties from host globals', async () => {
@@ -370,7 +381,6 @@ describe('custom-global results must not leak a raw host object via a pinned pro
     const result = await enclave.run(code);
     expect(result.success).toBe(true);
     expect(result.value).toBe(3);
-    enclave.dispose();
   });
 
   it('still passes ordinary host-global data through unchanged', async () => {
@@ -386,11 +396,10 @@ describe('custom-global results must not leak a raw host object via a pinned pro
     const result = await enclave.run(code);
     expect(result.success).toBe(true);
     expect(result.value).toEqual({ name: 'users:list', kind: 'object', prop: 'number' });
-    enclave.dispose();
   });
 
   it('leaves realm-owned intrinsics usable (host mode must not touch them)', async () => {
-    const enclave = new Enclave({ securityLevel: 'STANDARD', toolHandler: async () => ({ ok: true }) });
+    const enclave = enclaveWithHostGlobals({});
     const code = `
       async function __ag_main() {
         return {
@@ -403,6 +412,5 @@ describe('custom-global results must not leak a raw host object via a pinned pro
     const result = await enclave.run(code);
     expect(result.success).toBe(true);
     expect(result.value).toEqual({ joined: 'x-x-x', repeated: 'abab', parsed: 1 });
-    enclave.dispose();
   });
 });

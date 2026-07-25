@@ -410,15 +410,15 @@ describe('SecureProxy', () => {
       expect(() => (proxy as any).pinned).toThrow(/blocked/i);
     });
 
-    it('should not leak a frozen class prototype through the blocked-property path', () => {
+    it('should refuse a class prototype, which is pinned by the language', () => {
       class Widget {
         value = 1;
       }
-      Object.freeze(Widget.prototype);
       const proxy = createSecureProxy(Widget) as unknown as Record<string, unknown>;
 
-      // `prototype` on a class is non-configurable and non-writable, so the old invariant
-      // concession returned it raw — from there `.constructor.constructor` is host Function.
+      // `prototype` on a class is already non-configurable and non-writable, so this read is
+      // decided by the invariant branch rather than the blocked-property list. The old
+      // concession returned it raw, and `.constructor.constructor` from there is host Function.
       expect(() => proxy['prototype']).toThrow(/blocked/i);
     });
 
