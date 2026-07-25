@@ -27,6 +27,17 @@
  *    trap re-wraps every call result behind the security barrier (at a fresh depth so chained
  *    calls cannot inflate past the recursion cap).
  *
+ * 3. Custom-global results leaked a raw host object through a pinned property
+ *    A JavaScript `get` trap MUST report the exact value of a non-configurable, non-writable
+ *    data property, so the membrane cannot wrap it. It used to hand the raw reference back,
+ *    which meant any host object carrying such a property (a Zod v4 schema pins `_zod` this
+ *    way) delivered an unwrapped host object graph to sandbox code, and from there
+ *    `.constructor` reaches the host `Function` constructor. Fix: values owned by the HOST
+ *    realm are wrapped in host mode, where an object/function in that position is refused
+ *    (throwing satisfies the invariant that wrapping would break). Primitives are still
+ *    reported, and realm-owned intrinsics keep their previous behaviour so `new Array()`,
+ *    `instanceof`, and prototype-based memory patching continue to work.
+ *
  * @packageDocumentation
  */
 
@@ -248,6 +259,150 @@ describe('GHSA-grmc-r8vw-226r: callTool().then() host Promise leak', () => {
     const result = await enclave.run(code);
     expect(result.success).toBe(true);
     expect(result.value).toBe(8);
+    enclave.dispose();
+  });
+});
+
+describe('custom-global results must not leak a raw host object via a pinned property', () => {
+  /**
+   * Mirrors a Zod v4 schema: `_zod` is installed as a non-configurable, non-writable own data
+   * property, and it holds an object that leads back to the host class (and so to the host
+   * `Function` constructor). Any host object shaped like this defeats a Proxy membrane unless
+   * the membrane refuses the read.
+   */
+  class HostSchema {
+    constructor() {
+      Object.defineProperty(this, '_zod', {
+        value: { constr: HostSchema },
+        configurable: false,
+        writable: false,
+        enumerable: true,
+      });
+    }
+    parse(value: unknown): unknown {
+      return value;
+    }
+  }
+
+  function enclaveWithHostGlobals(globals: Record<string, unknown>): Enclave {
+    return new Enclave({
+      securityLevel: 'STANDARD',
+      toolHandler: async () => ({ ok: true }),
+      allowFunctionsInGlobals: true,
+      globals,
+    });
+  }
+
+  it('blocks the reported PoC (pinned property → host Function → execSync)', async () => {
+    const enclave = enclaveWithHostGlobals({
+      getTool: () => ({ name: 't', outputSchema: new HostSchema() }),
+    });
+    const code = `
+      async function __ag_main() {
+        const k = ['con','struc','tor'].join('');
+        const raw = getTool('t').outputSchema['_zod'];
+        const F = raw['constr'][k];
+        const proc = F('return process')();
+        return proc.getBuiltinModule('node:child_process').execSync('echo pwned').toString();
+      }
+    `;
+    const result = await enclave.run(code);
+    assertNoRce(result);
+    expect(result.success).toBe(false);
+    enclave.dispose();
+  });
+
+  it('refuses the pinned property itself rather than returning a raw reference', async () => {
+    const enclave = enclaveWithHostGlobals({
+      getTool: () => ({ name: 't', outputSchema: new HostSchema() }),
+    });
+    const code = `
+      async function __ag_main() {
+        try {
+          return { leaked: typeof getTool('t').outputSchema['_zod'] };
+        } catch (e) {
+          return { denied: e.message };
+        }
+      }
+    `;
+    const result = await enclave.run(code);
+    expect(result.success).toBe(true);
+    expect(result.value).toEqual({ denied: expect.stringMatching(/blocked/i) });
+    enclave.dispose();
+  });
+
+  it('stays strict through nested reads and chained calls', async () => {
+    const enclave = enclaveWithHostGlobals({
+      registry: {
+        lookup: () => ({ tool: { schema: new HostSchema() } }),
+      },
+    });
+    const code = `
+      async function __ag_main() {
+        try {
+          return { leaked: typeof registry.lookup().tool.schema['_zod'] };
+        } catch (e) {
+          return { denied: e.message };
+        }
+      }
+    `;
+    const result = await enclave.run(code);
+    expect(result.success).toBe(true);
+    expect(result.value).toEqual({ denied: expect.stringMatching(/blocked/i) });
+    enclave.dispose();
+  });
+
+  it('still exposes primitive-valued pinned properties from host globals', async () => {
+    const constants: Record<string, unknown> = {};
+    Object.defineProperty(constants, 'VERSION', {
+      value: 3,
+      configurable: false,
+      writable: false,
+      enumerable: true,
+    });
+
+    const enclave = enclaveWithHostGlobals({ constants });
+    const code = `
+      async function __ag_main() {
+        return constants.VERSION;
+      }
+    `;
+    const result = await enclave.run(code);
+    expect(result.success).toBe(true);
+    expect(result.value).toBe(3);
+    enclave.dispose();
+  });
+
+  it('still passes ordinary host-global data through unchanged', async () => {
+    const enclave = enclaveWithHostGlobals({
+      getTool: (name: string) => ({ name, inputSchema: { type: 'object', properties: { a: { type: 'number' } } } }),
+    });
+    const code = `
+      async function __ag_main() {
+        const meta = getTool('users:list');
+        return { name: meta.name, kind: meta.inputSchema.type, prop: meta.inputSchema.properties.a.type };
+      }
+    `;
+    const result = await enclave.run(code);
+    expect(result.success).toBe(true);
+    expect(result.value).toEqual({ name: 'users:list', kind: 'object', prop: 'number' });
+    enclave.dispose();
+  });
+
+  it('leaves realm-owned intrinsics usable (host mode must not touch them)', async () => {
+    const enclave = new Enclave({ securityLevel: 'STANDARD', toolHandler: async () => ({ ok: true }) });
+    const code = `
+      async function __ag_main() {
+        return {
+          joined: new Array(3).fill('x').join('-'),
+          repeated: 'ab'.repeat(2),
+          parsed: JSON.parse('{"n":1}').n,
+        };
+      }
+    `;
+    const result = await enclave.run(code);
+    expect(result.success).toBe(true);
+    expect(result.value).toEqual({ joined: 'x-x-x', repeated: 'abab', parsed: 1 });
     enclave.dispose();
   });
 });
