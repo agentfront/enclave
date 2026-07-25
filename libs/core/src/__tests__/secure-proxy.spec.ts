@@ -5,7 +5,12 @@
  * at runtime, preventing attacks that bypass static analysis.
  */
 
-import { createSecureProxy, wrapGlobalsWithSecureProxy, createSecureStandardLibrary } from '../secure-proxy';
+import {
+  createSecureProxy,
+  wrapGlobalsWithSecureProxy,
+  createSecureStandardLibrary,
+  MIN_MEMBRANE_RECURSION_DEPTH,
+} from '../secure-proxy';
 
 describe('SecureProxy', () => {
   describe('Constructor Access Blocking', () => {
@@ -227,7 +232,7 @@ describe('SecureProxy', () => {
       expect(instance.read()).toBe(43);
     });
 
-    it('should respect maxDepth option', () => {
+    it('blocks constructor at every level regardless of the configured maxDepth', () => {
       const deepObj: any = { level: 0 };
       let current = deepObj;
       for (let i = 1; i <= 20; i++) {
@@ -235,13 +240,36 @@ describe('SecureProxy', () => {
         current = current.nested;
       }
 
+      // maxDepth is floored to a safe recursion backstop; a small value never re-opens the
+      // membrane. Constructor stays blocked at every depth (no raw target is ever handed back).
       const proxy = createSecureProxy(deepObj, { maxDepth: 5 });
 
-      // Access within depth limit is proxied
       expect(proxy.nested.nested.constructor).toBeUndefined();
+      expect(proxy.nested.nested.nested.nested.nested.nested.nested.nested.constructor).toBeUndefined();
+    });
 
-      // Beyond maxDepth, we get the raw object (constructor accessible)
-      // Note: This test verifies the depth limit works, not that it's unsafe
+    it('never leaks a raw target: constructor stays blocked at every depth and traversal fails closed', () => {
+      // The security invariant is stronger than "throws past the cap": at NO depth may the
+      // membrane hand back an unwrapped object (which would expose a live .constructor). We walk
+      // past the real recursion cap (derived from the exported constant, not a hardcoded magic
+      // number) and assert (a) constructor is blocked at every level, and (b) the traversal
+      // eventually fails CLOSED with a recursion error rather than returning a raw object.
+      const chainDepth = MIN_MEMBRANE_RECURSION_DEPTH + 16;
+      const deepObj: any = { level: 0 };
+      let current = deepObj;
+      for (let i = 1; i <= chainDepth; i++) {
+        current.nested = { level: i };
+        current = current.nested;
+      }
+
+      let node: any = createSecureProxy(deepObj);
+      expect(() => {
+        for (let i = 0; i <= chainDepth; i++) {
+          // A raw object would expose its constructor; the membrane must keep it undefined.
+          expect(node.constructor).toBeUndefined();
+          node = node.nested;
+        }
+      }).toThrow(/recursion depth/i);
     });
   });
 

@@ -19,6 +19,24 @@ import type { SecureProxyLevelConfig, SecurityLevel } from './types';
 import { createSafeError } from './safe-error';
 
 /**
+ * Absolute floor for the membrane recursion cap.
+ *
+ * The recursion counter is a stack-safety backstop, NOT a security control: every level of the
+ * membrane already blocks the dangerous properties, so the cap value never decides whether an
+ * escape is possible. Its only job is to stop pathological recursion. It must therefore sit
+ * comfortably above the deepest value that can legitimately reach the membrane (a tool result is
+ * pre-sanitized to at most `maxSanitizeDepth`, which peaks at 50), or legitimate deep data would
+ * be rejected (custom host globals are not sanitize-bounded, hence the generous ~5x headroom).
+ * The membrane is lazy (one property access = one wrap = O(1) synchronous stack), so a large
+ * value costs nothing. Exceeding the cap fails CLOSED (throws) — it must never hand back a raw
+ * target.
+ *
+ * Exported so tests can derive their traversal depth from the real cap instead of hardcoding a
+ * value that would silently rot if the cap changed.
+ */
+export const MIN_MEMBRANE_RECURSION_DEPTH = 256;
+
+/**
  * Categorized blocked properties for defense-in-depth
  *
  * Organized by attack category to support per-security-level configuration
@@ -458,8 +476,11 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
   // Add any additional blocked properties
   const blockedSet = new Set([...baseBlocked, ...(options.additionalBlocked || [])]);
 
-  // Use maxDepth from levelConfig if provided, otherwise from options or default
-  const maxDepth = options.maxDepth ?? options.levelConfig?.proxyMaxDepth ?? 10;
+  // Use maxDepth from levelConfig if provided, otherwise from options or default.
+  // Floor it so the (fail-closed) recursion cap can never sit below the deepest value that can
+  // legitimately arrive; a higher cap only wraps MORE of the graph, so it is never less secure.
+  const configuredMaxDepth = options.maxDepth ?? options.levelConfig?.proxyMaxDepth ?? 10;
+  const maxDepth = Math.max(configuredMaxDepth, MIN_MEMBRANE_RECURSION_DEPTH);
 
   // Use throwOnBlocked from options or levelConfig (options takes precedence)
   const throwOnBlocked = options.throwOnBlocked ?? options.levelConfig?.throwOnBlocked ?? false;
@@ -480,9 +501,15 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
       }
     }
 
-    // Depth limit to prevent stack overflow
+    // Recursion backstop. Fail CLOSED: returning the raw target here would hand sandbox code an
+    // unwrapped reference whose prototype chain reaches the host Function constructor (the
+    // reported `.bind`-chain / deep-graph escape). Throwing keeps the membrane total.
     if (depth > maxDepth) {
-      return obj;
+      throw createSafeError(
+        `Security violation: secure-proxy recursion depth (${maxDepth}) exceeded. ` +
+          `The value cannot be exposed without breaking the sandbox barrier.`,
+        'SecurityError',
+      );
     }
 
     const proxy = new Proxy(obj, {

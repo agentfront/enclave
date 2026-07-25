@@ -15,6 +15,22 @@ import type { SerializableParentValidationConfig, SerializableSuspiciousPattern 
 import type { SecurityLevel } from '../types';
 
 /**
+ * Recursion backstop for the in-VM secure-proxy membranes.
+ *
+ * The counter is a stack-safety limit, NOT a security control: every membrane level already
+ * blocks the dangerous properties, so this number never decides whether an escape is possible.
+ * Exceeding it must fail CLOSED (throw) — returning the raw target used to hand sandbox code an
+ * unwrapped host reference (the reported `.bind`-chain escape inflated the counter past the old
+ * cap of 10 and received a raw function whose chain reaches the host Function constructor).
+ * It sits well above the deepest value that can legitimately arrive (a tool result is
+ * pre-sanitized to at most `maxSanitizeDepth`, which peaks at 50; custom host globals are not
+ * sanitize-bounded, hence the generous ~5x headroom) so legitimate data is never rejected. The
+ * membrane is lazy (one property access = one wrap = O(1) synchronous stack), so a large value
+ * costs nothing in stack depth or performance.
+ */
+const MEMBRANE_MAX_RECURSION_DEPTH = 256;
+
+/**
  * Options for generating the parent VM bootstrap script
  */
 export interface ParentVmBootstrapOptions {
@@ -405,7 +421,11 @@ ${stackTraceHardeningCode}
 	  function __ag_createSecureProxy(obj, depth) {
 	    if (depth === undefined) depth = 0;
 	    if (!__ag_Proxy || !__ag_Reflect) return obj;
-	    if (depth > 10) return obj;
+	    // Fail CLOSED past the recursion backstop: returning the raw target would leak an
+	    // unwrapped reference (see MEMBRANE_MAX_RECURSION_DEPTH).
+	    if (depth > ${MEMBRANE_MAX_RECURSION_DEPTH}) {
+	      throw new Error('Security violation: secure-proxy recursion depth exceeded.');
+	    }
 	    if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) return obj;
 
 	    if (__ag_proxyCache) {
@@ -853,7 +873,14 @@ ${stackTraceHardeningCode}
   function createSecureProxy(obj, depth, host) {
     if (depth === undefined) depth = 0;
     host = host === true;
-    if (depth > 10) return obj; // Max depth to prevent infinite recursion
+    // Recursion backstop. Fail CLOSED: returning the raw target here was the reported escape.
+    // A bind chain inflates depth (each read binds a FRESH function, so the identity cache never
+    // dedupes it) past the cap, and the raw host function prototype chain reaches the host
+    // Function constructor for RCE. Throwing keeps the membrane total; the cap sits far above any
+    // legitimately-deep (pre-sanitized) value so real data is never rejected.
+    if (depth > ${MEMBRANE_MAX_RECURSION_DEPTH}) {
+      throw createSafeError('Security violation: secure-proxy recursion depth exceeded.');
+    }
 
     // Skip primitives and null
     if (obj === null || typeof obj !== 'object' && typeof obj !== 'function') {
