@@ -68,6 +68,26 @@ describe('ResourceExhaustionRule — laundered dangerous computed keys', () => {
     expect(result.issues.some((i) => i.code === 'CONSTRUCTOR_ACCESS')).toBe(true);
   });
 
+  it('flags a single-element [..].toString()-built "constructor" used as a computed key', async () => {
+    const code = `
+      const k = ['constructor'].toString();
+      const out = obj[k];
+    `;
+    const result = await makeValidator().validate(code, opts);
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((i) => i.code === 'CONSTRUCTOR_ACCESS')).toBe(true);
+  });
+
+  it('does NOT flag a multi-element [..].toString() (comma-joined at runtime, never "constructor")', async () => {
+    // ['con','struc','tor'].toString() === 'con,struc,tor' at runtime, NOT 'constructor'.
+    const code = `
+      const k = ['con', 'struc', 'tor'].toString();
+      const out = obj[k];
+    `;
+    const result = await makeValidator().validate(code, opts);
+    expect(result.valid).toBe(true);
+  });
+
   it('does NOT flag a benign coerced key (no false positive)', async () => {
     const code = `
       const k = String.fromCharCode(104, 105);

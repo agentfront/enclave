@@ -422,9 +422,10 @@ ${stackTraceHardeningCode}
 	    if (depth === undefined) depth = 0;
 	    if (!__ag_Proxy || !__ag_Reflect) return obj;
 	    // Fail CLOSED past the recursion backstop: returning the raw target would leak an
-	    // unwrapped reference (see MEMBRANE_MAX_RECURSION_DEPTH).
+	    // unwrapped reference (see MEMBRANE_MAX_RECURSION_DEPTH). Use the hardened safe-error
+	    // helper (sanitized stack, nulled constructor/proto) rather than a raw Error.
 	    if (depth > ${MEMBRANE_MAX_RECURSION_DEPTH}) {
-	      throw new Error('Security violation: secure-proxy recursion depth exceeded.');
+	      throw __ag_createSafeError('Security violation: secure-proxy recursion depth exceeded.');
 	    }
 	    if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) return obj;
 

@@ -86,6 +86,23 @@ describe('bind-chain depth-inflation escape', () => {
     enclave.dispose();
   });
 
+  it('fails closed with a recursion-depth error when a bind chain exceeds the cap (>256)', async () => {
+    // A chain longer than the recursion backstop must hit the fail-CLOSED throw itself (never
+    // return a raw reference). This exercises the depth policy directly, not the constructor block.
+    const enclave = new Enclave({ securityLevel: 'STANDARD', toolHandler: async () => ({ ok: true }) });
+    const code = `
+      async function __ag_main() {
+        let f = callTool('x', {}).then;
+        for (let i = 0; i < 300; i++) { f = f.bind; }
+        return typeof f;
+      }
+    `;
+    const result = await enclave.run(code);
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toMatch(/recursion depth/i);
+    enclave.dispose();
+  });
+
   it('still allows legitimate deep tool-result traversal (no false positive)', async () => {
     // 16 levels deep — comfortably past the old fail-open cap of 10, within STANDARD's
     // maxSanitizeDepth (20). This must traverse cleanly, proving the raised cap did not

@@ -491,7 +491,12 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
   // Floor it so the (fail-closed) recursion cap can never sit below the deepest value that can
   // legitimately arrive; a higher cap only wraps MORE of the graph, so it is never less secure.
   const configuredMaxDepth = options.maxDepth ?? options.levelConfig?.proxyMaxDepth ?? 10;
-  const maxDepth = Math.max(configuredMaxDepth, MIN_MEMBRANE_RECURSION_DEPTH);
+  // A non-finite value (NaN/Infinity) would make `depth > maxDepth` never trip, silently
+  // disabling the fail-closed backstop — reject it and fall back to the floor. Valid values are
+  // floored so the cap can never sit below the deepest value that can legitimately arrive.
+  const maxDepth = Number.isFinite(configuredMaxDepth)
+    ? Math.max(configuredMaxDepth, MIN_MEMBRANE_RECURSION_DEPTH)
+    : MIN_MEMBRANE_RECURSION_DEPTH;
 
   // Use throwOnBlocked from options or levelConfig (options takes precedence)
   const throwOnBlocked = options.throwOnBlocked ?? options.levelConfig?.throwOnBlocked ?? false;

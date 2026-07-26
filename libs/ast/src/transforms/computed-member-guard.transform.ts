@@ -122,6 +122,14 @@ export function guardComputedMemberKeys(
     return { guardedCount: 0 };
   }
 
+  // The helper can only be injected into a Program body. Fail loudly BEFORE walking so we never
+  // rewrite `obj[expr]` into `obj[__ag_guardKey(expr)]` without a matching helper (which would
+  // produce a ReferenceError at runtime instead of a real guard).
+  const program = ast as unknown as { type?: string; body?: unknown };
+  if (program.type !== 'Program' || !Array.isArray(program.body)) {
+    throw new Error('guardComputedMemberKeys requires a Program AST node to inject its runtime helper');
+  }
+
   let guardedCount = 0;
 
   walk.simple(ast as unknown as acorn.Node, {

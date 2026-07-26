@@ -497,7 +497,9 @@ export class ResourceExhaustionRule implements ValidationRule {
       }
     }
 
-    let separator = '';
+    // Array.prototype.toString() and Array.prototype.join() with no argument both join with a
+    // comma at runtime; only an explicit join(sep) argument overrides it.
+    let separator = ',';
     if (method === 'join') {
       const sepArg = node.arguments[0];
       if (sepArg === undefined) {
