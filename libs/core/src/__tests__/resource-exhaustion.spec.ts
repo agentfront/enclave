@@ -775,8 +775,11 @@ describe('ATK-ESC-01: Constructor Leak via Arrow Function', () => {
     `;
     const result = await enclave.run(code);
     expect(result.success).toBe(false);
-    // Should fail with code generation error at runtime
-    expect(result.error?.message).toMatch(/code generation.*strings|EvalError/i);
+    // Blocked at runtime: the computed-key guard refuses the laundered `constructor` key before
+    // the Function constructor can be reached; if it were reached, code generation is also blocked.
+    expect(result.error?.message).toMatch(
+      /code generation.*strings|EvalError|computed access to 'constructor'|blocked/i,
+    );
     enclave.dispose();
   });
 

@@ -167,10 +167,9 @@ describe('ATK-FGAD: Function Gadget Attack Vectors (CWE-94)', () => {
           return 'no-fn-ctor';
         `;
         const result = await enclave.run(code);
-        // Should succeed with simple arithmetic (no blocked globals)
-        // Or blocked by codeGeneration.strings=false (stronger security)
-        expect(result.success).toBe(true);
-        expectSecureOutcome(result.value, 2);
+        // The laundered `constructor` key (String.fromCharCode) is now refused at validation by
+        // the computed-key static rule, so the run fails closed before any Function is reached.
+        expect(result.success).toBe(false);
         enclave.dispose();
       });
     });
@@ -511,8 +510,9 @@ describe('ATK-FGAD: Function Gadget Attack Vectors (CWE-94)', () => {
           return protoAccess;
         `;
         const result = await enclave.run(code);
-        expect(result.success).toBe(true);
-        // forEach gets sandbox array, proto access is sandbox's
+        // Dynamic `__proto__` access via a computed key is now refused by the computed-key guard
+        // (defense-in-depth), even on a sandbox-local array, so the run fails closed.
+        expect(result.success).toBe(false);
         enclave.dispose();
       });
     });

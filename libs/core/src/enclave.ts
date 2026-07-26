@@ -31,7 +31,12 @@ import {
   type MultiFileTransformResult,
 } from './babel';
 import { transformAgentScript, isWrappedInMain } from '@enclave-vm/ast';
-import { extractLargeStrings, transformConcatenation, transformTemplateLiterals } from '@enclave-vm/ast';
+import {
+  extractLargeStrings,
+  transformConcatenation,
+  transformTemplateLiterals,
+  guardComputedMemberKeys,
+} from '@enclave-vm/ast';
 import * as acorn from 'acorn';
 import { generate } from 'astring';
 import type {
@@ -52,6 +57,7 @@ import type {
 import type { WorkerPoolConfig } from './adapters/worker-pool';
 import { SECURITY_LEVEL_CONFIGS, DEFAULT_DOUBLE_VM_CONFIG } from './types';
 import { validateGlobals } from './globals-validator';
+import { buildBlockedPropertiesFromConfig } from './secure-proxy';
 import { ReferenceSidecar } from './sidecar';
 import { REFERENCE_CONFIGS, ReferenceConfig } from './sidecar';
 import { ScoringGate, ScoringGateResult } from './scoring';
@@ -431,6 +437,15 @@ export class Enclave {
         transformedCode = this.applyMemoryTrackingTransforms(transformedCode);
       }
 
+      // Step 2.2: Runtime computed-key guard (defense-in-depth for weakness 1).
+      // Runs AFTER validation so it neither masks the static rules nor trips them on its injected
+      // helper. Wraps dynamic computed member keys so `obj[expr]` checks the RESOLVED key at
+      // runtime, catching dangerous names built via `String.fromCharCode(...)`, concatenation,
+      // etc. that static analysis cannot resolve.
+      if (this.transformCode) {
+        transformedCode = this.applyComputedKeyGuard(transformedCode);
+      }
+
       // Step 2.5: AI Scoring Gate (if configured)
       // This runs AFTER AST validation but BEFORE code execution
       let scoringResult: ScoringGateResult | undefined;
@@ -548,6 +563,27 @@ export class Enclave {
    * @param code The code to transform
    * @returns The transformed code
    */
+  private applyComputedKeyGuard(code: string): string {
+    // Mirror the runtime membrane's policy for this security level: refuse the same keys, and
+    // yield undefined instead of throwing when the level does not throw on blocked access.
+    const proxyConfig = this.config.secureProxyConfig;
+    const blockedKeys = [...buildBlockedPropertiesFromConfig(proxyConfig)];
+    if (blockedKeys.length === 0) {
+      return code;
+    }
+    const throwOnBlocked = proxyConfig.throwOnBlocked ?? true;
+
+    const parseModule = (source: string): acorn.Node =>
+      acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'module' }) as unknown as acorn.Node;
+
+    const ast = parseModule(code);
+    const { guardedCount } = guardComputedMemberKeys(ast, parseModule, { blockedKeys, throwOnBlocked });
+    if (guardedCount === 0) {
+      return code;
+    }
+    return generate(ast);
+  }
+
   private applyMemoryTrackingTransforms(code: string): string {
     // Parse the code into an AST
     const ast = acorn.parse(code, {
