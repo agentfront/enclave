@@ -688,6 +688,41 @@ describe('getOwnPropertyDescriptor trap must not leak raw references (review fin
     expect(descriptor?.value.constructor).toBeUndefined();
     expect(descriptor?.value.nested).toBe(1);
   });
+
+  it('refuses a non-configurable accessor descriptor (cannot be wrapped under the invariant)', () => {
+    const obj: Record<string, unknown> = {};
+    Object.defineProperty(obj, 'danger', {
+      get() {
+        return 1;
+      },
+      configurable: false,
+      enumerable: true,
+    });
+    const proxy = createSecureProxy(obj);
+    expect(() => Object.getOwnPropertyDescriptor(proxy, 'danger')).toThrow(/blocked|cannot be exposed/i);
+  });
+
+  it('proxies a configurable accessor getter/setter so the descriptor cannot leak a raw function', () => {
+    const obj: Record<string, unknown> = {};
+    // eslint-disable-next-line accessor-pairs
+    Object.defineProperty(obj, 'value', {
+      get() {
+        return 42;
+      },
+      set() {
+        /* no-op */
+      },
+      configurable: true,
+      enumerable: true,
+    });
+    const proxy = createSecureProxy(obj) as any;
+    const descriptor = Object.getOwnPropertyDescriptor(proxy, 'value');
+    expect(typeof descriptor?.get).toBe('function');
+    // The getter is behind the membrane: its constructor is blocked (no raw host function leak).
+    expect((descriptor?.get as any).constructor).toBeUndefined();
+    expect(typeof descriptor?.set).toBe('function');
+    expect((descriptor?.set as any).constructor).toBeUndefined();
+  });
 });
 
 describe('BLOCKED_PROPERTY_CATEGORIES', () => {
