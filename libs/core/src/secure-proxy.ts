@@ -219,7 +219,7 @@ export function createSafeReflect(securityLevel: SecurityLevel): typeof Reflect 
 
       // Wrap Reflect.construct to block Function constructors
       if (typeof value === 'function' && prop === 'construct') {
-        return function (ctorTarget: unknown, args: unknown[], newTarget?: unknown) {
+        const safeConstruct = function (ctorTarget: unknown, args: unknown[], newTarget?: unknown) {
           // Block Function, AsyncFunction, GeneratorFunction, AsyncGeneratorFunction constructors
           // Intentional empty functions to obtain constructor references
           // eslint-disable-next-line @typescript-eslint/no-empty-function
@@ -243,6 +243,17 @@ export function createSafeReflect(securityLevel: SecurityLevel): typeof Reflect 
             newTarget as new (...args: unknown[]) => unknown,
           );
         };
+        // Wrap so the returned function cannot itself be walked to the host Function constructor.
+        return createSecureProxy(safeConstruct);
+      }
+
+      // SECURITY: never hand back the RAW native Reflect methods. Each is a host-realm function
+      // whose prototype chain reaches the host Function constructor, and Reflect.get /
+      // Reflect.getOwnPropertyDescriptor are reflection primitives whose STRING-LITERAL key
+      // argument bypasses the AST computed-key guard. Wrapping in a secure proxy blocks
+      // `.constructor` on the method and keeps every result behind the membrane.
+      if (typeof value === 'function') {
+        return createSecureProxy(value);
       }
 
       return value;
@@ -663,7 +674,23 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         const propName = typeof property === 'symbol' ? property.toString() : property;
         const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
 
-        // Must return actual descriptor for non-configurable properties (proxy invariant)
+        // Mirror the get trap: a non-configurable, non-writable data property must be reported
+        // with its exact value (proxy invariant), so an object/function value cannot be wrapped
+        // or hidden and would cross the barrier unwrapped via `descriptor.value`. Deny the read
+        // instead (throwing satisfies the invariant); primitives are inert and safe to report.
+        if (descriptor && !descriptor.configurable && descriptor.writable === false && 'value' in descriptor) {
+          const exactValue: unknown = descriptor.value;
+          if (exactValue !== null && (typeof exactValue === 'object' || typeof exactValue === 'function')) {
+            throw createSafeError(
+              `Security violation: Access to property descriptor for '${String(propName)}' is blocked. ` +
+                `This property cannot be exposed without breaking the sandbox barrier.`,
+              'SecurityError',
+            );
+          }
+          return descriptor;
+        }
+
+        // Must return actual descriptor for other non-configurable properties (proxy invariant)
         if (descriptor && !descriptor.configurable) {
           return descriptor;
         }
@@ -681,6 +708,15 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
             );
           }
           return undefined;
+        }
+
+        // Wrap object/function values so a descriptor read cannot hand back a raw reference that
+        // the get trap would have proxied (a configurable property's value may be safely wrapped).
+        if (descriptor && 'value' in descriptor) {
+          const value: unknown = descriptor.value;
+          if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
+            return { ...descriptor, value: proxyWithDepth(value as object, depth + 1) };
+          }
         }
 
         return descriptor;

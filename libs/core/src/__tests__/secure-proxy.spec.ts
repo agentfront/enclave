@@ -632,6 +632,62 @@ describe('createSafeReflect', () => {
     // When calling undefined as a function, it throws TypeError
     expect(safeReflect?.setPrototypeOf).toBeUndefined();
   });
+
+  // Regression: createSafeReflect used to hand back the RAW native Reflect methods, whose
+  // prototype chain reaches the host Function constructor, and Reflect.get was an unrestricted
+  // reflection primitive (string-literal key evades the AST guards).
+  it('does not hand back a raw Reflect.get that can reach the Function constructor', () => {
+    const safeReflect = createSafeReflect('STANDARD') as any;
+    const get = safeReflect.get;
+    expect(typeof get).toBe('function');
+    // The returned method is behind the membrane: its constructor is blocked.
+    expect(get.constructor).toBeUndefined();
+    // Reflect.get(Reflect.get, 'constructor') must not yield a usable Function constructor.
+    expect(get(get, 'constructor')).toBeUndefined();
+  });
+
+  it('still performs reflection correctly after hardening', () => {
+    const safeReflect = createSafeReflect('STANDARD') as any;
+    const obj = { a: 1, b: 2 };
+    expect(safeReflect.get(obj, 'a')).toBe(1);
+    expect(safeReflect.has(obj, 'b')).toBe(true);
+    expect([...safeReflect.ownKeys(obj)]).toEqual(expect.arrayContaining(['a', 'b']));
+  });
+});
+
+describe('getOwnPropertyDescriptor trap must not leak raw references (review finding)', () => {
+  it('refuses an object-valued non-configurable, non-writable pinned property', () => {
+    const host: Record<string, unknown> = {};
+    Object.defineProperty(host, 'pinned', {
+      value: { leadsToHost: {} },
+      configurable: false,
+      writable: false,
+      enumerable: true,
+    });
+    const proxy = createSecureProxy(host);
+    expect(() => Object.getOwnPropertyDescriptor(proxy, 'pinned')).toThrow(/blocked|cannot be exposed/i);
+  });
+
+  it('still reports a primitive-valued pinned property via its descriptor', () => {
+    const host: Record<string, unknown> = {};
+    Object.defineProperty(host, 'VERSION', {
+      value: 7,
+      configurable: false,
+      writable: false,
+      enumerable: true,
+    });
+    const proxy = createSecureProxy(host);
+    expect(Object.getOwnPropertyDescriptor(proxy, 'VERSION')?.value).toBe(7);
+  });
+
+  it('wraps a configurable object value so its descriptor cannot leak a raw reference', () => {
+    const obj = { child: { nested: 1 } };
+    const proxy = createSecureProxy(obj) as any;
+    const descriptor = Object.getOwnPropertyDescriptor(proxy, 'child');
+    // The descriptor value is itself a secure proxy: constructor is blocked.
+    expect(descriptor?.value.constructor).toBeUndefined();
+    expect(descriptor?.value.nested).toBe(1);
+  });
 });
 
 describe('BLOCKED_PROPERTY_CATEGORIES', () => {

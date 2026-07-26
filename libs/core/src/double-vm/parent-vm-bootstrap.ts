@@ -984,7 +984,23 @@ ${stackTraceHardeningCode}
         var propName = String(property);
         var descriptor = Reflect.getOwnPropertyDescriptor(target, property);
 
-        // Must return actual descriptor for non-configurable properties (proxy invariant)
+        // Mirror the get trap's host-owned pinned-value refusal: a non-configurable, non-writable
+        // data property must be reported with its exact value (proxy invariant), so on a HOST-owned
+        // value an object/function would cross the barrier unwrapped via descriptor.value and its
+        // prototype chain reaches the host Function constructor. Deny the read instead (throwing
+        // satisfies the invariant); primitives stay safe to report.
+        if (host && descriptor && !descriptor.configurable && descriptor.writable === false && 'value' in descriptor) {
+          var exactValue = descriptor.value;
+          if (exactValue !== null && (typeof exactValue === 'object' || typeof exactValue === 'function')) {
+            throw createSafeError(
+              "Security violation: Access to property descriptor for '" + propName + "' is blocked. " +
+              "This property cannot be exposed without breaking the sandbox barrier."
+            );
+          }
+          return descriptor;
+        }
+
+        // Must return actual descriptor for other non-configurable properties (proxy invariant)
         if (descriptor && !descriptor.configurable) {
           return descriptor;
         }
@@ -998,6 +1014,18 @@ ${stackTraceHardeningCode}
             );
           }
           return undefined;
+        }
+
+        // Wrap object/function values so a descriptor read cannot hand back a raw reference that
+        // the get trap would otherwise have proxied.
+        if (descriptor && 'value' in descriptor) {
+          var value = descriptor.value;
+          if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
+            var wrapped = {};
+            for (var dk in descriptor) { if (Object.prototype.hasOwnProperty.call(descriptor, dk)) wrapped[dk] = descriptor[dk]; }
+            wrapped.value = createSecureProxy(value, depth + 1, host);
+            return wrapped;
+          }
         }
         return descriptor;
       },
