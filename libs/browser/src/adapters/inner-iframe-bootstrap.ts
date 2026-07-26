@@ -86,7 +86,14 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 
   function createSecureProxy(obj, depth) {
     if (depth === undefined) depth = 0;
-    if (depth > 10) return obj;
+    // Recursion backstop. Fail CLOSED: returning the raw target would leak an unwrapped
+    // reference whose prototype chain reaches a Function constructor (the reported .bind-chain
+    // escape). The cap (256) sits far above any legitimately-deep value so real data is never
+    // rejected; the membrane is lazy so the value has no stack cost. It is NOT a security knob:
+    // every level blocks the dangerous properties regardless of depth.
+    if (depth > 256) {
+      throw createSafeError('Security violation: secure-proxy recursion depth exceeded.');
+    }
     if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) return obj;
     if (proxyCache.has(obj)) return proxyCache.get(obj);
 

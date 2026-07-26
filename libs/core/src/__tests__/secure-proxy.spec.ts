@@ -5,7 +5,12 @@
  * at runtime, preventing attacks that bypass static analysis.
  */
 
-import { createSecureProxy, wrapGlobalsWithSecureProxy, createSecureStandardLibrary } from '../secure-proxy';
+import {
+  createSecureProxy,
+  wrapGlobalsWithSecureProxy,
+  createSecureStandardLibrary,
+  MIN_MEMBRANE_RECURSION_DEPTH,
+} from '../secure-proxy';
 
 describe('SecureProxy', () => {
   describe('Constructor Access Blocking', () => {
@@ -227,7 +232,7 @@ describe('SecureProxy', () => {
       expect(instance.read()).toBe(43);
     });
 
-    it('should respect maxDepth option', () => {
+    it('blocks constructor at every level regardless of the configured maxDepth', () => {
       const deepObj: any = { level: 0 };
       let current = deepObj;
       for (let i = 1; i <= 20; i++) {
@@ -235,13 +240,36 @@ describe('SecureProxy', () => {
         current = current.nested;
       }
 
+      // maxDepth is floored to a safe recursion backstop; a small value never re-opens the
+      // membrane. Constructor stays blocked at every depth (no raw target is ever handed back).
       const proxy = createSecureProxy(deepObj, { maxDepth: 5 });
 
-      // Access within depth limit is proxied
       expect(proxy.nested.nested.constructor).toBeUndefined();
+      expect(proxy.nested.nested.nested.nested.nested.nested.nested.nested.constructor).toBeUndefined();
+    });
 
-      // Beyond maxDepth, we get the raw object (constructor accessible)
-      // Note: This test verifies the depth limit works, not that it's unsafe
+    it('never leaks a raw target: constructor stays blocked at every depth and traversal fails closed', () => {
+      // The security invariant is stronger than "throws past the cap": at NO depth may the
+      // membrane hand back an unwrapped object (which would expose a live .constructor). We walk
+      // past the real recursion cap (derived from the exported constant, not a hardcoded magic
+      // number) and assert (a) constructor is blocked at every level, and (b) the traversal
+      // eventually fails CLOSED with a recursion error rather than returning a raw object.
+      const chainDepth = MIN_MEMBRANE_RECURSION_DEPTH + 16;
+      const deepObj: any = { level: 0 };
+      let current = deepObj;
+      for (let i = 1; i <= chainDepth; i++) {
+        current.nested = { level: i };
+        current = current.nested;
+      }
+
+      let node: any = createSecureProxy(deepObj);
+      expect(() => {
+        for (let i = 0; i <= chainDepth; i++) {
+          // A raw object would expose its constructor; the membrane must keep it undefined.
+          expect(node.constructor).toBeUndefined();
+          node = node.nested;
+        }
+      }).toThrow(/recursion depth/i);
     });
   });
 
@@ -603,6 +631,97 @@ describe('createSafeReflect', () => {
     // setPrototypeOf is blocked by returning undefined for it
     // When calling undefined as a function, it throws TypeError
     expect(safeReflect?.setPrototypeOf).toBeUndefined();
+  });
+
+  // Regression: createSafeReflect used to hand back the RAW native Reflect methods, whose
+  // prototype chain reaches the host Function constructor, and Reflect.get was an unrestricted
+  // reflection primitive (string-literal key evades the AST guards).
+  it('does not hand back a raw Reflect.get that can reach the Function constructor', () => {
+    const safeReflect = createSafeReflect('STANDARD') as any;
+    const get = safeReflect.get;
+    expect(typeof get).toBe('function');
+    // The returned method is behind the membrane: its constructor is blocked.
+    expect(get.constructor).toBeUndefined();
+    // Reflect.get(Reflect.get, 'constructor') must not yield a usable Function constructor.
+    expect(get(get, 'constructor')).toBeUndefined();
+  });
+
+  it('still performs reflection correctly after hardening', () => {
+    const safeReflect = createSafeReflect('STANDARD') as any;
+    const obj = { a: 1, b: 2 };
+    expect(safeReflect.get(obj, 'a')).toBe(1);
+    expect(safeReflect.has(obj, 'b')).toBe(true);
+    expect([...safeReflect.ownKeys(obj)]).toEqual(expect.arrayContaining(['a', 'b']));
+  });
+});
+
+describe('getOwnPropertyDescriptor trap must not leak raw references (review finding)', () => {
+  it('refuses an object-valued non-configurable, non-writable pinned property', () => {
+    const host: Record<string, unknown> = {};
+    Object.defineProperty(host, 'pinned', {
+      value: { leadsToHost: {} },
+      configurable: false,
+      writable: false,
+      enumerable: true,
+    });
+    const proxy = createSecureProxy(host);
+    expect(() => Object.getOwnPropertyDescriptor(proxy, 'pinned')).toThrow(/blocked|cannot be exposed/i);
+  });
+
+  it('still reports a primitive-valued pinned property via its descriptor', () => {
+    const host: Record<string, unknown> = {};
+    Object.defineProperty(host, 'VERSION', {
+      value: 7,
+      configurable: false,
+      writable: false,
+      enumerable: true,
+    });
+    const proxy = createSecureProxy(host);
+    expect(Object.getOwnPropertyDescriptor(proxy, 'VERSION')?.value).toBe(7);
+  });
+
+  it('wraps a configurable object value so its descriptor cannot leak a raw reference', () => {
+    const obj = { child: { nested: 1 } };
+    const proxy = createSecureProxy(obj) as any;
+    const descriptor = Object.getOwnPropertyDescriptor(proxy, 'child');
+    // The descriptor value is itself a secure proxy: constructor is blocked.
+    expect(descriptor?.value.constructor).toBeUndefined();
+    expect(descriptor?.value.nested).toBe(1);
+  });
+
+  it('refuses a non-configurable accessor descriptor (cannot be wrapped under the invariant)', () => {
+    const obj: Record<string, unknown> = {};
+    Object.defineProperty(obj, 'danger', {
+      get() {
+        return 1;
+      },
+      configurable: false,
+      enumerable: true,
+    });
+    const proxy = createSecureProxy(obj);
+    expect(() => Object.getOwnPropertyDescriptor(proxy, 'danger')).toThrow(/blocked|cannot be exposed/i);
+  });
+
+  it('proxies a configurable accessor getter/setter so the descriptor cannot leak a raw function', () => {
+    const obj: Record<string, unknown> = {};
+    // eslint-disable-next-line accessor-pairs
+    Object.defineProperty(obj, 'value', {
+      get() {
+        return 42;
+      },
+      set() {
+        /* no-op */
+      },
+      configurable: true,
+      enumerable: true,
+    });
+    const proxy = createSecureProxy(obj) as any;
+    const descriptor = Object.getOwnPropertyDescriptor(proxy, 'value');
+    expect(typeof descriptor?.get).toBe('function');
+    // The getter is behind the membrane: its constructor is blocked (no raw host function leak).
+    expect((descriptor?.get as any).constructor).toBeUndefined();
+    expect(typeof descriptor?.set).toBe('function');
+    expect((descriptor?.set as any).constructor).toBeUndefined();
   });
 });
 

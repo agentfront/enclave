@@ -309,9 +309,13 @@ describe('custom-global results must not leak a raw host object via a pinned pro
     const enclave = enclaveWithHostGlobals({
       getTool: () => ({ name: 't', outputSchema: new HostSchema() }),
     });
+    // Build the 'constructor' key from a spread so the computed-key static rule cannot resolve it
+    // at validation — this keeps the test exercising the MEMBRANE's refusal of the pinned `_zod`
+    // property at runtime (its stated purpose), which fires before the constructor key is reached.
     const code = `
       async function __ag_main() {
-        const k = ['con','struc','tor'].join('');
+        const codes = [99,111,110,115,116,114,117,99,116,111,114];
+        const k = String.fromCharCode(...codes);
         const raw = getTool('t').outputSchema['_zod'];
         const F = raw['constr'][k];
         const proc = F('return process')();

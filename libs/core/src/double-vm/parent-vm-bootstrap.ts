@@ -15,6 +15,22 @@ import type { SerializableParentValidationConfig, SerializableSuspiciousPattern 
 import type { SecurityLevel } from '../types';
 
 /**
+ * Recursion backstop for the in-VM secure-proxy membranes.
+ *
+ * The counter is a stack-safety limit, NOT a security control: every membrane level already
+ * blocks the dangerous properties, so this number never decides whether an escape is possible.
+ * Exceeding it must fail CLOSED (throw) — returning the raw target used to hand sandbox code an
+ * unwrapped host reference (the reported `.bind`-chain escape inflated the counter past the old
+ * cap of 10 and received a raw function whose chain reaches the host Function constructor).
+ * It sits well above the deepest value that can legitimately arrive (a tool result is
+ * pre-sanitized to at most `maxSanitizeDepth`, which peaks at 50; custom host globals are not
+ * sanitize-bounded, hence the generous ~5x headroom) so legitimate data is never rejected. The
+ * membrane is lazy (one property access = one wrap = O(1) synchronous stack), so a large value
+ * costs nothing in stack depth or performance.
+ */
+const MEMBRANE_MAX_RECURSION_DEPTH = 256;
+
+/**
  * Options for generating the parent VM bootstrap script
  */
 export interface ParentVmBootstrapOptions {
@@ -405,7 +421,12 @@ ${stackTraceHardeningCode}
 	  function __ag_createSecureProxy(obj, depth) {
 	    if (depth === undefined) depth = 0;
 	    if (!__ag_Proxy || !__ag_Reflect) return obj;
-	    if (depth > 10) return obj;
+	    // Fail CLOSED past the recursion backstop: returning the raw target would leak an
+	    // unwrapped reference (see MEMBRANE_MAX_RECURSION_DEPTH). Use the hardened safe-error
+	    // helper (sanitized stack, nulled constructor/proto) rather than a raw Error.
+	    if (depth > ${MEMBRANE_MAX_RECURSION_DEPTH}) {
+	      throw __ag_createSafeError('Security violation: secure-proxy recursion depth exceeded.');
+	    }
 	    if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) return obj;
 
 	    if (__ag_proxyCache) {
@@ -428,8 +449,15 @@ ${stackTraceHardeningCode}
         if (typeof value === 'function') {
           // Bind methods to preserve internal slots when relevant.
           try { value = value.bind(target); } catch (e) {}
+          return __ag_createSecureProxy(value, depth + 1);
         }
-        return __ag_createSecureProxy(value, depth + 1);
+        // Only objects still need proxying; primitives (e.g. length/name) are inert and must be
+        // returned directly, so a deep chain cannot turn a safe primitive read into a
+        // recursion-depth error.
+        if (value !== null && typeof value === 'object') {
+          return __ag_createSecureProxy(value, depth + 1);
+        }
+        return value;
 	      },
 	      apply: function(target, thisArg, args) {
 	        return __ag_Reflect.apply(target, thisArg, args);
@@ -853,7 +881,14 @@ ${stackTraceHardeningCode}
   function createSecureProxy(obj, depth, host) {
     if (depth === undefined) depth = 0;
     host = host === true;
-    if (depth > 10) return obj; // Max depth to prevent infinite recursion
+    // Recursion backstop. Fail CLOSED: returning the raw target here was the reported escape.
+    // A bind chain inflates depth (each read binds a FRESH function, so the identity cache never
+    // dedupes it) past the cap, and the raw host function prototype chain reaches the host
+    // Function constructor for RCE. Throwing keeps the membrane total; the cap sits far above any
+    // legitimately-deep (pre-sanitized) value so real data is never rejected.
+    if (depth > ${MEMBRANE_MAX_RECURSION_DEPTH}) {
+      throw createSafeError('Security violation: secure-proxy recursion depth exceeded.');
+    }
 
     // Skip primitives and null
     if (obj === null || typeof obj !== 'object' && typeof obj !== 'function') {
@@ -957,7 +992,34 @@ ${stackTraceHardeningCode}
         var propName = String(property);
         var descriptor = Reflect.getOwnPropertyDescriptor(target, property);
 
-        // Must return actual descriptor for non-configurable properties (proxy invariant)
+        // Mirror the get trap's host-owned pinned-value refusal: a non-configurable, non-writable
+        // data property must be reported with its exact value (proxy invariant), so on a HOST-owned
+        // value an object/function would cross the barrier unwrapped via descriptor.value and its
+        // prototype chain reaches the host Function constructor. Deny the read instead (throwing
+        // satisfies the invariant); primitives stay safe to report.
+        if (host && descriptor && !descriptor.configurable && descriptor.writable === false && 'value' in descriptor) {
+          var exactValue = descriptor.value;
+          if (exactValue !== null && (typeof exactValue === 'object' || typeof exactValue === 'function')) {
+            throw createSafeError(
+              "Security violation: Access to property descriptor for '" + propName + "' is blocked. " +
+              "This property cannot be exposed without breaking the sandbox barrier."
+            );
+          }
+          return descriptor;
+        }
+
+        // Accessor descriptors expose raw getter/setter functions. A non-configurable accessor
+        // must be reported with its exact get/set (proxy invariant) and so cannot be wrapped —
+        // deny it if it carries a function whose prototype chain reaches the host constructor.
+        if (descriptor && !descriptor.configurable &&
+            (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')) {
+          throw createSafeError(
+            "Security violation: Access to property descriptor for '" + propName + "' is blocked. " +
+            "This property cannot be exposed without breaking the sandbox barrier."
+          );
+        }
+
+        // Must return actual descriptor for other non-configurable properties (proxy invariant)
         if (descriptor && !descriptor.configurable) {
           return descriptor;
         }
@@ -971,6 +1033,28 @@ ${stackTraceHardeningCode}
             );
           }
           return undefined;
+        }
+
+        // A configurable accessor's getter/setter may be safely proxied so the descriptor never
+        // hands back a raw function that leads to the host Function constructor.
+        if (descriptor && (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')) {
+          var accessorWrapped = {};
+          for (var ak in descriptor) { if (Object.prototype.hasOwnProperty.call(descriptor, ak)) accessorWrapped[ak] = descriptor[ak]; }
+          if (typeof descriptor.get === 'function') accessorWrapped.get = createSecureProxy(descriptor.get, depth + 1, host);
+          if (typeof descriptor.set === 'function') accessorWrapped.set = createSecureProxy(descriptor.set, depth + 1, host);
+          return accessorWrapped;
+        }
+
+        // Wrap object/function values so a descriptor read cannot hand back a raw reference that
+        // the get trap would otherwise have proxied.
+        if (descriptor && 'value' in descriptor) {
+          var value = descriptor.value;
+          if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
+            var wrapped = {};
+            for (var dk in descriptor) { if (Object.prototype.hasOwnProperty.call(descriptor, dk)) wrapped[dk] = descriptor[dk]; }
+            wrapped.value = createSecureProxy(value, depth + 1, host);
+            return wrapped;
+          }
         }
         return descriptor;
       },

@@ -131,6 +131,10 @@ export {
   rewriteImports,
   isValidPackageName,
   isValidSubpath,
+  // Computed member key runtime guard
+  guardComputedMemberKeys,
+  GUARD_KEY_FN,
+  DEFAULT_GUARD_BLOCKED_KEYS,
 } from './transforms';
 
 export type {
@@ -140,6 +144,8 @@ export type {
   ConcatTransformResult,
   ImportRewriteConfig,
   ImportRewriteResult,
+  ComputedMemberGuardResult,
+  ComputedMemberGuardOptions,
 } from './transforms';
 
 // Pre-Scanner (Layer 0 Defense)
