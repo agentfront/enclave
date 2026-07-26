@@ -449,8 +449,15 @@ ${stackTraceHardeningCode}
         if (typeof value === 'function') {
           // Bind methods to preserve internal slots when relevant.
           try { value = value.bind(target); } catch (e) {}
+          return __ag_createSecureProxy(value, depth + 1);
         }
-        return __ag_createSecureProxy(value, depth + 1);
+        // Only objects still need proxying; primitives (e.g. length/name) are inert and must be
+        // returned directly, so a deep chain cannot turn a safe primitive read into a
+        // recursion-depth error.
+        if (value !== null && typeof value === 'object') {
+          return __ag_createSecureProxy(value, depth + 1);
+        }
+        return value;
 	      },
 	      apply: function(target, thisArg, args) {
 	        return __ag_Reflect.apply(target, thisArg, args);
@@ -1001,6 +1008,17 @@ ${stackTraceHardeningCode}
           return descriptor;
         }
 
+        // Accessor descriptors expose raw getter/setter functions. A non-configurable accessor
+        // must be reported with its exact get/set (proxy invariant) and so cannot be wrapped —
+        // deny it if it carries a function whose prototype chain reaches the host constructor.
+        if (descriptor && !descriptor.configurable &&
+            (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')) {
+          throw createSafeError(
+            "Security violation: Access to property descriptor for '" + propName + "' is blocked. " +
+            "This property cannot be exposed without breaking the sandbox barrier."
+          );
+        }
+
         // Must return actual descriptor for other non-configurable properties (proxy invariant)
         if (descriptor && !descriptor.configurable) {
           return descriptor;
@@ -1015,6 +1033,16 @@ ${stackTraceHardeningCode}
             );
           }
           return undefined;
+        }
+
+        // A configurable accessor's getter/setter may be safely proxied so the descriptor never
+        // hands back a raw function that leads to the host Function constructor.
+        if (descriptor && (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')) {
+          var accessorWrapped = {};
+          for (var ak in descriptor) { if (Object.prototype.hasOwnProperty.call(descriptor, ak)) accessorWrapped[ak] = descriptor[ak]; }
+          if (typeof descriptor.get === 'function') accessorWrapped.get = createSecureProxy(descriptor.get, depth + 1, host);
+          if (typeof descriptor.set === 'function') accessorWrapped.set = createSecureProxy(descriptor.set, depth + 1, host);
+          return accessorWrapped;
         }
 
         // Wrap object/function values so a descriptor read cannot hand back a raw reference that

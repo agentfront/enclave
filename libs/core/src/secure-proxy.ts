@@ -695,6 +695,21 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
           return descriptor;
         }
 
+        // Accessor descriptors expose raw getter/setter functions. A non-configurable accessor
+        // must be reported with its exact get/set (proxy invariant), so it cannot be wrapped —
+        // deny it if it carries a function whose prototype chain reaches the host constructor.
+        if (
+          descriptor &&
+          !descriptor.configurable &&
+          (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')
+        ) {
+          throw createSafeError(
+            `Security violation: Access to property descriptor for '${String(propName)}' is blocked. ` +
+              `This property cannot be exposed without breaking the sandbox barrier.`,
+            'SecurityError',
+          );
+        }
+
         // Must return actual descriptor for other non-configurable properties (proxy invariant)
         if (descriptor && !descriptor.configurable) {
           return descriptor;
@@ -713,6 +728,16 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
             );
           }
           return undefined;
+        }
+
+        // A configurable accessor's getter/setter may be safely proxied so the descriptor never
+        // hands back a raw function whose prototype chain reaches the host Function constructor.
+        if (descriptor && (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')) {
+          return {
+            ...descriptor,
+            get: typeof descriptor.get === 'function' ? proxyWithDepth(descriptor.get, depth + 1) : descriptor.get,
+            set: typeof descriptor.set === 'function' ? proxyWithDepth(descriptor.set, depth + 1) : descriptor.set,
+          };
         }
 
         // Wrap object/function values so a descriptor read cannot hand back a raw reference that
