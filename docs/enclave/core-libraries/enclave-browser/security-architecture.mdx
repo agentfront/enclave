@@ -136,6 +136,8 @@ Every global object exposed to user code is wrapped in a `Proxy` that blocks acc
 
 The proxy behavior is configurable per security level. At `STRICT` and `SECURE` levels, accessing blocked properties throws an error. At `PERMISSIVE`, it returns `undefined`.
 
+Custom `globals` are serialized into the inner frame's bootstrap, so sandboxed code only ever sees plain data for them — no live outer-page object crosses the frame boundary.
+
 Additionally, dangerous static methods on `Object` are neutralized: `defineProperty`, `defineProperties`, `setPrototypeOf`, `getOwnPropertyDescriptor`, and `getOwnPropertyDescriptors`.
 
 ### Layer 7: Safe Runtime Wrappers

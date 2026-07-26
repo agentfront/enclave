@@ -392,6 +392,51 @@ describe('SecureProxy', () => {
       expect((proxy as any).frozen).toBe(42);
     });
 
+    it('should refuse an object-valued non-configurable non-writable property', () => {
+      // The proxy invariant forbids wrapping such a value, and handing back the raw
+      // reference would put an unwrapped host object graph in reach of sandbox code.
+      // Denying the read is the only invariant-safe outcome.
+      const escapeHatch = { reachable: function inner() {} };
+      const obj = {};
+      Object.defineProperty(obj, 'pinned', {
+        value: escapeHatch,
+        configurable: false,
+        writable: false,
+        enumerable: true,
+      });
+
+      const proxy = createSecureProxy(obj);
+
+      expect(() => (proxy as any).pinned).toThrow(/blocked/i);
+    });
+
+    it('should refuse a class prototype, which is pinned by the language', () => {
+      class Widget {
+        value = 1;
+      }
+      const proxy = createSecureProxy(Widget) as unknown as Record<string, unknown>;
+
+      // `prototype` on a class is already non-configurable and non-writable, so this read is
+      // decided by the invariant branch rather than the blocked-property list. The old
+      // concession returned it raw, and `.constructor.constructor` from there is host Function.
+      expect(() => proxy['prototype']).toThrow(/blocked/i);
+    });
+
+    it('should still report primitive-valued pinned properties (no regression)', () => {
+      const proxy = createSecureProxy(Math);
+
+      expect(proxy.PI).toBe(Math.PI);
+    });
+
+    it('should still allow construction through a wrapped constructor', () => {
+      class Widget {
+        value = 7;
+      }
+      const WrappedWidget = createSecureProxy(Widget) as typeof Widget;
+
+      expect(new WrappedWidget().value).toBe(7);
+    });
+
     it('should block constructor via bound functions', () => {
       const arr = [1, 2, 3];
       const proxy = createSecureProxy(arr);
