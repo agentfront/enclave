@@ -653,6 +653,48 @@ describe('createSafeReflect', () => {
     expect(safeReflect.has(obj, 'b')).toBe(true);
     expect([...safeReflect.ownKeys(obj)]).toEqual(expect.arrayContaining(['a', 'b']));
   });
+
+  // Regression: the wrapper used to read `Reflect` and its methods live, so a shared-realm
+  // attacker who overwrote the namespace could have the sandbox hand out their own function.
+  // Reads are now served from a snapshot taken at module load.
+  describe('is pinned against later mutation of the shared-realm Reflect', () => {
+    const originalGet = Reflect.get;
+    const originalHas = Reflect.has;
+
+    afterEach(() => {
+      Reflect.get = originalGet;
+      Reflect.has = originalHas;
+      delete (Reflect as unknown as Record<string, unknown>)['__injected'];
+    });
+
+    it('ignores a method overwritten after module load', () => {
+      const tampered = () => 'TAMPERED';
+      Reflect.get = tampered as unknown as typeof Reflect.get;
+      Reflect.has = tampered as unknown as typeof Reflect.has;
+
+      const safeReflect = createSafeReflect('STANDARD') as any;
+      expect(safeReflect.get({ a: 1 }, 'a')).toBe(1);
+      expect(safeReflect.has({ b: 2 }, 'b')).toBe(true);
+    });
+
+    it('does not serve a property injected onto Reflect after module load', () => {
+      (Reflect as unknown as Record<string, unknown>)['__injected'] = () => 'INJECTED';
+
+      const safeReflect = createSafeReflect('STANDARD') as any;
+      expect(safeReflect.__injected).toBeUndefined();
+    });
+
+    it('blocks Reflect.construct on the function constructors', () => {
+      const safeReflect = createSafeReflect('STANDARD') as any;
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
+      const AsyncFunction = async function () {}.constructor;
+
+      expect(() => safeReflect.construct(Function, ['return 1'])).toThrow();
+      expect(() => safeReflect.construct(AsyncFunction, ['return 1'])).toThrow();
+      // A benign constructor still works.
+      expect(safeReflect.construct(Array, [3])).toHaveLength(3);
+    });
+  });
 });
 
 describe('getOwnPropertyDescriptor trap must not leak raw references (review finding)', () => {

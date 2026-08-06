@@ -37,6 +37,32 @@ const ReflectConstruct = Reflect.construct;
 const ReflectObject = Reflect;
 
 /**
+ * Snapshot of every own value on the pristine `Reflect` namespace, taken at module load.
+ *
+ * `createSafeReflect` serves reads from this snapshot instead of re-reading the namespace, so a
+ * later `Reflect.get = evil` in a shared realm cannot be observed through the sandbox's Reflect.
+ * Pinning the namespace object alone is not enough: the proxy target's own properties stay
+ * writable, so only a value snapshot closes the window. Every own property of `Reflect` is a data
+ * property (the methods plus `Symbol.toStringTag`), so building the snapshot triggers no getters.
+ */
+const PINNED_REFLECT_VALUES = new Map<string | symbol, unknown>();
+for (const key of ReflectOwnKeys(ReflectObject)) {
+  PINNED_REFLECT_VALUES.set(key, ReflectGet(ReflectObject, key));
+}
+
+// Function constructors, pinned at module load. `createSafeReflect`'s construct guard compares
+// against these: reading them live (`async function () {}.constructor`) walks a prototype whose
+// `constructor` is writable, so a shared-realm attacker could point the comparison at a decoy and
+// slip the real Function constructor past the check.
+const FunctionCtor = Function;
+// Intentional empty functions used only to reach the hidden function-constructor intrinsics.
+/* eslint-disable @typescript-eslint/no-empty-function */
+const AsyncFunctionCtor = async function () {}.constructor;
+const GeneratorFunctionCtor = function* () {}.constructor;
+const AsyncGeneratorFunctionCtor = async function* () {}.constructor;
+/* eslint-enable @typescript-eslint/no-empty-function */
+
+/**
  * Absolute floor for the membrane recursion cap.
  *
  * The recursion counter is a stack-safety backstop, NOT a security control: every level of the
@@ -259,32 +285,35 @@ export function createSafeReflect(securityLevel: SecurityLevel): typeof Reflect 
   }
 
   return new Proxy(ReflectObject, {
-    get(target, prop: string | symbol) {
+    get(_target, prop: string | symbol) {
       if (typeof prop === 'string' && dangerousMethods.has(prop)) {
         return undefined;
       }
 
-      const value = ReflectGet(target, prop);
+      // Serve from the module-load snapshot: the proxy target's own properties are writable, so
+      // re-reading them here would expose whatever the current realm holds. Keys absent from the
+      // snapshot were not on the pristine namespace and are therefore never served.
+      if (!PINNED_REFLECT_VALUES.has(prop)) {
+        return undefined;
+      }
+      const value = PINNED_REFLECT_VALUES.get(prop);
 
       // Wrap Reflect.construct to block Function constructors
       if (typeof value === 'function' && prop === 'construct') {
         const safeConstruct = function (ctorTarget: unknown, args: unknown[], newTarget?: unknown) {
           // Block Function, AsyncFunction, GeneratorFunction, AsyncGeneratorFunction constructors
-          // Intentional empty functions to obtain constructor references
-          // eslint-disable-next-line @typescript-eslint/no-empty-function
-          const AsyncFunction = async function () {}.constructor;
-          // eslint-disable-next-line @typescript-eslint/no-empty-function
-          const GeneratorFunction = function* () {}.constructor;
-          // eslint-disable-next-line @typescript-eslint/no-empty-function
-          const AsyncGeneratorFunction = async function* () {}.constructor;
-
           if (
-            ctorTarget === Function ||
-            ctorTarget === AsyncFunction ||
-            ctorTarget === GeneratorFunction ||
-            ctorTarget === AsyncGeneratorFunction
+            ctorTarget === FunctionCtor ||
+            ctorTarget === AsyncFunctionCtor ||
+            ctorTarget === GeneratorFunctionCtor ||
+            ctorTarget === AsyncGeneratorFunctionCtor
           ) {
             throw createSafeError('Reflect.construct with function constructors is blocked', 'SecurityError');
+          }
+          // `Reflect.construct(t, a, undefined)` throws — newTarget is "present" as soon as a
+          // third argument is passed. Forward the 2-argument form when the caller omitted it.
+          if (newTarget === undefined) {
+            return ReflectConstruct(ctorTarget as new (...args: unknown[]) => unknown, args as unknown[]);
           }
           return ReflectConstruct(
             ctorTarget as new (...args: unknown[]) => unknown,
