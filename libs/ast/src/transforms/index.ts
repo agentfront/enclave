@@ -30,3 +30,12 @@ export {
   type ImportRewriteConfig,
   type ImportRewriteResult,
 } from './import-rewrite.transform';
+
+// Computed member key runtime guard (dynamic property-name sanitizer)
+export {
+  guardComputedMemberKeys,
+  GUARD_KEY_FN,
+  DEFAULT_GUARD_BLOCKED_KEYS,
+  type ComputedMemberGuardResult,
+  type ComputedMemberGuardOptions,
+} from './computed-member-guard.transform';

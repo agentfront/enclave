@@ -19,6 +19,24 @@ import type { SecureProxyLevelConfig, SecurityLevel } from './types';
 import { createSafeError } from './safe-error';
 
 /**
+ * Absolute floor for the membrane recursion cap.
+ *
+ * The recursion counter is a stack-safety backstop, NOT a security control: every level of the
+ * membrane already blocks the dangerous properties, so the cap value never decides whether an
+ * escape is possible. Its only job is to stop pathological recursion. It must therefore sit
+ * comfortably above the deepest value that can legitimately reach the membrane (a tool result is
+ * pre-sanitized to at most `maxSanitizeDepth`, which peaks at 50), or legitimate deep data would
+ * be rejected (custom host globals are not sanitize-bounded, hence the generous ~5x headroom).
+ * The membrane is lazy (one property access = one wrap = O(1) synchronous stack), so a large
+ * value costs nothing. Exceeding the cap fails CLOSED (throws) — it must never hand back a raw
+ * target.
+ *
+ * Exported so tests can derive their traversal depth from the real cap instead of hardcoding a
+ * value that would silently rot if the cap changed.
+ */
+export const MIN_MEMBRANE_RECURSION_DEPTH = 256;
+
+/**
  * Categorized blocked properties for defense-in-depth
  *
  * Organized by attack category to support per-security-level configuration
@@ -201,7 +219,7 @@ export function createSafeReflect(securityLevel: SecurityLevel): typeof Reflect 
 
       // Wrap Reflect.construct to block Function constructors
       if (typeof value === 'function' && prop === 'construct') {
-        return function (ctorTarget: unknown, args: unknown[], newTarget?: unknown) {
+        const safeConstruct = function (ctorTarget: unknown, args: unknown[], newTarget?: unknown) {
           // Block Function, AsyncFunction, GeneratorFunction, AsyncGeneratorFunction constructors
           // Intentional empty functions to obtain constructor references
           // eslint-disable-next-line @typescript-eslint/no-empty-function
@@ -225,6 +243,17 @@ export function createSafeReflect(securityLevel: SecurityLevel): typeof Reflect 
             newTarget as new (...args: unknown[]) => unknown,
           );
         };
+        // Wrap so the returned function cannot itself be walked to the host Function constructor.
+        return createSecureProxy(safeConstruct);
+      }
+
+      // SECURITY: never hand back the RAW native Reflect methods. Each is a host-realm function
+      // whose prototype chain reaches the host Function constructor, and Reflect.get /
+      // Reflect.getOwnPropertyDescriptor are reflection primitives whose STRING-LITERAL key
+      // argument bypasses the AST computed-key guard. Wrapping in a secure proxy blocks
+      // `.constructor` on the method and keeps every result behind the membrane.
+      if (typeof value === 'function') {
+        return createSecureProxy(value);
       }
 
       return value;
@@ -458,8 +487,16 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
   // Add any additional blocked properties
   const blockedSet = new Set([...baseBlocked, ...(options.additionalBlocked || [])]);
 
-  // Use maxDepth from levelConfig if provided, otherwise from options or default
-  const maxDepth = options.maxDepth ?? options.levelConfig?.proxyMaxDepth ?? 10;
+  // Use maxDepth from levelConfig if provided, otherwise from options or default.
+  // Floor it so the (fail-closed) recursion cap can never sit below the deepest value that can
+  // legitimately arrive; a higher cap only wraps MORE of the graph, so it is never less secure.
+  const configuredMaxDepth = options.maxDepth ?? options.levelConfig?.proxyMaxDepth ?? 10;
+  // A non-finite value (NaN/Infinity) would make `depth > maxDepth` never trip, silently
+  // disabling the fail-closed backstop — reject it and fall back to the floor. Valid values are
+  // floored so the cap can never sit below the deepest value that can legitimately arrive.
+  const maxDepth = Number.isFinite(configuredMaxDepth)
+    ? Math.max(configuredMaxDepth, MIN_MEMBRANE_RECURSION_DEPTH)
+    : MIN_MEMBRANE_RECURSION_DEPTH;
 
   // Use throwOnBlocked from options or levelConfig (options takes precedence)
   const throwOnBlocked = options.throwOnBlocked ?? options.levelConfig?.throwOnBlocked ?? false;
@@ -480,9 +517,15 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
       }
     }
 
-    // Depth limit to prevent stack overflow
+    // Recursion backstop. Fail CLOSED: returning the raw target here would hand sandbox code an
+    // unwrapped reference whose prototype chain reaches the host Function constructor (the
+    // reported `.bind`-chain / deep-graph escape). Throwing keeps the membrane total.
     if (depth > maxDepth) {
-      return obj;
+      throw createSafeError(
+        `Security violation: secure-proxy recursion depth (${maxDepth}) exceeded. ` +
+          `The value cannot be exposed without breaking the sandbox barrier.`,
+        'SecurityError',
+      );
     }
 
     const proxy = new Proxy(obj, {
@@ -636,7 +679,38 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         const propName = typeof property === 'symbol' ? property.toString() : property;
         const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
 
-        // Must return actual descriptor for non-configurable properties (proxy invariant)
+        // Mirror the get trap: a non-configurable, non-writable data property must be reported
+        // with its exact value (proxy invariant), so an object/function value cannot be wrapped
+        // or hidden and would cross the barrier unwrapped via `descriptor.value`. Deny the read
+        // instead (throwing satisfies the invariant); primitives are inert and safe to report.
+        if (descriptor && !descriptor.configurable && descriptor.writable === false && 'value' in descriptor) {
+          const exactValue: unknown = descriptor.value;
+          if (exactValue !== null && (typeof exactValue === 'object' || typeof exactValue === 'function')) {
+            throw createSafeError(
+              `Security violation: Access to property descriptor for '${String(propName)}' is blocked. ` +
+                `This property cannot be exposed without breaking the sandbox barrier.`,
+              'SecurityError',
+            );
+          }
+          return descriptor;
+        }
+
+        // Accessor descriptors expose raw getter/setter functions. A non-configurable accessor
+        // must be reported with its exact get/set (proxy invariant), so it cannot be wrapped —
+        // deny it if it carries a function whose prototype chain reaches the host constructor.
+        if (
+          descriptor &&
+          !descriptor.configurable &&
+          (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')
+        ) {
+          throw createSafeError(
+            `Security violation: Access to property descriptor for '${String(propName)}' is blocked. ` +
+              `This property cannot be exposed without breaking the sandbox barrier.`,
+            'SecurityError',
+          );
+        }
+
+        // Must return actual descriptor for other non-configurable properties (proxy invariant)
         if (descriptor && !descriptor.configurable) {
           return descriptor;
         }
@@ -654,6 +728,25 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
             );
           }
           return undefined;
+        }
+
+        // A configurable accessor's getter/setter may be safely proxied so the descriptor never
+        // hands back a raw function whose prototype chain reaches the host Function constructor.
+        if (descriptor && (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')) {
+          return {
+            ...descriptor,
+            get: typeof descriptor.get === 'function' ? proxyWithDepth(descriptor.get, depth + 1) : descriptor.get,
+            set: typeof descriptor.set === 'function' ? proxyWithDepth(descriptor.set, depth + 1) : descriptor.set,
+          };
+        }
+
+        // Wrap object/function values so a descriptor read cannot hand back a raw reference that
+        // the get trap would have proxied (a configurable property's value may be safely wrapped).
+        if (descriptor && 'value' in descriptor) {
+          const value: unknown = descriptor.value;
+          if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
+            return { ...descriptor, value: proxyWithDepth(value as object, depth + 1) };
+          }
         }
 
         return descriptor;
