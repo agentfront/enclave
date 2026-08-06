@@ -84,6 +84,34 @@ describe('AgentScript interpreter — security boundary', () => {
     await expect(run(main('return ([]).constructor.constructor("return 1")();'))).rejects.toThrow(/Forbidden/);
   });
 
+  it('blocks the escape keys via destructuring, static and literal (GHSA-3279)', async () => {
+    // Identifier key.
+    await expect(run(main('const { constructor: c } = {}; return c;'))).rejects.toThrow(/Forbidden destructured key/);
+    // String-literal key — previously read `prop.key.name` (undefined for literals) and slipped through.
+    await expect(run(main('const { "constructor": c } = {}; return c;'))).rejects.toThrow(/Forbidden destructured key/);
+    await expect(run(main('const { "prototype": p } = someFn; return p;'), { someFn: () => 0 })).rejects.toThrow(
+      /Forbidden destructured key/,
+    );
+    await expect(run(main('const { "__proto__": p } = {}; return p;'))).rejects.toThrow(/Forbidden destructured key/);
+    // Nested and defaulted patterns.
+    await expect(run(main('const { a: { "constructor": c } } = { a: {} }; return c;'))).rejects.toThrow(
+      /Forbidden destructured key/,
+    );
+    await expect(run(main('const { "constructor": c = 1 } = {}; return c;'))).rejects.toThrow(
+      /Forbidden destructured key/,
+    );
+    // Computed keys in destructuring are refused outright (cannot be statically checked).
+    await expect(run(main('const k = "constructor"; const { [k]: c } = {}; return c;'))).rejects.toThrow(
+      /Computed destructuring keys are not allowed/,
+    );
+  });
+
+  it('still binds ordinary destructuring keys correctly', async () => {
+    expect(await run(main('const { a, b: bee } = { a: 1, b: 2 }; return a + bee;'))).toBe(3);
+    expect(await run(main('const { x } = { x: 5 }; return x;'))).toBe(5);
+    expect(await run(main('const [p, q] = [10, 20]; return p + q;'))).toBe(30);
+  });
+
   it('does not leak the host realm through array/object intrinsics', async () => {
     // The classic escape: ([]).constructor.constructor('return process')() — blocked above.
     // Confirm a plain method call stays in-sandbox and returns data only.
