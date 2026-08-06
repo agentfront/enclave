@@ -18,6 +18,21 @@
 import type { SecureProxyLevelConfig, SecurityLevel } from './types';
 import { createSafeError } from './safe-error';
 
+// SECURITY (GHSA-3279 defense-in-depth): pin pristine reflection intrinsics at module load so the
+// membrane traps below never re-read a global that could be overwritten to capture a raw target.
+// In single-VM mode these traps run in the host realm (not sandbox-reachable), but pinning keeps the
+// guarantee intact if this membrane is ever driven from a shared realm (e.g. a browser adapter).
+const ObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const ObjectToString = Object.prototype.toString;
+const FunctionBind = Function.prototype.bind;
+const ReflectGet = Reflect.get;
+const ReflectSet = Reflect.set;
+const ReflectDefineProperty = Reflect.defineProperty;
+const ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+const ReflectOwnKeys = Reflect.ownKeys;
+const ReflectApply = Reflect.apply;
+const ReflectConstruct = Reflect.construct;
+
 /**
  * Absolute floor for the membrane recursion cap.
  *
@@ -53,6 +68,24 @@ export const BLOCKED_PROPERTY_CATEGORIES = {
     '__defineSetter__',
     '__lookupGetter__',
     '__lookupSetter__',
+  ]),
+
+  /**
+   * Property-descriptor and prototype MUTATION gadgets. These are the primitives behind the
+   * GHSA-3279 membrane self-leak (`Object.defineProperty(Object, 'getOwnPropertyDescriptor', hook)`
+   * to intercept the trap's raw target) and classic prototype pollution (`setPrototypeOf`). They
+   * are never needed by AgentScript and are already refused by the single-VM SafeObject
+   * (`DANGEROUS_OBJECT_STATIC_METHODS`), so they are blocked at every level that blocks the
+   * constructor (all except PERMISSIVE). Read-only reflection (getPrototypeOf, keys, entries,
+   * getOwnPropertyNames) is intentionally NOT here: the membrane's own getPrototypeOf/ownKeys traps
+   * already neutralize it for proxied values, and it has legitimate uses.
+   */
+  DESCRIPTOR_MUTATION: new Set([
+    'getOwnPropertyDescriptor',
+    'getOwnPropertyDescriptors',
+    'defineProperty',
+    'defineProperties',
+    'setPrototypeOf',
   ]),
 
   /**
@@ -107,9 +140,11 @@ export function getBlockedPropertiesForLevel(level: SecurityLevel): Set<string> 
   const blocked = new Set<string>();
 
   // PERMISSIVE: No prototype blocking (handled by explicit config)
-  // All other levels: Block core prototype manipulation
+  // All other levels: Block core prototype manipulation AND the descriptor/prototype mutation
+  // gadgets that enable the membrane self-leak + prototype pollution (GHSA-3279).
   if (level !== 'PERMISSIVE') {
     BLOCKED_PROPERTY_CATEGORIES.PROTOTYPE.forEach((p) => blocked.add(p));
+    BLOCKED_PROPERTY_CATEGORIES.DESCRIPTOR_MUTATION.forEach((p) => blocked.add(p));
   }
 
   switch (level) {
@@ -148,6 +183,13 @@ const BLOCKED_PROPERTIES = new Set([
   '__defineSetter__',
   '__lookupGetter__',
   '__lookupSetter__',
+
+  // Descriptor / prototype mutation gadgets (GHSA-3279 self-leak + prototype pollution)
+  'getOwnPropertyDescriptor',
+  'getOwnPropertyDescriptors',
+  'defineProperty',
+  'defineProperties',
+  'setPrototypeOf',
 ]);
 
 /**
@@ -161,6 +203,10 @@ export function buildBlockedPropertiesFromConfig(config: SecureProxyLevelConfig)
 
   if (config.blockConstructor) {
     blocked.add('constructor');
+    // Blocking the constructor without blocking the descriptor/prototype mutation gadgets leaves
+    // the GHSA-3279 self-leak open (patch Object.getOwnPropertyDescriptor, capture the trap's raw
+    // target). These share the constructor's threat model and are never needed by AgentScript.
+    BLOCKED_PROPERTY_CATEGORIES.DESCRIPTOR_MUTATION.forEach((p) => blocked.add(p));
   }
 
   if (config.blockPrototype) {
@@ -446,7 +492,7 @@ function isProxyable(value: unknown): value is object {
   if (typeof value !== 'object' && typeof value !== 'function') return false;
 
   // Check for built-in types that have internal slots
-  const tag = Object.prototype.toString.call(value);
+  const tag = ObjectToString.call(value);
   if (NON_PROXYABLE_TYPES.has(tag)) {
     return false;
   }
@@ -539,7 +585,7 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         // slots pinned to undefined. An object or function cannot be handed back: it would
         // cross the barrier unwrapped and its prototype chain reaches the host Function
         // constructor, so deny the read instead. Throwing always satisfies the invariant.
-        const descriptor = Object.getOwnPropertyDescriptor(target, property);
+        const descriptor = ObjectGetOwnPropertyDescriptor(target, property);
         if (descriptor && !descriptor.configurable && descriptor.writable === false && 'value' in descriptor) {
           const exactValue: unknown = descriptor.value;
           if (exactValue !== null && (typeof exactValue === 'object' || typeof exactValue === 'function')) {
@@ -586,18 +632,18 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         }
 
         // Get the actual value
-        const value = Reflect.get(target, property, receiver);
+        const value = ReflectGet(target, property, receiver);
 
         // For methods on objects with internal slots (like Promise), we need to:
         // 1. Bind the method to the original object so internal slot checks pass
         // 2. Proxy the bound method to block constructor access
         // This prevents attacks like: callTool(...).then.constructor
         if (typeof value === 'function') {
-          const tag = Object.prototype.toString.call(target);
+          const tag = ObjectToString.call(target);
           if (INTERNAL_SLOT_TYPES.has(tag)) {
             // Bind to original object so methods like .then() work correctly
             // Then proxy the bound function to block .constructor access
-            const boundMethod = value.bind(target);
+            const boundMethod = FunctionBind.call(value, target);
             return proxyWithDepth(boundMethod, depth + 1);
           }
         }
@@ -629,7 +675,7 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
           return false; // Silently fail
         }
 
-        return Reflect.set(target, property, value, receiver);
+        return ReflectSet(target, property, value, receiver);
       },
 
       // Block defining dangerous properties
@@ -650,13 +696,13 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
           return false;
         }
 
-        return Reflect.defineProperty(target, property, descriptor);
+        return ReflectDefineProperty(target, property, descriptor);
       },
 
       // Filter blocked property names from enumeration (Object.keys, Object.entries, etc.)
       // Must respect proxy invariants: non-configurable own properties cannot be hidden
       ownKeys(target: U): (string | symbol)[] {
-        const keys = Reflect.ownKeys(target);
+        const keys = ReflectOwnKeys(target);
         return keys.filter((key) => {
           const keyStr = typeof key === 'symbol' ? key.toString() : key;
           // Keep non-blocked properties
@@ -664,7 +710,7 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
             return true;
           }
           // Must keep non-configurable properties (proxy invariant)
-          const descriptor = Object.getOwnPropertyDescriptor(target, key);
+          const descriptor = ObjectGetOwnPropertyDescriptor(target, key);
           if (descriptor && !descriptor.configurable) {
             return true;
           }
@@ -677,7 +723,7 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
       // Must respect proxy invariants: non-configurable properties must return actual descriptor
       getOwnPropertyDescriptor(target: U, property: string | symbol): PropertyDescriptor | undefined {
         const propName = typeof property === 'symbol' ? property.toString() : property;
-        const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+        const descriptor = ReflectGetOwnPropertyDescriptor(target, property);
 
         // Mirror the get trap: a non-configurable, non-writable data property must be reported
         // with its exact value (proxy invariant), so an object/function value cannot be wrapped
@@ -779,7 +825,7 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
             : thisArg;
 
         // Call the original function
-        const result = Reflect.apply(target, unwrappedThis, argArray);
+        const result = ReflectApply(target, unwrappedThis, argArray);
 
         // Proxy the return value if it's an object or function
         if (isProxyable(result)) {
@@ -796,7 +842,7 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
       construct(target: any, argArray: any[], newTarget: any): any {
         // When invoked as `new (proxy)(...)`, newTarget is the proxy itself; reading its
         // blocked `.prototype` would fail, so fall back to the original constructor.
-        const instance = Reflect.construct(target, argArray, newTarget === proxy ? target : newTarget);
+        const instance = ReflectConstruct(target, argArray, newTarget === proxy ? target : newTarget);
 
         // Proxy the instance so the created object stays behind the security barrier.
         if (isProxyable(instance)) {

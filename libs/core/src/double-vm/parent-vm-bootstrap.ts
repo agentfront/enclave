@@ -865,6 +865,21 @@ ${stackTraceHardeningCode}
   const proxyCache = new WeakMap();
   const hostProxyCache = new WeakMap();
 
+  // SECURITY (GHSA-3279): pin pristine reflection intrinsics BEFORE any sandbox code runs, so the
+  // membrane traps never re-read a realm global the sandbox can overwrite. The reported escape
+  // replaced Object.getOwnPropertyDescriptor with a hook; the get trap then called it and handed
+  // the attacker the RAW target of a membrane proxy (the host Promise from callTool), reaching the
+  // host Function constructor. Using captured references makes a later monkeypatch a no-op.
+  const __ag_getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+  const __ag_ReflectGet = Reflect.get;
+  const __ag_ReflectSet = Reflect.set;
+  const __ag_ReflectDefineProperty = Reflect.defineProperty;
+  const __ag_ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+  const __ag_ReflectOwnKeys = Reflect.ownKeys;
+  const __ag_ReflectApply = Reflect.apply;
+  const __ag_hasOwnProperty = Object.prototype.hasOwnProperty;
+  const __ag_functionBind = Function.prototype.bind;
+
   /**
    * Create a secure proxy that blocks access to dangerous properties
    * Defense-in-depth against attacks like: callTool['const' + 'ructor']
@@ -906,7 +921,7 @@ ${stackTraceHardeningCode}
         var propName = String(property);
 
         // Check if property is non-configurable (proxy invariant requires returning actual value)
-        var descriptor = Object.getOwnPropertyDescriptor(target, property);
+        var descriptor = __ag_getOwnPropertyDescriptor(target, property);
         var isNonConfigurable = descriptor && !descriptor.configurable;
 
         // Proxy invariant: if the target has a non-configurable, non-writable data property,
@@ -927,15 +942,14 @@ ${stackTraceHardeningCode}
           return exactValue;
         }
 
-        // Block dangerous properties - but respect proxy invariants
+        // Block dangerous properties. The ONLY [[Get]] invariant that forces a specific return
+        // value is for a non-writable + non-configurable DATA property — already handled above.
+        // Anything reaching here is configurable, a non-configurable WRITABLE data property (such
+        // as a function own prototype), or a non-configurable accessor; the invariant constrains
+        // none of these, so the trap must never hand back the raw value. GHSA-3279: the old
+        // "isNonConfigurable and not host -> return Reflect.get(...)" branch leaked the raw
+        // writable prototype, exposing a parent-realm Object and defeating the membrane.
         if (blockedPropertiesSet.has(propName)) {
-          // For non-configurable properties, we MUST return the actual value
-          // (JavaScript proxy invariant - can't hide non-configurable properties).
-          // Host-owned values instead deny the read: every descriptor shape that could force
-          // the trap's result was handled above, so returning undefined is invariant-safe.
-          if (isNonConfigurable && !host) {
-            return Reflect.get(target, property, receiver);
-          }
           if (throwOnBlocked) {
             throw createSafeError(
               "Security violation: Access to '" + propName + "' is blocked. " +
@@ -945,12 +959,12 @@ ${stackTraceHardeningCode}
           return undefined;
         }
 
-        var value = Reflect.get(target, property, receiver);
+        var value = __ag_ReflectGet(target, property, receiver);
 
         // For function values, bind to target first (preserves internal slot access for Promises, etc.)
         // Then recursively proxy the bound function to block constructor access
         if (typeof value === 'function') {
-          var boundMethod = value.bind(target);
+          var boundMethod = __ag_functionBind.call(value, target);
           return createSecureProxy(boundMethod, depth + 1, host);
         }
 
@@ -973,7 +987,7 @@ ${stackTraceHardeningCode}
           }
           return false;
         }
-        return Reflect.set(target, property, value, receiver);
+        return __ag_ReflectSet(target, property, value, receiver);
       },
       defineProperty: function(target, property, descriptor) {
         var propName = String(property);
@@ -986,11 +1000,11 @@ ${stackTraceHardeningCode}
           }
           return false;
         }
-        return Reflect.defineProperty(target, property, descriptor);
+        return __ag_ReflectDefineProperty(target, property, descriptor);
       },
       getOwnPropertyDescriptor: function(target, property) {
         var propName = String(property);
-        var descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+        var descriptor = __ag_ReflectGetOwnPropertyDescriptor(target, property);
 
         // Mirror the get trap's host-owned pinned-value refusal: a non-configurable, non-writable
         // data property must be reported with its exact value (proxy invariant), so on a HOST-owned
@@ -1039,7 +1053,7 @@ ${stackTraceHardeningCode}
         // hands back a raw function that leads to the host Function constructor.
         if (descriptor && (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')) {
           var accessorWrapped = {};
-          for (var ak in descriptor) { if (Object.prototype.hasOwnProperty.call(descriptor, ak)) accessorWrapped[ak] = descriptor[ak]; }
+          for (var ak in descriptor) { if (__ag_hasOwnProperty.call(descriptor, ak)) accessorWrapped[ak] = descriptor[ak]; }
           if (typeof descriptor.get === 'function') accessorWrapped.get = createSecureProxy(descriptor.get, depth + 1, host);
           if (typeof descriptor.set === 'function') accessorWrapped.set = createSecureProxy(descriptor.set, depth + 1, host);
           return accessorWrapped;
@@ -1051,7 +1065,7 @@ ${stackTraceHardeningCode}
           var value = descriptor.value;
           if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
             var wrapped = {};
-            for (var dk in descriptor) { if (Object.prototype.hasOwnProperty.call(descriptor, dk)) wrapped[dk] = descriptor[dk]; }
+            for (var dk in descriptor) { if (__ag_hasOwnProperty.call(descriptor, dk)) wrapped[dk] = descriptor[dk]; }
             wrapped.value = createSecureProxy(value, depth + 1, host);
             return wrapped;
           }
@@ -1059,7 +1073,7 @@ ${stackTraceHardeningCode}
         return descriptor;
       },
       ownKeys: function(target) {
-        var keys = Reflect.ownKeys(target);
+        var keys = __ag_ReflectOwnKeys(target);
         return keys.filter(function(key) {
           var keyStr = String(key);
           // Keep non-blocked properties
@@ -1067,7 +1081,7 @@ ${stackTraceHardeningCode}
             return true;
           }
           // Must keep non-configurable properties (proxy invariant)
-          var descriptor = Object.getOwnPropertyDescriptor(target, key);
+          var descriptor = __ag_getOwnPropertyDescriptor(target, key);
           if (descriptor && !descriptor.configurable) {
             return true;
           }
@@ -1088,7 +1102,7 @@ ${stackTraceHardeningCode}
       // Results are re-wrapped at a FRESH depth (0) so a chain of calls such as
       // then().then() cannot inflate depth past the recursion cap and leak an unwrapped value.
       apply: function(target, thisArg, args) {
-        return createSecureProxy(Reflect.apply(target, thisArg, args), 0, host);
+        return createSecureProxy(__ag_ReflectApply(target, thisArg, args), 0, host);
       }
       // NOTE: intentionally NO construct trap here (unlike the standalone secure-proxy used
       // for single-VM mode). Every constructor reachable from sandbox code resolves to an

@@ -1323,9 +1323,11 @@ describe('ATK-DATA-02: Serialization Hijack', () => {
 
     const code = `
       const result = await callTool('getHijackMethod', {});
-      // Even with the method name, the method throws when called
-      const method = Object[result.hijackMethod];
+      // Even resolving the method name from a tool result is blocked: 'defineProperty' is a
+      // descriptor-mutation gadget, refused at the runtime computed-key guard / membrane
+      // (GHSA-3279), not merely when finally called.
       try {
+        const method = Object[result.hijackMethod];
         method({}, 'test', { value: 1 });
         return 'attack succeeded';
       } catch (e) {
@@ -1334,7 +1336,7 @@ describe('ATK-DATA-02: Serialization Hijack', () => {
     `;
     const result = await enclave.run(code);
     expect(result.success).toBe(true);
-    expect(result.value).toMatch(/blocked.*defineProperty.*not allowed/i);
+    expect(result.value).toMatch(/blocked.*defineProperty/i);
     enclave.dispose();
   });
 
