@@ -112,7 +112,11 @@ jobs:
             echo "Cherry-pick successful"
           else
             echo "conflict=true" >> "$GITHUB_OUTPUT"
-            git cherry-pick --abort || true
+            # `cherry-pick --no-commit` records no sequencer state, so --abort
+            # fails with "no cherry-pick in progress" and leaves the conflicted
+            # index and working tree in place. Reset explicitly instead.
+            git cherry-pick --quit 2>/dev/null || true
+            git reset --hard HEAD
             echo "Cherry-pick failed due to conflicts"
           fi
 
