@@ -717,6 +717,29 @@ ${stackTraceHardeningCode}
     } catch (e) { /* ignore */ }
   }
 
+  // SECURITY (GHSA-3279): pin pristine intrinsics BEFORE any sandbox code runs, so the membrane
+  // traps and the error hardening below never re-read a realm global the sandbox can overwrite.
+  // The reported escape replaced Object.getOwnPropertyDescriptor with a hook; the get trap then
+  // called it and handed the attacker the RAW target of a membrane proxy (the host Promise from
+  // callTool), reaching the host Function constructor. The same gadget aimed at the Object.*
+  // mutators below would let an attacker observe safe-error construction or defeat the final
+  // freeze, leaving the returned error with a live prototype and constructor chain. Using
+  // captured references makes a later monkeypatch a no-op.
+  const __ag_getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+  const __ag_defineProperty = Object.defineProperty;
+  const __ag_defineProperties = Object.defineProperties;
+  const __ag_setPrototypeOf = Object.setPrototypeOf;
+  const __ag_objectCreate = Object.create;
+  const __ag_objectFreeze = Object.freeze;
+  const __ag_ReflectGet = Reflect.get;
+  const __ag_ReflectSet = Reflect.set;
+  const __ag_ReflectDefineProperty = Reflect.defineProperty;
+  const __ag_ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+  const __ag_ReflectOwnKeys = Reflect.ownKeys;
+  const __ag_ReflectApply = Reflect.apply;
+  const __ag_hasOwnProperty = Object.prototype.hasOwnProperty;
+  const __ag_functionBind = Function.prototype.bind;
+
   /**
    * Creates a "safe" error object that cannot be used to escape the sandbox.
    *
@@ -739,7 +762,7 @@ ${stackTraceHardeningCode}
     var error = new Error(message);
     // NOTE: Use Object.defineProperty instead of direct assignment because
     // Error.prototype.name is frozen, and in strict mode direct assignment fails.
-    Object.defineProperty(error, 'name', {
+    __ag_defineProperty(error, 'name', {
       value: name,
       writable: true,
       enumerable: false,
@@ -748,12 +771,12 @@ ${stackTraceHardeningCode}
 
     // CRITICAL: sever the *actual* prototype chain (native getters / Object.getPrototypeOf).
     // A shadowing __proto__ data property is not sufficient.
-    Object.setPrototypeOf(error, null);
+    __ag_setPrototypeOf(error, null);
 
     // Create a null-prototype object to use as a safe "constructor"
     // This object has no prototype chain to climb
-    var SafeConstructor = Object.create(null);
-    Object.defineProperties(SafeConstructor, {
+    var SafeConstructor = __ag_objectCreate(null);
+    __ag_defineProperties(SafeConstructor, {
       // Make constructor point to itself to break the chain
       constructor: {
         value: SafeConstructor,
@@ -776,11 +799,11 @@ ${stackTraceHardeningCode}
         configurable: false
       }
     });
-    Object.freeze(SafeConstructor);
+    __ag_objectFreeze(SafeConstructor);
 
     // Override the constructor property on the error instance
     // This breaks the prototype chain: err.constructor.constructor no longer reaches Function
-    Object.defineProperty(error, 'constructor', {
+    __ag_defineProperty(error, 'constructor', {
       value: SafeConstructor,
       writable: false,
       enumerable: false,
@@ -789,7 +812,7 @@ ${stackTraceHardeningCode}
 
     // SECURITY: Override __proto__ on the error instance to prevent prototype chain escape
     // Attack vector blocked: err.__proto__.constructor.constructor('malicious code')()
-    Object.defineProperty(error, '__proto__', {
+    __ag_defineProperty(error, '__proto__', {
       value: null,
       writable: false,
       enumerable: false,
@@ -799,7 +822,7 @@ ${stackTraceHardeningCode}
     // SECURITY: Remove the stack property to prevent information leakage (Vector 1230)
     // The stack trace can reveal internal implementation details like function names,
     // file paths, and line numbers which can be used for reconnaissance attacks.
-    Object.defineProperty(error, 'stack', {
+    __ag_defineProperty(error, 'stack', {
       value: undefined,
       writable: false,
       enumerable: false,
@@ -808,7 +831,7 @@ ${stackTraceHardeningCode}
 
     // Add a unique marker to identify this as a safe error from our runtime
     // This is used by suspicious pattern detection to distinguish our errors from user errors
-    Object.defineProperty(error, SAFE_ERROR_MARKER, {
+    __ag_defineProperty(error, SAFE_ERROR_MARKER, {
       value: true,
       writable: false,
       enumerable: false,
@@ -816,7 +839,7 @@ ${stackTraceHardeningCode}
     });
 
     // Freeze the error to prevent modifications
-    Object.freeze(error);
+    __ag_objectFreeze(error);
 
     return error;
   }
@@ -864,21 +887,6 @@ ${stackTraceHardeningCode}
   // cached separately from realm-owned ones because the two use different blocking rules.
   const proxyCache = new WeakMap();
   const hostProxyCache = new WeakMap();
-
-  // SECURITY (GHSA-3279): pin pristine reflection intrinsics BEFORE any sandbox code runs, so the
-  // membrane traps never re-read a realm global the sandbox can overwrite. The reported escape
-  // replaced Object.getOwnPropertyDescriptor with a hook; the get trap then called it and handed
-  // the attacker the RAW target of a membrane proxy (the host Promise from callTool), reaching the
-  // host Function constructor. Using captured references makes a later monkeypatch a no-op.
-  const __ag_getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
-  const __ag_ReflectGet = Reflect.get;
-  const __ag_ReflectSet = Reflect.set;
-  const __ag_ReflectDefineProperty = Reflect.defineProperty;
-  const __ag_ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
-  const __ag_ReflectOwnKeys = Reflect.ownKeys;
-  const __ag_ReflectApply = Reflect.apply;
-  const __ag_hasOwnProperty = Object.prototype.hasOwnProperty;
-  const __ag_functionBind = Function.prototype.bind;
 
   /**
    * Create a secure proxy that blocks access to dangerous properties
@@ -1261,7 +1269,7 @@ ${stackTraceHardeningCode}
         }
 
         if (response.ok === true) {
-          if (Object.prototype.hasOwnProperty.call(response, 'value')) {
+          if (__ag_hasOwnProperty.call(response, 'value')) {
             return response.value;
           }
           return undefined;

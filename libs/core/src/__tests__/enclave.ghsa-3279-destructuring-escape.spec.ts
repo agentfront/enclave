@@ -29,6 +29,30 @@
 import { Enclave } from '../enclave';
 import { getBlockedPropertiesForLevel, buildBlockedPropertiesFromConfig } from '../secure-proxy';
 import { SECURITY_LEVEL_CONFIGS } from '../types';
+import type { ExecutionResult } from '../types';
+
+/**
+ * Every Enclave built by a test is registered here and disposed in `afterEach`, so a failing
+ * assertion (which skips the rest of the test body) can never leak a VM for the whole run.
+ */
+const openEnclaves: Enclave[] = [];
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors the Enclave constructor's options bag
+function makeEnclave(options: any): Enclave {
+  const enclave = new Enclave(options);
+  openEnclaves.push(enclave);
+  return enclave;
+}
+
+afterEach(() => {
+  while (openEnclaves.length > 0) {
+    try {
+      openEnclaves.pop()?.dispose();
+    } catch {
+      /* disposal must never mask the test's own failure */
+    }
+  }
+});
 
 /** The advisory PoC, with a benign payload. `callTool` is rewritten to `__safe_callTool`. */
 const POC = `
@@ -59,37 +83,52 @@ const g = HF("return typeof process !== 'undefined' ? process.getBuiltinModule('
 return g();
 `;
 
-/** Assert the run did not achieve RCE (either blocked, or returned a value with no marker). */
-function assertNoRce(result: { success: boolean; value?: unknown; error?: { message: string } }): void {
-  const str = JSON.stringify(result.value ?? null);
-  expect(str).not.toMatch(/pwned/i);
+/**
+ * Error code every membrane refusal must carry when the double VM is on and AST validation is
+ * off — asserting it keeps a test from passing because the run died for some unrelated reason.
+ */
+const MEMBRANE_ERROR_CODE = 'DOUBLE_VM_EXECUTION_ERROR';
+
+/**
+ * Assert the run did not achieve RCE (either blocked, or returned a value with no marker).
+ *
+ * The WHOLE result is inspected, not just `value`: a payload's output can surface through the
+ * error path too (a thrown value, or a message that embeds the command output), so checking
+ * `result.value` alone would miss an escape that reported itself as a failure.
+ */
+function assertNoRce(result: ExecutionResult): void {
+  const surfaces = [
+    JSON.stringify(result.value ?? null),
+    result.error?.message ?? '',
+    result.error?.name ?? '',
+    result.error?.stack ?? '',
+    JSON.stringify(result.error?.data ?? null),
+  ].join('\n');
+  expect(surfaces).not.toMatch(/pwned/i);
 }
 
 describe('GHSA-3279: static-destructuring escape', () => {
   describe('end-to-end PoC must not achieve RCE', () => {
     it('default double-VM (validation ON) blocks the escape', async () => {
-      const enclave = new Enclave({ toolHandler: async () => ({ id: 1, name: 'x' }) });
+      const enclave = makeEnclave({ toolHandler: async () => ({ id: 1, name: 'x' }) });
       const result = await enclave.run(POC);
       assertNoRce(result);
       expect(result.success).toBe(false);
-      enclave.dispose();
     }, 20000);
 
     it('double-VM with validation DISABLED is still blocked by the runtime membrane', async () => {
       // Isolates the membrane: even if AST validation is bypassed, the boundary must hold.
-      const enclave = new Enclave({ validate: false, toolHandler: async () => ({ id: 1, name: 'x' }) });
+      const enclave = makeEnclave({ validate: false, toolHandler: async () => ({ id: 1, name: 'x' }) });
       const result = await enclave.run(POC);
       assertNoRce(result);
       expect(result.success).toBe(false);
-      enclave.dispose();
     }, 20000);
 
     it('single-VM (double-VM disabled) blocks the escape', async () => {
-      const enclave = new Enclave({ doubleVm: { enabled: false }, toolHandler: async () => ({ id: 1, name: 'x' }) });
+      const enclave = makeEnclave({ doubleVm: { enabled: false }, toolHandler: async () => ({ id: 1, name: 'x' }) });
       const result = await enclave.run(POC);
       assertNoRce(result);
       expect(result.success).toBe(false);
-      enclave.dispose();
     }, 20000);
   });
 
@@ -121,16 +160,15 @@ describe('GHSA-3279: static-destructuring escape', () => {
 
     for (const { name, code } of cases) {
       it(`rejects: ${name}`, async () => {
-        const enclave = new Enclave({ toolHandler: async () => ({ id: 1 }) });
+        const enclave = makeEnclave({ toolHandler: async () => ({ id: 1 }) });
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
         expect(result.error?.code).toBe('VALIDATION_ERROR');
-        enclave.dispose();
       }, 20000);
     }
 
     it('flags the destructuring itself (NO_DANGEROUS_DESTRUCTURING), not an incidental rule', async () => {
-      const enclave = new Enclave({ toolHandler: async () => ({ id: 1 }) });
+      const enclave = makeEnclave({ toolHandler: async () => ({ id: 1 }) });
       for (const code of [
         `const { "constructor": c } = {}; return c;`,
         `const { a: { "constructor": c } } = { a: {} }; return c;`,
@@ -143,38 +181,39 @@ describe('GHSA-3279: static-destructuring escape', () => {
         );
         expect(codes).toContain('NO_DANGEROUS_DESTRUCTURING');
       }
-      enclave.dispose();
     }, 20000);
 
     it('does not flag benign keys that merely contain a dangerous substring', async () => {
-      const enclave = new Enclave({ toolHandler: async () => ({ constructorName: 'A', prototypeId: 2 }) });
+      const enclave = makeEnclave({ toolHandler: async () => ({ constructorName: 'A', prototypeId: 2 }) });
       const result = await enclave.run(`
         const { constructorName, prototypeId } = await callTool('x', {});
         return constructorName + prototypeId;
       `);
       expect(result.success).toBe(true);
       expect(result.value).toBe('A2');
-      enclave.dispose();
     }, 20000);
   });
 
   describe('membrane must not hand back a raw reference (validation disabled)', () => {
     it('reading callTool.prototype via static destructuring is refused at runtime', async () => {
-      const enclave = new Enclave({ validate: false, toolHandler: async () => ({ id: 1 }) });
+      const enclave = makeEnclave({ validate: false, toolHandler: async () => ({ id: 1 }) });
       const code = `
         const { "prototype": pr } = callTool;
         return typeof pr === "object" && pr !== null ? "leaked-object" : typeof pr;
       `;
       const result = await enclave.run(code);
-      // Must NOT leak a usable raw prototype object; either blocked or not an object.
+      // Must NOT leak a usable raw prototype object: either the membrane refused the read, or the
+      // read completed with something that is not an object. Both outcomes are asserted, so an
+      // unrelated failure (timeout, crash) can no longer make this test pass by default.
       if (result.success) {
         expect(result.value).not.toBe('leaked-object');
+      } else {
+        expect(result.error?.code).toBe(MEMBRANE_ERROR_CODE);
       }
-      enclave.dispose();
     }, 20000);
 
     it('monkeypatching Object.getOwnPropertyDescriptor cannot capture a membrane raw target', async () => {
-      const enclave = new Enclave({ validate: false, toolHandler: async () => ({ id: 1, name: 'x' }) });
+      const enclave = makeEnclave({ validate: false, toolHandler: async () => ({ id: 1, name: 'x' }) });
       const code = `
         const o = {};
         const { "constructor": IO } = o;
@@ -193,8 +232,9 @@ describe('GHSA-3279: static-destructuring escape', () => {
       const result = await enclave.run(code);
       if (result.success) {
         expect((result.value as { captured: string }).captured).toBe('none');
+      } else {
+        expect(result.error?.code).toBe(MEMBRANE_ERROR_CODE);
       }
-      enclave.dispose();
     }, 20000);
   });
 
@@ -325,15 +365,18 @@ describe('GHSA-3279: static-destructuring escape', () => {
 
     for (const v of vectors) {
       it(`no RCE and no raw leak: ${v.name}`, async () => {
-        const enclave = new Enclave({ validate: false, toolHandler: async () => ({ id: 1, name: 'x' }), ...v.opts });
+        const enclave = makeEnclave({ validate: false, toolHandler: async () => ({ id: 1, name: 'x' }), ...v.opts });
         const result = await enclave.run(v.code);
         // The one invariant that matters: no host command executed, and no raw target captured.
-        expect(JSON.stringify(result)).not.toMatch(/pwned/i);
+        assertNoRce(result);
         if (result.success) {
           expect(result.value).not.toBe('CAPTURED');
           expect(result.value).not.toBe('LEAKED');
+        } else {
+          // A refusal is a valid outcome, but it must be the membrane refusing — not the run
+          // dying for an unrelated reason that would mask a regression in the vector itself.
+          expect(result.error?.code).toBe(MEMBRANE_ERROR_CODE);
         }
-        enclave.dispose();
       }, 20000);
     }
   });
@@ -342,7 +385,7 @@ describe('GHSA-3279: static-destructuring escape', () => {
     it.each(['Reflect', 'Proxy', 'Symbol', 'Function', 'eval', 'WeakRef'])(
       'the global %s is not usable as an escape gadget',
       async (name) => {
-        const enclave = new Enclave({ toolHandler: async () => ({ id: 1 }) });
+        const enclave = makeEnclave({ toolHandler: async () => ({ id: 1 }) });
         // Whether blocked at validation or absent at runtime, it must never yield a working value.
         const result = await enclave.run(`return typeof ${name} === 'undefined' ? 'absent' : String(typeof ${name});`);
         if (result.success) {
@@ -350,7 +393,6 @@ describe('GHSA-3279: static-destructuring escape', () => {
         } else {
           expect(result.error?.code).toBeDefined();
         }
-        enclave.dispose();
       },
       20000,
     );
@@ -365,17 +407,20 @@ describe('GHSA-3279: static-destructuring escape', () => {
     };
 
     it('refuses .prototype / .constructor destructured off a host function', async () => {
-      const enclave = new Enclave(base);
+      const enclave = makeEnclave(base);
       const result = await enclave.run(`
         try { const { "prototype": pr } = getTool; return typeof pr === 'object' ? 'LEAKED' : 'ok-' + typeof pr; }
         catch (e) { return 'blocked'; }
       `);
-      if (result.success) expect(result.value).not.toBe('LEAKED');
-      enclave.dispose();
+      if (result.success) {
+        expect(result.value).not.toBe('LEAKED');
+      } else {
+        expect(result.error?.code).toBe(MEMBRANE_ERROR_CODE);
+      }
     }, 20000);
 
     it('a walk from a host-function return value cannot reach a working Function', async () => {
-      const enclave = new Enclave(base);
+      const enclave = makeEnclave(base);
       const RCE = JSON.stringify(`return typeof process !== 'undefined' ? 'HASPROC' : 'noproc'`);
       const result = await enclave.run(`
         const gpo = ['get','Prototype','Of'].join('');
@@ -384,7 +429,6 @@ describe('GHSA-3279: static-destructuring escape', () => {
         try { const F = Object[gpo](Object[gpo](s)[k])[k]; return F(${RCE})(); } catch (e) { return 'blocked'; }
       `);
       expect(JSON.stringify(result)).not.toMatch(/HASPROC/);
-      enclave.dispose();
     }, 20000);
   });
 
@@ -421,10 +465,9 @@ describe('GHSA-3279: static-destructuring escape', () => {
       async (code) => {
         // Blocked at whichever layer fires first (the AST NO_META_PROGRAMMING rule for the literal
         // `Object.x()` form, and the membrane blocked-set for an aliased/wrapped Object as in the PoC).
-        const enclave = new Enclave({ toolHandler: async () => ({ id: 1 }) });
+        const enclave = makeEnclave({ toolHandler: async () => ({ id: 1 }) });
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
-        enclave.dispose();
       },
       20000,
     );
@@ -432,7 +475,7 @@ describe('GHSA-3279: static-destructuring escape', () => {
 
   describe('no behavioral regression for legitimate destructuring', () => {
     it('destructures tool results by name', async () => {
-      const enclave = new Enclave({ toolHandler: async () => ({ data: { count: 41 } }) });
+      const enclave = makeEnclave({ toolHandler: async () => ({ data: { count: 41 } }) });
       const code = `
         const { data } = await callTool('x', {});
         const { count } = data;
@@ -441,19 +484,17 @@ describe('GHSA-3279: static-destructuring escape', () => {
       const result = await enclave.run(code);
       expect(result.success).toBe(true);
       expect(result.value).toBe(42);
-      enclave.dispose();
     }, 20000);
 
     it('callTool().then(v => v.n + 1) still resolves', async () => {
-      const enclave = new Enclave({ toolHandler: async () => ({ n: 7 }) });
+      const enclave = makeEnclave({ toolHandler: async () => ({ n: 7 }) });
       const result = await enclave.run(`return await callTool('x', {}).then((v) => v.n + 1);`);
       expect(result.success).toBe(true);
       expect(result.value).toBe(8);
-      enclave.dispose();
     }, 20000);
 
     it('array/object destructuring of ordinary keys works', async () => {
-      const enclave = new Enclave({ toolHandler: async () => ({ id: 1 }) });
+      const enclave = makeEnclave({ toolHandler: async () => ({ id: 1 }) });
       const code = `
         const [a, b] = [1, 2];
         const { name, value } = { name: 'k', value: 9 };
@@ -462,7 +503,6 @@ describe('GHSA-3279: static-destructuring escape', () => {
       const result = await enclave.run(code);
       expect(result.success).toBe(true);
       expect(result.value).toBe(1 + 2 + 9 + 1);
-      enclave.dispose();
     }, 20000);
   });
 });

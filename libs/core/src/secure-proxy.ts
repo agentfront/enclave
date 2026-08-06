@@ -32,6 +32,9 @@ const ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
 const ReflectOwnKeys = Reflect.ownKeys;
 const ReflectApply = Reflect.apply;
 const ReflectConstruct = Reflect.construct;
+// The Reflect namespace itself, pinned so `createSafeReflect` proxies the pristine object rather
+// than whatever the `Reflect` binding resolves to when the safe runtime is assembled.
+const ReflectObject = Reflect;
 
 /**
  * Absolute floor for the membrane recursion cap.
@@ -255,13 +258,13 @@ export function createSafeReflect(securityLevel: SecurityLevel): typeof Reflect 
     dangerousMethods.add('defineProperty');
   }
 
-  return new Proxy(Reflect, {
+  return new Proxy(ReflectObject, {
     get(target, prop: string | symbol) {
       if (typeof prop === 'string' && dangerousMethods.has(prop)) {
         return undefined;
       }
 
-      const value = Reflect.get(target, prop);
+      const value = ReflectGet(target, prop);
 
       // Wrap Reflect.construct to block Function constructors
       if (typeof value === 'function' && prop === 'construct') {
@@ -283,7 +286,7 @@ export function createSafeReflect(securityLevel: SecurityLevel): typeof Reflect 
           ) {
             throw createSafeError('Reflect.construct with function constructors is blocked', 'SecurityError');
           }
-          return Reflect.construct(
+          return ReflectConstruct(
             ctorTarget as new (...args: unknown[]) => unknown,
             args as unknown[],
             newTarget as new (...args: unknown[]) => unknown,

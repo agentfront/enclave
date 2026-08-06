@@ -69,7 +69,8 @@ export interface NoComputedDestructuringOptions {
 export class NoComputedDestructuringRule implements ValidationRule {
   readonly name = 'no-computed-destructuring';
   readonly description =
-    'Blocks computed property names in destructuring patterns to prevent runtime property name attacks';
+    'Blocks computed property names and dangerous static keys (constructor, prototype, __proto__, ...) ' +
+    'in destructuring patterns to prevent property name attacks';
   readonly defaultSeverity = ValidationSeverity.ERROR;
   readonly enabledByDefault = true;
 
@@ -117,9 +118,10 @@ export class NoComputedDestructuringRule implements ValidationRule {
             report({
               code: 'NO_DANGEROUS_DESTRUCTURING',
               message:
+                this.customMessage ||
                 `Destructuring the '${staticName}' property is not allowed: { ${this.describeKey(prop.key)}: ... }. ` +
-                `This property's prototype chain can reach the Function constructor for sandbox escape. ` +
-                `Remove the '${staticName}' binding.`,
+                  `This property's prototype chain can reach the Function constructor for sandbox escape. ` +
+                  `Remove the '${staticName}' binding.`,
               location: this.keyLocation(prop, node),
               data: {
                 keyType: prop.key?.type,
