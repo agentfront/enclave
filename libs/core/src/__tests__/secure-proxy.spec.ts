@@ -694,6 +694,35 @@ describe('createSafeReflect', () => {
       // A benign constructor still works.
       expect(safeReflect.construct(Array, [3])).toHaveLength(3);
     });
+
+    it('treats an explicitly passed undefined newTarget as present, like the native method', () => {
+      const safeReflect = createSafeReflect('STANDARD') as any;
+      // Native: `Reflect.construct(t, a, undefined)` throws — newTarget counts as present as soon
+      // as a third argument is passed, so the wrapper must not read it as "omitted".
+      expect(() => Reflect.construct(Array, [3], undefined as any)).toThrow();
+      expect(() => safeReflect.construct(Array, [3], undefined)).toThrow();
+    });
+
+    // Regression: the wrapper defined only a `get` trap, so the default forwarding traps let a
+    // write through to the HOST realm's Reflect namespace. This proxy is installed as the
+    // sandbox's `Reflect` global, so that was sandbox-reachable host-state corruption.
+    it('refuses writes instead of forwarding them to the host Reflect namespace', () => {
+      const safeReflect = createSafeReflect('STANDARD') as any;
+      const pristineGet = Reflect.get;
+      const pristineSet = Reflect.set;
+
+      expect(() => {
+        safeReflect.get = () => 'TAMPERED';
+      }).toThrow();
+      expect(() => Object.defineProperty(safeReflect, 'set', { value: () => 'TAMPERED' })).toThrow();
+      expect(() => delete safeReflect.has).toThrow();
+      expect(() => Object.setPrototypeOf(safeReflect, null)).toThrow();
+      expect(() => Object.preventExtensions(safeReflect)).toThrow();
+
+      // The host namespace is untouched.
+      expect(Reflect.get).toBe(pristineGet);
+      expect(Reflect.set).toBe(pristineSet);
+    });
   });
 });
 

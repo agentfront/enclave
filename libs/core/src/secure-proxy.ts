@@ -284,7 +284,22 @@ export function createSafeReflect(securityLevel: SecurityLevel): typeof Reflect 
     dangerousMethods.add('defineProperty');
   }
 
+  // SECURITY: this proxy is installed as the sandbox's `Reflect` global (see vm-adapter), so every
+  // MUTATING trap must be refused. With only a `get` trap defined, the defaults forward to the
+  // target — `Reflect.get = evil` inside the sandbox wrote straight through to the HOST realm's
+  // Reflect namespace, poisoning it for the host application and for any code that still reads it
+  // live. The namespace the sandbox sees is read-only.
+  const refuseMutation = (): never => {
+    throw createSafeError('Reflect is read-only in the sandbox', 'SecurityError');
+  };
+
   return new Proxy(ReflectObject, {
+    set: refuseMutation,
+    defineProperty: refuseMutation,
+    deleteProperty: refuseMutation,
+    setPrototypeOf: refuseMutation,
+    preventExtensions: refuseMutation,
+
     get(_target, prop: string | symbol) {
       if (typeof prop === 'string' && dangerousMethods.has(prop)) {
         return undefined;
@@ -300,7 +315,10 @@ export function createSafeReflect(securityLevel: SecurityLevel): typeof Reflect 
 
       // Wrap Reflect.construct to block Function constructors
       if (typeof value === 'function' && prop === 'construct') {
-        const safeConstruct = function (ctorTarget: unknown, args: unknown[], newTarget?: unknown) {
+        // `newTarget` is taken as a rest element, not an optional parameter: `Reflect.construct`
+        // treats it as PRESENT as soon as a third argument is passed, so an explicit `undefined`
+        // must still reach the native call (and throw) rather than be read as "omitted".
+        const safeConstruct = function (ctorTarget: unknown, args: unknown[], ...newTarget: unknown[]) {
           // Block Function, AsyncFunction, GeneratorFunction, AsyncGeneratorFunction constructors
           if (
             ctorTarget === FunctionCtor ||
@@ -310,15 +328,13 @@ export function createSafeReflect(securityLevel: SecurityLevel): typeof Reflect 
           ) {
             throw createSafeError('Reflect.construct with function constructors is blocked', 'SecurityError');
           }
-          // `Reflect.construct(t, a, undefined)` throws — newTarget is "present" as soon as a
-          // third argument is passed. Forward the 2-argument form when the caller omitted it.
-          if (newTarget === undefined) {
+          if (newTarget.length === 0) {
             return ReflectConstruct(ctorTarget as new (...args: unknown[]) => unknown, args as unknown[]);
           }
           return ReflectConstruct(
             ctorTarget as new (...args: unknown[]) => unknown,
             args as unknown[],
-            newTarget as new (...args: unknown[]) => unknown,
+            newTarget[0] as new (...args: unknown[]) => unknown,
           );
         };
         // Wrap so the returned function cannot itself be walked to the host Function constructor.
@@ -524,7 +540,9 @@ function isProxyable(value: unknown): value is object {
   if (typeof value !== 'object' && typeof value !== 'function') return false;
 
   // Check for built-in types that have internal slots
-  const tag = ObjectToString.call(value);
+  // ReflectApply, not `.call`: `.call` resolves Function.prototype.call live, which a
+  // shared-realm attacker can replace to intercept every tag check.
+  const tag = ReflectApply(ObjectToString, value, []);
   if (NON_PROXYABLE_TYPES.has(tag)) {
     return false;
   }
@@ -671,11 +689,11 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         // 2. Proxy the bound method to block constructor access
         // This prevents attacks like: callTool(...).then.constructor
         if (typeof value === 'function') {
-          const tag = ObjectToString.call(target);
+          const tag = ReflectApply(ObjectToString, target, []);
           if (INTERNAL_SLOT_TYPES.has(tag)) {
             // Bind to original object so methods like .then() work correctly
             // Then proxy the bound function to block .constructor access
-            const boundMethod = FunctionBind.call(value, target);
+            const boundMethod = ReflectApply(FunctionBind, value, [target]);
             return proxyWithDepth(boundMethod, depth + 1);
           }
         }

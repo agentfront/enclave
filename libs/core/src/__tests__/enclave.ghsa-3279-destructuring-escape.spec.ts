@@ -114,6 +114,7 @@ describe('GHSA-3279: static-destructuring escape', () => {
       const result = await enclave.run(POC);
       assertNoRce(result);
       expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('VALIDATION_ERROR');
     }, 20000);
 
     it('double-VM with validation DISABLED is still blocked by the runtime membrane', async () => {
@@ -122,6 +123,7 @@ describe('GHSA-3279: static-destructuring escape', () => {
       const result = await enclave.run(POC);
       assertNoRce(result);
       expect(result.success).toBe(false);
+      expect(result.error?.code).toBe(MEMBRANE_ERROR_CODE);
     }, 20000);
 
     it('single-VM (double-VM disabled) blocks the escape', async () => {
@@ -129,6 +131,7 @@ describe('GHSA-3279: static-destructuring escape', () => {
       const result = await enclave.run(POC);
       assertNoRce(result);
       expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('VALIDATION_ERROR');
     }, 20000);
   });
 
@@ -468,6 +471,8 @@ describe('GHSA-3279: static-destructuring escape', () => {
         const enclave = makeEnclave({ toolHandler: async () => ({ id: 1 }) });
         const result = await enclave.run(code);
         expect(result.success).toBe(false);
+        // The literal form is caught by the AST NO_META_PROGRAMMING rule, before the membrane.
+        expect(result.error?.code).toBe('VALIDATION_ERROR');
       },
       20000,
     );
