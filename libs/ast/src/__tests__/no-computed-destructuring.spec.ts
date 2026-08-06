@@ -107,6 +107,47 @@ describe('NoComputedDestructuringRule', () => {
     });
   });
 
+  describe('Static Dangerous Keys (GHSA-3279)', () => {
+    const dangerous = [
+      'constructor',
+      'prototype',
+      '__proto__',
+      '__defineGetter__',
+      '__defineSetter__',
+      '__lookupGetter__',
+      '__lookupSetter__',
+    ];
+
+    for (const key of dangerous) {
+      it(`blocks identifier key { ${key}: x }`, async () => {
+        const validator = new JSAstValidator([new NoComputedDestructuringRule()]);
+        const result = await validator.validate(`const { ${key}: x } = obj;`);
+        expect(result.valid).toBe(false);
+        expect(result.issues[0].code).toBe('NO_DANGEROUS_DESTRUCTURING');
+      });
+
+      it(`blocks string-literal key { "${key}": x }`, async () => {
+        const validator = new JSAstValidator([new NoComputedDestructuringRule()]);
+        const result = await validator.validate(`const { "${key}": x } = obj;`);
+        expect(result.valid).toBe(false);
+        expect(result.issues[0].code).toBe('NO_DANGEROUS_DESTRUCTURING');
+      });
+    }
+
+    it('blocks a dangerous key nested inside a valid pattern', async () => {
+      const validator = new JSAstValidator([new NoComputedDestructuringRule()]);
+      const result = await validator.validate(`const { user: { "constructor": c } } = obj;`);
+      expect(result.valid).toBe(false);
+      expect(result.issues[0].code).toBe('NO_DANGEROUS_DESTRUCTURING');
+    });
+
+    it('does not flag a benign key that merely contains a dangerous substring', async () => {
+      const validator = new JSAstValidator([new NoComputedDestructuringRule()]);
+      const result = await validator.validate(`const { constructorName, prototypeId } = obj;`);
+      expect(result.valid).toBe(true);
+    });
+  });
+
   describe('Valid Patterns (Should Allow)', () => {
     it('should allow static property names', async () => {
       const validator = new JSAstValidator([new NoComputedDestructuringRule()]);

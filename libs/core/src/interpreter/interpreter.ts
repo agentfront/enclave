@@ -623,7 +623,14 @@ export class Interpreter {
       const obj = (value ?? {}) as Record<string, unknown>;
       for (const prop of pattern.properties) {
         if (prop.type === 'RestElement') continue;
-        const key = (prop.key as ESTree.Identifier).name;
+        // Resolve the key for BOTH identifier (`{ constructor: x }`) and string/number literal
+        // (`{ "constructor": x }`) forms. Reading only `prop.key.name` left literal keys as
+        // `undefined`, so a blocked key smuggled as a string literal escaped this check (GHSA-3279).
+        if (prop.computed) throw new InterpreterError('Computed destructuring keys are not allowed');
+        let key: string;
+        if (prop.key.type === 'Identifier') key = prop.key.name;
+        else if (prop.key.type === 'Literal') key = String(prop.key.value);
+        else throw new InterpreterError('Unsupported destructuring key');
         if (BLOCKED_KEYS.has(key)) throw new InterpreterError(`Forbidden destructured key: ${key}`);
         this.bindPattern(prop.value, obj[key], scope, mutable);
       }
