@@ -92,14 +92,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Tolerate a failed upgrade on purpose. npm majors raise their Node
-          # engine floor independently of .nvmrc, so an unpinned npm@latest is a
-          # time bomb: npm@12.0.1 (Node ^24.15.0) hard-failed the v2.15.0
-          # release while .nvmrc was still v24.11.1. Fall back to the bundled
-          # npm, then verify it is new enough rather than discovering it in the
-          # middle of `nx release publish`.
-          npm install -g npm@latest \
-            || echo "::warning::npm@latest is incompatible with $(node -v) — keeping bundled npm $(npm -v)"
+          # Pin the publishing CLI. `npm@latest` is a time bomb here: npm majors
+          # raise their Node engine floor independently of .nvmrc, and npm@12.0.1
+          # (Node ^24.15.0) hard-failed the v2.15.0 release while .nvmrc was
+          # still v24.11.1. An unpinned install also makes the toolchain that
+          # signs our provenance non-reproducible across runs of the same commit.
+          # Bump this in lockstep with .nvmrc; keep it >= 11.5.1 (see below).
+          NPM_CLI_VERSION="12.0.2" # requires Node ^22.22.2 || ^24.15.0 || >=26
+
+          # Still tolerate a failed upgrade: fall back to the bundled npm and
+          # verify it below, rather than dying mid-`nx release publish`.
+          npm install -g "npm@${NPM_CLI_VERSION}" \
+            || echo "::warning::npm@${NPM_CLI_VERSION} is incompatible with $(node -v) — keeping bundled npm $(npm -v)"
 
           NPM_VERSION="$(npm -v)"
           echo "Using npm $NPM_VERSION on $(node -v)"
