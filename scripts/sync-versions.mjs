@@ -65,9 +65,28 @@ function discoverPackageJsons() {
   return results;
 }
 
-function syncPackageJson(filePath, version, isLib) {
+function readPackageJson(filePath) {
   const raw = readFileSync(filePath, 'utf8');
-  const pkg = JSON.parse(raw);
+
+  // A half-cleaned merge/cherry-pick leaves conflict markers behind. Say so
+  // plainly instead of failing with an opaque JSON.parse SyntaxError.
+  if (/^<{7} |^={7}$|^>{7} /m.test(raw)) {
+    console.error(
+      `${filePath} contains unresolved merge conflict markers — resolve them before syncing versions.`,
+    );
+    process.exit(1);
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error(`Failed to parse ${filePath}: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+function syncPackageJson(filePath, version, isLib) {
+  const pkg = readPackageJson(filePath);
   let changed = false;
 
   // Update version field for lib packages only
