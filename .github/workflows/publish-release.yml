@@ -88,7 +88,41 @@ jobs:
         run: yarn install --no-immutable
 
       - name: Update npm CLI for trusted publishing
-        run: npm install -g npm@latest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Pin the publishing CLI. `npm@latest` is a time bomb here: npm majors
+          # raise their Node engine floor independently of .nvmrc, and npm@12.0.1
+          # (Node ^24.15.0) hard-failed the v2.15.0 release while .nvmrc was
+          # still v24.11.1. An unpinned install also makes the toolchain that
+          # signs our provenance non-reproducible across runs of the same commit.
+          # Bump this in lockstep with .nvmrc; keep it >= 11.5.1 (see below).
+          NPM_CLI_VERSION="12.0.2" # requires Node ^22.22.2 || ^24.15.0 || >=26
+
+          # Still tolerate a failed upgrade: fall back to the bundled npm and
+          # verify it below, rather than dying mid-`nx release publish`.
+          npm install -g "npm@${NPM_CLI_VERSION}" \
+            || echo "::warning::npm@${NPM_CLI_VERSION} is incompatible with $(node -v) — keeping bundled npm $(npm -v)"
+
+          NPM_VERSION="$(npm -v)"
+          echo "Using npm $NPM_VERSION on $(node -v)"
+
+          # Trusted publishing (OIDC) landed in npm 11.5.1.
+          node -e '
+            const need = [11, 5, 1];
+            const have = process.argv[1].split("-")[0].split(".").map(Number);
+            const ok =
+              have[0] > need[0] ||
+              (have[0] === need[0] &&
+                (have[1] > need[1] || (have[1] === need[1] && have[2] >= need[2])));
+            if (!ok) {
+              console.error(
+                `::error::npm ${process.argv[1]} predates trusted publishing (need >= ${need.join(".")}). Bump .nvmrc to a Node version that can install a newer npm.`,
+              );
+              process.exit(1);
+            }
+          ' "$NPM_VERSION"
 
       - name: Compute version
         id: version
@@ -331,8 +365,11 @@ jobs:
       - name: Publish to npm
         if: ${{ inputs.dry_run != true }}
         shell: bash
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # No NODE_AUTH_TOKEN: this repo publishes via npm trusted publishing
+        # (OIDC). npm mints a short-lived token from the `id-token: write`
+        # credential granted at the job level, which is also what produces the
+        # SLSA provenance attestation on every package. A long-lived NPM_TOKEN
+        # here is unused and would only mask a broken trusted-publisher config.
         run: |
           set -euo pipefail
           NPM_TAG="${{ steps.version.outputs.npm_tag }}"
@@ -367,7 +404,6 @@ jobs:
           RELEASE_LINE="${{ steps.context.outputs.release_line }}"
           BRANCH="${{ steps.context.outputs.branch }}"
           IS_PRERELEASE="${{ steps.version.outputs.is_prerelease }}"
-          PROJECTS="core,types,stream,broker,client,react,runtime,ast"
 
           # Start building the release body
           {
@@ -381,14 +417,15 @@ jobs:
             echo ""
           } > /tmp/release-body.md
 
-          # List published packages with npm links
-          IFS=',' read -ra LIBS <<< "$PROJECTS"
-          for lib in "${LIBS[@]}"; do
-            # Get npm package name from package.json
-            if [ -f "libs/$lib/package.json" ]; then
-              NPM_NAME=$(node -p "require('./libs/$lib/package.json').name")
-              echo "- [\`${NPM_NAME}@${VERSION}\`](https://www.npmjs.com/package/${NPM_NAME}/v/${VERSION})" >> /tmp/release-body.md
-            fi
+          # List published packages with npm links. Derived from the workspace
+          # rather than a hardcoded list: nx publishes every non-private
+          # libs/* package, so a literal list silently drifts — it had already
+          # omitted @enclave-vm/browser from every release body.
+          for pkg in libs/*/package.json; do
+            [ -f "$pkg" ] || continue
+            NPM_NAME=$(node -p "const p=require('./$pkg'); p.private ? '' : p.name")
+            [ -n "$NPM_NAME" ] || continue
+            echo "- [\`${NPM_NAME}@${VERSION}\`](https://www.npmjs.com/package/${NPM_NAME}/v/${VERSION})" >> /tmp/release-body.md
           done
 
           # Add AI-generated changelog if available
@@ -580,15 +617,16 @@ jobs:
           git push origin --delete "$CHERRY_BRANCH" 2>/dev/null || true
           git checkout -b "$CHERRY_BRANCH"
 
-          # Attempt cherry-pick (may partially apply if main diverged from release branch)
-          git cherry-pick "$VERSION_COMMIT" --no-commit || {
-            echo "Cherry-pick had conflicts — resetting and using sync script instead"
-            git cherry-pick --abort 2>/dev/null || true
-            git checkout -- . 2>/dev/null || true
-          }
-
-          # Force-sync all package versions regardless of cherry-pick result
-          echo "Running version sync to ensure all packages are at $VERSION..."
+          # Rebuild the version bump instead of cherry-picking it. The release
+          # commit only ever touches libs/*/package.json, apps/*/package.json and
+          # yarn.lock, and every one of those changes is derivable from $VERSION.
+          # Cherry-picking it conflicts on exactly those files whenever main has
+          # legitimately diverged (own deps, own lockfile) — and `cherry-pick
+          # --no-commit` records no sequencer state, so `--abort` fails with "no
+          # cherry-pick in progress" and `checkout -- .` fails with "path is
+          # unmerged". Both errors used to be swallowed, leaving conflict markers
+          # in the package.json files for sync-versions.mjs to choke on.
+          echo "Syncing all package versions to $VERSION..."
           node scripts/sync-versions.mjs "$VERSION"
 
           # Update yarn.lock to reflect dependency version changes.
@@ -596,8 +634,9 @@ jobs:
           # default in CI, but this step intentionally rewrites yarn.lock.
           yarn install --no-immutable
 
-          # Stage all version-related changes
-          git add libs/*/package.json apps/*/package.json yarn.lock
+          # Stage all version-related changes. Use -A over bare globs so an
+          # absent apps/ or libs/ package.json can't fail the pathspec.
+          git add -A -- libs apps yarn.lock
 
           # Check if there are actual changes to commit
           if [ -z "$(git diff --cached --name-only)" ]; then
@@ -608,7 +647,7 @@ jobs:
           git commit -m "$(cat <<EOF
           chore: sync version to $VERSION
 
-          Cherry-picked from $RELEASE_BRANCH (release v$VERSION)
+          Synced from $RELEASE_BRANCH (release v$VERSION)
           Original commit: $VERSION_COMMIT
           EOF
           )"
