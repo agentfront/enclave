@@ -12,7 +12,7 @@
 
 **Secure sandbox runtime for AI agents**
 
-[![npm ast-guard](https://img.shields.io/npm/v/ast-guard.svg?label=ast-guard&color=e8a045)](https://www.npmjs.com/package/ast-guard)
+[![npm ast-guard](https://img.shields.io/npm/v/@enclave-vm/ast.svg?label=@enclave-vm/ast&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/ast)
 [![npm @enclave-vm/core](https://img.shields.io/npm/v/@enclave-vm/core.svg?label=@enclave-vm/core&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/core)
 <br>
 [![npm @enclave-vm/broker](https://img.shields.io/npm/v/@enclave-vm/broker.svg?label=@enclave-vm/broker&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/broker)
