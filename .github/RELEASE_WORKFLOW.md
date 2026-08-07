@@ -371,7 +371,14 @@ or
 Required in GitHub repository settings:
 
 - `CODEX_OPENAI_KEY` - OpenAI API key for Codex (environment: release)
-- `NPM_TOKEN` - npm publish token (for trusted publishing)
+
+npm publishing needs **no** secret: it uses trusted publishing (OIDC), where npm
+exchanges the workflow's `id-token: write` credential for a short-lived token.
+That is also what attaches the SLSA provenance attestation to each package. The
+trusted publisher is configured per package on npmjs.com, not in this repo.
+
+Requires npm >= 11.5.1, which the "Update npm CLI for trusted publishing" step
+installs and verifies.
 
 ### Node Version
 
