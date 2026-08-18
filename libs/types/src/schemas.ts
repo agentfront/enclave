@@ -26,29 +26,43 @@ import { SupportedCurve, EncryptionAlgorithm, KeyDerivation, EncryptionMode } fr
  */
 export const ProtocolVersionSchema = z.union([z.literal(PROTOCOL_VERSION), z.literal(1)]);
 
+const MAX_ID_LENGTH = 128;
+const ID_BODY_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+function prefixedIdSchema(prefix: string) {
+  return z
+    .string()
+    .startsWith(prefix)
+    .min(prefix.length + 1)
+    .max(MAX_ID_LENGTH)
+    .regex(ID_BODY_PATTERN);
+}
+
 /**
  * Session ID schema.
  */
-export const SessionIdSchema = z
-  .string()
-  .startsWith(SESSION_ID_PREFIX)
-  .min(SESSION_ID_PREFIX.length + 1);
+export const SessionIdSchema = prefixedIdSchema(SESSION_ID_PREFIX);
 
 /**
  * Call ID schema.
  */
-export const CallIdSchema = z
-  .string()
-  .startsWith(CALL_ID_PREFIX)
-  .min(CALL_ID_PREFIX.length + 1);
+export const CallIdSchema = prefixedIdSchema(CALL_ID_PREFIX);
 
 /**
  * Reference ID schema.
  */
-export const RefIdSchema = z
-  .string()
-  .startsWith(REF_ID_PREFIX)
-  .min(REF_ID_PREFIX.length + 1);
+export const RefIdSchema = prefixedIdSchema(REF_ID_PREFIX);
+
+const PROTOTYPE_POLLUTING_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * Path schema that rejects prototype-polluting segments.
+ */
+const SafePathSchema = z.array(
+  z.string().refine((segment) => !PROTOTYPE_POLLUTING_SEGMENTS.has(segment), {
+    message: 'Path segment must not be __proto__, constructor, or prototype',
+  }),
+);
 
 /**
  * Log level schema.
@@ -202,7 +216,7 @@ export const ErrorDetailSchema = z.discriminatedUnion('type', [
 export const ErrorPayloadSchema = z.object({
   code: z.string(),
   message: z.string(),
-  path: z.array(z.string()).optional(),
+  path: SafePathSchema.optional(),
   details: z.array(ErrorDetailSchema).optional(),
 });
 
@@ -305,7 +319,7 @@ export const ErrorEventSchema = BaseEventSchema.extend({
  * Partial result payload schema.
  */
 export const PartialResultPayloadSchema = z.object({
-  path: z.array(z.string()),
+  path: SafePathSchema,
   data: z.unknown().optional(),
   error: ErrorPayloadSchema.optional(),
   hasNext: z.boolean(),

@@ -6,6 +6,8 @@ import {
   CallIdSchema,
   RefIdSchema,
   StreamEventSchema,
+  PartialResultPayloadSchema,
+  ErrorPayloadSchema,
 } from './schemas';
 import { PROTOCOL_VERSION } from './protocol';
 
@@ -28,6 +30,29 @@ describe('Schemas', () => {
       expect(RefIdSchema.safeParse('ref_abc123').success).toBe(true);
       expect(RefIdSchema.safeParse('s_abc123').success).toBe(false);
       expect(RefIdSchema.safeParse('ref_').success).toBe(false);
+    });
+
+    it('should reject IDs with unsafe characters or excessive length', () => {
+      expect(CallIdSchema.safeParse('c_../../etc/passwd').success).toBe(false);
+      expect(CallIdSchema.safeParse('c_a\nb').success).toBe(false);
+      expect(CallIdSchema.safeParse('c_<script>').success).toBe(false);
+      expect(CallIdSchema.safeParse('c_a b').success).toBe(false);
+      expect(CallIdSchema.safeParse(`c_${'a'.repeat(200)}`).success).toBe(false);
+      expect(SessionIdSchema.safeParse('s_valid-ID_123').success).toBe(true);
+    });
+  });
+
+  describe('Prototype-pollution-safe paths', () => {
+    it('should accept ordinary path segments', () => {
+      expect(PartialResultPayloadSchema.safeParse({ path: ['results', '0'], hasNext: false }).success).toBe(true);
+      expect(ErrorPayloadSchema.safeParse({ code: 'E', message: 'm', path: ['a', 'b'] }).success).toBe(true);
+    });
+
+    it('should reject prototype-polluting path segments', () => {
+      for (const segment of ['__proto__', 'constructor', 'prototype']) {
+        expect(PartialResultPayloadSchema.safeParse({ path: [segment], hasNext: false }).success).toBe(false);
+        expect(ErrorPayloadSchema.safeParse({ code: 'E', message: 'm', path: [segment] }).success).toBe(false);
+      }
     });
   });
 

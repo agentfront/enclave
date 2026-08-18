@@ -122,7 +122,11 @@ export interface SessionEventHandlers {
   onError?: (code: string, message: string) => void;
 
   /**
-   * Called when a partial result arrives
+   * Called when a partial result arrives.
+   *
+   * Security: `path` segments are validated to reject `__proto__`, `constructor`, and
+   * `prototype`. If you apply `path` to an accumulator yourself, prefer an
+   * `Object.create(null)` target and avoid blindly deep-setting untrusted segments.
    */
   onPartialResult?: (path: string[], data?: unknown, error?: ErrorPayload, hasNext?: boolean) => void;
 
