@@ -167,9 +167,22 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
       if (pending) {
         delete pendingToolCalls[data.callId];
         if (data.error) {
-          pending.reject(createSafeError(data.error.message, data.error.name));
+          // A failure of the tool itself resolves to { success: false, error } when the script
+          // asked for { throwOnError: false }; refusals by the enclave still reject.
+          if (!pending.throwOnError && data.toolError === true) {
+            var info = {
+              __proto__: null,
+              name: typeof data.error.name === 'string' ? data.error.name : 'Error',
+              message: typeof data.error.message === 'string' ? data.error.message : 'Tool call failed',
+              toolName: pending.toolName
+            };
+            if (typeof data.error.code === 'string') info.code = data.error.code;
+            pending.resolve({ __proto__: null, success: false, error: info });
+          } else {
+            pending.reject(createSafeError(data.error.message, data.error.name));
+          }
         } else {
-          pending.resolve(data.result);
+          pending.resolve(pending.throwOnError ? data.result : { __proto__: null, success: true, data: data.result });
         }
       }
     } else if (data.type === 'abort') {
@@ -195,7 +208,15 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     return 'c-' + (++callIdCounter) + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   }
 
-  function __safe_callTool(toolName, args) {
+  // callTool(name, args, options): only { throwOnError: false } changes behavior. Tool failures
+  // then resolve to { success: false, error }; refusals by the enclave still throw.
+  function __safe_callTool(toolName, args, options) {
+    var throwOnError = true;
+    if (options !== undefined && options !== null) {
+      if (typeof options !== 'object') throw createSafeError('callTool options must be an object', 'TypeError');
+      throwOnError = options.throwOnError !== false;
+    }
+
     if (aborted) throw createSafeError('Execution aborted');
 
     toolCallCount++;
@@ -218,7 +239,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     var callId = generateCallId();
 
     return new Promise(function(resolve, reject) {
-      pendingToolCalls[callId] = { resolve: resolve, reject: reject };
+      pendingToolCalls[callId] = { resolve: resolve, reject: reject, throwOnError: throwOnError, toolName: toolName };
       sendToOuter({
         type: 'tool-call',
         callId: callId,
@@ -595,6 +616,35 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
       safeGlobals['__safe_' + cgKey] = createSecureProxy(customGlobals[cgKey]);
     }
   }
+
+  // Tool namespaces (mail.list(args)): frozen, null-prototype objects built in this realm whose
+  // methods call __safe_callTool, so a namespace call is an ordinary tool call (counted here,
+  // validated by the outer iframe). Mirrors TOOL_NAMESPACE_FACTORY_SOURCE in @enclave-vm/core;
+  // names were validated by normalizeToolNamespaces and are re-checked for prototype keys.
+  (function() {
+    var spec = ${safeJsonStringify(config.toolNamespaces ?? [])};
+    function isSafeKey(key) {
+      return typeof key === 'string' && key.length > 0 &&
+        !(key.charAt(0) === '_' && key.charAt(1) === '_') &&
+        key !== 'constructor' && key !== 'prototype';
+    }
+    function bind(toolName) {
+      return (args, options) => __safe_callTool(toolName, args === undefined ? {} : args, options);
+    }
+    for (var i = 0; i < spec.length; i++) {
+      var ns = spec[i];
+      if (!ns || !isSafeKey(ns.name) || !Array.isArray(ns.methods)) continue;
+      var target = { __proto__: null };
+      for (var j = 0; j < ns.methods.length; j++) {
+        var method = ns.methods[j];
+        if (!method || !isSafeKey(method.name) || typeof method.toolName !== 'string') continue;
+        target[method.name] = bind(method.toolName);
+      }
+      Object.freeze(target);
+      safeGlobals[ns.name] = target;
+      safeGlobals['__safe_' + ns.name] = target;
+    }
+  })();
 
   for (var gKey in safeGlobals) {
     if (safeGlobals.hasOwnProperty(gKey)) {

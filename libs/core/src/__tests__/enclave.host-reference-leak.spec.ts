@@ -36,7 +36,9 @@
  *    realm are wrapped in host mode, where an object/function in that position is refused
  *    (throwing satisfies the invariant that wrapping would break). Primitives are still
  *    reported, and realm-owned intrinsics keep their previous behaviour so `new Array()`,
- *    `instanceof`, and prototype-based memory patching continue to work.
+ *    `instanceof`, and prototype-based memory patching continue to work. Since then, a value
+ *    RETURNED by a host function is also sanitized like a tool result before it reaches the
+ *    sandbox (the global-function gate), so such an object is refused one step earlier.
  *
  * @packageDocumentation
  */
@@ -324,9 +326,28 @@ describe('custom-global results must not leak a raw host object via a pinned pro
     `;
     const result = await enclave.run(code);
     assertNoRce(result);
-    // The run must fail at the membrane, not somewhere incidental further down the chain.
+    // The run must fail at the boundary, not somewhere incidental further down the chain. The
+    // global-function gate sanitizes a host function's result like a tool result, so the schema
+    // (which carries a class) is refused before any part of it reaches the sandbox.
     expect(result.success).toBe(false);
-    expect(result.error?.message).toMatch(/Access to '_zod' is blocked/);
+    expect(result.error?.message).toMatch(/cannot be passed into the sandbox/);
+  });
+
+  it('refuses a pinned object on a host global at the membrane', async () => {
+    // Not a function result, so the value is reached through the host-mode membrane itself.
+    const enclave = enclaveWithHostGlobals({ schema: new HostSchema() });
+    const code = `
+      async function __ag_main() {
+        try {
+          return { leaked: typeof schema['_zod'] };
+        } catch (e) {
+          return { denied: e.message };
+        }
+      }
+    `;
+    const result = await enclave.run(code);
+    expect(result.success).toBe(true);
+    expect(result.value).toEqual({ denied: expect.stringMatching(/Access to '_zod' is blocked/) });
   });
 
   it('refuses the pinned property itself rather than returning a raw reference', async () => {
@@ -344,7 +365,7 @@ describe('custom-global results must not leak a raw host object via a pinned pro
     `;
     const result = await enclave.run(code);
     expect(result.success).toBe(true);
-    expect(result.value).toEqual({ denied: expect.stringMatching(/blocked/i) });
+    expect(result.value).toEqual({ denied: expect.stringMatching(/cannot be passed into the sandbox/) });
   });
 
   it('stays strict through nested reads and chained calls', async () => {
@@ -364,7 +385,7 @@ describe('custom-global results must not leak a raw host object via a pinned pro
     `;
     const result = await enclave.run(code);
     expect(result.success).toBe(true);
-    expect(result.value).toEqual({ denied: expect.stringMatching(/blocked/i) });
+    expect(result.value).toEqual({ denied: expect.stringMatching(/cannot be passed into the sandbox/) });
   });
 
   it('still exposes primitive-valued pinned properties from host globals', async () => {

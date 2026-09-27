@@ -23,6 +23,7 @@ import type {
   SerializedError,
 } from './protocol';
 import { safeDeserialize, safeSerialize, sanitizeObject } from './safe-deserialize';
+import { TOOL_NAMESPACE_FACTORY_SOURCE, buildToolNamespaceBindings } from '../../tool-namespaces';
 
 /**
  * Patch code executed inside the sandbox realm to prevent leaking host stack traces via `error.stack`.
@@ -184,6 +185,12 @@ const CODE_GENERATION_VIOLATION_DETECTOR_CODE = `
 
 const CODE_GENERATION_VIOLATION_DETECTOR_SCRIPT = new vm.Script(CODE_GENERATION_VIOLATION_DETECTOR_CODE);
 
+/**
+ * Builds `toolNamespaces` objects inside the sandbox realm: frozen, null-prototype objects whose
+ * methods call the sandbox's (gated) __safe_callTool.
+ */
+const TOOL_NAMESPACE_FACTORY_SCRIPT = new vm.Script(TOOL_NAMESPACE_FACTORY_SOURCE, { filename: 'tool-namespaces.js' });
+
 // ============================================================================
 // SECURITY: Capture parentPort then remove dangerous globals
 // ============================================================================
@@ -233,7 +240,20 @@ interface CurrentExecution {
 }
 
 let currentExecution: CurrentExecution | null = null;
-const pendingToolCalls = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+interface PendingToolCall {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  /** From the script's callTool options: false turns a tool failure into a result object */
+  throwOnError: boolean;
+  toolName: string;
+}
+
+const pendingToolCalls = new Map<string, PendingToolCall>();
+
+/** A null-prototype object for callTool results handed to the sandbox (no prototype chain). */
+function plainResult(fields: Record<string, unknown>): Record<string, unknown> {
+  return Object.assign(Object.create(null) as Record<string, unknown>, fields);
+}
 
 // ============================================================================
 // Message Handling
@@ -303,6 +323,24 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
 
     const isStrictOrSecure = msg.config.securityLevel === 'STRICT' || msg.config.securityLevel === 'SECURE';
     const policyViolation: { type?: string } = {};
+
+    // Tool namespaces (mail.list(args)): each method is a __safe_callTool call, so it is counted
+    // and limited like any other tool call.
+    const toolNamespaces = msg.config.toolNamespaces ?? [];
+    if (toolNamespaces.length > 0) {
+      const install = TOOL_NAMESPACE_FACTORY_SCRIPT.runInContext(context);
+      const callTool = (context as Record<string, unknown>)['__safe_callTool'];
+      for (const binding of buildToolNamespaceBindings(install, callTool, toolNamespaces)) {
+        for (const name of [binding.name, `__safe_${binding.name}`]) {
+          Object.defineProperty(context, name, {
+            value: binding.value,
+            writable: false,
+            configurable: false,
+            enumerable: false,
+          });
+        }
+      }
+    }
 
     // SECURITY HARDENING: prevent leaking host stack traces via error.stack inside the sandbox.
     const shouldHardenStacks = msg.config.sanitizeStackTraces ?? true;
@@ -426,11 +464,28 @@ function handleToolResponse(msg: ToolResponseMessage): void {
   pendingToolCalls.delete(msg.callId);
 
   if (msg.error) {
+    // A failure of the tool itself resolves to { success: false, error } when the script asked
+    // for { throwOnError: false }; refusals by the host still reject.
+    if (!pending.throwOnError && msg.toolError === true) {
+      pending.resolve(
+        plainResult({
+          success: false,
+          error: plainResult({
+            name: msg.error.name,
+            message: msg.error.message,
+            ...(typeof msg.error.code === 'string' ? { code: msg.error.code } : {}),
+            toolName: pending.toolName,
+          }),
+        }),
+      );
+      return;
+    }
     const error = new Error(msg.error.message);
     error.name = msg.error.name;
     pending.reject(error);
   } else {
-    pending.resolve(sanitizeObject(msg.result));
+    const result = sanitizeObject(msg.result);
+    pending.resolve(pending.throwOnError ? result : plainResult({ success: true, data: result }));
   }
 }
 
@@ -657,7 +712,20 @@ function createSandbox(requestId: string, config: SerializedConfig): Record<stri
 // ============================================================================
 
 function createProxiedCallTool(requestId: string, config: SerializedConfig) {
-  return async function __safe_callTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  return async function __safe_callTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    options?: { throwOnError?: unknown },
+  ): Promise<unknown> {
+    // callTool options: only { throwOnError: false } changes behavior
+    let throwOnError = true;
+    if (options !== undefined && options !== null) {
+      if (typeof options !== 'object') {
+        throw new TypeError('callTool options must be an object');
+      }
+      throwOnError = options.throwOnError !== false;
+    }
+
     // Check if aborted
     if (currentExecution?.aborted) {
       throw new Error('Execution aborted');
@@ -688,7 +756,7 @@ function createProxiedCallTool(requestId: string, config: SerializedConfig) {
     const callId = `${requestId}-${Date.now()}-${crypto.randomUUID()}`;
 
     return new Promise((resolve, reject) => {
-      pendingToolCalls.set(callId, { resolve, reject });
+      pendingToolCalls.set(callId, { resolve, reject, throwOnError, toolName });
 
       sendMessage({
         type: 'tool-call',

@@ -25,6 +25,7 @@ import { MemoryMonitor } from './memory-monitor';
 import { RateLimiter, createRateLimiter } from './rate-limiter';
 import { sanitizeObject } from './safe-deserialize';
 import { WorkerPoolDisposedError, WorkerTimeoutError, TooManyPendingCallsError, QueueFullError } from './errors';
+import { sanitizeStackTrace } from '../../stack-trace';
 
 /**
  * Worker Pool Adapter
@@ -360,6 +361,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       // Security level determines which globals are available in sandbox
       // This mirrors AST guard's allowed globals for defense-in-depth
       securityLevel: this.securityLevel,
+      toolNamespaces: context.toolNamespaces ? [...context.toolNamespaces] : undefined,
     };
 
     return new Promise<ExecutionResult<T>>((resolve, reject) => {
@@ -385,7 +387,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
             // Execution complete
             cleanup();
             const duration = Date.now() - startTime;
-            const result = this.buildResult<T>(msg, duration);
+            const result = this.buildResult<T>(msg, duration, context.config.sanitizeStackTraces);
             resolve(result);
           } else if (isConsoleMessage(msg) && msg.requestId === requestId) {
             // Forward console output
@@ -443,6 +445,8 @@ export class WorkerPoolAdapter implements SandboxAdapter {
 
     let result: unknown;
     let error: SerializedError | undefined;
+    // Whether the failure came from the tool handler itself (see ToolResponseMessage.toolError)
+    let toolError = false;
 
     try {
       if (!context.toolHandler) {
@@ -451,12 +455,26 @@ export class WorkerPoolAdapter implements SandboxAdapter {
 
       // Sanitize args before passing to handler
       const sanitizedArgs = sanitizeObject(msg.args) as Record<string, unknown>;
-      result = await context.toolHandler(msg.toolName, sanitizedArgs);
+      toolError = true;
+      const handlerResult = await context.toolHandler(msg.toolName, sanitizedArgs);
+      // A result the enclave cannot carry back is a failure of the tool, as the string bridge
+      // reports it: the script gets it as an error (or a result, with throwOnError: false).
+      try {
+        result = sanitizeObject(handlerResult);
+      } catch {
+        throw Object.assign(new Error('Tool returned an unsupported value'), {
+          name: 'ToolBridgeError',
+          code: 'TOOL_RESULT_NOT_SAFE',
+        });
+      }
+      toolError = false;
     } catch (e) {
       const err = e as Error;
+      const code = (e as { code?: unknown } | null)?.code;
       error = {
         name: err.name || 'Error',
         message: err.message || 'Unknown error',
+        ...(toolError && typeof code === 'string' ? { code } : {}),
       };
     } finally {
       pendingToolCalls.delete(msg.callId);
@@ -467,8 +485,9 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       type: 'tool-response',
       requestId: msg.requestId,
       callId: msg.callId,
-      result: sanitizeObject(result),
+      result,
       error,
+      ...(error && toolError ? { toolError: true } : {}),
     });
   }
 
@@ -488,7 +507,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
    * before sending, but full runtime type validation would require schema
    * definitions which are not available at this layer.
    */
-  private buildResult<T>(msg: ExecutionResultMessage, duration: number): ExecutionResult<T> {
+  private buildResult<T>(msg: ExecutionResultMessage, duration: number, sanitizeStacks: boolean): ExecutionResult<T> {
     if (msg.success) {
       return {
         success: true,
@@ -509,7 +528,8 @@ export class WorkerPoolAdapter implements SandboxAdapter {
           name: error.name,
           message: error.message,
           code: error.code,
-          stack: error.stack,
+          // The worker trims its stack; sanitize it here too so the result obeys the option.
+          stack: sanitizeStackTrace(error.stack, sanitizeStacks),
         },
         stats: {
           duration,

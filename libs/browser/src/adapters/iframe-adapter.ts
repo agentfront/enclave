@@ -150,12 +150,33 @@ export class IframeAdapter {
           (async () => {
             try {
               const result = await toolHandler(data.toolName, data.args);
-              // Sanitize result through JSON round-trip
+              // Sanitize result through JSON round-trip. A result that cannot be delivered is a
+              // failure of the tool, as in @enclave-vm/core, not a successful `undefined`.
               let safeResult: unknown;
-              try {
-                safeResult = JSON.parse(JSON.stringify(result));
-              } catch {
-                safeResult = undefined;
+              let undeliverable: { message: string; code: string } | undefined;
+              if (result !== undefined) {
+                try {
+                  const json = JSON.stringify(result);
+                  if (json === undefined) {
+                    undeliverable = { message: 'Tool returned an unsupported value', code: 'TOOL_RESULT_NOT_SAFE' };
+                  } else {
+                    safeResult = JSON.parse(json);
+                  }
+                } catch {
+                  undeliverable = { message: 'Tool result must be JSON-serializable', code: 'TOOL_RESULT_NOT_JSON' };
+                }
+              }
+
+              if (undeliverable) {
+                this.sendToOuter({
+                  __enclave_msg__: true,
+                  type: 'tool-response',
+                  requestId,
+                  callId,
+                  error: { name: 'ToolBridgeError', ...undeliverable },
+                  toolError: true,
+                });
+                return;
               }
 
               this.sendToOuter({
@@ -167,6 +188,7 @@ export class IframeAdapter {
               });
             } catch (error: unknown) {
               const err = error instanceof Error ? error : new Error(typeof error === 'string' ? error : String(error));
+              const code = (error as { code?: unknown } | null)?.code;
               this.sendToOuter({
                 __enclave_msg__: true,
                 type: 'tool-response',
@@ -175,7 +197,11 @@ export class IframeAdapter {
                 error: {
                   name: err.name,
                   message: err.message,
+                  ...(typeof code === 'string' ? { code } : {}),
                 },
+                // A failure of the tool itself (not a refusal by the enclave): a script's
+                // callTool(..., { throwOnError: false }) receives it as a result object.
+                toolError: true,
               });
             }
           })();

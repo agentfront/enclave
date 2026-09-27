@@ -22,6 +22,8 @@ import {
   getAgentScriptGlobals,
   transformAgentScript,
   isWrappedInMain,
+  normalizeToolNamespaces,
+  type NormalizedToolNamespace,
   type ValidationIssue,
 } from '@enclave-vm/ast';
 import { IframeAdapter, type IframeExecutionContext } from './adapters/iframe-adapter';
@@ -37,6 +39,7 @@ import type {
   SerializableSuspiciousPattern,
 } from './types';
 import { SECURITY_LEVEL_CONFIGS, DEFAULT_DOUBLE_IFRAME_CONFIG } from './types';
+import { sanitizeStackTrace } from './utils/sanitize-stack';
 
 /**
  * Default security level
@@ -165,6 +168,7 @@ export class BrowserEnclave {
   private readonly validateCode: boolean;
   private readonly transformCode: boolean;
   private readonly customGlobalNames: string[];
+  private readonly toolNamespaces: NormalizedToolNamespace[];
   private readonly adapter: IframeAdapter;
   private readonly config: {
     timeout: number;
@@ -201,7 +205,7 @@ export class BrowserEnclave {
       maxToolCalls: options.maxToolCalls ?? levelConfig.maxToolCalls,
       maxConsoleOutputBytes: options.maxConsoleOutputBytes ?? levelConfig.maxConsoleOutputBytes,
       maxConsoleCalls: options.maxConsoleCalls ?? levelConfig.maxConsoleCalls,
-      sanitizeStackTraces: levelConfig.sanitizeStackTraces,
+      sanitizeStackTraces: options.sanitizeStackTraces ?? levelConfig.sanitizeStackTraces,
       maxSanitizeDepth: levelConfig.maxSanitizeDepth,
       maxSanitizeProperties: levelConfig.maxSanitizeProperties,
       memoryLimit: options.memoryLimit ?? 1 * 1024 * 1024,
@@ -210,17 +214,28 @@ export class BrowserEnclave {
       secureProxyConfig,
     };
 
-    // Extract custom global names
-    this.customGlobalNames = Object.keys(this.config.globals);
+    // Tool namespaces: validated here so an unsafe name fails at construction (same rules as
+    // @enclave-vm/core). A namespace may not collide with a custom global.
+    const globalNames = Object.keys(this.config.globals);
+    this.toolNamespaces = normalizeToolNamespaces(options.toolNamespaces, { reservedNames: globalNames });
+
+    // Extract custom global names (and the namespace names, which are bound the same way)
+    this.customGlobalNames = [...globalNames, ...this.toolNamespaces.map((ns) => ns.name)];
     const customAllowedGlobals = this.customGlobalNames.flatMap((name) => [name, `__safe_${name}`]);
 
     // Create validator
     const presetName: AstPreset = options.preset ?? 'agentscript';
 
-    if (this.customGlobalNames.length > 0 && presetName !== 'agentscript') {
+    if (globalNames.length > 0 && presetName !== 'agentscript') {
       throw new Error(
         "Custom globals are only supported with the 'agentscript' preset. " +
           'Remove globals or switch to preset: "agentscript".',
+      );
+    }
+    if (this.toolNamespaces.length > 0 && presetName !== 'agentscript') {
+      throw new Error(
+        "Tool namespaces are only supported with the 'agentscript' preset. " +
+          'Remove toolNamespaces or switch to preset: "agentscript".',
       );
     }
 
@@ -299,6 +314,7 @@ export class BrowserEnclave {
         throwOnBlocked: this.config.secureProxyConfig.throwOnBlocked,
         allowComposites: false,
         globals: this.serializeGlobals(this.config.globals),
+        toolNamespaces: this.toolNamespaces,
       };
 
       // Step 4: Build validation config for outer iframe
@@ -340,7 +356,9 @@ export class BrowserEnclave {
         error: {
           name: err.name || 'EnclaveError',
           message: err.message || 'Unknown enclave error',
-          stack: err.stack,
+          // Errors raised on the host (e.g. a parse error in the transformer) carry the page's
+          // stack; it obeys sanitizeStackTraces like every other returned error.
+          stack: sanitizeStackTrace(err.stack, this.config.sanitizeStackTraces),
           code: 'ENCLAVE_ERROR',
         },
         stats: {

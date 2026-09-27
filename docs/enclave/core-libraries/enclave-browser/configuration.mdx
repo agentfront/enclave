@@ -43,10 +43,12 @@ const enclave = new BrowserEnclave({
 | `maxIterations` | number | varies | Maximum loop iterations (per loop) |
 | `memoryLimit` | number | 1048576 | Memory limit in bytes (soft tracking) |
 | `toolHandler` | function | - | Async function that handles `callTool()` invocations |
+| `toolNamespaces` | object | - | Expose tools as `ns.method(args)`: `{ mail: ['list', 'send'] }` or `{ users: { get: 'users:get' } }`. Each call is a `callTool()` call, validated by the outer iframe. Same naming rules as `@enclave-vm/core` |
 | `globals` | object | - | Additional globals available in the sandbox (JSON-serializable only) |
 | `validate` | boolean | `true` | Validate code with ast-guard before execution |
 | `transform` | boolean | `true` | Transform code before execution (AgentScript wrappers) |
-| `allowFunctionsInGlobals` | boolean | varies | Whether to allow functions in custom globals |
+| `allowFunctionsInGlobals` | boolean | varies | Whether to allow functions in custom globals. Functions never cross the iframe boundary; expose host capabilities as tools |
+| `sanitizeStackTraces` | boolean | varies | Sanitize the stack of every error `run()` returns (frames become `at [REDACTED]`, URLs and paths are redacted) |
 
 ## Console Limits
 
@@ -174,6 +176,23 @@ const enclave = new BrowserEnclave({
 </Warning>
 
 Each custom global is also available with a `__safe_` prefix (e.g., `config` and `__safe_config`), matching the pattern used by AgentScript's code transformation.
+
+## Tool Namespaces and callTool Options
+
+```ts
+const enclave = new BrowserEnclave({
+  toolHandler: async (name, args) => callMyTool(name, args),
+  toolNamespaces: { mail: ['list', 'send'] },
+});
+
+await enclave.run(`
+  const inbox = await mail.list({});
+  const r = await callTool('users:get', { id: inbox[0].from }, { throwOnError: false });
+  return r.success ? r.data : r.error.message;
+`);
+```
+
+A namespace call is a `callTool()` call: counted toward `maxToolCalls` and checked by the outer iframe (rate limit, operation names, suspicious sequences). With `{ throwOnError: false }`, a failing tool resolves to `{ success: false, error: { name, message, code?, toolName } }` and a working one to `{ success: true, data }`; refusals by the enclave still throw.
 
 ## Related
 

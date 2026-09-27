@@ -8,6 +8,12 @@ type ToolBridgeErrorPayload = {
   name: string;
   message: string;
   code?: string;
+  /**
+   * Set when the tool itself failed (its handler threw or rejected, or its result could not be
+   * delivered), as opposed to the enclave refusing the call. A script's
+   * `callTool(..., { throwOnError: false })` receives only such failures as a result object.
+   */
+  toolError?: true;
 };
 
 type ToolBridgeOkResponse = {
@@ -326,7 +332,7 @@ export function createHostToolBridge(
           {
             v: TOOL_BRIDGE_PROTOCOL_VERSION,
             ok: false,
-            error: safeError,
+            error: { ...safeError, toolError: true },
           },
           maxPayloadBytes,
         );
@@ -352,7 +358,7 @@ export function createHostToolBridge(
           {
             v: TOOL_BRIDGE_PROTOCOL_VERSION,
             ok: false,
-            error: safeError,
+            error: { ...safeError, toolError: true },
           },
           maxPayloadBytes,
         );
@@ -390,7 +396,7 @@ export function createHostToolBridge(
           {
             v: TOOL_BRIDGE_PROTOCOL_VERSION,
             ok: false,
-            error: safeError,
+            error: { ...safeError, toolError: true },
           },
           maxPayloadBytes,
         );
@@ -405,6 +411,7 @@ export function createHostToolBridge(
               name: 'ToolBridgeError',
               message: `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
               code: 'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+              toolError: true,
             },
           },
           maxPayloadBytes,

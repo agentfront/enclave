@@ -31,7 +31,11 @@ new Enclave(options?: EnclaveOptions)
 | `maxIterations` | `number` | `10000` | Maximum loop iterations |
 | `memoryLimit` | `number` | `67108864` | Memory limit in bytes (64MB) |
 | `toolHandler` | `ToolHandler` | `undefined` | Tool execution function |
+| `toolNamespaces` | `ToolNamespaces` | `undefined` | Expose tools as `ns.method(args)` bindings that are `callTool()` calls |
 | `globals` | `Record<string, unknown>` | `{}` | Custom globals |
+| `allowFunctionsInGlobals` | `boolean` | by level | Allow functions in `globals` (calls are gated and results sanitized) |
+| `maxGlobalFunctionCalls` | `number` | 10 × `maxToolCalls` | Maximum calls into functions from `globals` |
+| `sanitizeStackTraces` | `boolean` | by level | Sanitize the stack of every returned error |
 | `scoringGate` | `ScoringGateOptions` | `undefined` | AI scoring configuration |
 | `adapter` | `EnclaveAdapter` | `undefined` | Execution adapter |
 | `verboseErrors` | `boolean` | `false` | Include detailed error info |
@@ -151,14 +155,15 @@ type SecurityLevel = 'STRICT' | 'SECURE' | 'STANDARD' | 'PERMISSIVE';
 ```ts
 type ToolHandler = (
   name: string,
-  args: Record<string, unknown>,
-  context?: Record<string, unknown>
+  args: Record<string, unknown>
 ) => Promise<unknown>;
 ```
 
+The script's `callTool(name, args, options)` options (`CallToolOptions`, e.g. `{ throwOnError: false }`) are applied inside the sandbox and are not passed to the handler.
+
 **Example:**
 ```ts
-const toolHandler: ToolHandler = async (name, args, context) => {
+const toolHandler: ToolHandler = async (name, args) => {
   switch (name) {
     case 'users:list':
       return db.users.findAll({ limit: args.limit });

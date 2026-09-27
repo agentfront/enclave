@@ -4,7 +4,8 @@ import type { Page } from '@playwright/test';
  * Navigate to the test harness and wait for the bundle to be ready.
  */
 export async function loadHarness(page: Page) {
-  await page.goto('/test-harness');
+  // The file name, not the clean URL: fixtures/serve.json turns cleanUrls off, so `/test-harness` is a 404.
+  await page.goto('/test-harness.html');
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await page.waitForFunction(() => (window as any).__enclaveReady === true, null, {
     timeout: 10_000,
@@ -21,6 +22,8 @@ export interface RunOptions {
   globals?: Record<string, unknown>;
   validate?: boolean;
   transform?: boolean;
+  toolNamespaces?: Record<string, string[] | Record<string, string>>;
+  sanitizeStackTraces?: boolean;
 }
 
 /**

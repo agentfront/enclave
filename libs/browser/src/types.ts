@@ -6,6 +6,10 @@
  * @packageDocumentation
  */
 
+import type { NormalizedToolNamespace, ToolNamespaces } from '@enclave-vm/ast';
+
+export type { NormalizedToolNamespace, ToolNamespaces };
+
 /**
  * Security levels (mirrored from @enclave-vm/core for browser independence)
  */
@@ -18,8 +22,42 @@ export type AstPreset = 'agentscript' | 'strict' | 'secure' | 'standard' | 'perm
 
 /**
  * Tool call handler function
+ *
+ * Called for every `callTool(name, args)` and every `toolNamespaces` method call that passes the
+ * enclave's checks. The script's `callTool` options are applied inside the sandbox and are not
+ * passed to the handler.
  */
 export type ToolHandler = (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+
+/**
+ * Options a script may pass as the third argument of `callTool(name, args, options)`, or as the
+ * second argument of a `toolNamespaces` method (mirrored from @enclave-vm/core).
+ */
+export interface CallToolOptions {
+  /**
+   * When `false`, a failing tool resolves to `{ success: false, error }` instead of throwing, and
+   * a successful call to `{ success: true, data }`. Refusals by the enclave itself (tool-call cap,
+   * rate limit, operation-name and suspicious-sequence checks, invalid arguments) always throw.
+   *
+   * @default true
+   */
+  throwOnError?: boolean;
+}
+
+/**
+ * Error details a script receives for a failing tool when `throwOnError` is `false`.
+ */
+export interface ToolCallErrorInfo {
+  name: string;
+  message: string;
+  code?: string;
+  toolName: string;
+}
+
+/**
+ * What `callTool(name, args, { throwOnError: false })` resolves to inside the sandbox.
+ */
+export type ToolCallResult<T = unknown> = { success: true; data: T } | { success: false; error: ToolCallErrorInfo };
 
 /**
  * Execution result from the browser sandbox
@@ -282,9 +320,35 @@ export interface BrowserEnclaveOptions {
   transform?: boolean;
 
   /**
-   * Whether to allow functions in custom globals
+   * Whether to allow functions in custom globals.
+   *
+   * Functions cannot cross the iframe boundary: they are never passed into the sandbox. Expose
+   * host capabilities as tools (`toolHandler` with `callTool()` or `toolNamespaces`), which go
+   * through the outer iframe's checks.
    */
   allowFunctionsInGlobals?: boolean;
+
+  /**
+   * Tool namespaces: expose tools to the script as namespaced functions.
+   *
+   * With `{ mail: ['list', 'send'] }`, `await mail.list(args, options)` inside the sandbox is exactly
+   * `await callTool('mail.list', args, options)`: counted toward `maxToolCalls`, rate-limited and
+   * pattern-checked by the outer iframe, and routed to the `toolHandler`. A method can name its
+   * tool explicitly: `{ users: { list: 'users:list' } }`. `args` defaults to `{}`.
+   *
+   * Each namespace is a frozen, null-prototype object created inside the sandbox. The constructor
+   * throws a `TypeError` for unsafe or unusable names (same rules as @enclave-vm/core). Requires
+   * the 'agentscript' preset.
+   */
+  toolNamespaces?: ToolNamespaces;
+
+  /**
+   * Whether to sanitize stack traces in the errors `run()` returns (paths, URLs and file
+   * locations are redacted and stack frames become `at [REDACTED]`).
+   *
+   * @default Determined by securityLevel (true for STRICT/SECURE)
+   */
+  sanitizeStackTraces?: boolean;
 
   /**
    * Secure proxy configuration override
@@ -333,6 +397,8 @@ export interface SerializedIframeConfig {
   throwOnBlocked: boolean;
   allowComposites: boolean;
   globals?: Record<string, unknown>;
+  /** Validated tool namespaces to bind in the inner iframe */
+  toolNamespaces?: NormalizedToolNamespace[];
 }
 
 /**

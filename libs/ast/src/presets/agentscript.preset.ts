@@ -131,6 +131,115 @@ export function getAgentScriptGlobals(securityLevel: SecurityLevel | string): re
 }
 
 /**
+ * Identifiers AgentScript refuses anywhere in a script, whether as a variable or as a property
+ * name (`obj.fetch`). A custom global listed in `allowedGlobals` is exempted from this list for
+ * that preset; `additionalDisallowedIdentifiers` extends it.
+ */
+export const AGENTSCRIPT_DISALLOWED_IDENTIFIERS: readonly string[] = Object.freeze([
+  // Node.js/System access
+  'process',
+  'require',
+  'module',
+  'exports',
+  '__dirname',
+  '__filename',
+  'Buffer',
+
+  // Code execution (already blocked by NoEvalRule, but include for clarity)
+  'eval',
+  'Function',
+  'AsyncFunction',
+  'GeneratorFunction',
+
+  // Block Arguments object (scope leakage)
+  'arguments',
+
+  // Block RegExp constructor (ReDoS bypass via new RegExp)
+  'RegExp',
+
+  // Block Promise (Async flooding/Task manipulation)
+  'Promise',
+
+  // Block Symbol (Iterator modification / Prototype poisoning)
+  'Symbol',
+
+  // Prototype manipulation
+  'constructor',
+  '__proto__',
+  'prototype',
+
+  // Reflection and meta-programming
+  'Proxy',
+  'Reflect',
+
+  // Error manipulation (stack traces can leak)
+  'Error',
+  'TypeError',
+  'ReferenceError',
+  'SyntaxError',
+  'RangeError',
+  'URIError',
+  'EvalError',
+  'AggregateError',
+
+  // Web APIs (if in browser context)
+  'fetch',
+  'XMLHttpRequest',
+  'WebSocket',
+  'localStorage',
+  'sessionStorage',
+  'indexedDB',
+  'crypto',
+  'performance',
+  'structuredClone', // Object cloning API
+  'AbortController', // Async control flow manipulation
+  'AbortSignal', // Async control flow manipulation
+  'MessageChannel', // Cross-context messaging
+  'MessagePort', // Cross-context messaging
+  'BroadcastChannel', // Cross-tab communication
+  'TextEncoder', // Binary encoding
+  'TextDecoder', // Binary decoding
+  'Intl', // Environment fingerprinting (timezone/locale)
+
+  // Timers (timing attacks)
+  'setTimeout',
+  'setInterval',
+  'setImmediate',
+  'clearTimeout',
+  'clearInterval',
+  'clearImmediate',
+  'queueMicrotask', // Microtask flooding attacks
+
+  // WebAssembly (native code execution)
+  'WebAssembly',
+
+  // Workers (sandbox escape)
+  'Worker',
+  'SharedWorker',
+  'ServiceWorker',
+
+  // Weak references (can hold references to sensitive objects, harder to audit)
+  'WeakMap',
+  'WeakSet',
+  'WeakRef',
+  'FinalizationRegistry',
+
+  // Memory Hazards
+  'Map',
+  'Set',
+
+  // Additional dangerous globals
+  'Atomics',
+  'SharedArrayBuffer',
+  'importScripts',
+
+  // Dangerous JavaScript APIs (potential sandbox escape vectors)
+  'ShadowRealm', // Escape via isolated execution
+  'Iterator', // Iterator helpers can access prototype chain
+  'AsyncIterator', // Async iterator helpers can access prototype chain
+]);
+
+/**
  * Configuration options for AgentScript preset
  */
 export interface AgentScriptOptions {
@@ -388,109 +497,7 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   );
 
   // 6. Block comprehensive list of dangerous identifiers
-  const dangerousIdentifiers = [
-    // Node.js/System access
-    'process',
-    'require',
-    'module',
-    'exports',
-    '__dirname',
-    '__filename',
-    'Buffer',
-
-    // Code execution (already blocked by NoEvalRule, but include for clarity)
-    'eval',
-    'Function',
-    'AsyncFunction',
-    'GeneratorFunction',
-
-    // Block Arguments object (scope leakage)
-    'arguments',
-
-    // Block RegExp constructor (ReDoS bypass via new RegExp)
-    'RegExp',
-
-    // Block Promise (Async flooding/Task manipulation)
-    'Promise',
-
-    // Block Symbol (Iterator modification / Prototype poisoning)
-    'Symbol',
-
-    // Prototype manipulation
-    'constructor',
-    '__proto__',
-    'prototype',
-
-    // Reflection and meta-programming
-    'Proxy',
-    'Reflect',
-
-    // Error manipulation (stack traces can leak)
-    'Error',
-    'TypeError',
-    'ReferenceError',
-    'SyntaxError',
-    'RangeError',
-    'URIError',
-    'EvalError',
-    'AggregateError',
-
-    // Web APIs (if in browser context)
-    'fetch',
-    'XMLHttpRequest',
-    'WebSocket',
-    'localStorage',
-    'sessionStorage',
-    'indexedDB',
-    'crypto',
-    'performance',
-    'structuredClone', // Object cloning API
-    'AbortController', // Async control flow manipulation
-    'AbortSignal', // Async control flow manipulation
-    'MessageChannel', // Cross-context messaging
-    'MessagePort', // Cross-context messaging
-    'BroadcastChannel', // Cross-tab communication
-    'TextEncoder', // Binary encoding
-    'TextDecoder', // Binary decoding
-    'Intl', // Environment fingerprinting (timezone/locale)
-
-    // Timers (timing attacks)
-    'setTimeout',
-    'setInterval',
-    'setImmediate',
-    'clearTimeout',
-    'clearInterval',
-    'clearImmediate',
-    'queueMicrotask', // Microtask flooding attacks
-
-    // WebAssembly (native code execution)
-    'WebAssembly',
-
-    // Workers (sandbox escape)
-    'Worker',
-    'SharedWorker',
-    'ServiceWorker',
-
-    // Weak references (can hold references to sensitive objects, harder to audit)
-    'WeakMap',
-    'WeakSet',
-    'WeakRef',
-    'FinalizationRegistry',
-
-    // Memory Hazards
-    'Map',
-    'Set',
-
-    // Additional dangerous globals
-    'Atomics',
-    'SharedArrayBuffer',
-    'importScripts',
-
-    // Dangerous JavaScript APIs (potential sandbox escape vectors)
-    'ShadowRealm', // Escape via isolated execution
-    'Iterator', // Iterator helpers can access prototype chain
-    'AsyncIterator', // Async iterator helpers can access prototype chain
-  ];
+  const dangerousIdentifiers = AGENTSCRIPT_DISALLOWED_IDENTIFIERS;
   // Filter out identifiers that are explicitly in allowedGlobals (e.g. user provided 'process' as a custom global)
   // but preserve any additionalDisallowedIdentifiers (those always take precedence)
   const allowedSet = new Set(allowedGlobals);
