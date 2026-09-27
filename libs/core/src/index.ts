@@ -32,6 +32,11 @@ export type {
   ReferenceSidecarOptions,
   WorkerPoolConfig,
   PartialDoubleVmConfig,
+  CallToolOptions,
+  ToolCallResult,
+  ToolCallErrorInfo,
+  ToolNamespaces,
+  NormalizedToolNamespace,
 } from './types';
 
 // Security level configurations

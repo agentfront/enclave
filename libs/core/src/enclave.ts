@@ -36,6 +36,8 @@ import {
   transformConcatenation,
   transformTemplateLiterals,
   guardComputedMemberKeys,
+  normalizeToolNamespaces,
+  type NormalizedToolNamespace,
 } from '@enclave-vm/ast';
 import * as acorn from 'acorn';
 import { generate } from 'astring';
@@ -61,6 +63,8 @@ import { buildBlockedPropertiesFromConfig } from './secure-proxy';
 import { ReferenceSidecar } from './sidecar';
 import { REFERENCE_CONFIGS, ReferenceConfig } from './sidecar';
 import { ScoringGate, ScoringGateResult } from './scoring';
+import { resolveMaxGlobalFunctionCalls } from './global-function-gate';
+import { sanitizeStackTrace } from './stack-trace';
 
 /**
  * Default security level
@@ -185,6 +189,7 @@ export class Enclave {
     maxConsoleCalls: number;
     workerPoolConfig?: Partial<WorkerPoolConfig>;
     secureProxyConfig: SecureProxyLevelConfig;
+    maxGlobalFunctionCalls: number;
   };
   private readonly securityLevel: SecurityLevel;
   private readonly validator: JSAstValidator;
@@ -194,6 +199,7 @@ export class Enclave {
   private readonly scoringGate?: ScoringGate;
   private readonly doubleVmConfig: DoubleVmConfig;
   private readonly customGlobalNames: string[];
+  private readonly toolNamespaces: readonly NormalizedToolNamespace[];
   private adapter?: SandboxAdapter;
 
   constructor(options: CreateEnclaveOptions = {}) {
@@ -276,6 +282,19 @@ export class Enclave {
       };
     }
 
+    // Tool namespaces: validated once here so an unsafe name fails at construction. A namespace
+    // may not collide with a custom global (including the Babel global of the babel preset).
+    this.toolNamespaces = normalizeToolNamespaces(options.toolNamespaces, {
+      reservedNames: Object.keys(initialGlobals),
+    });
+
+    if (
+      options.maxGlobalFunctionCalls !== undefined &&
+      !(Number.isInteger(options.maxGlobalFunctionCalls) && options.maxGlobalFunctionCalls >= 0)
+    ) {
+      throw new TypeError('maxGlobalFunctionCalls must be a non-negative integer');
+    }
+
     // Merge with defaults, applying security level configuration
     // Note: We explicitly set secureProxyConfig AFTER spreading options to ensure
     // the merged config from securityConfig takes precedence over partial options
@@ -294,12 +313,17 @@ export class Enclave {
       // secureProxyConfig must come AFTER options spread to use the merged config
       secureProxyConfig: securityConfig.secureProxyConfig,
       globals: initialGlobals,
+      maxGlobalFunctionCalls: resolveMaxGlobalFunctionCalls({
+        maxToolCalls: securityConfig.maxToolCalls,
+        maxGlobalFunctionCalls: options.maxGlobalFunctionCalls,
+      }),
     };
 
     // Create validator with custom globals
     // Extract custom global names from the final globals (includes Babel if preset='babel')
-    // Store for use in transformation (so custom globals aren't transformed to __safe_ prefix)
-    this.customGlobalNames = Object.keys(initialGlobals);
+    // plus the tool namespace names. Store for use in transformation (so these globals aren't
+    // transformed to __safe_ prefix)
+    this.customGlobalNames = [...Object.keys(initialGlobals), ...this.toolNamespaces.map((ns) => ns.name)];
 
     // For each custom global, we need to whitelist both:
     // 1. The original name (customValue)
@@ -364,11 +388,33 @@ export class Enclave {
   /**
    * Execute AgentScript code
    *
+   * Every error returned obeys `sanitizeStackTraces`, whichever stage raised it.
+   *
    * @param code AgentScript code to execute
    * @param toolHandler Optional tool handler (overrides constructor config)
    * @returns Execution result
    */
   async run<T = unknown>(code: string, toolHandler?: ToolHandler): Promise<ExecutionResult<T>> {
+    const result = await this.execute<T>(code, toolHandler);
+    return this.applyStackTracePolicy(result);
+  }
+
+  /**
+   * Single exit for returned errors: with `sanitizeStackTraces` on, strip host paths, file
+   * locations and frames from the stack, whichever stage (validation, transform, compile,
+   * execution, tool call) and adapter produced the error.
+   */
+  private applyStackTracePolicy<T>(result: ExecutionResult<T>): ExecutionResult<T> {
+    if (result.success || !result.error?.stack || !this.config.sanitizeStackTraces) {
+      return result;
+    }
+    return { ...result, error: { ...result.error, stack: sanitizeStackTrace(result.error.stack, true) } };
+  }
+
+  /**
+   * Transform, validate and execute. `run` applies the stack-trace policy to what this returns.
+   */
+  private async execute<T>(code: string, toolHandler?: ToolHandler): Promise<ExecutionResult<T>> {
     const startTime = Date.now();
 
     // Initialize stats
@@ -488,6 +534,7 @@ export class Enclave {
         sidecar,
         referenceConfig: this.referenceConfig,
         secureProxyConfig: this.config.secureProxyConfig,
+        toolNamespaces: this.toolNamespaces,
       };
 
       // Set up timeout

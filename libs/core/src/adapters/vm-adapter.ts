@@ -15,165 +15,9 @@ import { createSafeError } from '../safe-error';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 import { createHostToolBridge } from '../tool-bridge';
 import { checkSerializedSize, sanitizeValue } from '../value-sanitizer';
-
-/**
- * Sensitive patterns to redact from stack traces
- * Security: Prevents information leakage about host environment
- *
- * Categories covered:
- * - File system paths (Unix, Windows, UNC)
- * - Cloud environment variables and metadata
- * - Container/orchestration paths
- * - CI/CD system paths
- * - User home directories
- * - Secret/credential patterns
- * - Internal hostnames and IPs
- * - Package manager cache paths
- */
-const SENSITIVE_STACK_PATTERNS = [
-  // Unix file system paths
-  /\/Users\/[^/]+\/[^\s):]*/gi, // macOS home directories
-  /\/home\/[^/]+\/[^\s):]*/gi, // Linux home directories
-  /\/var\/[^\s):]*/gi, // System var directories
-  /\/opt\/[^\s):]*/gi, // Optional software
-  /\/tmp\/[^\s):]*/gi, // Temporary files
-  /\/etc\/[^\s):]*/gi, // System configuration
-  /\/root\/[^\s):]*/gi, // Root home directory
-  /\/mnt\/[^\s):]*/gi, // Mount points
-  /\/srv\/[^\s):]*/gi, // Service data
-  /\/data\/[^\s):]*/gi, // Data directories
-  /\/app\/[^\s):]*/gi, // Application directories
-  /\/proc\/[^\s):]*/gi, // Process information
-  /\/sys\/[^\s):]*/gi, // System files
-
-  // Windows paths
-  /\\\\[^\s):]*/g, // UNC paths
-  /[A-Z]:\\[^\s):]+/gi, // Windows drive paths
-
-  // URL-based paths
-  /file:\/\/[^\s):]+/gi, // File URLs
-  /webpack:\/\/[^\s):]+/gi, // Webpack paths
-  /%2F[^\s):]+/gi, // URL-encoded paths
-
-  // Package managers and node
-  /node_modules\/[^\s):]+/gi, // Node modules paths
-  /\/nix\/store\/[^\s):]*/gi, // Nix store paths
-  /\.npm\/[^\s):]*/gi, // NPM cache
-  /\.yarn\/[^\s):]*/gi, // Yarn cache
-  /\.pnpm\/[^\s):]*/gi, // PNPM cache
-
-  // Container and orchestration
-  /\/run\/secrets\/[^\s):]*/gi, // Docker/K8s secrets
-  /\/var\/run\/[^\s):]*/gi, // Runtime directories
-  /\/docker\/[^\s):]*/gi, // Docker paths
-  /\/containers\/[^\s):]*/gi, // Container paths
-  /\/kubelet\/[^\s):]*/gi, // Kubernetes kubelet
-
-  // CI/CD systems
-  /\/github\/workspace\/[^\s):]*/gi, // GitHub Actions
-  /\/runner\/[^\s):]*/gi, // GitHub/GitLab runner
-  /\/builds\/[^\s):]*/gi, // CI builds
-  /\/workspace\/[^\s):]*/gi, // Generic workspace
-  /\/pipeline\/[^\s):]*/gi, // CI pipelines
-  /\/jenkins\/[^\s):]*/gi, // Jenkins
-  /\/bamboo\/[^\s):]*/gi, // Bamboo
-  /\/teamcity\/[^\s):]*/gi, // TeamCity
-  /\/circleci\/[^\s):]*/gi, // CircleCI
-
-  // Cloud providers
-  /\/aws\/[^\s):]*/gi, // AWS paths
-  /\/gcloud\/[^\s):]*/gi, // Google Cloud
-  /\/azure\/[^\s):]*/gi, // Azure paths
-  /s3:\/\/[^\s):]+/gi, // S3 URIs
-  /gs:\/\/[^\s):]+/gi, // GCS URIs
-
-  // Secrets and credentials (patterns that might appear in paths or errors)
-  /[A-Z0-9]{20,}/g, // AWS-style access keys (20+ uppercase chars)
-  /sk-[a-zA-Z0-9]{32,}/g, // OpenAI/Stripe-style secret keys
-  /ghp_[a-zA-Z0-9]{36,}/g, // GitHub personal access tokens
-  /gho_[a-zA-Z0-9]{36,}/g, // GitHub OAuth tokens
-  /github_pat_[a-zA-Z0-9_]{22,}/g, // GitHub fine-grained tokens
-  /xox[baprs]-[a-zA-Z0-9-]+/g, // Slack tokens
-  /Bearer\s+[a-zA-Z0-9._-]+/gi, // Bearer tokens
-  /Basic\s+[a-zA-Z0-9+/=]+/gi, // Basic auth
-
-  // Internal network info
-  /(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d+\.\d+/g, // Private IPs
-  /[a-z0-9-]+\.internal(?:\.[a-z]+)?/gi, // Internal hostnames
-  /localhost:\d+/gi, // Localhost with port
-  /127\.0\.0\.1:\d+/gi, // Loopback with port
-
-  // User information
-  /\/u\/[^/]+\//gi, // User subdirectories
-  /~[a-z_][a-z0-9_-]*/gi, // Unix user home shorthand
-];
-
-/**
- * Sanitize stack trace by removing host file system paths
- * Security: Prevents information leakage about host environment
- *
- * When enabled (sanitize=true):
- * - Removes file paths from all supported platforms
- * - Redacts potential secrets and credentials
- * - Strips internal hostnames and IPs
- * - Removes line/column numbers for full anonymization
- *
- * Uses line-by-line processing with pre-checks to prevent ReDoS attacks.
- * The vulnerable pattern /at\s+(\S+)\s+\([^)]*:\d+:\d+\)/g can cause polynomial
- * backtracking on malicious input like "at ! (at ! (at ! (...".
- *
- * @param stack Original stack trace
- * @param sanitize Whether to sanitize (defaults to true)
- * @returns Sanitized stack trace (or original if sanitize=false)
- */
-function sanitizeStackTrace(stack: string | undefined, sanitize = true): string | undefined {
-  if (!stack) return stack;
-
-  // Return unsanitized stack if disabled
-  if (!sanitize) return stack;
-
-  let sanitized = stack;
-
-  // Apply all sensitive patterns
-  for (const pattern of SENSITIVE_STACK_PATTERNS) {
-    // Reset lastIndex for global patterns to ensure consistent behavior
-    pattern.lastIndex = 0;
-    sanitized = sanitized.replace(pattern, '[REDACTED]');
-  }
-
-  // Remove line/column numbers - process line by line with pre-checks to prevent ReDoS
-  // Pre-checking the ending pattern before applying full regex avoids polynomial backtracking
-  const lines = sanitized.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // Defense-in-depth: skip very long lines
-    if (line.length > 1000) continue;
-
-    // Pattern 1: "at functionName (path:line:column)" format
-    // Quick check: does line contain ":digits:digits)" pattern?
-    if (/:\d+:\d+\)/.test(line)) {
-      // Extract function name using indexOf to avoid regex backtracking
-      const atIdx = line.indexOf('at ');
-      if (atIdx !== -1) {
-        const afterAt = line.substring(atIdx + 3).trimStart();
-        const spaceIdx = afterAt.indexOf(' ');
-        if (spaceIdx !== -1 && afterAt.charAt(spaceIdx + 1) === '(') {
-          const funcName = afterAt.substring(0, spaceIdx);
-          lines[i] = line.substring(0, atIdx) + 'at ' + funcName + ' ([REDACTED])';
-          continue;
-        }
-      }
-    }
-
-    // Pattern 2: "at path:line:column" format (no parentheses)
-    if (/:\d+:\d+$/.test(line) && /^\s*at\s/.test(line)) {
-      lines[i] = line.replace(/:\d+:\d+$/, '') + '[REDACTED]';
-    }
-  }
-
-  return lines.join('\n');
-}
+import { sanitizeStackTrace } from '../stack-trace';
+import { createGlobalFunctionGate, type SandboxRealmBridge } from '../global-function-gate';
+import { TOOL_NAMESPACE_FACTORY_SOURCE, buildToolNamespaceBindings } from '../tool-namespaces';
 
 /**
  * Patch code executed inside the sandbox realm to prevent leaking host stack traces via `error.stack`.
@@ -360,6 +204,28 @@ const INTRINSIC_OBJECT_NEUTRALIZATION_CODE = `
 })();
 `;
 const INTRINSIC_OBJECT_NEUTRALIZATION_SCRIPT = new vm.Script(INTRINSIC_OBJECT_NEUTRALIZATION_CODE);
+
+/**
+ * Sandbox-realm helpers for the host-function gate: the realm's own `JSON.parse` (so a sanitized
+ * host result is re-created as sandbox-realm data) and a way to settle a sandbox-realm promise
+ * from a host promise (so no host promise reaches the script).
+ */
+const SANDBOX_REALM_BRIDGE_SCRIPT = new vm.Script(`
+(function () {
+  'use strict';
+  var parse = JSON.parse;
+  var SandboxPromise = Promise;
+  return Object.freeze({
+    parseJson: function (json) { return parse(json); },
+    adoptPromise: function (hostPromise) {
+      return new SandboxPromise(function (resolve, reject) { hostPromise.then(resolve, reject); });
+    }
+  });
+})()
+`);
+
+/** Builds `toolNamespaces` objects inside the sandbox realm (see ../tool-namespaces). */
+const TOOL_NAMESPACE_FACTORY_SCRIPT = new vm.Script(TOOL_NAMESPACE_FACTORY_SOURCE, { filename: 'tool-namespaces.js' });
 
 /**
  * Protected identifier prefixes that cannot be modified from sandbox code
@@ -764,14 +630,6 @@ export class VmAdapter implements SandboxAdapter {
     memoryTracker?.start();
 
     try {
-      // Create safe runtime context with optional sidecar support and proxy config
-      const safeRuntime = createSafeRuntime(executionContext, {
-        sidecar: executionContext.sidecar,
-        referenceConfig: executionContext.referenceConfig,
-        secureProxyConfig: executionContext.secureProxyConfig,
-        memoryTracker, // Pass tracker for allocation monitoring
-      });
-
       // Create sandbox context with safe globals only
       // IMPORTANT: Use empty object to get NEW isolated prototypes
       // codeGeneration.strings=false disables new Function() and eval() from strings
@@ -782,6 +640,27 @@ export class VmAdapter implements SandboxAdapter {
           codeGeneration: { strings: false, wasm: false },
         },
       );
+
+      // Capture sandbox-realm helpers before any sanitization touches the realm's globals:
+      // - the realm bridge re-creates host-function results as sandbox-realm values;
+      // - the tool-namespace factory builds `toolNamespaces` objects inside the realm.
+      const realmBridge = SANDBOX_REALM_BRIDGE_SCRIPT.runInContext(baseSandbox) as SandboxRealmBridge;
+      const installToolNamespaces = executionContext.toolNamespaces?.length
+        ? (TOOL_NAMESPACE_FACTORY_SCRIPT.runInContext(baseSandbox) as unknown)
+        : undefined;
+
+      // Every call into a host function passed in `globals` goes through this gate
+      // (abort check, maxGlobalFunctionCalls, result sanitization, safe errors).
+      const globalFunctionGate = createGlobalFunctionGate(executionContext, realmBridge);
+
+      // Create safe runtime context with optional sidecar support and proxy config
+      const safeRuntime = createSafeRuntime(executionContext, {
+        sidecar: executionContext.sidecar,
+        referenceConfig: executionContext.referenceConfig,
+        secureProxyConfig: executionContext.secureProxyConfig,
+        memoryTracker, // Pass tracker for allocation monitoring
+        globalFunctionGate,
+      });
 
       // CRITICAL: Inject memory-safe prototype methods BEFORE sanitizeVmContext
       // This must happen FIRST because sanitizeVmContext replaces the intrinsic Object
@@ -978,9 +857,28 @@ export class VmAdapter implements SandboxAdapter {
             // Remove global handle after capture (defense-in-depth)
             try { delete globalThis.__host_callToolBridge__; } catch (e) { /* ignore */ }
 
-            function estimateBytes(str) {
-              // Conservative: UTF-8 can be up to 4 bytes per code unit.
-              return str.length * 4;
+            // Whether a payload is larger than the limit in UTF-8 bytes, as the host counts it. A code
+            // unit is 1 to 3 bytes (a surrogate pair is 4), so only lengths in between are counted.
+            function exceedsPayloadLimit(str) {
+              if (str.length > maxBytes) return true;
+              if (str.length * 3 <= maxBytes) return false;
+              var bytes = 0;
+              for (var i = 0; i < str.length; i++) {
+                var c = str.charCodeAt(i);
+                if (c < 0x80) bytes += 1;
+                else if (c < 0x800) bytes += 2;
+                else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
+                  var d = str.charCodeAt(i + 1);
+                  if (d >= 0xdc00 && d <= 0xdfff) {
+                    bytes += 4;
+                    i++;
+                  } else {
+                    bytes += 3;
+                  }
+                } else bytes += 3;
+                if (bytes > maxBytes) return true;
+              }
+              return false;
             }
 
             function makeError(message, name) {
@@ -989,7 +887,16 @@ export class VmAdapter implements SandboxAdapter {
               return err;
             }
 
-            return async function __safe_callTool(toolName, args) {
+            return async function __safe_callTool(toolName, args, options) {
+              // callTool options: only { throwOnError: false } changes behavior. Tool failures
+              // then resolve to { success: false, error }; the enclave's own refusals still throw.
+              var throwOnError = true;
+              if (options !== undefined && options !== null) {
+                if (typeof options !== 'object') {
+                  throw makeError('callTool options must be an object', 'TypeError');
+                }
+                throwOnError = options.throwOnError !== false;
+              }
               if (typeof toolName !== 'string' || !toolName) {
                 throw makeError('Tool name must be a non-empty string', 'TypeError');
               }
@@ -1015,7 +922,7 @@ export class VmAdapter implements SandboxAdapter {
                 throw makeError('Tool request must be JSON-serializable', 'TypeError');
               }
 
-              if (estimateBytes(requestJson) > maxBytes) {
+              if (exceedsPayloadLimit(requestJson)) {
                 throw makeError('Tool request exceeds maximum size (' + maxBytes + ' bytes)', 'RangeError');
               }
 
@@ -1023,8 +930,24 @@ export class VmAdapter implements SandboxAdapter {
               if (typeof responseJson !== 'string') {
                 throw makeError('Tool bridge returned invalid response', 'Error');
               }
-              if (estimateBytes(responseJson) > maxBytes) {
-                throw makeError('Tool response exceeds maximum size (' + maxBytes + ' bytes)', 'RangeError');
+              // The host refuses an oversized response as a tool failure; this check only backs it
+              // up, and reports the same way so { throwOnError: false } resolves it to a result.
+              if (exceedsPayloadLimit(responseJson)) {
+                var tooLarge = 'Tool response exceeds maximum size (' + maxBytes + ' bytes)';
+                if (!throwOnError) {
+                  return {
+                    __proto__: null,
+                    success: false,
+                    error: {
+                      __proto__: null,
+                      name: 'RangeError',
+                      message: tooLarge,
+                      toolName: toolName,
+                      code: 'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+                    },
+                  };
+                }
+                throw makeError(tooLarge, 'RangeError');
               }
 
               var response;
@@ -1039,13 +962,18 @@ export class VmAdapter implements SandboxAdapter {
               }
 
               if (response.ok === true) {
-                if (hasOwn.call(response, 'value')) return response.value;
-                return undefined;
+                var value = hasOwn.call(response, 'value') ? response.value : undefined;
+                return throwOnError ? value : { __proto__: null, success: true, data: value };
               }
 
               if (response.ok === false && response.error) {
                 var msg = (typeof response.error.message === 'string') ? response.error.message : 'Tool call failed';
                 var name = (typeof response.error.name === 'string') ? response.error.name : 'Error';
+                if (!throwOnError && response.error.toolError === true) {
+                  var info = { __proto__: null, name: name, message: msg, toolName: toolName };
+                  if (typeof response.error.code === 'string') info.code = response.error.code;
+                  return { __proto__: null, success: false, error: info };
+                }
                 throw makeError(msg, name);
               }
 
@@ -1094,13 +1022,16 @@ export class VmAdapter implements SandboxAdapter {
       // This blocks access to __proto__, constructor, and other dangerous properties
       // SECURITY: Use enumerable: false to prevent Object.assign({}, this) from copying globals
       // This blocks Vector 380 (Bridge-Serialized State Reflection) attack
+      // SECURITY: functions are wrapped too, with the global-function gate, so no call into a host
+      // function bypasses the limits or hands an unsanitized host value to the script.
       if (config.globals) {
         for (const [key, value] of Object.entries(config.globals)) {
-          // Only proxy objects, primitives are safe as-is
+          // Only proxy objects and functions, primitives are safe as-is
           const wrappedValue =
-            value !== null && typeof value === 'object'
+            value !== null && (typeof value === 'object' || typeof value === 'function')
               ? createSecureProxy(value as object, {
                   levelConfig: executionContext.secureProxyConfig,
+                  callGate: globalFunctionGate,
                 })
               : value;
           Object.defineProperty(baseSandbox, key, {
@@ -1109,6 +1040,26 @@ export class VmAdapter implements SandboxAdapter {
             configurable: false,
             enumerable: false,
           });
+        }
+      }
+
+      // Tool namespaces (`mail.list(args)`): realm-local objects whose methods call the gated
+      // __safe_callTool, so they are counted, limited and sanitized like any other tool call.
+      if (executionContext.toolNamespaces?.length) {
+        const callTool = (baseSandbox as Record<string, unknown>)['__safe_callTool'];
+        for (const binding of buildToolNamespaceBindings(
+          installToolNamespaces,
+          callTool,
+          executionContext.toolNamespaces,
+        )) {
+          for (const name of [binding.name, `__safe_${binding.name}`]) {
+            Object.defineProperty(baseSandbox, name, {
+              value: binding.value,
+              writable: false,
+              configurable: false,
+              enumerable: false,
+            });
+          }
         }
       }
 

@@ -266,7 +266,8 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
         type: 'tool-response',
         callId: data.callId,
         result: data.result,
-        error: data.error
+        error: data.error,
+        toolError: data.toolError === true
       });
     }
     else if (data.type === 'abort') {

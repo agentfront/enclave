@@ -558,8 +558,48 @@ export interface EnclaveConfig {
 
 /**
  * Tool call handler function
+ *
+ * Called for every `callTool(name, args)` and every `toolNamespaces` method call that passes the
+ * enclave's checks. The script's `callTool` options (see {@link CallToolOptions}) are applied
+ * inside the enclave and are not passed to the handler.
  */
 export type ToolHandler = (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+
+/**
+ * Options a script may pass as the third argument of `callTool(name, args, options)`, or as the
+ * second argument of a `toolNamespaces` method (`mail.send(args, options)`).
+ */
+export interface CallToolOptions {
+  /**
+   * When `false`, a failing tool does not throw into the script: the call resolves to
+   * `{ success: false, error }` instead, and a successful call resolves to `{ success: true, data }`
+   * (see {@link ToolCallResult}). A failing tool is one whose handler threw or rejected, or whose
+   * result could not be delivered (unsafe or oversized). Refusals by the enclave itself (abort,
+   * `maxToolCalls`, rate limit, operation-name and suspicious-sequence checks, invalid or oversized
+   * arguments) always throw.
+   *
+   * @default true
+   */
+  throwOnError?: boolean;
+}
+
+/**
+ * Error details a script receives for a failing tool when `throwOnError` is `false`.
+ * Plain data created inside the sandbox: no stack, no host object.
+ */
+export interface ToolCallErrorInfo {
+  name: string;
+  message: string;
+  /** Error code reported by the tool, when it is a string */
+  code?: string;
+  /** Name of the tool that failed */
+  toolName: string;
+}
+
+/**
+ * What `callTool(name, args, { throwOnError: false })` resolves to inside the sandbox.
+ */
+export type ToolCallResult<T = unknown> = { success: true; data: T } | { success: false; error: ToolCallErrorInfo };
 
 /**
  * Safe runtime context provided to AgentScript code
@@ -569,7 +609,7 @@ export interface SafeRuntimeContext {
    * Safe tool call function
    * Tracks calls, enforces limits, and delegates to the tool handler
    */
-  __safe_callTool: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+  __safe_callTool: (toolName: string, args: Record<string, unknown>, options?: CallToolOptions) => Promise<unknown>;
 
   /**
    * Safe for-of loop iterator
@@ -632,6 +672,7 @@ import type { ReferenceConfig } from './sidecar/reference-config';
 import type { ScoringGateConfig, ScoringGateResult } from './scoring/types';
 import type { WorkerPoolConfig } from './adapters/worker-pool/config';
 import type { DoubleVmConfig, PartialDoubleVmConfig, ParentValidationConfig } from './double-vm/types';
+import type { NormalizedToolNamespace, ToolNamespaces } from '@enclave-vm/ast';
 
 /**
  * Internal execution context (tracks state during execution)
@@ -645,7 +686,17 @@ export interface ExecutionContext {
     sanitizeStackTraces: boolean;
     maxSanitizeDepth: number;
     maxSanitizeProperties: number;
+    /**
+     * Cap on calls into host functions passed in `globals`
+     * (defaults to 10 × `maxToolCalls` when absent)
+     */
+    maxGlobalFunctionCalls?: number;
   };
+
+  /**
+   * Validated tool namespaces to bind in the sandbox (see `CreateEnclaveOptions.toolNamespaces`)
+   */
+  toolNamespaces?: readonly NormalizedToolNamespace[];
 
   /**
    * Statistics tracker
@@ -830,17 +881,75 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * Whether to allow functions in custom globals
    * Default: Determined by securityLevel (false for STRICT/SECURE/STANDARD)
    *
+   * Every call the script makes into such a function goes through the enclave's gate: it is
+   * refused once the execution is aborted, counts toward {@link maxGlobalFunctionCalls} (not
+   * `maxToolCalls`), shares the double VM's operation rate limit
+   * (`doubleVm.parentValidation.maxOperationsPerSecond`) with tool calls, and its return value is
+   * sanitized like a tool result (functions, symbols and values beyond the sanitize limits are
+   * refused; the script receives a plain-data copy). Errors it throws reach the script as plain
+   * errors without the host stack, and calling it with `new` is refused.
+   * The suspicious-sequence detectors only look at tool calls: expose tools with
+   * {@link toolNamespaces} or `callTool()`, not as functions.
+   * The `worker_threads` adapter never passes functions into the sandbox.
+   *
+   * Functions (and objects with methods, such as class instances) are refused inside arrays,
+   * Maps and Sets in `globals`, whatever this option says: the built-in methods of those
+   * collections (forEach, iteration, get) hand elements to the script directly, which would skip
+   * the gate. Promises, WeakMaps, iterators and generators are refused anywhere in `globals`.
+   *
    * Security Warning: Functions can leak host scope via closures.
    * Only enable if you understand the security implications.
    */
   allowFunctionsInGlobals?: boolean;
 
   /**
+   * Maximum number of calls the script may make into functions passed in `globals`
+   * (including functions nested in objects), per execution.
+   *
+   * Default: 10 × `maxToolCalls`
+   */
+  maxGlobalFunctionCalls?: number;
+
+  /**
+   * Tool namespaces: expose tools to the script as namespaced functions.
+   *
+   * With `{ mail: ['list', 'send'] }`, `await mail.list(args, options)` inside the sandbox is exactly
+   * `await callTool('mail.list', args, options)`: it counts toward `maxToolCalls`, is rate-limited
+   * and pattern-checked, its result is sanitized, and it reaches the `toolHandler`. A method can
+   * name its tool explicitly: `{ users: { list: 'users:list' } }`. `args` defaults to `{}`.
+   *
+   * Each namespace is a frozen, null-prototype object created inside the sandbox, so aliasing
+   * (`const m = mail; m.list()`) and destructuring work and no host object is exposed.
+   *
+   * The constructor throws a `TypeError` for names that are not identifiers, prototype keys,
+   * names starting with `__`, reserved words and sandbox globals used as namespaces, identifiers
+   * the AgentScript validator refuses, namespaces that collide with a custom global, duplicated
+   * methods, and empty tool names.
+   *
+   * @example
+   * ```typescript
+   * const enclave = new Enclave({
+   *   toolHandler,
+   *   toolNamespaces: { mail: ['list', 'send'], users: { get: 'users:get' } },
+   * });
+   * await enclave.run(`
+   *   const inbox = await mail.list({ unread: true });
+   *   const r = await users.get({ id: inbox[0].from }, { throwOnError: false });
+   *   return r.success ? r.data.name : r.error.message;
+   * `);
+   * ```
+   */
+  toolNamespaces?: ToolNamespaces;
+
+  /**
    * Whether to sanitize stack traces in error messages
    * Default: Determined by securityLevel (true for STRICT/SECURE)
    *
    * When enabled, file paths and line numbers are removed from stack traces
-   * to prevent information leakage about the host system.
+   * to prevent information leakage about the host system. This applies to every
+   * error `run()` returns, whichever stage raised it (validation, transformation,
+   * compilation, execution, tool calls) and on every adapter: stack frames become
+   * `at [REDACTED]` and paths in the remaining lines are redacted.
    */
   sanitizeStackTraces?: boolean;
 
@@ -1019,6 +1128,13 @@ export type { WorkerPoolConfig };
  * @see {@link ParentValidationConfig} Parent VM validation settings
  */
 export type { DoubleVmConfig, PartialDoubleVmConfig, ParentValidationConfig };
+
+/**
+ * Re-exported tool namespace types
+ * @see {@link ToolNamespaces} The `toolNamespaces` configuration
+ * @see {@link NormalizedToolNamespace} A validated namespace
+ */
+export type { ToolNamespaces, NormalizedToolNamespace };
 
 /**
  * Default double VM configuration

@@ -41,6 +41,49 @@ type ToolHandler = (
 ) => Promise<unknown>;
 ```
 
+The script's `callTool` options (below) are applied inside the sandbox and are not passed to the handler.
+
+## Tool Namespaces
+
+Expose tools as namespaced functions, the natural API for scripts:
+
+```ts
+const enclave = new Enclave({
+  toolHandler: async (name, args) => callMyTool(name, args),
+  toolNamespaces: {
+    mail: ['list', 'send'],       // mail.list(args) calls the tool 'mail.list'
+    users: { get: 'users:get' },  // users.get(args) calls the tool 'users:get'
+  },
+});
+
+const result = await enclave.run(`
+  const inbox = await mail.list({ unread: true });
+  return await users.get({ id: inbox[0].from });
+`);
+```
+
+`mail.list(args, options)` is exactly `callTool('mail.list', args, options)`: it counts toward `maxToolCalls`, is rate-limited and checked by the suspicious-sequence detectors, its result is sanitized, and it reaches your `toolHandler`. Each namespace is a frozen, null-prototype object created inside the sandbox, so aliasing (`const m = mail`) and destructuring work.
+
+Unsafe or unusable names are refused when the enclave is constructed (`TypeError: Invalid toolNamespaces: ...`): non-identifiers, `__proto__`/`constructor`/`prototype`, names starting with `__`, reserved words and sandbox globals as namespaces, identifiers the AgentScript validator refuses, collisions with a custom global, duplicated methods, and tool names every adapter cannot carry (letters, digits, `:`, `.`, `_` and `-`, starting with a letter; this includes the generated `<namespace>.<method>` name, so a namespace such as `_util` needs explicit tool names).
+
+<Warning>
+  Do not expose tools as functions in `globals`. Those calls are capped, rate-limited and sanitized, but the suspicious-sequence detectors only see tool calls. Use `toolNamespaces` or `callTool()`.
+</Warning>
+
+## callTool Options
+
+```ts
+const r = await callTool('users:get', { id }, { throwOnError: false });
+if (r.success) return r.data;
+return { failed: r.error.message }; // r.error: { name, message, code?, toolName }
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `throwOnError` | `true` | `false`: resolve to `{ success: true, data }`, or `{ success: false, error }` when the tool fails, instead of throwing |
+
+Only failures of the tool itself (the handler threw or rejected, or its result could not be delivered) are returned. Refusals by the enclave (abort, `maxToolCalls`, rate limit, operation-name and suspicious-sequence checks, invalid arguments) always throw. Namespace methods take the same options as their second argument.
+
 ## Integrating with a Tool Registry
 
 Connect enclave to your existing tool system:
@@ -93,9 +136,10 @@ const enclave = new Enclave({
       userId: 'user-123',
       tenantId: 'tenant-456',
     },
-    // Custom utility function
+    // Custom utility function (requires allowFunctionsInGlobals)
     formatDate: (date: Date) => date.toISOString(),
   },
+  allowFunctionsInGlobals: true,
 });
 
 const code = `
@@ -106,6 +150,10 @@ const code = `
 
 const result = await enclave.run(code);
 ```
+
+Every call into a function from `globals` goes through the enclave's gate: it is refused after an abort, counts toward `maxGlobalFunctionCalls` (default 10 × `maxToolCalls`), shares the double VM's rate limit with tool calls, and returns a sanitized, plain-data copy of the result (functions and symbols are refused). Errors it throws reach the script without the host stack, and `new` is refused. The `worker_threads` adapter does not pass functions into the sandbox.
+
+Functions (and objects with methods) are refused inside arrays, Maps and Sets, because the built-in methods of those collections hand elements to the script directly; keep them as properties of plain objects. Promises, WeakMaps, iterators and generators are refused anywhere in `globals`.
 
 ## One-Shot Execution
 
