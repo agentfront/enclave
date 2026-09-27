@@ -46,6 +46,12 @@ export interface NormalizeToolNamespacesOptions {
 /** Longest tool name a method may map to. */
 export const MAX_TOOL_NAMESPACE_TOOL_NAME_LENGTH = 256;
 
+/**
+ * Tool names every adapter can carry: the worker_threads and iframe protocols refuse any other
+ * (letters, digits, `:`, `.`, `_` and `-`, starting with a letter).
+ */
+export const TOOL_NAMESPACE_TOOL_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9:._-]*$/;
+
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 /** Keys that reach a prototype instead of the object in hand. */
@@ -115,6 +121,12 @@ function checkToolName(qualified: string, toolName: unknown): string {
   if (toolName.length > MAX_TOOL_NAMESPACE_TOOL_NAME_LENGTH) {
     fail(`method "${qualified}" maps to a tool name longer than ${MAX_TOOL_NAMESPACE_TOOL_NAME_LENGTH} characters`);
   }
+  if (!TOOL_NAMESPACE_TOOL_NAME_PATTERN.test(toolName)) {
+    fail(
+      `method "${qualified}" maps to "${toolName}", which is not a valid tool name ` +
+        '(letters, digits, ":", ".", "_" and "-", starting with a letter)',
+    );
+  }
   return toolName;
 }
 
@@ -124,8 +136,9 @@ function checkToolName(qualified: string, toolName: unknown): string {
  * Refuses (with a `TypeError` naming the offending entry): names that are not identifiers,
  * prototype keys (`__proto__`, `constructor`, `prototype`), names starting with `__` (reserved for
  * the runtime), reserved words and sandbox globals as namespaces, identifiers the AgentScript
- * validator refuses, namespaces that collide with `reservedNames`, duplicated methods, and empty
- * or oversized tool names.
+ * validator refuses, namespaces that collide with `reservedNames`, duplicated methods, and tool
+ * names that are empty, oversized or outside {@link TOOL_NAMESPACE_TOOL_NAME_PATTERN} (whether
+ * generated as `<namespace>.<method>` or mapped explicitly).
  *
  * @param spec The host's configuration (`undefined` means no namespaces)
  * @param options Further reserved names
@@ -156,7 +169,8 @@ export function normalizeToolNamespaces(
     if (Array.isArray(entry)) {
       for (const method of entry) {
         const checked = checkMethodName(name, method);
-        add(checked, `${name}.${checked}`);
+        const qualified = `${name}.${checked}`;
+        add(checked, checkToolName(qualified, qualified));
       }
     } else if (isPlainRecord(entry)) {
       for (const method of Object.keys(entry)) {

@@ -407,8 +407,11 @@ The AgentScript preset uses security-level-aware globals for defense-in-depth:
 and `@enclave-vm/browser` (`{ mail: ['list', 'send'] }` or `{ users: { get: 'users:get' } }`) and returns it as
 plain data, so every runtime refuses the same names: non-identifiers, prototype keys, names starting with `__`,
 reserved words and sandbox globals as namespaces, identifiers AgentScript refuses (as namespaces or method
-names), collisions with `reservedNames`, duplicated methods, and empty or oversized tool names. It throws a
-`TypeError` whose message starts with `Invalid toolNamespaces:`.
+names), collisions with `reservedNames`, duplicated methods, and tool names that are empty, oversized or not
+valid tool names (`TOOL_NAMESPACE_TOOL_NAME_PATTERN`: letters, digits, `:`, `.`, `_` and `-`, starting with a
+letter, as the `worker_threads` and iframe protocols require; this also applies to the generated
+`<namespace>.<method>` names, so `_util` or `$db` need explicit tool names). It throws a `TypeError` whose
+message starts with `Invalid toolNamespaces:`.
 
 ### AgentScript Preset
 

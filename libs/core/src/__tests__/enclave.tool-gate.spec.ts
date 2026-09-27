@@ -589,6 +589,59 @@ describe('host functions inside collections in globals', () => {
     ['iteration over a Set', (fn) => ({ fns: new Set([fn]) }), `for (const f of fns) { f(); } return 'called';`],
     ['a Promise', (fn) => ({ later: Promise.resolve(fn) }), `const f = await later; f(); return 'called';`],
     ['an iterator', (fn) => ({ it: [fn].values() }), `it.next().value(); return 'called';`],
+    // Entries a key listing does not show, but built-in methods still read
+    [
+      'a non-enumerable array index',
+      (fn) => {
+        const fns: unknown[] = [1];
+        Object.defineProperty(fns, 0, { value: fn, enumerable: false });
+        return { fns };
+      },
+      `fns.forEach((f) => f()); return 'called';`,
+    ],
+    [
+      'an array index inherited from a custom prototype',
+      (fn) => {
+        const proto = Object.create(Array.prototype) as unknown[];
+        proto[0] = fn;
+        const fns = new Array(1);
+        Object.setPrototypeOf(fns, proto);
+        return { fns };
+      },
+      `fns.forEach((f) => f()); return 'called';`,
+    ],
+    [
+      'a Proxy array that hides an index',
+      (fn) => ({
+        fns: new Proxy([1], {
+          ownKeys: () => ['length'],
+          get: (target, prop, receiver) => (prop === '0' ? fn : Reflect.get(target, prop, receiver)),
+        }),
+      }),
+      `fns.forEach((f) => f()); return 'called';`,
+    ],
+    [
+      'a non-enumerable method of an object in an array',
+      (fn) => {
+        const item = {};
+        Object.defineProperty(item, 'run', { value: fn, enumerable: false });
+        return { items: [item] };
+      },
+      `items.forEach((i) => i.run()); return 'called';`,
+    ],
+    [
+      'a method of a Map subclass in an array',
+      (fn) => ({
+        items: [
+          new (class Handlers extends Map {
+            run(): string {
+              return fn();
+            }
+          })(),
+        ],
+      }),
+      `items.forEach((m) => m.run()); return 'called';`,
+    ],
   ];
 
   describe.each(ALL_ADAPTERS)('$name', (adapter) => {
@@ -686,6 +739,19 @@ describe('callTool options', () => {
 
       expect(result.success).toBe(false);
       expect(result.error?.message).toContain('upstream refused');
+    });
+
+    it('reports a result the enclave cannot carry back as a tool failure', async () => {
+      // Over the worker protocol's 1,000,000-element array cap and the sanitizer's property limits
+      const enclave = makeEnclave(adapter, { toolHandler: async () => new Array(1_000_001).fill(0) });
+
+      const result = await enclave.run(`
+        const r = await callTool('huge', {}, { throwOnError: false });
+        return { success: r.success, toolName: r.error.toolName };
+      `);
+
+      expect(result.error).toBeUndefined();
+      expect(result.value).toEqual({ success: false, toolName: 'huge' });
     });
 
     it('still throws when the enclave itself refuses the call', async () => {

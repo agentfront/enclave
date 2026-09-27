@@ -661,22 +661,30 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
  * Serialize safe runtime code as a string for injection
  * This is used by sandbox adapters that need to inject the runtime as code
  *
+ * The adapter provides `__internal_callTool(toolName, args, options)`; `options` is the script's
+ * third `callTool` argument, so the adapter implements `{ throwOnError: false }` (a failure of the
+ * tool resolves to `{ success: false, error }`, a success to `{ success: true, data }`).
+ *
  * @returns JavaScript code string containing the safe runtime
  */
 export function serializeSafeRuntime(): string {
   return `
-    // Safe callTool implementation
-    async function __safe_callTool(toolName, args) {
+    // Safe callTool implementation. The options ({ throwOnError: false }) are passed on:
+    // only the adapter's __internal_callTool can tell a failure of the tool from a refusal.
+    async function __safe_callTool(toolName, args, options) {
       if (typeof toolName !== 'string' || !toolName) {
         throw new TypeError('Tool name must be a non-empty string');
       }
       if (typeof args !== 'object' || args === null || Array.isArray(args)) {
         throw new TypeError('Tool arguments must be an object');
       }
+      if (options !== undefined && options !== null && typeof options !== 'object') {
+        throw new TypeError('callTool options must be an object');
+      }
 
       // This will be replaced by the sandbox adapter with actual implementation
       if (typeof __internal_callTool === 'function') {
-        return await __internal_callTool(toolName, args);
+        return await __internal_callTool(toolName, args, options);
       }
       throw new Error('Tool handler not available');
     }

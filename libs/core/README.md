@@ -598,7 +598,8 @@ The constructor throws a `TypeError` (`Invalid toolNamespaces: ...`) for names t
 prototype keys (`__proto__`, `constructor`, `prototype`), names starting with `__`, reserved words and
 sandbox globals used as namespaces (`callTool`, `Math`, `console`, ...), identifiers the AgentScript
 validator refuses (`process`, `fetch`, ...), namespaces that collide with a custom global, duplicated
-methods, and empty tool names.
+methods, and tool names every adapter cannot carry (empty, over 256 characters, or outside letters, digits,
+`:`, `.`, `_` and `-` starting with a letter, including a generated `<namespace>.<method>` name).
 
 Prefer namespaces over exposing tools as functions in `globals`: functions in `globals` are gated and
 sanitized (see "Custom Globals"), but the suspicious-sequence detectors only see tool calls.
@@ -671,8 +672,11 @@ Inside arrays, Maps and Sets only plain data is allowed (primitives, plain objec
 Dates, RegExps, typed arrays): the built-in methods of those collections (`forEach`, iteration, `get`)
 hand elements to the script directly, so a function (or an object with methods) stored there would be
 called without the gate. The constructor refuses it with an error naming the path, e.g.
-`Custom global "cfg" contains a function inside a collection at hooks.0.run`. Promises, WeakMaps,
-iterators and generators are refused anywhere in `globals`, since their contents cannot be validated.
+`Custom global "cfg" contains a function inside a collection at hooks.0.run`. Every own entry counts there,
+enumerable or not, and Map and Set subclasses are refused inside collections. Arrays anywhere in `globals`
+must be plain arrays (no Proxy, no custom prototype), since those can hide entries from validation.
+Promises, WeakMaps, iterators and generators are refused anywhere in `globals`, since their contents cannot
+be validated.
 
 ## Execution Result
 

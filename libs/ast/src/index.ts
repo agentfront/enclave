@@ -113,7 +113,11 @@ export type {
 } from './presets';
 
 // Tool namespaces (`mail.list(args)` bindings that are plain `callTool()` calls)
-export { normalizeToolNamespaces, MAX_TOOL_NAMESPACE_TOOL_NAME_LENGTH } from './tool-namespaces';
+export {
+  normalizeToolNamespaces,
+  MAX_TOOL_NAMESPACE_TOOL_NAME_LENGTH,
+  TOOL_NAMESPACE_TOOL_NAME_PATTERN,
+} from './tool-namespaces';
 export type {
   ToolNamespaces,
   ToolNamespaceMethod,

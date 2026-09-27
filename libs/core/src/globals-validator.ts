@@ -73,7 +73,11 @@ const DANGEROUS_GLOBAL_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 const MapEntries = Map.prototype.entries;
 const SetValues = Set.prototype.values;
 const ReflectApply = Reflect.apply;
+const ReflectOwnKeys = Reflect.ownKeys;
 const ObjectGetPrototypeOf = Object.getPrototypeOf;
+const ArrayPrototype = Array.prototype;
+const MapPrototype = Map.prototype;
+const SetPrototype = Set.prototype;
 
 /** %IteratorPrototype% and %AsyncIteratorPrototype%: every built-in iterator inherits one of them. */
 const IteratorPrototype: object = ObjectGetPrototypeOf(ObjectGetPrototypeOf([][Symbol.iterator]()));
@@ -274,11 +278,34 @@ export function validateGlobalValue(
     const isMap = types.isMap(obj);
     const isSet = types.isSet(obj);
 
+    // An array's built-in methods (forEach, iteration, Array.from) read every index it answers
+    // for: own or inherited, enumerable or not, and through a Proxy's traps. Only a plain array
+    // can be validated completely, so an array anywhere in globals must be one.
+    if (isArray) {
+      const hidden = types.isProxy(obj)
+        ? 'a Proxy array'
+        : ObjectGetPrototypeOf(obj) !== ArrayPrototype
+          ? 'an array with a custom prototype'
+          : undefined;
+      if (hidden) {
+        throw new Error(
+          `Custom global "${key}" contains ${hidden} at ${path.join('.') || 'root'}. ` +
+            `Only plain arrays are allowed in custom globals: their built-in methods (forEach, ` +
+            `iteration) read entries that a Proxy or a prototype can hide from validation, and ` +
+            `hand them to the script directly.`,
+        );
+      }
+    }
+
     if (inCollection) {
       if (types.isProxy(obj)) {
         throw collectionError(key, 'a Proxy', path);
       }
       if (!isArray && !isMap && !isSet && !isPlainDataObject(obj)) {
+        throw collectionError(key, describeInstance(obj), path);
+      }
+      // A Map or Set subclass carries methods the script could call on the raw object.
+      if ((isMap || isSet) && ObjectGetPrototypeOf(obj) !== (isMap ? MapPrototype : SetPrototype)) {
         throw collectionError(key, describeInstance(obj), path);
       }
     }
@@ -321,23 +348,25 @@ export function validateGlobalValue(
       }
     }
 
-    // Own properties: array elements (and any extra array properties) are inside a collection
-    const keys = Object.keys(obj);
+    // Own properties: array elements (and any extra array properties) are inside a collection.
+    // Built-in methods hand an array's entries, and those of anything inside a collection, to the
+    // script without the secure proxy, so there every own key counts, not only enumerable ones.
+    const keys: Array<string | symbol> = isArray || inCollection ? ReflectOwnKeys(obj) : Object.keys(obj);
     for (const prop of keys) {
       // Check for dangerous keys
-      if (DANGEROUS_GLOBAL_KEYS.has(prop)) {
+      if (typeof prop === 'string' && DANGEROUS_GLOBAL_KEYS.has(prop)) {
         throw new Error(
           `Custom global "${key}" contains dangerous key "${prop}" at ${path.join('.') || 'root'}. ` +
             `Keys like "__proto__", "constructor", and "prototype" are not allowed.`,
         );
       }
 
-      const propValue = (obj as Record<string, unknown>)[prop];
+      const propValue = (obj as Record<string | symbol, unknown>)[prop];
       validateGlobalValue(
         key,
         propValue,
         options,
-        [...path, prop],
+        [...path, typeof prop === 'string' ? prop : `[${String(prop)}]`],
         visited,
         collectionVisited,
         inCollection || isArray,

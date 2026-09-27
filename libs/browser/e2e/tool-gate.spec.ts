@@ -114,6 +114,9 @@ test.describe('tool gate', () => {
     expect(await constructorError(page, { toolNamespaces: { constructor: ['list'] } })).toMatch(/toolNamespaces/);
     expect(await constructorError(page, { toolNamespaces: { mail: ['__proto__'] } })).toMatch(/toolNamespaces/);
     expect(await constructorError(page, { toolNamespaces: { callTool: ['x'] } })).toMatch(/toolNamespaces/);
+    expect(await constructorError(page, { toolNamespaces: { files: { get: 'files/get' } } })).toMatch(
+      /not a valid tool name/,
+    );
     expect(await constructorError(page, { toolNamespaces: { math: ['add'] } })).toBeNull();
   });
 
@@ -134,6 +137,34 @@ test.describe('tool gate', () => {
       toolName: 'orders:get',
       stack: 'undefined',
     });
+  });
+
+  test('a result that cannot be serialized is a tool failure, not an undefined success', async ({ page }) => {
+    const code = `
+      const r = await callTool('t', {}, { throwOnError: false });
+      return { success: r.success, code: r.error && r.error.code, toolName: r.error && r.error.toolName };
+    `;
+    const circular = await runWithToolHandler(page, code, `const o = {}; o.self = o; return o;`, { timeout: 10000 });
+    const bigint = await runWithToolHandler(page, code, `return { n: BigInt(1) };`, { timeout: 10000 });
+    const fn = await runWithToolHandler(page, code, `return () => 1;`, { timeout: 10000 });
+
+    expect(circular.value).toEqual({ success: false, code: 'TOOL_RESULT_NOT_JSON', toolName: 't' });
+    expect(bigint.value).toEqual({ success: false, code: 'TOOL_RESULT_NOT_JSON', toolName: 't' });
+    expect(fn.value).toEqual({ success: false, code: 'TOOL_RESULT_NOT_SAFE', toolName: 't' });
+
+    // By default the failure throws into the script; an undefined result stays a success.
+    const thrown = await runWithToolHandler(page, `return await callTool('t', {});`, `return BigInt(1);`, {
+      timeout: 10000,
+    });
+    expect(thrown.success).toBe(false);
+    expect(thrown.error.message).toContain('Tool result must be JSON-serializable');
+    const nothing = await runWithToolHandler(
+      page,
+      `return await callTool('t', {}, { throwOnError: false });`,
+      `return undefined;`,
+      { timeout: 10000 },
+    );
+    expect(nothing.value).toEqual({ success: true });
   });
 
   test('callTool with throwOnError: false wraps a successful result', async ({ page }) => {

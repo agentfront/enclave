@@ -64,7 +64,7 @@ const result = await enclave.run(`
 
 `mail.list(args, options)` is exactly `callTool('mail.list', args, options)`: it counts toward `maxToolCalls`, is rate-limited and checked by the suspicious-sequence detectors, its result is sanitized, and it reaches your `toolHandler`. Each namespace is a frozen, null-prototype object created inside the sandbox, so aliasing (`const m = mail`) and destructuring work.
 
-Unsafe or unusable names are refused when the enclave is constructed (`TypeError: Invalid toolNamespaces: ...`): non-identifiers, `__proto__`/`constructor`/`prototype`, names starting with `__`, reserved words and sandbox globals as namespaces, identifiers the AgentScript validator refuses, collisions with a custom global, and duplicated methods.
+Unsafe or unusable names are refused when the enclave is constructed (`TypeError: Invalid toolNamespaces: ...`): non-identifiers, `__proto__`/`constructor`/`prototype`, names starting with `__`, reserved words and sandbox globals as namespaces, identifiers the AgentScript validator refuses, collisions with a custom global, duplicated methods, and tool names every adapter cannot carry (letters, digits, `:`, `.`, `_` and `-`, starting with a letter; this includes the generated `<namespace>.<method>` name, so a namespace such as `_util` needs explicit tool names).
 
 <Warning>
   Do not expose tools as functions in `globals`. Those calls are capped, rate-limited and sanitized, but the suspicious-sequence detectors only see tool calls. Use `toolNamespaces` or `callTool()`.

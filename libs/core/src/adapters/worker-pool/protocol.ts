@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import type { NormalizedToolNamespace } from '@enclave-vm/ast';
+import { TOOL_NAMESPACE_TOOL_NAME_PATTERN, type NormalizedToolNamespace } from '@enclave-vm/ast';
 import type { ResourceUsage } from './config';
 
 /**
@@ -230,11 +230,11 @@ export type WorkerToMainMessage =
 // ============================================================================
 
 /**
- * Tool name regex pattern
- * Allows: letters, numbers, colons, dots (tool namespaces: `mail.list`), underscores, hyphens
- * Must start with a letter
+ * Tool name regex pattern, shared with the iframe protocol and the tool-namespace normalizer:
+ * letters, numbers, colons, dots (tool namespaces: `mail.list`), underscores, hyphens; must start
+ * with a letter.
  */
-const TOOL_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9:._-]*$/;
+const TOOL_NAME_PATTERN = TOOL_NAMESPACE_TOOL_NAME_PATTERN;
 
 /**
  * UUID-like pattern for request/call IDs

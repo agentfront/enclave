@@ -4,6 +4,7 @@ import {
   JSAstValidator,
   normalizeToolNamespaces,
   MAX_TOOL_NAMESPACE_TOOL_NAME_LENGTH,
+  TOOL_NAMESPACE_TOOL_NAME_PATTERN,
 } from '../index';
 
 describe('normalizeToolNamespaces', () => {
@@ -35,6 +36,21 @@ describe('normalizeToolNamespaces', () => {
         ],
       },
     ]);
+  });
+
+  it('allows any identifier as namespace or method when it maps to a valid tool name', () => {
+    expect(normalizeToolNamespaces({ _util: { $send: 'util:send' } })).toEqual([
+      { name: '_util', methods: [{ name: '$send', toolName: 'util:send' }] },
+    ]);
+  });
+
+  it('accepts exactly the tool names the worker and iframe protocols accept', () => {
+    for (const toolName of ['a', 'mail.list', 'users:get', 'my_tool-2', 'A.b:c_d-e']) {
+      expect(TOOL_NAMESPACE_TOOL_NAME_PATTERN.test(toolName)).toBe(true);
+    }
+    for (const toolName of ['_a', '1a', 'a/b', 'a b', 'a$', '', 'é']) {
+      expect(TOOL_NAMESPACE_TOOL_NAME_PATTERN.test(toolName)).toBe(false);
+    }
   });
 
   it('allows reserved words as method names (they are valid property names)', () => {
@@ -86,6 +102,12 @@ describe('normalizeToolNamespaces', () => {
     ['a non-string tool name', { mail: { list: 3 } }, /non-empty tool name/],
     ['an oversized tool name', { mail: { list: 'x'.repeat(MAX_TOOL_NAMESPACE_TOOL_NAME_LENGTH + 1) } }, /longer than/],
     ['a namespace that is neither a list nor a map', { mail: 'list' }, /must be an array/],
+    // Tool names the worker_threads and iframe protocols refuse, so every adapter refuses them
+    ['a mapped tool name with a slash', { files: { get: 'files/get' } }, /not a valid tool name/],
+    ['a mapped tool name starting with a digit', { files: { get: '1files' } }, /not a valid tool name/],
+    ['a namespace starting with "_" (tool "_util.list")', { _util: ['list'] }, /not a valid tool name/],
+    ['a namespace starting with "$" (tool "$db.get")', { $db: ['get'] }, /not a valid tool name/],
+    ['a method containing "$" (tool "mail.$send")', { mail: ['$send'] }, /not a valid tool name/],
   ];
 
   it.each(refused)('refuses %s', (_label, spec, message) => {

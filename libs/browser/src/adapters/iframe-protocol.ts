@@ -9,6 +9,7 @@
  * @packageDocumentation
  */
 
+import { TOOL_NAMESPACE_TOOL_NAME_PATTERN } from '@enclave-vm/ast';
 import { z } from 'zod';
 import type { SerializedIframeConfig } from '../types';
 
@@ -119,8 +120,9 @@ export type OuterToInnerMessage = ToolResponseMessage | AbortMessage;
 // Validation Schemas
 // ============================================================================
 
-// Letters, digits, colons, dots (tool namespaces: `mail.list`), underscores and hyphens
-const TOOL_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9:._-]*$/;
+// Letters, digits, colons, dots (tool namespaces: `mail.list`), underscores and hyphens; shared
+// with the worker_threads protocol and the tool-namespace normalizer
+const TOOL_NAME_PATTERN = TOOL_NAMESPACE_TOOL_NAME_PATTERN;
 const ID_PATTERN = /^[a-zA-Z0-9-]+$/;
 
 export const toolCallMessageSchema = z
