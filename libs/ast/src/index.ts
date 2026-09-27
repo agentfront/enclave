@@ -95,6 +95,7 @@ export {
   AGENTSCRIPT_SECURE_GLOBALS,
   AGENTSCRIPT_STANDARD_GLOBALS,
   AGENTSCRIPT_PERMISSIVE_GLOBALS,
+  AGENTSCRIPT_DISALLOWED_IDENTIFIERS,
   AGENTSCRIPT_BASE_GLOBALS, // Legacy alias for STRICT
   getAgentScriptGlobals,
   // Babel preset for TSX/JSX transformation
@@ -110,6 +111,19 @@ export type {
   BabelPresetOptions,
   BabelSecurityConfig,
 } from './presets';
+
+// Tool namespaces (`mail.list(args)` bindings that are plain `callTool()` calls)
+export {
+  normalizeToolNamespaces,
+  MAX_TOOL_NAMESPACE_TOOL_NAME_LENGTH,
+  TOOL_NAMESPACE_TOOL_NAME_PATTERN,
+} from './tool-namespaces';
+export type {
+  ToolNamespaces,
+  ToolNamespaceMethod,
+  NormalizedToolNamespace,
+  NormalizeToolNamespacesOptions,
+} from './tool-namespaces';
 
 // AgentScript tool descriptions for AI agents
 export {

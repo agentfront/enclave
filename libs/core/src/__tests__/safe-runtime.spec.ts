@@ -681,4 +681,33 @@ describe('serializeSafeRuntime', () => {
       new Function(code);
     }).not.toThrow();
   });
+
+  describe('__safe_callTool', () => {
+    type CallTool = (toolName: string, args: unknown, options?: unknown) => Promise<unknown>;
+
+    /** The serialized __safe_callTool, with `internal` as the adapter's __internal_callTool. */
+    function serializedCallTool(internal: (...args: unknown[]) => unknown): CallTool {
+      const factory = new Function('__internal_callTool', `${serializeSafeRuntime()}\nreturn __safe_callTool;`);
+      return factory(internal) as CallTool;
+    }
+
+    it('forwards callTool options to __internal_callTool', async () => {
+      const internal = jest.fn(async () => 'ok');
+      const callTool = serializedCallTool(internal);
+
+      await callTool('orders:get', { id: 1 }, { throwOnError: false });
+      await callTool('orders:get', { id: 2 });
+
+      expect(internal).toHaveBeenNthCalledWith(1, 'orders:get', { id: 1 }, { throwOnError: false });
+      expect(internal).toHaveBeenNthCalledWith(2, 'orders:get', { id: 2 }, undefined);
+    });
+
+    it('refuses options that are not an object', async () => {
+      const internal = jest.fn(async () => 'ok');
+      const callTool = serializedCallTool(internal);
+
+      await expect(callTool('orders:get', {}, 'no-throw')).rejects.toThrow('callTool options must be an object');
+      expect(internal).not.toHaveBeenCalled();
+    });
+  });
 });

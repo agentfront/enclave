@@ -16,70 +16,15 @@ import { createSafeError } from '../safe-error';
 import { ReferenceResolver } from '../sidecar/reference-resolver';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 import { createHostToolBridge } from '../tool-bridge';
+import { sanitizeStackTrace } from '../stack-trace';
+import {
+  createHostGlobalFunctionInvoker,
+  isBuiltinMethod,
+  resolveMaxGlobalFunctionCalls,
+} from '../global-function-gate';
 import type { DoubleVmConfig, SerializableParentValidationConfig } from './types';
 import { generateParentVmBootstrap } from './parent-vm-bootstrap';
 import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-patterns';
-
-/**
- * Sensitive patterns to redact from stack traces
- * (Same as vm-adapter for consistency)
- */
-const SENSITIVE_STACK_PATTERNS = [
-  /\/Users\/[^/]+\/[^\s):]*/gi,
-  /\/home\/[^/]+\/[^\s):]*/gi,
-  /\/var\/[^\s):]*/gi,
-  /node_modules\/[^\s):]+/gi,
-];
-
-/**
- * Sanitize stack trace by removing host file system paths
- *
- * Uses line-by-line processing with pre-checks to prevent ReDoS attacks.
- * The vulnerable pattern /at\s+(\S+)\s+\([^)]*:\d+:\d+\)/g can cause polynomial
- * backtracking on malicious input like "at ! (at ! (at ! (...".
- */
-function sanitizeStackTrace(stack: string | undefined, sanitize = true): string | undefined {
-  if (!stack || !sanitize) return stack;
-
-  let sanitized = stack;
-  for (const pattern of SENSITIVE_STACK_PATTERNS) {
-    pattern.lastIndex = 0;
-    sanitized = sanitized.replace(pattern, '[REDACTED]');
-  }
-
-  // Remove line/column numbers - process line by line with pre-checks to prevent ReDoS
-  // Pre-checking the ending pattern before applying full regex avoids polynomial backtracking
-  const lines = sanitized.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // Defense-in-depth: skip very long lines
-    if (line.length > 1000) continue;
-
-    // Pattern 1: "at functionName (path:line:column)" format
-    // Quick check: does line contain ":digits:digits)" pattern?
-    if (/:\d+:\d+\)/.test(line)) {
-      // Extract function name using indexOf to avoid regex backtracking
-      const atIdx = line.indexOf('at ');
-      if (atIdx !== -1) {
-        const afterAt = line.substring(atIdx + 3).trimStart();
-        const spaceIdx = afterAt.indexOf(' ');
-        if (spaceIdx !== -1 && afterAt.charAt(spaceIdx + 1) === '(') {
-          const funcName = afterAt.substring(0, spaceIdx);
-          lines[i] = line.substring(0, atIdx) + 'at ' + funcName + ' ([REDACTED])';
-          continue;
-        }
-      }
-    }
-
-    // Pattern 2: "at path:line:column" format (no parentheses)
-    if (/:\d+:\d+$/.test(line) && /^\s*at\s/.test(line)) {
-      lines[i] = line.replace(/:\d+:\d+$/, '') + '[REDACTED]';
-    }
-  }
-
-  return lines.join('\n');
-}
 
 /**
  * Double VM Wrapper
@@ -323,6 +268,23 @@ export class DoubleVmWrapper implements SandboxAdapter {
       configurable: true, // Allow deletion after capture for defense-in-depth
     });
 
+    // Inject the host side of the global-function gate. The parent VM routes every call into a
+    // host function from `globals` through its own checks and then through this invoker, which
+    // sanitizes the result like a tool result and returns it as a JSON envelope.
+    Object.defineProperty(parentContext, '__host_invokeGlobal__', {
+      value: createHostGlobalFunctionInvoker(executionContext),
+      writable: false,
+      configurable: true, // Allow deletion after capture for defense-in-depth
+    });
+
+    // Built-in prototype methods (Array.prototype.map, iterators, ...) of host data are the only
+    // host functions the parent VM lets through ungated; this tells it which ones they are.
+    Object.defineProperty(parentContext, '__host_isBuiltinMethod__', {
+      value: (fn: unknown) => isBuiltinMethod(fn),
+      writable: false,
+      configurable: true, // Allow deletion after capture for defense-in-depth
+    });
+
     // Inject mutable stats reference so parent can update counts
     Object.defineProperty(parentContext, '__host_stats__', {
       value: stats,
@@ -499,7 +461,13 @@ export class DoubleVmWrapper implements SandboxAdapter {
         // This is critical - the original error from the tool handler could expose
         // the host Function constructor via error.constructor.constructor
         const err = error as Error;
-        throw createSafeError(`Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`);
+        // The code marks a failure of the tool itself (not a refusal by the enclave), which a
+        // script's `callTool(..., { throwOnError: false })` receives as a result object.
+        throw createSafeError(
+          `Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`,
+          'Error',
+          'TOOL_CALL_FAILED',
+        );
       }
     };
   }
@@ -559,6 +527,8 @@ export class DoubleVmWrapper implements SandboxAdapter {
       throwOnBlocked,
       toolBridgeMode,
       toolBridgeMaxPayloadBytes,
+      maxGlobalFunctionCalls: resolveMaxGlobalFunctionCalls(config),
+      toolNamespaces: executionContext.toolNamespaces ?? [],
     });
   }
 
