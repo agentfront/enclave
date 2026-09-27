@@ -1328,6 +1328,32 @@ ${stackTraceHardeningCode}
   }
 
   /**
+   * Whether a tool bridge payload is larger than the limit in UTF-8 bytes, as the host counts it.
+   * A code unit is 1 to 3 bytes (a surrogate pair is 4), so only lengths in between are counted.
+   */
+  function exceedsPayloadLimit(str, maxBytes) {
+    if (str.length > maxBytes) return true;
+    if (str.length * 3 <= maxBytes) return false;
+    var bytes = 0;
+    for (var i = 0; i < str.length; i++) {
+      var c = str.charCodeAt(i);
+      if (c < 0x80) bytes += 1;
+      else if (c < 0x800) bytes += 2;
+      else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
+        var d = str.charCodeAt(i + 1);
+        if (d >= 0xdc00 && d <= 0xdfff) {
+          bytes += 4;
+          i++;
+        } else {
+          bytes += 3;
+        }
+      } else bytes += 3;
+      if (bytes > maxBytes) return true;
+    }
+    return false;
+  }
+
+  /**
    * Inner VM's callTool function
    * Proxies through parent VM with validation
    *
@@ -1386,8 +1412,8 @@ ${stackTraceHardeningCode}
         throw createSafeError('Tool request must be JSON-serializable');
       }
 
-      // Conservative byte estimate: UTF-8 is at most 4 bytes per code unit.
-      if (requestJson && (requestJson.length * 4) > toolBridgeMaxPayloadBytes) {
+      // Counted in UTF-8 bytes, as the host counts it, so both sides agree on the limit.
+      if (requestJson && exceedsPayloadLimit(requestJson, toolBridgeMaxPayloadBytes)) {
         throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
       }
 
@@ -1396,8 +1422,17 @@ ${stackTraceHardeningCode}
           throw createSafeError('Tool bridge returned non-string response');
         }
 
-        if ((responseJson.length * 4) > toolBridgeMaxPayloadBytes) {
-          throw createSafeError('Tool response exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
+        // The host refuses an oversized response as a tool failure; this check only backs it up,
+        // and reports the same way so { throwOnError: false } resolves it to a result.
+        if (exceedsPayloadLimit(responseJson, toolBridgeMaxPayloadBytes)) {
+          var tooLarge = 'Tool response exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)';
+          throw markToolFailure(
+            createSafeError(tooLarge, 'RangeError'),
+            toolName,
+            'RangeError',
+            tooLarge,
+            'TOOL_BRIDGE_RESPONSE_TOO_LARGE'
+          );
         }
 
         var response;

@@ -162,6 +162,27 @@ describe('toolNamespaces', () => {
       expect(result.value).toEqual({ keys: ['add', 'multiply'], proto: true, frozen: true, kind: 'function' });
     });
 
+    it('allows methods named like string and regex methods', async () => {
+      const methods = ['search', 'match', 'matchAll', 'replace', 'replaceAll', 'split', 'test', 'exec'];
+      const enclave = makeEnclave(adapter, {
+        toolHandler: async (name, args) => ({ name, q: args['q'] }),
+        toolNamespaces: { web: methods },
+      });
+
+      const result = await enclave.run(`
+        const out = [];
+        ${methods.map((m) => `out.push(await web.${m}({ q: '${m}' }));`).join('\n')}
+        out.push(await web.search());
+        return out;
+      `);
+
+      expect(result.error).toBeUndefined();
+      expect(result.value).toEqual([
+        ...methods.map((m) => ({ name: `web.${m}`, q: m })),
+        { name: 'web.search', q: undefined },
+      ]);
+    });
+
     it('supports { throwOnError: false } on namespace methods', async () => {
       const enclave = makeEnclave(adapter, {
         toolHandler: async () => {
@@ -678,6 +699,67 @@ describe('callTool options', () => {
 
       expect(result.success).toBe(false);
       expect(result.error?.message).toMatch(/tool call limit/i);
+    });
+  });
+
+  describe.each(IN_PROCESS_ADAPTERS)('$name with the string tool bridge payload limit', (adapter) => {
+    // 40 KB: a payload between a quarter of it and all of it must pass, as the host allows it.
+    const limit: CreateEnclaveOptions = { toolBridge: { mode: 'string', maxPayloadBytes: 40_000 } };
+
+    it('accepts a response within the limit counted in UTF-8 bytes', async () => {
+      const enclave = makeEnclave(adapter, {
+        ...limit,
+        toolHandler: async (name) => {
+          if (name === 'ascii') return 'a'.repeat(20_000);
+          if (name === 'accented') return 'é'.repeat(15_000); // 30 KB
+          return '😀'.repeat(8_000); // 32 KB: four bytes per surrogate pair
+        },
+      });
+
+      const result = await enclave.run(`
+        const a = await callTool('ascii', {});
+        const b = await callTool('accented', {});
+        const c = await callTool('emoji', {});
+        return [a.length, b.length, c.length];
+      `);
+
+      expect(result.error).toBeUndefined();
+      expect(result.value).toEqual([20_000, 15_000, 16_000]);
+    });
+
+    it('accepts a request within the limit counted in UTF-8 bytes', async () => {
+      const enclave = makeEnclave(adapter, {
+        ...limit,
+        toolHandler: async (_name, args) => String(args['text']).length,
+      });
+
+      const result = await enclave.run(`return await callTool('count', { text: 'a'.repeat(20000) });`);
+
+      expect(result.error).toBeUndefined();
+      expect(result.value).toBe(20_000);
+    });
+
+    it('reports an oversized response as a tool failure when throwOnError is false', async () => {
+      const enclave = makeEnclave(adapter, { ...limit, toolHandler: async () => 'é'.repeat(25_000) }); // 50 KB
+
+      const result = await enclave.run(`
+        const r = await callTool('big', {}, { throwOnError: false });
+        return { success: r.success, toolName: r.error.toolName, code: r.error.code };
+      `);
+
+      expect(result.error).toBeUndefined();
+      expect(result.value).toEqual({ success: false, toolName: 'big', code: 'TOOL_BRIDGE_RESPONSE_TOO_LARGE' });
+    });
+
+    it('still refuses a request over the limit', async () => {
+      const enclave = makeEnclave(adapter, { ...limit, toolHandler: async () => 'unreachable' });
+
+      const result = await enclave.run(`
+        return await callTool('big', { text: 'é'.repeat(25000) }, { throwOnError: false });
+      `);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toMatch(/Tool request exceeds maximum size/);
     });
   });
 

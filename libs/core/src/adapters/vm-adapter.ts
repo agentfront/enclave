@@ -857,9 +857,28 @@ export class VmAdapter implements SandboxAdapter {
             // Remove global handle after capture (defense-in-depth)
             try { delete globalThis.__host_callToolBridge__; } catch (e) { /* ignore */ }
 
-            function estimateBytes(str) {
-              // Conservative: UTF-8 can be up to 4 bytes per code unit.
-              return str.length * 4;
+            // Whether a payload is larger than the limit in UTF-8 bytes, as the host counts it. A code
+            // unit is 1 to 3 bytes (a surrogate pair is 4), so only lengths in between are counted.
+            function exceedsPayloadLimit(str) {
+              if (str.length > maxBytes) return true;
+              if (str.length * 3 <= maxBytes) return false;
+              var bytes = 0;
+              for (var i = 0; i < str.length; i++) {
+                var c = str.charCodeAt(i);
+                if (c < 0x80) bytes += 1;
+                else if (c < 0x800) bytes += 2;
+                else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
+                  var d = str.charCodeAt(i + 1);
+                  if (d >= 0xdc00 && d <= 0xdfff) {
+                    bytes += 4;
+                    i++;
+                  } else {
+                    bytes += 3;
+                  }
+                } else bytes += 3;
+                if (bytes > maxBytes) return true;
+              }
+              return false;
             }
 
             function makeError(message, name) {
@@ -903,7 +922,7 @@ export class VmAdapter implements SandboxAdapter {
                 throw makeError('Tool request must be JSON-serializable', 'TypeError');
               }
 
-              if (estimateBytes(requestJson) > maxBytes) {
+              if (exceedsPayloadLimit(requestJson)) {
                 throw makeError('Tool request exceeds maximum size (' + maxBytes + ' bytes)', 'RangeError');
               }
 
@@ -911,8 +930,24 @@ export class VmAdapter implements SandboxAdapter {
               if (typeof responseJson !== 'string') {
                 throw makeError('Tool bridge returned invalid response', 'Error');
               }
-              if (estimateBytes(responseJson) > maxBytes) {
-                throw makeError('Tool response exceeds maximum size (' + maxBytes + ' bytes)', 'RangeError');
+              // The host refuses an oversized response as a tool failure; this check only backs it
+              // up, and reports the same way so { throwOnError: false } resolves it to a result.
+              if (exceedsPayloadLimit(responseJson)) {
+                var tooLarge = 'Tool response exceeds maximum size (' + maxBytes + ' bytes)';
+                if (!throwOnError) {
+                  return {
+                    __proto__: null,
+                    success: false,
+                    error: {
+                      __proto__: null,
+                      name: 'RangeError',
+                      message: tooLarge,
+                      toolName: toolName,
+                      code: 'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+                    },
+                  };
+                }
+                throw makeError(tooLarge, 'RangeError');
               }
 
               var response;
