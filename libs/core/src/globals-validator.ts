@@ -74,6 +74,7 @@ const MapEntries = Map.prototype.entries;
 const SetValues = Set.prototype.values;
 const ReflectApply = Reflect.apply;
 const ReflectOwnKeys = Reflect.ownKeys;
+const ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
 const ObjectGetPrototypeOf = Object.getPrototypeOf;
 const ArrayPrototype = Array.prototype;
 const MapPrototype = Map.prototype;
@@ -312,11 +313,14 @@ export function validateGlobalValue(
 
     // Check for getters/setters
     if (!allowGettersSetters) {
-      const descriptors = Object.getOwnPropertyDescriptors(obj);
-      for (const [prop, desc] of Object.entries(descriptors)) {
-        if (desc.get || desc.set) {
+      // Every own key, symbols included: the script reaches symbol-keyed accessors through
+      // language operations (`'' + value` reads Symbol.toPrimitive, `for...of` Symbol.iterator).
+      for (const prop of ReflectOwnKeys(obj)) {
+        const desc = ReflectGetOwnPropertyDescriptor(obj, prop);
+        if (desc && (desc.get || desc.set)) {
+          const at = [...path, typeof prop === 'string' ? prop : `[${String(prop)}]`].join('.');
           throw new Error(
-            `Custom global "${key}" has a getter/setter at ${[...path, prop].join('.')}. ` +
+            `Custom global "${key}" has a getter/setter at ${at}. ` +
               `Getters and setters are not allowed because they can execute arbitrary code on property access. ` +
               `Use allowGettersSetters: true if you understand the security implications.`,
           );

@@ -445,6 +445,16 @@ describe('host-function globals', () => {
       expect(hostCalls).toBe(2);
     });
 
+    it('refuses a global with an accessor at a symbol key, so the script cannot run it', () => {
+      const getter = jest.fn(() => () => 'host');
+      const data = { a: 1 };
+      Object.defineProperty(data, Symbol.toPrimitive, { get: getter });
+
+      // `'' + data` in a script would call the host getter on ToPrimitive.
+      expect(() => makeEnclave(adapter, { globals: { data } })).toThrow(/getter\/setter/);
+      expect(getter).not.toHaveBeenCalled();
+    });
+
     it('refuses to construct host functions', async () => {
       let constructed = 0;
       const enclave = makeEnclave(adapter, {

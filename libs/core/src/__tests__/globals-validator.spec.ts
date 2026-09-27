@@ -320,6 +320,35 @@ describe('globals-validator', () => {
           };
           expect(() => validateGlobalValue('test', obj)).toThrow(/has a getter\/setter at nested.trap/);
         });
+
+        it('should detect getters at symbol keys without calling them', () => {
+          const getter = jest.fn(() => () => 'host');
+          const obj = { a: 1 };
+          Object.defineProperty(obj, Symbol.toPrimitive, { get: getter });
+
+          expect(() => validateGlobalValue('test', obj)).toThrow(
+            /has a getter\/setter at \[Symbol\(Symbol\.toPrimitive\)\]/,
+          );
+          expect(getter).not.toHaveBeenCalled();
+        });
+
+        it('should detect non-enumerable getters', () => {
+          const obj = { a: 1 };
+          Object.defineProperty(obj, 'hidden', { get: () => 1, enumerable: false });
+
+          expect(() => validateGlobalValue('test', obj)).toThrow(/has a getter\/setter at hidden/);
+        });
+
+        it('should detect a getter at a symbol key of an array', () => {
+          const getter = jest.fn(() => Array.prototype[Symbol.iterator]);
+          const arr = [1, 2];
+          Object.defineProperty(arr, Symbol.iterator, { get: getter });
+
+          expect(() => validateGlobalValue('test', arr)).toThrow(
+            /has a getter\/setter at \[Symbol\(Symbol\.iterator\)\]/,
+          );
+          expect(getter).not.toHaveBeenCalled();
+        });
       });
 
       describe('circular references', () => {
