@@ -167,6 +167,7 @@ export class IframeAdapter {
               });
             } catch (error: unknown) {
               const err = error instanceof Error ? error : new Error(typeof error === 'string' ? error : String(error));
+              const code = (error as { code?: unknown } | null)?.code;
               this.sendToOuter({
                 __enclave_msg__: true,
                 type: 'tool-response',
@@ -175,7 +176,11 @@ export class IframeAdapter {
                 error: {
                   name: err.name,
                   message: err.message,
+                  ...(typeof code === 'string' ? { code } : {}),
                 },
+                // A failure of the tool itself (not a refusal by the enclave): a script's
+                // callTool(..., { throwOnError: false }) receives it as a result object.
+                toolError: true,
               });
             }
           })();

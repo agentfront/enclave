@@ -32,6 +32,11 @@ export type {
   SerializableSuspiciousPattern,
   OperationHistory,
   SerializedIframeConfig,
+  CallToolOptions,
+  ToolCallResult,
+  ToolCallErrorInfo,
+  ToolNamespaces,
+  NormalizedToolNamespace,
 } from './types';
 
 // Security level configurations

@@ -415,6 +415,34 @@ export interface SecureProxyOptions {
    * - Explicitly set `throwOnBlocked: false` in options
    */
   throwOnBlocked?: boolean;
+
+  /**
+   * Gate for calls into wrapped functions (used for host functions passed in `globals`).
+   *
+   * When set, a call through this proxy, or through any proxy derived from it (a method read off
+   * a wrapped object), whose target `gates()` accepts is handed to `call(target, thisArg, args)`
+   * instead of being invoked directly, and its return value is returned unwrapped: the gate is
+   * responsible for producing a sandbox-safe value. Calling such a function with `new` is refused.
+   */
+  callGate?: {
+    gates(target: unknown): boolean;
+    call(target: unknown, thisArg: unknown, args: unknown[]): unknown;
+  };
+}
+
+/**
+ * Proxies built with a `callGate` belong to one execution: they are cached per gate (weakly, so
+ * they go away with the gate) and never shared through the global cache.
+ */
+const gatedProxyCaches = new WeakMap<object, WeakMap<object, object>>();
+
+function gatedProxyCache(gate: object): WeakMap<object, object> {
+  let cache = gatedProxyCaches.get(gate);
+  if (!cache) {
+    cache = new WeakMap<object, object>();
+    gatedProxyCaches.set(gate, cache);
+  }
+  return cache;
 }
 
 /**
@@ -566,13 +594,15 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
   // Generate cache key based on all options that affect proxy behavior
   const cacheKey = getFullCacheKey(options);
 
+  // Gated proxies are cached per gate (per execution), everything else in the global cache
+  const gateCache = options.callGate ? gatedProxyCache(options.callGate) : undefined;
+  const lookupCached = (obj: object): object | undefined =>
+    gateCache ? gateCache.get(obj) : proxyCache.get(obj)?.get(cacheKey);
+
   // Check if already proxied with this config
-  const targetCache = proxyCache.get(target);
-  if (targetCache) {
-    const cached = targetCache.get(cacheKey);
-    if (cached) {
-      return cached as T;
-    }
+  const cached = lookupCached(target);
+  if (cached) {
+    return cached as T;
   }
 
   // Build blocked set from levelConfig if provided, otherwise use defaults
@@ -605,12 +635,9 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
     }
 
     // Check cache first with config key
-    const objCache = proxyCache.get(obj);
-    if (objCache) {
-      const cachedProxy = objCache.get(cacheKey);
-      if (cachedProxy) {
-        return cachedProxy as U;
-      }
+    const cachedProxy = lookupCached(obj);
+    if (cachedProxy) {
+      return cachedProxy as U;
     }
 
     // Recursion backstop. Fail CLOSED: returning the raw target here would hand sandbox code an
@@ -874,6 +901,12 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
             ? proxyToTarget.get(thisArg)
             : thisArg;
 
+        // Gated functions (host functions from `globals`) are called by the gate, which
+        // enforces the limits and returns a value that is already safe for the sandbox.
+        if (options.callGate && options.callGate.gates(target)) {
+          return options.callGate.call(target, unwrappedThis, argArray);
+        }
+
         // Call the original function
         const result = ReflectApply(target, unwrappedThis, argArray);
 
@@ -890,6 +923,12 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
       // host Function constructor — the same escape class the apply trap closes for calls.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Proxy handler signature requires any for compatibility
       construct(target: any, argArray: any[], newTarget: any): any {
+        // A gated host function is only ever called; constructing one would hand back a raw
+        // host instance without going through the gate.
+        if (options.callGate && options.callGate.gates(target)) {
+          throw createSafeError('Host functions cannot be called with new', 'TypeError');
+        }
+
         // When invoked as `new (proxy)(...)`, newTarget is the proxy itself; reading its
         // blocked `.prototype` would fail, so fall back to the original constructor.
         const instance = ReflectConstruct(target, argArray, newTarget === proxy ? target : newTarget);
@@ -904,12 +943,16 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
     });
 
     // Cache the proxy with config key
-    let objCacheMap = proxyCache.get(obj);
-    if (!objCacheMap) {
-      objCacheMap = new Map<string, object>();
-      proxyCache.set(obj, objCacheMap);
+    if (gateCache) {
+      gateCache.set(obj, proxy);
+    } else {
+      let objCacheMap = proxyCache.get(obj);
+      if (!objCacheMap) {
+        objCacheMap = new Map<string, object>();
+        proxyCache.set(obj, objCacheMap);
+      }
+      objCacheMap.set(cacheKey, proxy);
     }
-    objCacheMap.set(cacheKey, proxy);
 
     // Track the proxy in the WeakSet for isSecureProxy checks
     proxySet.add(proxy);

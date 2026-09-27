@@ -488,14 +488,107 @@ describe('globals-validator', () => {
         expect(() => validateGlobalValue('test', obj)).not.toThrow();
       });
 
-      it('should warn for unknown types via console.warn', () => {
-        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      it('should reject WeakMaps (their values cannot be validated)', () => {
+        expect(() => validateGlobalValue('test', new WeakMap())).toThrow(/contains a WeakMap at root/);
+      });
+    });
 
-        // WeakMap has a special type behavior, let's just test it doesn't throw
-        const weakMap = new WeakMap();
-        expect(() => validateGlobalValue('test', weakMap)).not.toThrow();
+    describe('collections (arrays, Maps, Sets)', () => {
+      // Built-in methods of these collections hand their elements to the script directly
+      // (forEach, iteration, get), bypassing the global-function gate, so only plain data may
+      // live inside them, whether or not functions are otherwise allowed.
+      const fn = () => 'host';
+      const allow = { allowFunctions: true };
 
-        warnSpy.mockRestore();
+      it('rejects a function in an array even when functions are allowed', () => {
+        expect(() => validateGlobalValue('fns', [fn], allow)).toThrow(
+          /Custom global "fns" contains a function inside a collection at 0/,
+        );
+      });
+
+      it('rejects a method of an object inside an array', () => {
+        expect(() => validateGlobalValue('cfg', { hooks: [{ run: fn }] }, allow)).toThrow(
+          /contains a function inside a collection at hooks\.0\.run/,
+        );
+      });
+
+      it('rejects a function on an extra array property', () => {
+        const list: unknown[] & { extra?: unknown } = [1];
+        list.extra = fn;
+        expect(() => validateGlobalValue('list', list, allow)).toThrow(/inside a collection at extra/);
+      });
+
+      it('rejects a function as a Map value or key', () => {
+        expect(() => validateGlobalValue('m', new Map([['send', fn]]), allow)).toThrow(
+          /inside a collection at get\("send"\)/,
+        );
+        expect(() => validateGlobalValue('m', new Map([[{ run: fn }, 1]]), allow)).toThrow(
+          /inside a collection at keys\(\)\[0\]\.run/,
+        );
+      });
+
+      it('rejects a function in a Set', () => {
+        expect(() => validateGlobalValue('s', new Set([fn]), allow)).toThrow(/inside a collection at values\(\)\[0\]/);
+      });
+
+      it('rejects class instances inside collections, even without allowFunctions', () => {
+        class Client {
+          run(): string {
+            return 'host';
+          }
+        }
+        expect(() => validateGlobalValue('items', [new Client()])).toThrow(
+          /contains a Client instance inside a collection at 0/,
+        );
+      });
+
+      it('rejects proxies inside collections', () => {
+        expect(() => validateGlobalValue('items', [new Proxy({}, {})])).toThrow(/contains a Proxy inside a collection/);
+      });
+
+      it('rejects an object shared between a collection and a plain property', () => {
+        const shared = { run: fn };
+        expect(() => validateGlobalValue('cfg', { direct: shared, list: [shared] }, allow)).toThrow(
+          /inside a collection at list\.0\.run/,
+        );
+      });
+
+      it('keeps the default message for functions in arrays when functions are not allowed', () => {
+        expect(() => validateGlobalValue('fns', [fn])).toThrow(/contains a function at 0/);
+      });
+
+      it('allows plain data inside collections', () => {
+        expect(() =>
+          validateGlobalValue('data', {
+            list: [1, 'a', null, { nested: [true] }, Object.create(null)],
+            lookup: new Map<unknown, unknown>([
+              ['k', { v: 1 }],
+              [{ id: 1 }, [new Date(0)]],
+            ]),
+            tags: new Set(['a', { b: 1 }]),
+            misc: [new Date(0), /x/, new Uint8Array(2), new ArrayBuffer(1)],
+          }),
+        ).not.toThrow();
+      });
+    });
+
+    describe('opaque containers', () => {
+      it.each([
+        ['a Promise', () => Promise.resolve(1), /contains a Promise at root/],
+        ['an array iterator', () => [1].values(), /contains an iterator at root/],
+        ['a Map iterator', () => new Map().entries(), /contains an iterator at root/],
+        [
+          'a generator',
+          () =>
+            (function* gen() {
+              yield 1;
+            })(),
+          /contains a generator at root/,
+        ],
+        ['a WeakMap', () => new WeakMap(), /contains a WeakMap at root/],
+      ])('rejects %s anywhere in globals', (_label, make, message) => {
+        expect(() => validateGlobalValue('x', make(), { allowFunctions: true })).toThrow(message);
+        expect(() => validateGlobalValue('x', { nested: make() }, { allowFunctions: true })).toThrow(/at nested/);
       });
     });
   });

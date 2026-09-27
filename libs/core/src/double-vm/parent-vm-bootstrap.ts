@@ -11,8 +11,11 @@
  * @packageDocumentation
  */
 
+import type { NormalizedToolNamespace } from '@enclave-vm/ast';
 import type { SerializableParentValidationConfig, SerializableSuspiciousPattern } from './types';
 import type { SecurityLevel } from '../types';
+import { globalFunctionLimitMessage } from '../global-function-gate';
+import { TOOL_NAMESPACE_FACTORY_SOURCE } from '../tool-namespaces';
 
 /**
  * Recursion backstop for the in-VM secure-proxy membranes.
@@ -84,6 +87,15 @@ export interface ParentVmBootstrapOptions {
 
   /** Whether to throw errors instead of returning undefined for blocked properties */
   throwOnBlocked?: boolean;
+
+  /**
+   * Maximum number of calls into host functions passed in `globals`
+   * @default 1000
+   */
+  maxGlobalFunctionCalls?: number;
+
+  /** Validated tool namespaces to bind in the inner VM */
+  toolNamespaces?: readonly NormalizedToolNamespace[];
 }
 
 /**
@@ -229,6 +241,8 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     allowComposites = false,
     memoryLimit = 0,
     throwOnBlocked = true,
+    maxGlobalFunctionCalls = 1000,
+    toolNamespaces = [],
   } = options;
 
   const sanitizeContextCode = generateSanitizeContextCode(securityLevel);
@@ -687,6 +701,8 @@ ${stackTraceHardeningCode}
     const hostReportViolation = __host_reportViolation__;
     const hostConfig = __host_config__;
     const hostMemoryTrack = typeof __host_memory_track__ === 'function' ? __host_memory_track__ : function(){};
+    const hostInvokeGlobal = typeof __host_invokeGlobal__ === 'function' ? __host_invokeGlobal__ : null;
+    const hostIsBuiltinMethod = typeof __host_isBuiltinMethod__ === 'function' ? __host_isBuiltinMethod__ : function() { return false; };
     const toolBridgeMode = ${JSON.stringify(toolBridgeMode)};
     const toolBridgeMaxPayloadBytes = ${toolBridgeMaxPayloadBytes};
 
@@ -699,6 +715,8 @@ ${stackTraceHardeningCode}
     try { delete globalThis.__host_reportViolation__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_config__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_memory_track__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_invokeGlobal__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_isBuiltinMethod__; } catch (e) { /* ignore */ }
 
     // Policy violation reporter (best-effort; host decides how to handle based on security level)
     function __ag_reportViolation(kind) {
@@ -868,6 +886,22 @@ ${stackTraceHardeningCode}
   // Tool call stats for rate limiting
   let toolCallCount = 0;
 
+  // Calls into host functions passed in globals: counted against their own cap, and their
+  // timestamps share the operation rate limit with tool calls. They are not recorded in
+  // operationHistory, so the tool-call suspicious-sequence detectors only see tool calls.
+  let globalFunctionCallCount = 0;
+  const globalFunctionCallTimes = [];
+
+  // Fail-closed: every call into a host function goes through the gate, except the built-in
+  // prototype methods of host data (Array.prototype.map, iterators, Date methods, ...), which
+  // the get trap binds and records here so data globals keep working as before.
+  const ungatedHostFunctions = new WeakSet();
+
+  // Errors that report a failure of the tool itself (the handler threw, or its result could not
+  // be delivered), as opposed to a refusal by the enclave. callTool(..., { throwOnError: false })
+  // turns only these into { success: false, error } results. Keyed by the safe error thrown.
+  const toolFailures = new WeakMap();
+
   // Blocked properties for secure proxy (from security level)
   const blockedPropertiesSet = new Set(${JSON.stringify(blockedProperties)});
 
@@ -973,6 +1007,9 @@ ${stackTraceHardeningCode}
         // Then recursively proxy the bound function to block constructor access
         if (typeof value === 'function') {
           var boundMethod = __ag_functionBind.call(value, target);
+          if (host && hostIsBuiltinMethod(value)) {
+            ungatedHostFunctions.add(boundMethod);
+          }
           return createSecureProxy(boundMethod, depth + 1, host);
         }
 
@@ -1109,18 +1146,29 @@ ${stackTraceHardeningCode}
       // (Promise.prototype up to Function) to reach the host Function constructor for RCE.
       // Results are re-wrapped at a FRESH depth (0) so a chain of calls such as
       // then().then() cannot inflate depth past the recursion cap and leak an unwrapped value.
+      //
+      // SECURITY: a call into a HOST function (a custom global, a method read off one, or
+      // call/apply/bind on one) goes through the global-function gate instead: abort check,
+      // maxGlobalFunctionCalls, the shared operation rate limit, and a sanitized, parent-realm
+      // copy of the result. Without it those calls skipped every limit that guards callTool, and
+      // their results arrived unsanitized. Only built-in methods of host data are exempt.
       apply: function(target, thisArg, args) {
+        if (host && !ungatedHostFunctions.has(target)) {
+          return callHostFunction(target, thisArg, args);
+        }
         return createSecureProxy(__ag_ReflectApply(target, thisArg, args), 0, host);
-      }
-      // NOTE: intentionally NO construct trap here (unlike the standalone secure-proxy used
-      // for single-VM mode). Every constructor reachable from sandbox code resolves to an
+      },
+      // Constructing a HOST function would hand back a raw host instance without passing the
+      // gate, so it is refused. Realm-owned values keep NO construct trap (undefined here means
+      // the default behavior): every constructor reachable from sandbox code resolves to an
       // inner-VM or parent-VM intrinsic, and BOTH of those realms run with code generation
       // from strings disabled, so a 'new X()' result cannot reach a usable Function
-      // constructor. The only code-generation-enabled realm (the host) is reached solely via
-      // host return values (callTool), which is an apply-path and is covered above. Wrapping
-      // construct results would additionally break the proxy invariant for the frozen (non-
-      // extensible) Error objects the harness throws (getPrototypeOf must not report null for
-      // a non-extensible target), masking legitimate errors.
+      // constructor. Wrapping construct results would additionally break the proxy invariant
+      // for the frozen (non-extensible) Error objects the harness throws (getPrototypeOf must
+      // not report null for a non-extensible target), masking legitimate errors.
+      construct: host ? function() {
+        throw createSafeError('Host functions cannot be called with new', 'TypeError');
+      } : undefined
     });
 
     cache.set(obj, proxy);
@@ -1132,19 +1180,91 @@ ${stackTraceHardeningCode}
   }
 
   /**
+   * Operation rate limit, shared by tool calls and calls into host functions.
+   * Sliding one-second window; entries older than two seconds are dropped.
+   */
+  function enforceRateLimit(now) {
+    while (operationHistory.length > 0 && now - operationHistory[0].timestamp > 2000) {
+      operationHistory.shift();
+    }
+    while (globalFunctionCallTimes.length > 0 && now - globalFunctionCallTimes[0] > 2000) {
+      globalFunctionCallTimes.shift();
+    }
+    var recent = 0;
+    for (var r = 0; r < operationHistory.length; r++) {
+      if (now - operationHistory[r].timestamp < 1000) recent++;
+    }
+    for (var g = 0; g < globalFunctionCallTimes.length; g++) {
+      if (now - globalFunctionCallTimes[g] < 1000) recent++;
+    }
+    if (recent >= validationConfig.maxOperationsPerSecond) {
+      throw createSafeError('Operation rate limit exceeded (' + validationConfig.maxOperationsPerSecond + ' operations/second)');
+    }
+  }
+
+  /**
+   * Parse the host invoker's JSON envelope into a parent-realm value, or throw its error.
+   */
+  function decodeGlobalFunctionResult(envelopeJson) {
+    if (typeof envelopeJson !== 'string') {
+      throw createSafeError('Global function bridge returned an invalid response');
+    }
+    var envelope;
+    try {
+      envelope = JSON.parse(envelopeJson);
+    } catch (e) {
+      throw createSafeError('Global function bridge returned invalid JSON');
+    }
+    if (!envelope || typeof envelope !== 'object' || envelope.v !== 1) {
+      throw createSafeError('Global function bridge returned an invalid response');
+    }
+    if (envelope.ok === true) {
+      return __ag_hasOwnProperty.call(envelope, 'value') ? envelope.value : undefined;
+    }
+    var failure = envelope.error;
+    var message = (failure && typeof failure.message === 'string') ? failure.message : 'Global function call failed';
+    var name = (failure && typeof failure.name === 'string') ? failure.name : 'Error';
+    throw createSafeError(message, name);
+  }
+
+  /**
+   * The global-function gate: every call from the sandbox into a host function passed in
+   * globals (including functions nested in objects) comes through here.
+   */
+  function callHostFunction(target, thisArg, args) {
+    if (hostAbortCheck()) {
+      throw createSafeError('Execution aborted');
+    }
+    if (typeof hostInvokeGlobal !== 'function') {
+      throw createSafeError('Global function bridge is not available');
+    }
+
+    globalFunctionCallCount++;
+    if (globalFunctionCallCount > ${maxGlobalFunctionCalls}) {
+      throw createSafeError(${JSON.stringify(globalFunctionLimitMessage(maxGlobalFunctionCalls))});
+    }
+
+    var now = Date.now();
+    enforceRateLimit(now);
+    globalFunctionCallTimes.push(now);
+
+    var outcome = hostInvokeGlobal(target, thisArg, args);
+    if (typeof outcome === 'string') {
+      return createSecureProxy(decodeGlobalFunctionResult(outcome));
+    }
+
+    // A host function that returned a thenable: settle to a sanitized parent-realm value.
+    return createSecureProxy(outcome.then(decodeGlobalFunctionResult).then(function(value) {
+      return createSecureProxy(value);
+    }));
+  }
+
+  /**
    * Validate an operation before forwarding to host
    */
   function validateOperation(operationName, args) {
     // Rate limiting check with sliding window cleanup
-    const now = Date.now();
-    // Clean up old entries to prevent unbounded growth (keep only last 2 seconds)
-    while (operationHistory.length > 0 && now - operationHistory[0].timestamp > 2000) {
-      operationHistory.shift();
-    }
-    const recentOperations = operationHistory.filter(function(h) { return now - h.timestamp < 1000; });
-    if (recentOperations.length >= validationConfig.maxOperationsPerSecond) {
-      throw createSafeError('Operation rate limit exceeded (' + validationConfig.maxOperationsPerSecond + ' operations/second)');
-    }
+    enforceRateLimit(Date.now());
 
     // Operation name format validation
     if (typeof operationName !== 'string' || !operationName) {
@@ -1187,10 +1307,37 @@ ${stackTraceHardeningCode}
   }
 
   /**
+   * Read a script's callTool options. Only { throwOnError: false } changes behavior.
+   */
+  function readThrowOnError(options) {
+    if (options === undefined || options === null) return true;
+    if (typeof options !== 'object') {
+      throw createSafeError('callTool options must be an object', 'TypeError');
+    }
+    return options.throwOnError !== false;
+  }
+
+  /**
+   * Remember that a safe error reports a failure of the tool itself (see toolFailures).
+   */
+  function markToolFailure(error, toolName, name, message, code) {
+    var info = { name: name, message: message, toolName: toolName };
+    if (typeof code === 'string') info.code = code;
+    toolFailures.set(error, info);
+    return error;
+  }
+
+  /**
    * Inner VM's callTool function
    * Proxies through parent VM with validation
+   *
+   * options.throwOnError === false: a failing tool resolves to { success: false, error } and a
+   * working one to { success: true, data }. Refusals by the enclave (abort, tool-call cap, rate
+   * limit, operation-name and suspicious-sequence checks, invalid arguments) still throw.
    */
-  function innerCallTool(toolName, args) {
+  function innerCallTool(toolName, args, options) {
+    var throwOnError = readThrowOnError(options);
+
     // Check if aborted
     if (hostAbortCheck()) {
       throw createSafeError('Execution aborted');
@@ -1279,13 +1426,36 @@ ${stackTraceHardeningCode}
           var err = response.error;
           var msg = (err && typeof err.message === 'string') ? err.message : 'Tool call failed';
           var name = (err && typeof err.name === 'string') ? err.name : 'Error';
-          throw createSafeError(msg, name);
+          var failure = createSafeError(msg, name);
+          if (err && err.toolError === true) {
+            markToolFailure(failure, toolName, name, msg, err.code);
+          }
+          throw failure;
         }
 
         throw createSafeError('Tool bridge returned invalid response');
       });
     } else {
-      promise = hostCallTool(toolName, sanitizedArgs);
+      promise = hostCallTool(toolName, sanitizedArgs).then(undefined, function(error) {
+        // Direct mode: the host marks failures of the tool itself with this code.
+        if (error && error.code === 'TOOL_CALL_FAILED') {
+          var message = typeof error.message === 'string' ? error.message : 'Tool call failed';
+          throw markToolFailure(createSafeError(message), toolName, 'Error', message, 'TOOL_CALL_FAILED');
+        }
+        throw error;
+      });
+    }
+
+    if (!throwOnError) {
+      promise = promise.then(function(result) {
+        return { success: true, data: result };
+      }, function(error) {
+        var info = toolFailures.get(error);
+        if (info) {
+          return { success: false, error: info };
+        }
+        throw error;
+      });
     }
 
     // Create a secure promise that wraps both the promise object and its result
@@ -1937,6 +2107,36 @@ ${stackTraceHardeningCode}
     var innerRuntimeScript = new vm.Script(${innerRealmSafeConcatAndTemplateCodeJson}, { filename: 'inner-runtime.js' });
     innerRuntimeScript.runInContext(innerContext);
   } catch (e) { /* ignore */ }
+
+  // Tool namespaces (mail.list(args)): built INSIDE the inner realm by a factory evaluated there
+  // (before Object/JSON are replaced by the safe globals below), so each namespace is a frozen,
+  // null-prototype inner-realm object whose methods call the gated callTool. A namespace call is
+  // therefore an ordinary tool call: counted, rate-limited, pattern-checked and sanitized.
+  var toolNamespaceNames = ${JSON.stringify(toolNamespaces.map((ns) => ns.name))};
+  if (toolNamespaceNames.length > 0) {
+    var installToolNamespaces = new vm.Script(${JSON.stringify(TOOL_NAMESPACE_FACTORY_SOURCE)}, {
+      filename: 'inner-tool-namespaces.js'
+    }).runInContext(innerContext);
+    var builtToolNamespaces = installToolNamespaces(safeRuntime.__safe_callTool, ${JSON.stringify(
+      JSON.stringify(toolNamespaces),
+    )});
+    for (var tn = 0; tn < toolNamespaceNames.length; tn++) {
+      var toolNamespaceName = toolNamespaceNames[tn];
+      var toolNamespace = builtToolNamespaces[toolNamespaceName];
+      __ag_defineProperty(innerContext, toolNamespaceName, {
+        value: toolNamespace,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+      __ag_defineProperty(innerContext, '__safe_' + toolNamespaceName, {
+        value: toolNamespace,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+    }
+  }
 
   // Defense-in-depth: Remove host callback from inner sandbox after all scripts have captured it
   try { delete innerContext['__host_memory_track__']; } catch (e) { /* ignore */ }

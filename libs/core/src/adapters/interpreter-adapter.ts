@@ -16,6 +16,7 @@ import type * as ESTree from 'estree';
 
 import { Interpreter, StepLimitError } from '../interpreter/interpreter';
 import type { ExecutionContext, ExecutionError, ExecutionResult, SandboxAdapter } from '../types';
+import { sanitizeStackTrace } from '../stack-trace';
 
 /**
  * Host globals exposed to sandboxed code. Deliberately minimal + escape-free:
@@ -41,6 +42,8 @@ export class InterpreterAdapter implements SandboxAdapter {
   async execute<T = unknown>(code: string, context: ExecutionContext): Promise<ExecutionResult<T>> {
     const startTime = Date.now();
     let toolCallCount = 0;
+    // Returned errors obey sanitizeStackTraces like every other adapter's.
+    const sanitizeStacks = context.config.sanitizeStackTraces === true;
 
     const maxToolCalls = context.config.maxToolCalls ?? Number.POSITIVE_INFINITY;
     const toolHandler = context.toolHandler ?? context.config.toolHandler;
@@ -62,7 +65,7 @@ export class InterpreterAdapter implements SandboxAdapter {
     try {
       program = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'script' }) as unknown as ESTree.Program;
     } catch (error) {
-      return this.fail<T>(error, startTime, toolCallCount, 0, 'SyntaxError');
+      return this.fail<T>(error, startTime, toolCallCount, 0, sanitizeStacks, 'SyntaxError');
     }
 
     // Wall-clock timeout drives the AbortSignal the interpreter checks per step.
@@ -101,6 +104,7 @@ export class InterpreterAdapter implements SandboxAdapter {
           startTime,
           toolCallCount,
           interpreter.stepCount,
+          sanitizeStacks,
           'TimeoutError',
           'EXECUTION_TIMEOUT',
         );
@@ -112,7 +116,7 @@ export class InterpreterAdapter implements SandboxAdapter {
       };
     } catch (error) {
       const code2 = error instanceof StepLimitError ? 'STEP_LIMIT_EXCEEDED' : undefined;
-      return this.fail<T>(error, startTime, toolCallCount, interpreter.stepCount, undefined, code2);
+      return this.fail<T>(error, startTime, toolCallCount, interpreter.stepCount, sanitizeStacks, undefined, code2);
     } finally {
       if (timer) clearTimeout(timer);
       if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -133,14 +137,16 @@ export class InterpreterAdapter implements SandboxAdapter {
     startTime: number,
     toolCallCount: number,
     iterationCount: number,
+    sanitizeStacks: boolean,
     name?: string,
     code?: string,
   ): ExecutionResult<T> {
     const err = error instanceof Error ? error : new Error(String(error));
+    const stack = sanitizeStackTrace(err.stack, sanitizeStacks);
     const execError: ExecutionError = {
       message: err.message,
       name: name ?? err.name,
-      ...(err.stack ? { stack: err.stack } : {}),
+      ...(stack ? { stack } : {}),
       ...(code ? { code } : {}),
     };
     return { success: false, error: execError, stats: this.stats(startTime, toolCallCount, iterationCount) };

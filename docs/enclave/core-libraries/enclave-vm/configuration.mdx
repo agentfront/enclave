@@ -40,7 +40,10 @@ const enclave = new Enclave({
 | `maxToolCalls` | number | 100 | Maximum tool calls per execution |
 | `maxIterations` | number | 10000 | Maximum loop iterations (prevents infinite loops) |
 | `toolHandler` | function | - | Async function that handles `callTool()` invocations |
+| `toolNamespaces` | object | - | Expose tools as `ns.method(args)`: `{ mail: ['list', 'send'] }` or `{ users: { get: 'users:get' } }`. Each call is a `callTool()` call (see [Tool System](/enclave/core-libraries/enclave-vm/tool-system#tool-namespaces)) |
 | `globals` | object | - | Additional globals available in script context |
+| `allowFunctionsInGlobals` | boolean | varies | Allow functions in `globals`. Calls into them are gated: abort check, `maxGlobalFunctionCalls`, the double VM rate limit, and a sanitized copy of the result |
+| `maxGlobalFunctionCalls` | number | 10 × `maxToolCalls` | Maximum calls into functions from `globals` per execution |
 | `validate` | boolean | true | Validate code with ast-guard before execution |
 | `transform` | boolean | true | Transform code before execution |
 
@@ -163,7 +166,7 @@ const enclave = new Enclave({
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `sanitizeStackTraces` | boolean | varies | Remove internal paths from stack traces |
+| `sanitizeStackTraces` | boolean | varies | Sanitize the stack of every error `run()` returns (any stage, any adapter): frames become `at [REDACTED]`, paths and file locations are redacted |
 | `blockTimingAPIs` | boolean | varies | Block Date, performance timing |
 | `allowUnboundedLoops` | boolean | varies | Allow while/do-while loops |
 | `unicodeSecurityCheck` | boolean | varies | Check for Unicode attacks |

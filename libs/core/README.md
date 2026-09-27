@@ -91,10 +91,15 @@ interface CreateEnclaveOptions {
 
   // Tool execution
   toolHandler?: ToolHandler; // Function to execute tool calls
+  toolNamespaces?: ToolNamespaces; // Expose tools as `ns.method(args)` (see "Tool Namespaces")
 
   // Custom globals
   globals?: Record<string, unknown>; // Additional globals for the VM
   allowFunctionsInGlobals?: boolean; // Allow functions in globals (default: false)
+  maxGlobalFunctionCalls?: number; // Cap on calls into functions from globals (default: 10 × maxToolCalls)
+
+  // Errors
+  sanitizeStackTraces?: boolean; // Redact paths/frames in every returned error (default: by security level)
 
   // Sidecar (large data handling)
   sidecar?: ReferenceSidecarOptions;
@@ -562,6 +567,64 @@ const malicious = ref + '__proto__'; // Attempting prototype pollution
 
 Set `allowComposites: true` only if you need to concatenate strings and understand the security implications.
 
+## Tool Namespaces
+
+Expose tools to scripts as namespaced functions instead of (or alongside) `callTool()`:
+
+```typescript
+const enclave = new Enclave({
+  toolHandler: async (name, args) => callMyTool(name, args),
+  toolNamespaces: {
+    mail: ['list', 'send'], // mail.list(args) calls the tool 'mail.list'
+    users: { get: 'users:get' }, // users.get(args) calls the tool 'users:get'
+  },
+});
+
+const result = await enclave.run(`
+  const inbox = await mail.list({ unread: true });
+  const sender = await users.get({ id: inbox[0].from });
+  return sender.name;
+`);
+```
+
+A namespace method call **is** a `callTool()` call: `mail.list(args, options)` behaves exactly like
+`callTool('mail.list', args, options)`. It counts toward `maxToolCalls`, goes through the double VM's
+rate limit, operation-name and suspicious-sequence checks, its result is sanitized, and it reaches your
+`toolHandler`. `args` defaults to `{}`. Each namespace is a frozen, null-prototype object created
+inside the sandbox, so aliasing (`const m = mail; m.list()`) and destructuring work and no host object
+is exposed.
+
+The constructor throws a `TypeError` (`Invalid toolNamespaces: ...`) for names that are not identifiers,
+prototype keys (`__proto__`, `constructor`, `prototype`), names starting with `__`, reserved words and
+sandbox globals used as namespaces (`callTool`, `Math`, `console`, ...), identifiers the AgentScript
+validator refuses (`process`, `fetch`, ...), namespaces that collide with a custom global, duplicated
+methods, and empty tool names.
+
+Prefer namespaces over exposing tools as functions in `globals`: functions in `globals` are gated and
+sanitized (see "Custom Globals"), but the suspicious-sequence detectors only see tool calls.
+
+## callTool Options
+
+Scripts can pass options as the third argument of `callTool` (or the second argument of a namespace
+method):
+
+```javascript
+const r = await callTool('users:get', { id }, { throwOnError: false });
+if (r.success) {
+  return r.data;
+}
+return { failed: r.error.message }; // r.error: { name, message, code?, toolName }
+```
+
+| Option         | Default | Description                                                                                                            |
+| -------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `throwOnError` | `true`  | `false`: resolve to `{ success: true, data }` or, when the tool fails, `{ success: false, error }` instead of throwing |
+
+Only failures of the tool itself (the handler threw or rejected, or its result could not be delivered)
+are returned this way; the error object is plain data with no stack. Refusals by the enclave (abort,
+`maxToolCalls`, rate limit, operation-name and suspicious-sequence checks, invalid arguments) always
+throw. Options are applied inside the sandbox and are not passed to the `toolHandler`.
+
 ## Custom Globals
 
 You can provide custom globals to the VM:
@@ -589,6 +652,28 @@ const result = await enclave.run(`
 
 **Security Note**: Set `allowFunctionsInGlobals: true` only when you intentionally provide functions. Functions in globals can potentially leak host scope via closures.
 
+Every call from the script into a function from `globals` (including functions nested in objects) goes
+through the enclave's gate:
+
+- it is refused once the execution is aborted, and counts toward `maxGlobalFunctionCalls`
+  (default: 10 × `maxToolCalls`), not toward `maxToolCalls`;
+- in the double VM (the default) it shares the operation rate limit
+  (`doubleVm.parentValidation.maxOperationsPerSecond`) with tool calls;
+- its return value is sanitized like a tool result: the script receives a plain-data copy, and a
+  value containing functions or symbols, or exceeding the sanitize depth/size limits, is refused;
+- an error it throws reaches the script as a plain error without the host stack;
+- calling it with `new` is refused.
+
+The suspicious-sequence detectors only look at tool calls, so expose tools with `toolNamespaces` or
+`callTool()`, not as functions. The `worker_threads` adapter never passes functions into the sandbox.
+
+Inside arrays, Maps and Sets only plain data is allowed (primitives, plain objects, arrays, Maps, Sets,
+Dates, RegExps, typed arrays): the built-in methods of those collections (`forEach`, iteration, `get`)
+hand elements to the script directly, so a function (or an object with methods) stored there would be
+called without the gate. The constructor refuses it with an error naming the path, e.g.
+`Custom global "cfg" contains a function inside a collection at hooks.0.run`. Promises, WeakMaps,
+iterators and generators are refused anywhere in `globals`, since their contents cannot be validated.
+
 ## Execution Result
 
 ```typescript
@@ -609,6 +694,11 @@ interface ExecutionResult<T> {
   };
 }
 ```
+
+With `sanitizeStackTraces` on (the default for `STRICT` and `SECURE`), every returned `error.stack` is
+sanitized, whichever stage raised the error (validation, transformation, compilation, execution, tool
+calls) and whichever adapter ran the script: stack frames become `at [REDACTED]` and paths, URLs and
+file locations in the remaining lines are redacted.
 
 ### Error Codes
 
@@ -712,6 +802,10 @@ class Enclave {
 ```typescript
 type ToolHandler = (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
 ```
+
+Called for every `callTool()` and `toolNamespaces` method call that passes the enclave's checks. The
+script's `callTool` options (`CallToolOptions`) are applied inside the sandbox and are not passed to
+the handler.
 
 ## Testing
 

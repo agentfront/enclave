@@ -7,7 +7,8 @@
  * @packageDocumentation
  */
 
-import type { ExecutionContext, SecureProxyLevelConfig } from './types';
+import type { CallToolOptions, ExecutionContext, SecureProxyLevelConfig } from './types';
+import type { GlobalFunctionCallGate } from './global-function-gate';
 import { sanitizeValue } from './value-sanitizer';
 import { createSafeError, createSafeTypeError } from './safe-error';
 import { ReferenceSidecar } from './sidecar/reference-sidecar';
@@ -45,6 +46,29 @@ export interface SafeRuntimeOptions {
    * and enforce memory limits
    */
   memoryTracker?: MemoryTracker;
+
+  /**
+   * Gate for calls into host functions passed in `globals` (see `createGlobalFunctionGate`).
+   * When provided, the custom globals are wrapped so every call into one of their functions goes
+   * through it.
+   */
+  globalFunctionGate?: GlobalFunctionCallGate;
+}
+
+/**
+ * Read a script's `callTool` options. Only `throwOnError: false` changes behavior.
+ */
+function readThrowOnError(options: unknown): boolean {
+  if (options === undefined || options === null) return true;
+  if (typeof options !== 'object') {
+    throw createSafeTypeError('callTool options must be an object');
+  }
+  return (options as CallToolOptions).throwOnError !== false;
+}
+
+/** A null-prototype result object for `throwOnError: false` (no prototype chain to walk). */
+function plainResult(fields: Record<string, unknown>): Record<string, unknown> {
+  return Object.assign(Object.create(null) as Record<string, unknown>, fields);
 }
 
 /**
@@ -73,7 +97,13 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
    * - Lifts large results back to sidecar
    * - Delegates to user-provided tool handler
    */
-  async function __safe_callTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  async function __safe_callTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    options?: CallToolOptions,
+  ): Promise<unknown> {
+    const throwOnError = readThrowOnError(options);
+
     // Check if aborted
     // SECURITY: Use createSafeError to prevent prototype chain escape attacks
     if (context.aborted) {
@@ -145,26 +175,39 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
       });
 
       // Lift large string results to sidecar if configured
+      let value: unknown = sanitized;
       if (sidecar && referenceConfig && typeof sanitized === 'string') {
         const size = Buffer.byteLength(sanitized, 'utf-8');
         if (size >= referenceConfig.extractionThreshold) {
           try {
-            const refId = sidecar.store(sanitized, 'tool-result', { origin: toolName });
-            return refId;
+            value = sidecar.store(sanitized, 'tool-result', { origin: toolName });
           } catch {
             // If storage fails (limits), return original value
-            return sanitized;
+            value = sanitized;
           }
         }
       }
 
-      return sanitized;
+      return throwOnError ? value : plainResult({ success: true, data: value });
     } catch (error: unknown) {
       // SECURITY: Re-throw with safe error to prevent prototype chain escape attacks
       // This is critical - the original error from the tool handler could expose
       // the host Function constructor via error.constructor.constructor
       const err = error as Error;
-      throw createSafeError(`Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`);
+      const message = `Tool call failed: ${toolName} - ${err.message || 'Unknown error'}`;
+      if (!throwOnError) {
+        const code = (error as { code?: unknown } | null)?.code;
+        return plainResult({
+          success: false,
+          error: plainResult({
+            name: 'Error',
+            message,
+            ...(typeof code === 'string' ? { code } : {}),
+            toolName,
+          }),
+        });
+      }
+      throw createSafeError(message);
     }
   }
 
@@ -540,7 +583,10 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
   // Wrap all custom globals with secure proxies to block constructor access
   const customGlobalsWithPrefix: Record<string, unknown> = {};
   if (config.globals) {
-    const wrappedCustomGlobals = wrapGlobalsWithSecureProxy(config.globals, proxyOptions);
+    const customGlobalProxyOptions: SecureProxyOptions = options?.globalFunctionGate
+      ? { ...proxyOptions, callGate: options.globalFunctionGate }
+      : proxyOptions;
+    const wrappedCustomGlobals = wrapGlobalsWithSecureProxy(config.globals, customGlobalProxyOptions);
     for (const [key, value] of Object.entries(wrappedCustomGlobals)) {
       customGlobalsWithPrefix[`__safe_${key}`] = value;
     }

@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import type { NormalizedToolNamespace } from '@enclave-vm/ast';
 import type { ResourceUsage } from './config';
 
 /**
@@ -69,6 +70,11 @@ export interface SerializedConfig {
    * Used for defense-in-depth with AST guard
    */
   securityLevel: 'STRICT' | 'SECURE' | 'STANDARD' | 'PERMISSIVE';
+  /**
+   * Validated tool namespaces to bind in the sandbox (`mail.list(args)` calls the tool
+   * `mail.list` through the worker's callTool)
+   */
+  toolNamespaces?: NormalizedToolNamespace[];
 }
 
 // ============================================================================
@@ -101,6 +107,12 @@ export interface ToolResponseMessage {
   result?: unknown;
   /** Error (if failed) */
   error?: SerializedError;
+  /**
+   * Set when the error is a failure of the tool itself (its handler threw or rejected), as
+   * opposed to the host refusing the call. A script's `callTool(..., { throwOnError: false })`
+   * receives only such failures as a result object.
+   */
+  toolError?: boolean;
 }
 
 /**
@@ -219,10 +231,10 @@ export type WorkerToMainMessage =
 
 /**
  * Tool name regex pattern
- * Allows: letters, numbers, colons, underscores, hyphens
+ * Allows: letters, numbers, colons, dots (tool namespaces: `mail.list`), underscores, hyphens
  * Must start with a letter
  */
-const TOOL_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9:_-]*$/;
+const TOOL_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9:._-]*$/;
 
 /**
  * UUID-like pattern for request/call IDs

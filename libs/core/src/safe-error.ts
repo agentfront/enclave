@@ -14,10 +14,23 @@
 /**
  * Create an Error instance whose prototype chain is severed (actual [[Prototype]]),
  * preventing prototype-chain escape to host constructors.
+ *
+ * @param message Error message
+ * @param name Error name
+ * @param code Optional error code (a read-only own property)
  */
-export function createSafeError(message: string, name = 'Error'): Error {
+export function createSafeError(message: string, name = 'Error', code?: string): Error {
   const error = new Error(message);
   error.name = name;
+
+  if (typeof code === 'string') {
+    Object.defineProperty(error, 'code', {
+      value: code,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
 
   // Null-prototype "constructor" object to break `err.constructor.constructor` chains.
   const SafeConstructor = Object.create(null);

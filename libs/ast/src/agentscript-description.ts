@@ -27,10 +27,11 @@ export const AGENTSCRIPT_DESCRIPTION_MEDIUM = `Execute AgentScript - a restricte
 
 ## callTool Function
 \`\`\`javascript
-await callTool(toolName: string, args: object): Promise<any>
+await callTool(toolName: string, args: object, options?: { throwOnError?: boolean }): Promise<any>
 \`\`\`
 - \`toolName\`: Tool identifier (e.g., 'users:list', 'orders:create')
 - \`args\`: Object with tool arguments
+- \`options.throwOnError\`: \`false\` returns \`{ success: true, data }\` or \`{ success: false, error: { name, message } }\` instead of throwing when the tool fails
 
 ## Allowed Features
 - Loops: \`for\`, \`for...of\` (bounded iteration)
@@ -71,12 +72,13 @@ AgentScript is a restricted JavaScript subset designed for AI agent orchestratio
 
 ## callTool API
 \`\`\`javascript
-await callTool(toolName: string, args: object): Promise<any>
+await callTool(toolName: string, args: object, options?: { throwOnError?: boolean }): Promise<any>
 \`\`\`
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | \`toolName\` | string | Tool identifier (e.g., 'users:list') |
 | \`args\` | object | Tool arguments as key-value pairs |
+| \`options.throwOnError\` | boolean | \`false\`: return \`{ success: true, data }\` or \`{ success: false, error: { name, message } }\` instead of throwing when the tool fails |
 
 ## Allowed Features
 | Feature | Example |
