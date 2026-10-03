@@ -138,6 +138,55 @@ const DEFAULT_SERIALIZED_PATTERNS: SerializableSuspiciousPattern[] = [
 ];
 
 /**
+ * Copy custom globals as JSON data for the inner iframe. Throws for a value that cannot cross the
+ * iframe boundary instead of dropping it, which would leave the script with `undefined`.
+ */
+function serializeGlobals(globals: Record<string, unknown>): Record<string, unknown> {
+  const serializable: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(globals)) {
+    const json = stringifyGlobal(name, value);
+    if (json !== undefined) {
+      serializable[name] = JSON.parse(json);
+    }
+  }
+  return serializable;
+}
+
+function stringifyGlobal(name: string, value: unknown): string | undefined {
+  let unsupported: { key: string; type: 'function' | 'symbol' } | undefined;
+  let json: string | undefined;
+
+  try {
+    json = JSON.stringify(value, (key: string, nestedValue: unknown) => {
+      const type = typeof nestedValue;
+      if (!unsupported && (type === 'function' || type === 'symbol')) {
+        unsupported = { key, type };
+      }
+      return nestedValue;
+    });
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Custom global "${name}" cannot be passed into the sandbox: ${reason}. Globals must be JSON data.`);
+  }
+
+  if (!unsupported) {
+    return json;
+  }
+
+  const subject =
+    unsupported.key === ''
+      ? `Custom global "${name}" is a ${unsupported.type}`
+      : `Custom global "${name}" contains a ${unsupported.type} at key "${unsupported.key}"`;
+  if (unsupported.type === 'symbol') {
+    throw new Error(`${subject}, which cannot be passed into the sandbox. Globals must be JSON data.`);
+  }
+  throw new Error(
+    `${subject}. Functions cannot cross the iframe boundary into the sandbox; expose host capabilities ` +
+      'as tools (toolHandler with callTool(), or toolNamespaces).',
+  );
+}
+
+/**
  * BrowserEnclave - Safe AgentScript Execution in the Browser
  *
  * @example
@@ -213,6 +262,9 @@ export class BrowserEnclave {
       toolHandler: options.toolHandler,
       secureProxyConfig,
     };
+
+    // Fails fast on a global that cannot reach the sandbox; run() serializes again to pick up later changes.
+    serializeGlobals(this.config.globals);
 
     // Tool namespaces: validated here so an unsafe name fails at construction (same rules as
     // @enclave-vm/core). A namespace may not collide with a custom global.
@@ -313,7 +365,7 @@ export class BrowserEnclave {
         blockedProperties: getBlockedProperties(this.config.secureProxyConfig),
         throwOnBlocked: this.config.secureProxyConfig.throwOnBlocked,
         allowComposites: false,
-        globals: this.serializeGlobals(this.config.globals),
+        globals: serializeGlobals(this.config.globals),
         toolNamespaces: this.toolNamespaces,
       };
 
@@ -370,23 +422,6 @@ export class BrowserEnclave {
         },
       };
     }
-  }
-
-  /**
-   * Serialize globals for iframe injection (strip functions)
-   */
-  private serializeGlobals(globals: Record<string, unknown>): Record<string, unknown> {
-    const serializable: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(globals)) {
-      if (typeof value === 'function') continue; // Functions can't cross iframe boundary
-      try {
-        // Verify JSON round-trippable
-        serializable[key] = JSON.parse(JSON.stringify(value));
-      } catch {
-        // Skip non-serializable values
-      }
-    }
-    return serializable;
   }
 
   /**
