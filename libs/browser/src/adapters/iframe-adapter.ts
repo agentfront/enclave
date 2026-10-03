@@ -29,6 +29,7 @@ import {
 } from './iframe-protocol';
 import { generateOuterIframeHtml } from './outer-iframe-bootstrap';
 import { IFRAME_SANDBOX } from './iframe-html-builder';
+import { PausableTimer } from './pausable-timer';
 
 /**
  * Execution context passed to the adapter
@@ -91,14 +92,12 @@ export class IframeAdapter {
 
     return new Promise<ExecutionResult<T>>((resolve) => {
       let settled = false;
-      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      let timeoutTimer: PausableTimer | null = null;
+      let pendingToolCalls = 0;
       let messageHandler: ((event: MessageEvent) => void) | null = null;
 
       const cleanup = () => {
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-          timeoutId = null;
-        }
+        timeoutTimer?.stop();
         if (messageHandler) {
           window.removeEventListener('message', messageHandler);
           messageHandler = null;
@@ -144,9 +143,12 @@ export class IframeAdapter {
             return;
           }
 
-          // Execute tool handler and relay result/error
+          // Execute tool handler and relay result/error. The timeout does not run while the host
+          // handles a tool call, as in @enclave-vm/core, which never cuts off a call in progress.
           const callId = data.callId;
           const toolHandler = context.toolHandler;
+          pendingToolCalls++;
+          timeoutTimer?.pause();
           (async () => {
             try {
               const result = await toolHandler(data.toolName, data.args);
@@ -203,6 +205,9 @@ export class IframeAdapter {
                 // callTool(..., { throwOnError: false }) receives it as a result object.
                 toolError: true,
               });
+            } finally {
+              pendingToolCalls--;
+              if (pendingToolCalls === 0) timeoutTimer?.resume();
             }
           })();
         } else if (isResultMessage(data) && data.requestId === requestId) {
@@ -266,9 +271,9 @@ export class IframeAdapter {
 
       window.addEventListener('message', messageHandler);
 
-      // Set up hard timeout with iframe.remove()
+      // Hard timeout with iframe.remove(), backing up the outer iframe's own timeout
       const totalTimeout = context.config.timeout + (context.doubleIframeConfig.parentTimeoutBuffer || 1000);
-      timeoutId = setTimeout(() => {
+      timeoutTimer = new PausableTimer(totalTimeout, () => {
         settle({
           success: false,
           error: {
@@ -282,7 +287,8 @@ export class IframeAdapter {
             endTime: Date.now(),
           },
         });
-      }, totalTimeout);
+      });
+      timeoutTimer.resume();
 
       // Generate outer iframe HTML
       try {

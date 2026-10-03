@@ -36,7 +36,7 @@ const enclave = new Enclave({
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `securityLevel` | string | `'STANDARD'` | Preset: `STRICT`, `SECURE`, `STANDARD`, `PERMISSIVE` |
-| `timeout` | number | 30000 | Maximum execution time in milliseconds |
+| `timeout` | number | 30000 | Maximum execution time in milliseconds. A tool call in progress when it passes is not cut off; the script's next tool call then fails with `Execution aborted` (same in `@enclave-vm/browser`) |
 | `maxToolCalls` | number | 100 | Maximum tool calls per execution |
 | `maxIterations` | number | 10000 | Maximum loop iterations (prevents infinite loops) |
 | `toolHandler` | function | - | Async function that handles `callTool()` invocations |

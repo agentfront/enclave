@@ -1,5 +1,9 @@
 import { test, expect } from '@playwright/test';
-import { loadHarness, runInEnclave } from './helpers';
+import { loadHarness, runInEnclave, runWithToolHandler } from './helpers';
+
+/** Tool handler body resolving with 'done' after `ms` milliseconds. */
+const slowTool = (ms: number) =>
+  `return new Promise(function (resolve) { setTimeout(function () { resolve('done'); }, ${ms}); });`;
 
 test.describe('timeout and iteration limits', () => {
   test.beforeEach(async ({ page }) => {
@@ -51,6 +55,54 @@ test.describe('timeout and iteration limits', () => {
     );
     expect(result.success).toBe(true);
     expect(result.value).toBe('done');
+  });
+
+  test('time spent waiting for a tool call does not time the script out', async ({ page }) => {
+    const result = await runWithToolHandler(page, "return await callTool('slow', {});", slowTool(2500), {
+      timeout: 1000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.value).toBe('done');
+  });
+
+  test('parallel tool calls longer than the timeout complete', async ({ page }) => {
+    const result = await runWithToolHandler(
+      page,
+      "return await parallel([() => callTool('a', {}), () => callTool('b', {}), () => callTool('c', {})]);",
+      slowTool(1500),
+      { timeout: 1000 },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual(['done', 'done', 'done']);
+  });
+
+  test('once the timeout has passed, the next tool call is refused', async ({ page }) => {
+    const result = await runWithToolHandler(
+      page,
+      "const first = await callTool('slow', {}); const second = await callTool('slow', {}); return [first, second];",
+      slowTool(1200),
+      { timeout: 1000 },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toBe('Execution aborted');
+  });
+
+  test('the timeout still bounds the script after a tool call', async ({ page }) => {
+    const result = await runWithToolHandler(
+      page,
+      `
+        async function __ag_main() {
+          await callTool('fast', {});
+          await new Promise(function(r) { setTimeout(r, 10000); });
+          return "late";
+        }
+      `,
+      slowTool(300),
+      { validate: false, transform: false, timeout: 1000 },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('EXECUTION_TIMEOUT');
+    expect(result.stats.duration).toBeLessThan(5000);
   });
 
   test('delay exceeding timeout fails', async ({ page }) => {

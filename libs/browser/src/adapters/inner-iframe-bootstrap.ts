@@ -45,7 +45,9 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 (function() {
   var requestId = ${safeJsonStringify(requestId)};
   var aborted = false;
-  var startTime = Date.now();
+  var _dateNow = Date.now;
+  var startTime = _dateNow();
+  var timeout = ${config.timeout};
   var toolCallCount = 0;
   var iterationCount = 0;
   var consoleCalls = 0;
@@ -379,7 +381,9 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
       throwOnError = options.throwOnError !== false;
     }
 
-    if (aborted) throw createSafeError('Execution aborted');
+    // As in @enclave-vm/core: once the timeout has passed (a tool call in progress is never cut
+    // off), the script's next tool call is refused.
+    if (aborted || _dateNow() - startTime > timeout) throw createSafeError('Execution aborted');
 
     toolCallCount++;
     if (toolCallCount > ${maxToolCalls}) {

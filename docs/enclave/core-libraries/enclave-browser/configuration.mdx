@@ -38,7 +38,7 @@ const enclave = new BrowserEnclave({
 |--------|------|---------|-------------|
 | `securityLevel` | string | `'STANDARD'` | Preset: `STRICT`, `SECURE`, `STANDARD`, `PERMISSIVE` |
 | `preset` | string | `'agentscript'` | AST preset: `agentscript`, `strict`, `secure`, `standard`, `permissive` |
-| `timeout` | number | varies | Maximum execution time in milliseconds |
+| `timeout` | number | varies | Maximum execution time in milliseconds. Time spent waiting for `toolHandler` does not count toward the hard stop, so a tool call in progress is never cut off; once `timeout` has passed, the script's next tool call fails with `Execution aborted` (same as `@enclave-vm/core`) |
 | `maxToolCalls` | number | varies | Maximum tool calls per execution |
 | `maxIterations` | number | varies | Maximum loop iterations (per loop) |
 | `memoryLimit` | number | 1048576 | Memory limit in bytes (soft tracking) |

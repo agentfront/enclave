@@ -278,7 +278,11 @@ export interface BrowserEnclaveOptions {
   preset?: AstPreset;
 
   /**
-   * Maximum execution time in milliseconds
+   * Maximum execution time in milliseconds, with the same rules as @enclave-vm/core: time spent
+   * waiting for `toolHandler` does not count toward the hard stop, so a tool call in progress is
+   * never cut off; once `timeout` has passed since the start, the script's next tool call fails
+   * with "Execution aborted". A handler that never settles keeps `run()` waiting, so bound slow
+   * tools in the handler.
    */
   timeout?: number;
 
