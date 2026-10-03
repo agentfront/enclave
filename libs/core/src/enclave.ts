@@ -65,6 +65,7 @@ import { REFERENCE_CONFIGS, ReferenceConfig } from './sidecar';
 import { ScoringGate, ScoringGateResult } from './scoring';
 import { resolveMaxGlobalFunctionCalls } from './global-function-gate';
 import { sanitizeStackTrace } from './stack-trace';
+import { assertNodeVmAvailable } from './node-vm';
 
 /**
  * Default security level
@@ -200,6 +201,7 @@ export class Enclave {
   private readonly doubleVmConfig: DoubleVmConfig;
   private readonly customGlobalNames: string[];
   private readonly toolNamespaces: readonly NormalizedToolNamespace[];
+  private readonly sandboxAdapter?: SandboxAdapter;
   private adapter?: SandboxAdapter;
 
   constructor(options: CreateEnclaveOptions = {}) {
@@ -348,6 +350,11 @@ export class Enclave {
 
     // Build double VM config (default enabled for all adapters)
     this.doubleVmConfig = this.buildDoubleVmConfig(options.doubleVm);
+
+    if (options.sandboxAdapter !== undefined && !isSandboxAdapter(options.sandboxAdapter)) {
+      throw new TypeError('sandboxAdapter must have execute(code, context) and dispose() methods');
+    }
+    this.sandboxAdapter = options.sandboxAdapter;
 
     // Adapter will be lazy-loaded based on config.adapter
   }
@@ -689,7 +696,8 @@ export class Enclave {
   /**
    * Get or create the sandbox adapter
    *
-   * When double VM is enabled (default), the base adapter is wrapped
+   * A host-supplied `sandboxAdapter` is used as is. Otherwise, when double VM is enabled
+   * (default), the base adapter is wrapped
    * with a double VM layer that provides:
    * - Nested VM isolation (Parent VM + Inner VM)
    * - Enhanced tool call validation
@@ -697,8 +705,14 @@ export class Enclave {
    * - Defense-in-depth against VM escape attacks
    */
   private async getAdapter(): Promise<SandboxAdapter> {
+    if (this.sandboxAdapter) {
+      return this.sandboxAdapter;
+    }
     if (this.adapter) {
       return this.adapter;
+    }
+    if (this.doubleVmConfig.enabled || this.config.adapter === 'vm') {
+      assertNodeVmAvailable();
     }
 
     // If double VM is enabled, use the double VM wrapper directly
@@ -897,6 +911,16 @@ export class Enclave {
 
     return uniqueErrors.join('\n');
   }
+}
+
+function isSandboxAdapter(value: unknown): value is SandboxAdapter {
+  const candidate = value as Partial<SandboxAdapter> | null;
+  return (
+    typeof candidate === 'object' &&
+    candidate !== null &&
+    typeof candidate.execute === 'function' &&
+    typeof candidate.dispose === 'function'
+  );
 }
 
 /**

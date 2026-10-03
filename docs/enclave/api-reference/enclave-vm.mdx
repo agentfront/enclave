@@ -37,7 +37,8 @@ new Enclave(options?: EnclaveOptions)
 | `maxGlobalFunctionCalls` | `number` | 10 × `maxToolCalls` | Maximum calls into functions from `globals` |
 | `sanitizeStackTraces` | `boolean` | by level | Sanitize the stack of every returned error |
 | `scoringGate` | `ScoringGateOptions` | `undefined` | AI scoring configuration |
-| `adapter` | `EnclaveAdapter` | `undefined` | Execution adapter |
+| `adapter` | `'vm' \| 'worker_threads'` | `'vm'` | Built-in adapter; takes effect only with `doubleVm: { enabled: false }` |
+| `sandboxAdapter` | `SandboxAdapter` | `undefined` | Run scripts with this adapter instead of the double VM (for hosts without `node:vm`); not disposed by the enclave |
 | `verboseErrors` | `boolean` | `false` | Include detailed error info |
 
 ### Methods
