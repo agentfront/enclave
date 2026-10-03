@@ -23,7 +23,6 @@ await build({
   alias: {
     '@enclave-vm/ast': path.resolve(root, 'libs/ast/src/index.ts'),
   },
-  inject: [path.resolve(__dirname, 'buffer-shim.mjs')],
   sourcemap: false,
   minify: false,
   logLevel: 'info',

@@ -8,6 +8,7 @@
 import type { PreScannerConfig } from '../config';
 import type { ScanState } from '../scan-state';
 import { PRESCANNER_ERROR_CODES } from '../errors';
+import { utf8ByteLength } from '../../utils/utf8-byte-length';
 
 /**
  * Check input size against limits.
@@ -18,7 +19,7 @@ import { PRESCANNER_ERROR_CODES } from '../errors';
  * @param state - Scan state for recording issues
  */
 export function checkInputSize(source: string, config: PreScannerConfig, state: ScanState): void {
-  const inputSize = Buffer.byteLength(source, 'utf8');
+  const inputSize = utf8ByteLength(source);
   state.setInputSize(inputSize);
 
   if (inputSize > config.maxInputSize) {
