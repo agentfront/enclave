@@ -110,6 +110,8 @@ interface ExecutionResult<T> {
 }
 ```
 
+The value a script returns is copied out of the sandbox the same way as in `@enclave-vm/core`: `Date` stays a `Date`, `BigInt` becomes a string, a `Map` becomes an object (string keys only), a `Set` becomes an array, a `RegExp` becomes its string form (`"/ab+c/gi"`), an `Error` becomes `{ name, message }`, `__proto__` and `constructor` keys are dropped, and an object seen a second time becomes `'[Circular]'`. A value containing a function or symbol, nested deeper than `maxSanitizeDepth`, or with more than `maxSanitizeProperties` properties fails the run.
+
 ## Error Codes
 
 | Code | Meaning | Action |

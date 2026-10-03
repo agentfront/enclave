@@ -49,6 +49,8 @@ const enclave = new BrowserEnclave({
 | `transform` | boolean | `true` | Transform code before execution (AgentScript wrappers) |
 | `allowFunctionsInGlobals` | boolean | varies | No effect in the browser: functions never cross the iframe boundary, so a function in `globals` always throws. Expose host capabilities as tools |
 | `sanitizeStackTraces` | boolean | varies | Sanitize the stack of every error `run()` returns (frames become `at [REDACTED]`, URLs and paths are redacted) |
+| `maxSanitizeDepth` | number | varies | Maximum nesting depth of the value a script returns; a deeper value fails the run |
+| `maxSanitizeProperties` | number | varies | Maximum properties (keys, array elements, Map and Set entries, over the whole value) a script may return; a larger value fails the run |
 
 ## Console Limits
 

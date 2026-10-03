@@ -66,6 +66,7 @@ const ReflectGet = Reflect.get;
 const ArrayIsArray = Array.isArray;
 const ObjectKeys = Object.keys;
 const ObjectCreate = Object.create;
+const ObjectGetPrototypeOf = Object.getPrototypeOf;
 const NumberIsFinite = Number.isFinite;
 const MathFloor = Math.floor;
 const MapProtoEntries = Map.prototype.entries;
@@ -73,6 +74,34 @@ const SetProtoValues = Set.prototype.values;
 const DateProtoGetTime = Date.prototype.getTime;
 const DateProtoToISOString = Date.prototype.toISOString;
 const RegExpProtoToString = RegExp.prototype.toString;
+const RegExpProtoSourceGetter = Object.getOwnPropertyDescriptor(RegExp.prototype, 'source')?.get;
+const MapProtoSizeGetter = Object.getOwnPropertyDescriptor(Map.prototype, 'size')?.get;
+const SetProtoSizeGetter = Object.getOwnPropertyDescriptor(Set.prototype, 'size')?.get;
+
+/**
+ * Whether a builtin accessor or method accepts `value` as its receiver. Builtins check the
+ * receiver's internal slot (a Date's time value, a Map's entries), so this recognizes values
+ * from another realm (the sandbox's Date is not `instanceof` the host's Date) and refuses
+ * a Proxy, without reading any property of the value.
+ */
+function hasBrand(builtin: ((...args: unknown[]) => unknown) | undefined, value: object): boolean {
+  if (!builtin) return false;
+  try {
+    ReflectApply(builtin, value, []);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether `value`'s prototype is null or an `Object.prototype` (of any realm). Such a value is
+ * not a Date, Map, Set or RegExp, so it can skip `hasBrand`, which throws for every miss.
+ */
+function isPlainObject(value: object): boolean {
+  const prototype = ObjectGetPrototypeOf(value);
+  return prototype === null || ObjectGetPrototypeOf(prototype) === null;
+}
 
 /**
  * Property counter for tracking total properties across recursive calls
@@ -216,11 +245,12 @@ export function sanitizeValue(
     return result;
   }
 
-  // Handle Date objects.
+  const isPlain = isPlainObject(value as object);
+
+  // Handle Date objects, including the sandbox realm's.
   // SECURITY: read the timestamp via the captured Date.prototype.getTime (Reflect.apply),
-  // never `value.getTime()`, so a Proxy that merely passes `instanceof Date` cannot supply
-  // its own method. On a non-Date receiver the genuine builtin throws (fails closed).
-  if (value instanceof Date) {
+  // never `value.getTime()`, so the value cannot supply its own method.
+  if (!isPlain && hasBrand(DateProtoGetTime, value as object)) {
     const time = ReflectApply(DateProtoGetTime, value, []) as number;
     if (allowDates) {
       // Return a new Date to prevent reference sharing
@@ -250,15 +280,15 @@ export function sanitizeValue(
   }
 
   // Handle RegExp objects (convert to string via the captured RegExp.prototype.toString)
-  if (value instanceof RegExp) {
+  if (!isPlain && hasBrand(RegExpProtoSourceGetter, value as object)) {
     return ReflectApply(RegExpProtoToString, value, []) as string;
   }
 
-  // Handle Map objects.
+  // Handle Map objects, including the sandbox realm's.
   // SECURITY: enumerate with the captured Map.prototype.entries (Reflect.apply) rather than
-  // `value.entries()`, so an attacker Proxy that passes `instanceof Map` cannot hijack the
-  // iteration. The returned iterator is a genuine host Map Iterator, safe to `for..of`.
-  if (value instanceof Map) {
+  // `value.entries()`, so the value cannot hijack the iteration. The returned iterator is a
+  // genuine host Map Iterator, safe to `for..of`.
+  if (!isPlain && hasBrand(MapProtoSizeGetter, value as object)) {
     const sanitizedMap: Record<string, unknown> = ObjectCreate(null);
     const entries = ReflectApply(MapProtoEntries, value, []) as IterableIterator<[unknown, unknown]>;
     for (const [key, val] of entries) {
@@ -270,10 +300,10 @@ export function sanitizeValue(
     return sanitizedMap;
   }
 
-  // Handle Set objects (convert to array).
+  // Handle Set objects (convert to array), including the sandbox realm's.
   // SECURITY: enumerate with the captured Set.prototype.values (Reflect.apply), not
-  // `Array.from(value)` / the value's own iterator, so a fake Set proxy cannot hijack it.
-  if (value instanceof Set) {
+  // `Array.from(value)` / the value's own iterator, so the value cannot hijack it.
+  if (!isPlain && hasBrand(SetProtoSizeGetter, value as object)) {
     const iter = ReflectApply(SetProtoValues, value, []) as IterableIterator<unknown>;
     const result: unknown[] = [];
     for (const item of iter) {

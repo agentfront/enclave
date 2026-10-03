@@ -37,6 +37,8 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   const memoryLimit = config.memoryLimit;
   const maxConsoleCalls = config.maxConsoleCalls;
   const maxConsoleOutputBytes = config.maxConsoleOutputBytes;
+  const maxSanitizeDepth = config.maxSanitizeDepth;
+  const maxSanitizeProperties = config.maxSanitizeProperties;
 
   return `
 "use strict";
@@ -142,6 +144,143 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 
     proxyCache.set(obj, proxy);
     return proxy;
+  }
+
+  // ============================================================
+  // Result Sanitizer (mirrors sanitizeValue in @enclave-vm/core)
+  // ============================================================
+  var _ReflectApply = Reflect.apply;
+  var _isArray = Array.isArray;
+  var _objectKeys = Object.keys;
+  var _objectCreate = Object.create;
+  var _objectGetPrototypeOf = Object.getPrototypeOf;
+  var _numberIsFinite = Number.isFinite;
+  var _mathFloor = Math.floor;
+  var _String = String;
+  var _Date = Date;
+  var _Error = Error;
+  var _WeakSet = WeakSet;
+  var _dateGetTime = Date.prototype.getTime;
+  var _regExpToString = RegExp.prototype.toString;
+  var _regExpSourceGetter = _getOwnPropertyDescriptor(RegExp.prototype, 'source').get;
+  var _mapSizeGetter = _getOwnPropertyDescriptor(Map.prototype, 'size').get;
+  var _mapEntries = Map.prototype.entries;
+  var _setSizeGetter = _getOwnPropertyDescriptor(Set.prototype, 'size').get;
+  var _setValues = Set.prototype.values;
+  var maxSanitizeDepth = ${maxSanitizeDepth};
+  var maxSanitizeProperties = ${maxSanitizeProperties};
+
+  // A builtin accepts a receiver only if it has the matching internal slot (a Date's time value,
+  // a Map's entries), so this identifies the type without reading a property of the value.
+  function hasBrand(builtin, value) {
+    try { _ReflectApply(builtin, value, []); return true; }
+    catch(e) { return false; }
+  }
+
+  // A value whose prototype is null or Object.prototype is not a Date, Map, Set or RegExp, so it
+  // can skip hasBrand, which throws for every miss.
+  function isPlainObject(value) {
+    var prototype = _objectGetPrototypeOf(value);
+    return prototype === null || _objectGetPrototypeOf(prototype) === null;
+  }
+
+  function isDangerousResultKey(key) {
+    return key === '__proto__' || key === 'constructor';
+  }
+
+  function checkResultProperties(context) {
+    if (context.propertyCount > maxSanitizeProperties) {
+      throw createSafeError('Script result exceeds maximum properties (' + maxSanitizeProperties + ').');
+    }
+  }
+
+  // Copy the script's return value into plain data that can be posted to the host: same limits and
+  // conversions as @enclave-vm/core. A value it cannot convert fails the run.
+  function sanitizeResult(value) {
+    return sanitizeResultValue(value, 0, { propertyCount: 0, visited: new _WeakSet() });
+  }
+
+  function sanitizeResultValue(value, depth, context) {
+    if (depth > maxSanitizeDepth) {
+      throw createSafeError('Script result exceeds maximum depth (' + maxSanitizeDepth + ').');
+    }
+    checkResultProperties(context);
+
+    if (value === null || value === undefined) return value;
+    var type = typeof value;
+    if (type === 'string' || type === 'number' || type === 'boolean') return value;
+    if (type === 'bigint') return _String(value);
+    if (type === 'function') throw createSafeError('Script result contains a function, which cannot be returned.');
+    if (type === 'symbol') throw createSafeError('Script result contains a symbol, which cannot be returned.');
+
+    if (context.visited.has(value)) return '[Circular]';
+    context.visited.add(value);
+
+    if (_isArray(value)) {
+      var rawLength = _ReflectGet(value, 'length');
+      var length = typeof rawLength === 'number' && _numberIsFinite(rawLength) && rawLength >= 0 ? _mathFloor(rawLength) : 0;
+      context.propertyCount += length;
+      checkResultProperties(context);
+      var array = [];
+      for (var index = 0; index < length; index++) {
+        var item;
+        try { item = _ReflectGet(value, index); } catch(e) { item = undefined; }
+        array[index] = sanitizeResultValue(item, depth + 1, context);
+      }
+      return array;
+    }
+
+    var isPlain = isPlainObject(value);
+
+    if (!isPlain && hasBrand(_dateGetTime, value)) return new _Date(_ReflectApply(_dateGetTime, value, []));
+
+    if (value instanceof _Error) {
+      var errorName = _ReflectGet(value, 'name');
+      var errorMessage = _ReflectGet(value, 'message');
+      return {
+        name: typeof errorName === 'string' ? errorName : 'Error',
+        message: typeof errorMessage === 'string' ? errorMessage : ''
+      };
+    }
+
+    if (!isPlain && hasBrand(_regExpSourceGetter, value)) return _ReflectApply(_regExpToString, value, []);
+
+    if (!isPlain && hasBrand(_mapSizeGetter, value)) {
+      var mapCopy = _objectCreate(null);
+      var entries = _ReflectApply(_mapEntries, value, []);
+      for (var entry of entries) {
+        if (typeof entry[0] !== 'string' || isDangerousResultKey(entry[0])) continue;
+        context.propertyCount++;
+        mapCopy[entry[0]] = sanitizeResultValue(entry[1], depth + 1, context);
+      }
+      return mapCopy;
+    }
+
+    if (!isPlain && hasBrand(_setSizeGetter, value)) {
+      var setCopy = [];
+      var members = _ReflectApply(_setValues, value, []);
+      for (var member of members) {
+        context.propertyCount++;
+        setCopy.push(sanitizeResultValue(member, depth + 1, context));
+      }
+      return setCopy;
+    }
+
+    if (type === 'object') {
+      var objectCopy = _objectCreate(null);
+      var keys = _objectKeys(value);
+      context.propertyCount += keys.length;
+      checkResultProperties(context);
+      for (var k = 0; k < keys.length; k++) {
+        if (isDangerousResultKey(keys[k])) continue;
+        var propertyValue;
+        try { propertyValue = _ReflectGet(value, keys[k]); } catch(e) { continue; }
+        objectCopy[keys[k]] = sanitizeResultValue(propertyValue, depth + 1, context);
+      }
+      return objectCopy;
+    }
+
+    return _String(value);
   }
 
   // ============================================================
@@ -674,18 +813,10 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 
       var result = typeof __ag_main === 'function' ? await __ag_main() : undefined;
 
-      // Sanitize result before sending
-      var safeResult;
-      try {
-        safeResult = JSON.parse(JSON.stringify(result));
-      } catch(e) {
-        safeResult = undefined;
-      }
-
       sendToOuter({
         type: 'result',
         success: true,
-        value: safeResult,
+        value: sanitizeResult(result),
         stats: {
           duration: Date.now() - startTime,
           toolCallCount: toolCallCount,
