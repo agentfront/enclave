@@ -298,7 +298,14 @@ export interface BrowserEnclaveOptions {
   memoryLimit?: number;
 
   /**
-   * Custom globals to inject into the sandbox
+   * Custom globals to inject into the sandbox, copied in as JSON data: plain objects and class
+   * instances (own enumerable properties), arrays, strings, numbers, booleans, null, and Dates (as
+   * ISO strings).
+   *
+   * The constructor throws, naming the global and the path, for anything else: a function or
+   * symbol at any depth (also one hidden behind `toJSON()`), a BigInt, a circular structure, a
+   * value JSON would turn into `{}` (Map, Set, RegExp, ...), or an `undefined` global. Expose host
+   * capabilities as tools.
    */
   globals?: Record<string, unknown>;
 
@@ -320,11 +327,9 @@ export interface BrowserEnclaveOptions {
   transform?: boolean;
 
   /**
-   * Whether to allow functions in custom globals.
-   *
-   * Functions cannot cross the iframe boundary: they are never passed into the sandbox. Expose
-   * host capabilities as tools (`toolHandler` with `callTool()` or `toolNamespaces`), which go
-   * through the outer iframe's checks.
+   * Has no effect in the browser: functions cannot cross the iframe boundary, so a function in
+   * `globals` makes the constructor throw whatever this says. Expose host capabilities as tools
+   * (`toolHandler` with `callTool()` or `toolNamespaces`), which go through the outer iframe's checks.
    */
   allowFunctionsInGlobals?: boolean;
 
