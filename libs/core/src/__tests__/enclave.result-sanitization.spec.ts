@@ -5,7 +5,8 @@
  * for values built in the sandbox realm, so a script's `new Date(0)` came back as `{}`. It now
  * checks the builtin's internal slot, as `@enclave-vm/browser` does inside its iframe. The single
  * VM's membrane wraps the script's Dates in a proxy, which has no slot, so that adapter hands the
- * sanitizer `unwrapSecureProxy` to reach the Date behind it.
+ * sanitizer `unwrapSecureProxy` to reach the Date behind it. The worker sanitizes in the worker and
+ * sends Dates, NaN, Infinity and undefined next to the JSON result (see result-encoding).
  */
 
 import * as vm from 'vm';
@@ -83,6 +84,15 @@ describe('unwrapSecureProxy', () => {
 describe.each<[string, CreateEnclaveOptions]>([
   ['double VM', {}],
   ['single VM', { doubleVm: { enabled: false } }],
+  [
+    'worker_threads',
+    {
+      adapter: 'worker_threads',
+      doubleVm: { enabled: false },
+      memoryLimit: 0,
+      workerPoolConfig: { minWorkers: 1, maxWorkers: 1, warmOnInit: true, memoryLimitPerWorker: 0 },
+    },
+  ],
 ])('script results on the %s', (_name, adapterOptions) => {
   let enclave: Enclave;
 

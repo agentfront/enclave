@@ -12,6 +12,7 @@ import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({
   adapter: 'worker_threads',
+  doubleVm: { enabled: false }, // `adapter` takes effect only with the double VM off
   workerPoolConfig: {
     minWorkers: 2,
     maxWorkers: 8,
@@ -131,6 +132,8 @@ flowchart TB
 
 1. **Worker Thread** - OS-level process isolation
 2. **VM Context** - JavaScript-level sandboxing
+
+Messages between the worker and the main thread are JSON. The script's return value is converted as on the in-process adapters (same `maxSanitizeDepth` and `maxSanitizeProperties` limits, `'[Circular]'`, BigInt to string, Map to object, Set to array), and the values JSON cannot carry (`Date`, `NaN`, `Infinity`, `undefined`) are sent alongside it and restored, so a `Date` comes back as a `Date`.
 
 ## Monitoring Worker Health
 

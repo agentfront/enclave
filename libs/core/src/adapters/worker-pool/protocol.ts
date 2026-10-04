@@ -10,6 +10,7 @@
 import { z } from 'zod';
 import { TOOL_NAMESPACE_TOOL_NAME_PATTERN, type NormalizedToolNamespace } from '@enclave-vm/ast';
 import type { ResourceUsage } from './config';
+import type { SpecialResultValue } from './result-encoding';
 
 /**
  * Serialized error format for cross-thread communication
@@ -185,8 +186,10 @@ export interface ExecutionResultMessage {
   requestId: string;
   /** Whether execution succeeded */
   success: boolean;
-  /** Return value (if successful) */
+  /** Return value (if successful), as JSON data */
   value?: unknown;
+  /** Values in `value` JSON cannot carry (Date, NaN, Infinity, undefined), restored by the pool */
+  specialValues?: SpecialResultValue[];
   /** Error (if failed) */
   error?: SerializedError;
   /** Execution statistics */
@@ -263,6 +266,17 @@ export const executionResultMessageSchema = z
     requestId: z.string().min(1).max(100).regex(ID_PATTERN),
     success: z.boolean(),
     value: z.unknown().optional(),
+    specialValues: z
+      .array(
+        z
+          .object({
+            path: z.array(z.union([z.string(), z.number().int().nonnegative()])).max(64),
+            kind: z.enum(['date', 'nan', 'infinity', '-infinity', 'undefined']),
+            time: z.number().nullable().optional(),
+          })
+          .strict(),
+      )
+      .optional(),
     error: z
       .object({
         name: z.string().max(100),
