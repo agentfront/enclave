@@ -310,7 +310,8 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
   // Timeout Handling
   // ============================================================
   // Bounds the script's own running time: paused while a tool call waits for the host, as
-  // @enclave-vm/core never cuts off a tool call in progress.
+  // @enclave-vm/core never cuts off a tool call in progress. Measured on the monotonic clock, so
+  // a system clock change cannot stretch or cut the budget; Date.now() is only for the stats.
   var timeout = ${config.timeout};
   var startTime = Date.now();
   var remainingTime = timeout;
@@ -319,7 +320,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
 
   function resumeTimeout() {
     if (completed || timeoutTimer !== null) return;
-    timeoutResumedAt = Date.now();
+    timeoutResumedAt = performance.now();
     timeoutTimer = setTimeout(onTimeout, Math.max(0, remainingTime));
   }
 
@@ -327,7 +328,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
     if (timeoutTimer === null) return;
     clearTimeout(timeoutTimer);
     timeoutTimer = null;
-    remainingTime -= Date.now() - timeoutResumedAt;
+    remainingTime -= performance.now() - timeoutResumedAt;
   }
 
   function onTimeout() {

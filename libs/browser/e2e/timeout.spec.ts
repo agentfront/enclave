@@ -87,6 +87,32 @@ test.describe('timeout and iteration limits', () => {
     expect(result.error?.message).toBe('Execution aborted');
   });
 
+  test('a system clock change between tool calls does not end the run', async ({ page }) => {
+    // After the first call returns, the page's clock jumps an hour ahead. The timeout must keep
+    // measuring elapsed time, not wall-clock time.
+    const jumpClockAfterFirstCall = `
+      if (name === 'first') {
+        var realNow = Date.now;
+        window.__restoreDateNow = function () { Date.now = realNow; };
+        setTimeout(function () { Date.now = function () { return realNow() + 3600000; }; }, 0);
+      }
+      return 'done';
+    `;
+    try {
+      const result = await runWithToolHandler(
+        page,
+        "await callTool('first', {}); return await callTool('second', {});",
+        jumpClockAfterFirstCall,
+        { timeout: 5000 },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.value).toBe('done');
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await page.evaluate(() => (window as any).__restoreDateNow?.());
+    }
+  });
+
   test('the timeout still bounds the script after a tool call', async ({ page }) => {
     const result = await runWithToolHandler(
       page,

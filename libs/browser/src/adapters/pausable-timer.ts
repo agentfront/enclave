@@ -2,7 +2,8 @@
  * Pausable Timer
  *
  * A one-shot countdown that can be paused and resumed, used to leave the time spent waiting for
- * the host's tool handler out of the execution timeout.
+ * the host's tool handler out of the execution timeout. Elapsed time is measured on the monotonic
+ * clock, so a system clock change cannot stretch or cut the countdown.
  *
  * @packageDocumentation
  */
@@ -23,7 +24,7 @@ export class PausableTimer {
   /** Start or resume the countdown. Does nothing while running or after `stop()`. */
   resume(): void {
     if (this.stopped || this.handle !== null) return;
-    this.resumedAt = Date.now();
+    this.resumedAt = performance.now();
     this.handle = setTimeout(() => this.expire(), Math.max(0, this.remainingMs));
   }
 
@@ -32,7 +33,7 @@ export class PausableTimer {
     if (this.handle === null) return;
     clearTimeout(this.handle);
     this.handle = null;
-    this.remainingMs -= Date.now() - this.resumedAt;
+    this.remainingMs -= performance.now() - this.resumedAt;
   }
 
   /** Cancel the countdown for good. */

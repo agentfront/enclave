@@ -45,8 +45,11 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 (function() {
   var requestId = ${safeJsonStringify(requestId)};
   var aborted = false;
-  var _dateNow = Date.now;
-  var startTime = _dateNow();
+  var startTime = Date.now();
+  // The deadline uses the monotonic clock (captured before STRICT removes performance), so a
+  // system clock change during a tool call cannot move it.
+  var _monotonicNow = performance.now.bind(performance);
+  var deadlineStart = _monotonicNow();
   var timeout = ${config.timeout};
   var toolCallCount = 0;
   var iterationCount = 0;
@@ -383,7 +386,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 
     // As in @enclave-vm/core: once the timeout has passed (a tool call in progress is never cut
     // off), the script's next tool call is refused.
-    if (aborted || _dateNow() - startTime > timeout) throw createSafeError('Execution aborted');
+    if (aborted || _monotonicNow() - deadlineStart > timeout) throw createSafeError('Execution aborted');
 
     toolCallCount++;
     if (toolCallCount > ${maxToolCalls}) {
