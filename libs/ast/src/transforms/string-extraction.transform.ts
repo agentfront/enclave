@@ -9,6 +9,7 @@
 
 import * as walk from 'acorn-walk';
 import type * as acorn from 'acorn';
+import { utf8ByteLength } from '../utils/utf8-byte-length';
 
 /**
  * Configuration for string extraction
@@ -131,7 +132,7 @@ export function extractLargeStrings(ast: acorn.Node, config: StringExtractionCon
       // (Skipping explicit check here as 'use strict' is tiny and won't pass threshold)
 
       const value = node.value;
-      const size = Buffer.byteLength(value, 'utf-8');
+      const size = utf8ByteLength(value);
 
       // Check threshold
       if (size < config.threshold) {
@@ -178,7 +179,7 @@ export function extractLargeStrings(ast: acorn.Node, config: StringExtractionCon
         return;
       }
 
-      const size = Buffer.byteLength(value, 'utf-8');
+      const size = utf8ByteLength(value);
 
       // Check threshold
       if (size < config.threshold) {
@@ -221,5 +222,5 @@ export function extractLargeStrings(ast: acorn.Node, config: StringExtractionCon
  * @returns true if the string should be extracted
  */
 export function shouldExtract(value: string, threshold: number): boolean {
-  return Buffer.byteLength(value, 'utf-8') >= threshold;
+  return utf8ByteLength(value) >= threshold;
 }

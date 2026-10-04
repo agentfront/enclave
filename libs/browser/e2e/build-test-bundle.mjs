@@ -26,8 +26,6 @@ await build({
   alias: {
     '@enclave-vm/ast': path.resolve(root, 'libs/ast/src/index.ts'),
   },
-  // Inject a minimal Buffer shim (ast package uses Buffer.byteLength)
-  inject: [path.resolve(__dirname, 'buffer-shim.mjs')],
   sourcemap: false,
   minify: false,
   logLevel: 'info',

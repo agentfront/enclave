@@ -94,6 +94,15 @@ test.describe('AST validation', () => {
     expect(result.value).toBe(3);
   });
 
+  test('validates without a Node.js Buffer global', async ({ page }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await page.evaluate(() => typeof (globalThis as any).Buffer)).toBe('undefined');
+
+    const result = await runInEnclave(page, 'return "日本 😀";');
+    expect(result.error).toBeUndefined();
+    expect(result.value).toBe('日本 😀');
+  });
+
   test('skips validation when disabled', async ({ page }) => {
     const result = await runInEnclave(page, 'return 42', {
       validate: false,
