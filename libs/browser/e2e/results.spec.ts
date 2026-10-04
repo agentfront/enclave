@@ -58,6 +58,20 @@ test.describe('script results', () => {
     });
   });
 
+  test('builtins the script replaced before returning do not change the copy', async ({ page }) => {
+    const result = await runInEnclave(
+      page,
+      `async function __ag_main() {
+        WeakSet.prototype.has = function() { return true; };
+        Object.getPrototypeOf(new Map().entries()).next = function() { return { done: true }; };
+        return { nested: { ok: 1 }, map: new Map([['a', 1]]) };
+      }`,
+      { validate: false, transform: false },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual({ nested: { ok: 1 }, map: { a: 1 } });
+  });
+
   test('a function in the result fails the run', async ({ page }) => {
     const result = await runInEnclave(page, 'return { label: "x", run: () => 1 };');
     expect(result.success).toBe(false);

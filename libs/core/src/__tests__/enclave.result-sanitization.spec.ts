@@ -29,6 +29,20 @@ describe('sanitizeValue with values from another realm', () => {
     expect(sanitized['pattern']).toBe('/ab+c/gi');
   });
 
+  it("reads a RegExp's source and flags without running the value's own accessors", () => {
+    const onRead = jest.fn(() => 'forged');
+    const pattern = vm.runInNewContext(
+      `const pattern = /ab+c/gi;
+       Object.defineProperty(pattern, 'source', { get: onRead });
+       Object.defineProperty(pattern, 'flags', { get: onRead });
+       pattern`,
+      { onRead },
+    );
+
+    expect(sanitizeValue(pattern)).toBe('/ab+c/gi');
+    expect(onRead).not.toHaveBeenCalled();
+  });
+
   it('turns a Proxy over a Date into a plain object without calling its traps', () => {
     const get = jest.fn();
     const sanitized = sanitizeValue(new Proxy(new Date(0), { get }));

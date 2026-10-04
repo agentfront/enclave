@@ -160,13 +160,24 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   var _Date = Date;
   var _Error = Error;
   var _WeakSet = WeakSet;
+  var _weakSetHas = WeakSet.prototype.has;
+  var _weakSetAdd = WeakSet.prototype.add;
   var _dateGetTime = Date.prototype.getTime;
-  var _regExpToString = RegExp.prototype.toString;
   var _regExpSourceGetter = _getOwnPropertyDescriptor(RegExp.prototype, 'source').get;
+  // [flag, getter] in the order RegExp.prototype.flags lists them; each getter reads the internal slot.
+  var _regExpFlagGetters = [
+    ['d', 'hasIndices'], ['g', 'global'], ['i', 'ignoreCase'], ['m', 'multiline'],
+    ['s', 'dotAll'], ['u', 'unicode'], ['v', 'unicodeSets'], ['y', 'sticky']
+  ].map(function(pair) {
+    var descriptor = _getOwnPropertyDescriptor(RegExp.prototype, pair[1]);
+    return [pair[0], descriptor && descriptor.get];
+  });
   var _mapSizeGetter = _getOwnPropertyDescriptor(Map.prototype, 'size').get;
   var _mapEntries = Map.prototype.entries;
+  var _mapIteratorNext = _objectGetPrototypeOf(new Map().entries()).next;
   var _setSizeGetter = _getOwnPropertyDescriptor(Set.prototype, 'size').get;
   var _setValues = Set.prototype.values;
+  var _setIteratorNext = _objectGetPrototypeOf(new Set().values()).next;
   var maxSanitizeDepth = ${maxSanitizeDepth};
   var maxSanitizeProperties = ${maxSanitizeProperties};
 
@@ -182,6 +193,17 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   function isPlainObject(value) {
     var prototype = _objectGetPrototypeOf(value);
     return prototype === null || _objectGetPrototypeOf(prototype) === null;
+  }
+
+  // RegExp.prototype.toString is generic: it reads source and flags off the value, which may
+  // define its own accessors. Read both through the captured getters instead.
+  function regExpToString(value) {
+    var flags = '';
+    for (var f = 0; f < _regExpFlagGetters.length; f++) {
+      var getter = _regExpFlagGetters[f][1];
+      if (getter && _ReflectApply(getter, value, [])) flags += _regExpFlagGetters[f][0];
+    }
+    return '/' + _ReflectApply(_regExpSourceGetter, value, []) + '/' + flags;
   }
 
   function isDangerousResultKey(key) {
@@ -213,8 +235,8 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     if (type === 'function') throw createSafeError('Script result contains a function, which cannot be returned.');
     if (type === 'symbol') throw createSafeError('Script result contains a symbol, which cannot be returned.');
 
-    if (context.visited.has(value)) return '[Circular]';
-    context.visited.add(value);
+    if (_ReflectApply(_weakSetHas, context.visited, [value])) return '[Circular]';
+    _ReflectApply(_weakSetAdd, context.visited, [value]);
 
     if (_isArray(value)) {
       var rawLength = _ReflectGet(value, 'length');
@@ -243,12 +265,13 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
       };
     }
 
-    if (!isPlain && hasBrand(_regExpSourceGetter, value)) return _ReflectApply(_regExpToString, value, []);
+    if (!isPlain && hasBrand(_regExpSourceGetter, value)) return regExpToString(value);
 
     if (!isPlain && hasBrand(_mapSizeGetter, value)) {
       var mapCopy = _objectCreate(null);
       var entries = _ReflectApply(_mapEntries, value, []);
-      for (var entry of entries) {
+      for (var step = _ReflectApply(_mapIteratorNext, entries, []); !step.done; step = _ReflectApply(_mapIteratorNext, entries, [])) {
+        var entry = step.value;
         if (typeof entry[0] !== 'string' || isDangerousResultKey(entry[0])) continue;
         context.propertyCount++;
         mapCopy[entry[0]] = sanitizeResultValue(entry[1], depth + 1, context);
@@ -259,9 +282,9 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     if (!isPlain && hasBrand(_setSizeGetter, value)) {
       var setCopy = [];
       var members = _ReflectApply(_setValues, value, []);
-      for (var member of members) {
+      for (var next = _ReflectApply(_setIteratorNext, members, []); !next.done; next = _ReflectApply(_setIteratorNext, members, [])) {
         context.propertyCount++;
-        setCopy.push(sanitizeResultValue(member, depth + 1, context));
+        setCopy.push(sanitizeResultValue(next.value, depth + 1, context));
       }
       return setCopy;
     }

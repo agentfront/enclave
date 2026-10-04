@@ -73,8 +73,20 @@ const MapProtoEntries = Map.prototype.entries;
 const SetProtoValues = Set.prototype.values;
 const DateProtoGetTime = Date.prototype.getTime;
 const DateProtoToISOString = Date.prototype.toISOString;
-const RegExpProtoToString = RegExp.prototype.toString;
 const RegExpProtoSourceGetter = Object.getOwnPropertyDescriptor(RegExp.prototype, 'source')?.get;
+/** [flag, getter] in the order RegExp.prototype.flags lists them; each getter reads the internal slot. */
+const RegExpFlagGetters = (
+  [
+    ['d', 'hasIndices'],
+    ['g', 'global'],
+    ['i', 'ignoreCase'],
+    ['m', 'multiline'],
+    ['s', 'dotAll'],
+    ['u', 'unicode'],
+    ['v', 'unicodeSets'],
+    ['y', 'sticky'],
+  ] as const
+).map(([flag, property]) => [flag, Object.getOwnPropertyDescriptor(RegExp.prototype, property)?.get] as const);
 const MapProtoSizeGetter = Object.getOwnPropertyDescriptor(Map.prototype, 'size')?.get;
 const SetProtoSizeGetter = Object.getOwnPropertyDescriptor(Set.prototype, 'size')?.get;
 
@@ -92,6 +104,19 @@ function hasBrand(builtin: ((...args: unknown[]) => unknown) | undefined, value:
   } catch {
     return false;
   }
+}
+
+/**
+ * `/source/flags` of a RegExp. RegExp.prototype.toString is generic: it reads `source` and
+ * `flags` off the value, which may define its own accessors, so read both through the captured
+ * getters instead.
+ */
+function regExpToString(value: object): string {
+  let flags = '';
+  for (const [flag, getter] of RegExpFlagGetters) {
+    if (getter && ReflectApply(getter, value, [])) flags += flag;
+  }
+  return `/${ReflectApply(RegExpProtoSourceGetter as () => string, value, [])}/${flags}`;
 }
 
 /**
@@ -279,9 +304,9 @@ export function sanitizeValue(
     return { error: message };
   }
 
-  // Handle RegExp objects (convert to string via the captured RegExp.prototype.toString)
+  // Handle RegExp objects (convert to their /source/flags string)
   if (!isPlain && hasBrand(RegExpProtoSourceGetter, value as object)) {
-    return ReflectApply(RegExpProtoToString, value, []) as string;
+    return regExpToString(value as object);
   }
 
   // Handle Map objects, including the sandbox realm's.
