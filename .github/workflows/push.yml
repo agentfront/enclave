@@ -114,6 +114,84 @@ jobs:
         if: steps.test.outcome == 'failure'
         run: exit 1
 
+  browser-e2e:
+    name: Browser E2E
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      NX_DAEMON: "false"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node + Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version-file: ".nvmrc"
+          install: "false"
+
+      - name: Restore build artifacts
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            node_modules
+            libs/*/dist
+          key: build-${{ github.sha }}
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Set Nx SHAs
+        uses: nrwl/nx-set-shas@v4
+
+      # The Playwright suites run in Chromium; skip the browser download when no project with an
+      # e2e target (today only @enclave-vm/browser, and through it @enclave-vm/ast) is affected.
+      - name: Find affected e2e projects
+        id: affected
+        run: |
+          projects=$(npx nx show projects --affected --withTarget test-e2e | xargs)
+          echo "projects=${projects}" >> "$GITHUB_OUTPUT"
+          echo "Affected e2e projects: ${projects:-none}"
+
+      - name: Read Playwright version
+        if: steps.affected.outputs.projects != ''
+        id: playwright
+        run: echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        if: steps.affected.outputs.projects != ''
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium
+
+      - name: Install Chromium
+        if: steps.affected.outputs.projects != '' && steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Chromium system dependencies
+        if: steps.affected.outputs.projects != '' && steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Run Playwright tests
+        if: steps.affected.outputs.projects != ''
+        run: npx nx affected -t test-e2e --outputStyle stream
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            libs/*/playwright-report
+            libs/*/test-results
+          if-no-files-found: ignore
+          retention-days: 14
+
   performance:
     name: Performance
     runs-on: ubuntu-latest
