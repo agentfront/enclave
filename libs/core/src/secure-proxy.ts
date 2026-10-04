@@ -1029,6 +1029,22 @@ export function isSecureProxy(obj: unknown): boolean {
 }
 
 /**
+ * The object a secure proxy wraps, or `value` itself when it is not one.
+ *
+ * For host code that must read a sandbox value's internal slots, which a proxy does not carry
+ * (a proxied Date fails `Date.prototype.getTime`). Never hand the result back to the sandbox.
+ */
+export function unwrapSecureProxy<T>(value: T): T {
+  let current: unknown = value;
+  while (current !== null && (typeof current === 'object' || typeof current === 'function')) {
+    const target = proxyToTarget.get(current as object);
+    if (target === undefined) break;
+    current = target;
+  }
+  return current as T;
+}
+
+/**
  * Clear the proxy cache
  *
  * @deprecated This function always throws an error. WeakMap and WeakSet entries are

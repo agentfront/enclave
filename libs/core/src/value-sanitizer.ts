@@ -38,6 +38,13 @@ export interface SanitizeOptions {
    * @default true
    */
   allowErrors?: boolean;
+
+  /**
+   * Returns the object to check for a Date, Map, Set or RegExp in place of a wrapper around it
+   * (the single VM's secure proxy, which has no internal slots). Only builtins are read from the
+   * unwrapped object; everything else is still read through `value`.
+   */
+  unwrap?: (value: object) => object;
 }
 
 /**
@@ -270,19 +277,20 @@ export function sanitizeValue(
     return result;
   }
 
-  const isPlain = isPlainObject(value as object);
+  const inspected = options.unwrap ? options.unwrap(value as object) : (value as object);
+  const isPlain = isPlainObject(inspected);
 
   // Handle Date objects, including the sandbox realm's.
   // SECURITY: read the timestamp via the captured Date.prototype.getTime (Reflect.apply),
   // never `value.getTime()`, so the value cannot supply its own method.
-  if (!isPlain && hasBrand(DateProtoGetTime, value as object)) {
-    const time = ReflectApply(DateProtoGetTime, value, []) as number;
+  if (!isPlain && hasBrand(DateProtoGetTime, inspected)) {
+    const time = ReflectApply(DateProtoGetTime, inspected, []) as number;
     if (allowDates) {
       // Return a new Date to prevent reference sharing
       return new Date(time);
     }
     // Convert to ISO string if dates not allowed
-    return ReflectApply(DateProtoToISOString, value, []) as string;
+    return ReflectApply(DateProtoToISOString, inspected, []) as string;
   }
 
   // Handle Error objects
@@ -305,17 +313,17 @@ export function sanitizeValue(
   }
 
   // Handle RegExp objects (convert to their /source/flags string)
-  if (!isPlain && hasBrand(RegExpProtoSourceGetter, value as object)) {
-    return regExpToString(value as object);
+  if (!isPlain && hasBrand(RegExpProtoSourceGetter, inspected)) {
+    return regExpToString(inspected);
   }
 
   // Handle Map objects, including the sandbox realm's.
   // SECURITY: enumerate with the captured Map.prototype.entries (Reflect.apply) rather than
   // `value.entries()`, so the value cannot hijack the iteration. The returned iterator is a
   // genuine host Map Iterator, safe to `for..of`.
-  if (!isPlain && hasBrand(MapProtoSizeGetter, value as object)) {
+  if (!isPlain && hasBrand(MapProtoSizeGetter, inspected)) {
     const sanitizedMap: Record<string, unknown> = ObjectCreate(null);
-    const entries = ReflectApply(MapProtoEntries, value, []) as IterableIterator<[unknown, unknown]>;
+    const entries = ReflectApply(MapProtoEntries, inspected, []) as IterableIterator<[unknown, unknown]>;
     for (const [key, val] of entries) {
       if (typeof key !== 'string') continue; // Only string keys
       if (DANGEROUS_KEYS.has(key)) continue; // Skip dangerous keys
@@ -328,8 +336,8 @@ export function sanitizeValue(
   // Handle Set objects (convert to array), including the sandbox realm's.
   // SECURITY: enumerate with the captured Set.prototype.values (Reflect.apply), not
   // `Array.from(value)` / the value's own iterator, so the value cannot hijack it.
-  if (!isPlain && hasBrand(SetProtoSizeGetter, value as object)) {
-    const iter = ReflectApply(SetProtoValues, value, []) as IterableIterator<unknown>;
+  if (!isPlain && hasBrand(SetProtoSizeGetter, inspected)) {
+    const iter = ReflectApply(SetProtoValues, inspected, []) as IterableIterator<unknown>;
     const result: unknown[] = [];
     for (const item of iter) {
       context.propCount.count++;

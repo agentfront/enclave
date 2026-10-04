@@ -10,7 +10,7 @@
 import * as vm from 'vm';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { createSafeRuntime } from '../safe-runtime';
-import { createSafeReflect, createSecureProxy } from '../secure-proxy';
+import { createSafeReflect, createSecureProxy, unwrapSecureProxy } from '../secure-proxy';
 import { createSafeError } from '../safe-error';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 import { createHostToolBridge } from '../tool-bridge';
@@ -1186,6 +1186,8 @@ export class VmAdapter implements SandboxAdapter {
         maxProperties: clampedProperties,
         allowDates: true,
         allowErrors: true,
+        // The membrane wraps the script's Dates; read them through their targets.
+        unwrap: unwrapSecureProxy,
       });
 
       return {
