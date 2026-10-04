@@ -3,13 +3,16 @@
  *
  * The sanitizer used to recognize Dates, Maps, Sets and RegExps with `instanceof`, which is false
  * for values built in the sandbox realm, so a script's `new Date(0)` came back as `{}`. It now
- * checks the builtin's internal slot, as `@enclave-vm/browser` does inside its iframe. (The single
- * VM still returns `{}`: its membrane hands the sanitizer a proxy, which the check refuses.)
+ * checks the builtin's internal slot, as `@enclave-vm/browser` does inside its iframe. The single
+ * VM's membrane wraps the script's Dates in a proxy, which has no slot, so that adapter hands the
+ * sanitizer `unwrapSecureProxy` to reach the Date behind it.
  */
 
 import * as vm from 'vm';
 import { Enclave } from '../enclave';
+import { createSecureProxy, unwrapSecureProxy } from '../secure-proxy';
 import { sanitizeValue } from '../value-sanitizer';
+import type { CreateEnclaveOptions } from '../types';
 
 describe('sanitizeValue with values from another realm', () => {
   const foreign = vm.runInNewContext(`({
@@ -52,11 +55,47 @@ describe('sanitizeValue with values from another realm', () => {
   });
 });
 
-describe('script results on the double VM', () => {
+describe('unwrapSecureProxy', () => {
+  it('returns the object a secure proxy wraps', () => {
+    const date = new Date(0);
+
+    expect(unwrapSecureProxy(createSecureProxy(date))).toBe(date);
+  });
+
+  it('returns any other value unchanged', () => {
+    const plain = { a: 1 };
+    const foreignProxy = new Proxy(new Date(0), {});
+
+    expect(unwrapSecureProxy(plain)).toBe(plain);
+    expect(unwrapSecureProxy(foreignProxy)).toBe(foreignProxy);
+    expect(unwrapSecureProxy(null)).toBeNull();
+    expect(unwrapSecureProxy(1)).toBe(1);
+  });
+
+  it('lets sanitizeValue read a wrapped Date', () => {
+    const wrapped = { date: createSecureProxy(new Date(0)) };
+
+    expect(sanitizeValue(wrapped)).toEqual({ date: {} });
+    expect(sanitizeValue(wrapped, { unwrap: unwrapSecureProxy })).toEqual({ date: new Date(0) });
+  });
+});
+
+describe.each<[string, CreateEnclaveOptions]>([
+  ['double VM', {}],
+  ['single VM', { doubleVm: { enabled: false } }],
+])('script results on the %s', (_name, adapterOptions) => {
   let enclave: Enclave;
 
+  beforeAll(() => {
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterAll(() => {
+    jest.restoreAllMocks();
+  });
+
   beforeEach(() => {
-    enclave = new Enclave({ timeout: 5000 });
+    enclave = new Enclave({ timeout: 5000, ...adapterOptions });
   });
 
   afterEach(() => {
@@ -64,11 +103,14 @@ describe('script results on the double VM', () => {
   });
 
   it('returns a Date as a Date', async () => {
-    const result = await enclave.run<{ date: Date }>('return { date: new Date(0) };');
+    const result = await enclave.run<{ date: Date; nested: Date[] }>(
+      'return { date: new Date(0), nested: [new Date(1)] };',
+    );
 
     expect(result.error).toBeUndefined();
     expect(result.value?.date).toBeInstanceOf(Date);
     expect(result.value?.date.getTime()).toBe(0);
+    expect(result.value?.nested[0].getTime()).toBe(1);
   });
 
   it('keeps the other conversions', async () => {
