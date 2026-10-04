@@ -20,3 +20,5 @@ out
 
 # Documentation (managed by Mintlify)
 docs/
+
+.nx/self-healing
