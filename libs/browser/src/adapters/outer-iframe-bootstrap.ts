@@ -114,6 +114,9 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
   // Tool call counter
   var toolCallCount = 0;
 
+  // Tool calls forwarded to the host and not yet answered; the timeout is paused while any are.
+  var pendingHostCalls = 0;
+
   // ============================================================
   // Validation Logic (ported from parent-vm-bootstrap.ts)
   // ============================================================
@@ -220,6 +223,8 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
         });
 
         // Forward validated tool call to host
+        if (pendingHostCalls === 0) pauseTimeout();
+        pendingHostCalls++;
         sendToHost({
           type: 'tool-call',
           callId: data.callId,
@@ -261,6 +266,10 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
     }
     else if (data.type === 'tool-response') {
       if (!fromHost) return;
+      if (pendingHostCalls > 0) {
+        pendingHostCalls--;
+        if (pendingHostCalls === 0) resumeTimeout();
+      }
       // Message from host - forward tool response to inner
       sendToInner({
         type: 'tool-response',
@@ -300,33 +309,56 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
   // ============================================================
   // Timeout Handling
   // ============================================================
+  // Bounds the script's own running time: paused while a tool call waits for the host, as
+  // @enclave-vm/core never cuts off a tool call in progress. Measured on the monotonic clock, so
+  // a system clock change cannot stretch or cut the budget; Date.now() is only for the stats.
   var timeout = ${config.timeout};
-  setTimeout(function() {
-    if (!completed) {
-      completed = true;
-      // Hard kill inner iframe
-      if (innerFrame && innerFrame.parentNode) {
-        innerFrame.parentNode.removeChild(innerFrame);
-        innerFrame = null;
-      }
-      sendToHost({
-        type: 'result',
-        success: false,
-        error: {
-          name: 'TimeoutError',
-          message: 'Execution timed out after ' + timeout + 'ms',
-          code: 'EXECUTION_TIMEOUT'
-        },
-        stats: {
-          duration: timeout,
-          toolCallCount: toolCallCount,
-          iterationCount: 0,
-          startTime: Date.now() - timeout,
-          endTime: Date.now()
-        }
-      });
+  var startTime = Date.now();
+  var remainingTime = timeout;
+  var timeoutResumedAt = 0;
+  var timeoutTimer = null;
+
+  function resumeTimeout() {
+    if (completed || timeoutTimer !== null) return;
+    timeoutResumedAt = performance.now();
+    timeoutTimer = setTimeout(onTimeout, Math.max(0, remainingTime));
+  }
+
+  function pauseTimeout() {
+    if (timeoutTimer === null) return;
+    clearTimeout(timeoutTimer);
+    timeoutTimer = null;
+    remainingTime -= performance.now() - timeoutResumedAt;
+  }
+
+  function onTimeout() {
+    timeoutTimer = null;
+    if (completed) return;
+    completed = true;
+    // Hard kill inner iframe
+    if (innerFrame && innerFrame.parentNode) {
+      innerFrame.parentNode.removeChild(innerFrame);
+      innerFrame = null;
     }
-  }, timeout);
+    sendToHost({
+      type: 'result',
+      success: false,
+      error: {
+        name: 'TimeoutError',
+        message: 'Execution timed out after ' + timeout + 'ms',
+        code: 'EXECUTION_TIMEOUT'
+      },
+      stats: {
+        duration: Date.now() - startTime,
+        toolCallCount: toolCallCount,
+        iterationCount: 0,
+        startTime: startTime,
+        endTime: Date.now()
+      }
+    });
+  }
+
+  resumeTimeout();
 })();
 `.trim();
 }

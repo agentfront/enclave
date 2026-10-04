@@ -481,7 +481,10 @@ export interface ToolBridgeConfig {
 
 export interface EnclaveConfig {
   /**
-   * Maximum execution time in milliseconds
+   * Maximum execution time in milliseconds. A tool call in progress when it passes is not cut
+   * off and its result is delivered; the script's next tool call then fails with "Execution
+   * aborted". A handler that never settles keeps `run()` waiting, so bound slow tools in the
+   * handler. @enclave-vm/browser follows the same rules.
    * Default: 30000 (30 seconds)
    */
   timeout?: number;
