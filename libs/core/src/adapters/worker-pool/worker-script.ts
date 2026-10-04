@@ -23,6 +23,8 @@ import type {
   SerializedError,
 } from './protocol';
 import { safeDeserialize, safeSerialize, sanitizeObject } from './safe-deserialize';
+import { encodeResult } from './result-encoding';
+import { sanitizeValue } from '../../value-sanitizer';
 import { TOOL_NAMESPACE_FACTORY_SOURCE, buildToolNamespaceBindings } from '../../tool-namespaces';
 
 /**
@@ -408,12 +410,20 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
       return;
     }
 
-    // Send success result
+    // Same conversion as the in-process adapters (limits, '[Circular]', Dates, BigInts, ...);
+    // a value it refuses fails the run below.
+    const { value, specialValues } = encodeResult(
+      sanitizeValue(result, {
+        maxDepth: msg.config.maxSanitizeDepth,
+        maxProperties: msg.config.maxSanitizeProperties,
+      }),
+    );
     sendMessage({
       type: 'result',
       requestId: msg.requestId,
       success: true,
-      value: sanitizeObject(result),
+      value,
+      ...(specialValues.length > 0 ? { specialValues } : {}),
       stats: currentExecution.stats,
     });
   } catch (error) {

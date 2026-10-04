@@ -24,6 +24,7 @@ import { ExecutionQueue } from './execution-queue';
 import { MemoryMonitor } from './memory-monitor';
 import { RateLimiter, createRateLimiter } from './rate-limiter';
 import { sanitizeObject } from './safe-deserialize';
+import { decodeResult } from './result-encoding';
 import { WorkerPoolDisposedError, WorkerTimeoutError, TooManyPendingCallsError, QueueFullError } from './errors';
 import { sanitizeStackTrace } from '../../stack-trace';
 
@@ -502,16 +503,15 @@ export class WorkerPoolAdapter implements SandboxAdapter {
   /**
    * Build result from worker message.
    *
-   * Note: The `msg.value as T` assertion is inherent to cross-thread
-   * serialization boundaries. The worker sanitizes output via sanitizeObject()
-   * before sending, but full runtime type validation would require schema
-   * definitions which are not available at this layer.
+   * Note: The `as T` assertion is inherent to cross-thread serialization boundaries. The
+   * worker sanitizes the result with sanitizeValue() and sends the values JSON cannot carry
+   * (Dates, NaN, ...) separately; decodeResult() puts them back and refuses a malformed list.
    */
   private buildResult<T>(msg: ExecutionResultMessage, duration: number, sanitizeStacks: boolean): ExecutionResult<T> {
     if (msg.success) {
       return {
         success: true,
-        value: msg.value as T,
+        value: decodeResult(msg.value, msg.specialValues) as T,
         stats: {
           duration,
           toolCallCount: msg.stats.toolCallCount,
