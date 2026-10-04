@@ -298,10 +298,14 @@ export interface BrowserEnclaveOptions {
   memoryLimit?: number;
 
   /**
-   * Custom globals to inject into the sandbox, copied in as JSON data.
+   * Custom globals to inject into the sandbox, copied in as JSON data: plain objects and class
+   * instances (own enumerable properties), arrays, strings, numbers, booleans, null, and Dates (as
+   * ISO strings).
    *
-   * The constructor throws for a value that cannot cross the iframe boundary: a function or symbol
-   * (at any depth), a BigInt or a circular structure. Expose host capabilities as tools.
+   * The constructor throws, naming the global and the path, for anything else: a function or
+   * symbol at any depth (also one hidden behind `toJSON()`), a BigInt, a circular structure, a
+   * value JSON would turn into `{}` (Map, Set, RegExp, ...), or an `undefined` global. Expose host
+   * capabilities as tools.
    */
   globals?: Record<string, unknown>;
 

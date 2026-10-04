@@ -44,7 +44,7 @@ const enclave = new BrowserEnclave({
 | `memoryLimit` | number | 1048576 | Memory limit in bytes (soft tracking) |
 | `toolHandler` | function | - | Async function that handles `callTool()` invocations |
 | `toolNamespaces` | object | - | Expose tools as `ns.method(args)`: `{ mail: ['list', 'send'] }` or `{ users: { get: 'users:get' } }`. Each call is a `callTool()` call, validated by the outer iframe. Same naming rules as `@enclave-vm/core` |
-| `globals` | object | - | Additional globals available in the sandbox (JSON-serializable only; the constructor throws for a function, symbol, BigInt or circular value) |
+| `globals` | object | - | Additional globals available in the sandbox (JSON data only; the constructor throws for a function, symbol, BigInt, circular structure, Map, Set, RegExp or `undefined`) |
 | `validate` | boolean | `true` | Validate code with ast-guard before execution |
 | `transform` | boolean | `true` | Transform code before execution (AgentScript wrappers) |
 | `allowFunctionsInGlobals` | boolean | varies | No effect in the browser: functions never cross the iframe boundary, so a function in `globals` always throws. Expose host capabilities as tools |
@@ -150,7 +150,7 @@ These patterns are detected automatically when `blockSuspiciousSequences` is ena
 
 ## Custom Globals
 
-Inject read-only data into the sandbox. Only JSON-serializable values are supported — functions cannot cross the iframe boundary. The constructor throws for a global that is or contains a function or symbol, a BigInt, or a circular structure, naming the global, so the problem shows up before any script runs.
+Inject read-only data into the sandbox. Only JSON-serializable values are supported — functions cannot cross the iframe boundary. The constructor throws for a global that is or contains a function or symbol (also one hidden behind `toJSON()`), a BigInt, a circular structure, or a value JSON would turn into `{}` (Map, Set, RegExp, DOM node, ...), and for an `undefined` global. The error names the global and the path (`Custom global "cfg" contains a function at "hooks.0.run"`), so the problem shows up before any script runs. Dates are passed as ISO strings.
 
 ```ts
 const enclave = new BrowserEnclave({

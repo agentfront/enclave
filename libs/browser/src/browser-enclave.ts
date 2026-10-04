@@ -138,52 +138,102 @@ const DEFAULT_SERIALIZED_PATTERNS: SerializableSuspiciousPattern[] = [
 ];
 
 /**
+ * Object kinds JSON copies faithfully: plain objects and class instances (own enumerable
+ * properties), arrays, and Dates (as ISO strings). JSON turns the others (Map, Set, RegExp, DOM
+ * nodes, ...) into `{}`, losing their data.
+ */
+const JSON_OBJECT_TAGS = new Set(['[object Object]', '[object Array]', '[object Date]']);
+
+const OBJECT_TO_STRING = Object.prototype.toString;
+
+interface UnsupportedGlobalValue {
+  /** Dotted path inside the global; empty for the global itself. */
+  path: string;
+  /** What was found, e.g. "a function" or "a Map". */
+  kind: string;
+}
+
+/**
  * Copy custom globals as JSON data for the inner iframe. Throws for a value that cannot cross the
- * iframe boundary instead of dropping it, which would leave the script with `undefined`.
+ * iframe boundary instead of dropping it, which would leave the script with `undefined` or `{}`.
  */
 function serializeGlobals(globals: Record<string, unknown>): Record<string, unknown> {
   const serializable: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(globals)) {
-    const json = stringifyGlobal(name, value);
-    if (json !== undefined) {
-      serializable[name] = JSON.parse(json);
-    }
+    serializable[name] = serializeGlobal(name, value);
   }
   return serializable;
 }
 
-function stringifyGlobal(name: string, value: unknown): string | undefined {
-  let unsupported: { key: string; type: 'function' | 'symbol' } | undefined;
-  let json: string | undefined;
+function serializeGlobal(name: string, value: unknown): unknown {
+  // Checked on the original value: JSON.stringify calls toJSON() first, which could hide a function.
+  const unsupported = findUnsupportedValue(value, '', new Set());
+  if (unsupported) {
+    throw new Error(describeUnsupportedGlobal(name, unsupported));
+  }
 
+  let json: string | undefined;
   try {
-    json = JSON.stringify(value, (key: string, nestedValue: unknown) => {
-      const type = typeof nestedValue;
-      if (!unsupported && (type === 'function' || type === 'symbol')) {
-        unsupported = { key, type };
-      }
-      return nestedValue;
-    });
+    json = JSON.stringify(value);
   } catch (error: unknown) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`Custom global "${name}" cannot be passed into the sandbox: ${reason}. Globals must be JSON data.`);
   }
+  if (json === undefined) {
+    throw new Error(`Custom global "${name}" is undefined; give it a value or leave it out.`);
+  }
+  return JSON.parse(json);
+}
 
-  if (!unsupported) {
-    return json;
+/** Find the first value JSON.stringify would drop or mangle, walking what it would copy. */
+function findUnsupportedValue(
+  value: unknown,
+  path: string,
+  ancestors: Set<object>,
+): UnsupportedGlobalValue | undefined {
+  const type = typeof value;
+  if (type === 'function' || type === 'symbol') {
+    return { path, kind: `a ${type}` };
+  }
+  if (type === 'bigint') {
+    return { path, kind: 'a BigInt' };
+  }
+  if (value === null || type !== 'object') {
+    return undefined;
   }
 
+  const object = value as Record<string, unknown>;
+  if (ancestors.has(object)) {
+    return { path, kind: 'a circular reference' };
+  }
+  const tag = OBJECT_TO_STRING.call(object);
+  if (!JSON_OBJECT_TAGS.has(tag)) {
+    return { path, kind: `a ${tag.slice('[object '.length, -1)}` };
+  }
+
+  ancestors.add(object);
+  for (const key of Object.keys(object)) {
+    const found = findUnsupportedValue(object[key], path ? `${path}.${key}` : key, ancestors);
+    if (found) {
+      return found;
+    }
+  }
+  ancestors.delete(object);
+  return undefined;
+}
+
+function describeUnsupportedGlobal(name: string, unsupported: UnsupportedGlobalValue): string {
   const subject =
-    unsupported.key === ''
-      ? `Custom global "${name}" is a ${unsupported.type}`
-      : `Custom global "${name}" contains a ${unsupported.type} at key "${unsupported.key}"`;
-  if (unsupported.type === 'symbol') {
-    throw new Error(`${subject}, which cannot be passed into the sandbox. Globals must be JSON data.`);
+    unsupported.path === ''
+      ? `Custom global "${name}" is ${unsupported.kind}`
+      : `Custom global "${name}" contains ${unsupported.kind} at "${unsupported.path}"`;
+  if (unsupported.kind === 'a function') {
+    return (
+      `${subject}. Functions cannot cross the iframe boundary into the sandbox; expose host capabilities ` +
+      'as tools (toolHandler with callTool(), or toolNamespaces).'
+    );
   }
-  throw new Error(
-    `${subject}. Functions cannot cross the iframe boundary into the sandbox; expose host capabilities ` +
-      'as tools (toolHandler with callTool(), or toolNamespaces).',
-  );
+  return `${subject}, which cannot be passed into the sandbox. Globals must be JSON data.`;
 }
 
 /**

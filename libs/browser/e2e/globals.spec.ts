@@ -32,12 +32,12 @@ test.describe('custom globals', () => {
 
   test('a nested function throws at construction', async ({ page }) => {
     const message = await constructorError(page, `{ utils: { double: (n) => n * 2 } }`);
-    expect(message).toContain('Custom global "utils" contains a function at key "double"');
+    expect(message).toContain('Custom global "utils" contains a function at "double"');
   });
 
   test('a function inside an array throws at construction', async ({ page }) => {
     const message = await constructorError(page, `{ hooks: [1, () => 2] }`);
-    expect(message).toContain('Custom global "hooks" contains a function at key "1"');
+    expect(message).toContain('Custom global "hooks" contains a function at "1"');
   });
 
   test('a function throws even with allowFunctionsInGlobals', async ({ page }) => {
@@ -56,14 +56,51 @@ test.describe('custom globals', () => {
 
   test('a symbol global throws at construction', async ({ page }) => {
     const message = await constructorError(page, `{ tag: { kind: Symbol('x') } }`);
-    expect(message).toContain('Custom global "tag" contains a symbol at key "kind"');
+    expect(message).toContain('Custom global "tag" contains a symbol at "kind"');
   });
 
   test('BigInt and circular globals throw at construction', async ({ page }) => {
-    expect(await constructorError(page, `{ big: 10n }`)).toContain('Custom global "big" cannot be passed');
+    expect(await constructorError(page, `{ big: 10n }`)).toContain('Custom global "big" is a BigInt');
 
     const circular = await constructorError(page, `(() => { const a = { name: 'a' }; a.self = a; return { a }; })()`);
-    expect(circular).toContain('Custom global "a" cannot be passed');
+    expect(circular).toContain('Custom global "a" contains a circular reference at "self"');
+  });
+
+  test('a function hidden behind toJSON() throws at construction', async ({ page }) => {
+    const message = await constructorError(page, `{ cfg: { fn: () => 1, toJSON() { return { label: 'ok' }; } } }`);
+    expect(message).toContain('Custom global "cfg" contains a function at "fn"');
+  });
+
+  test('a deeply nested function is reported with its path', async ({ page }) => {
+    const message = await constructorError(page, `{ cfg: { hooks: [{ run: () => 1 }] } }`);
+    expect(message).toContain('Custom global "cfg" contains a function at "hooks.0.run"');
+  });
+
+  test('an undefined global throws at construction', async ({ page }) => {
+    const message = await constructorError(page, `{ label: undefined }`);
+    expect(message).toContain('Custom global "label" is undefined');
+  });
+
+  test('a value JSON would turn into {} throws at construction', async ({ page }) => {
+    expect(await constructorError(page, `{ lookup: new Map([['a', 1]]) }`)).toContain(
+      'Custom global "lookup" is a Map',
+    );
+    expect(await constructorError(page, `{ cfg: { pattern: /a+/ } }`)).toContain(
+      'Custom global "cfg" contains a RegExp at "pattern"',
+    );
+  });
+
+  test('a Date global reaches the script as an ISO string', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const EB = (window as any).EnclaveBrowser;
+      const enclave = new EB.BrowserEnclave({ timeout: 5000, globals: { since: new Date(0) } });
+      const run = await enclave.run('return since;');
+      enclave.dispose();
+      return run;
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.value).toBe('1970-01-01T00:00:00.000Z');
   });
 
   test('JSON data globals still reach the script', async ({ page }) => {
