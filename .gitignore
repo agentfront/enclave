@@ -114,3 +114,7 @@ libs/browser/e2e/fixtures/enclave-browser-bundle.mjs
 .pnp.*
 yarn-debug.log*
 .yarn/install-state.gz
+
+.claude/worktrees
+.nx/polygraph
+.nx/self-healing
