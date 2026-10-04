@@ -356,6 +356,21 @@ export interface BrowserEnclaveOptions {
   sanitizeStackTraces?: boolean;
 
   /**
+   * Maximum nesting depth of the value a script returns; a deeper value fails the run.
+   *
+   * @default Determined by securityLevel
+   */
+  maxSanitizeDepth?: number;
+
+  /**
+   * Maximum number of properties (object keys, array elements, Map and Set entries, counted over
+   * the whole value) a script may return; a larger value fails the run.
+   *
+   * @default Determined by securityLevel
+   */
+  maxSanitizeProperties?: number;
+
+  /**
    * Secure proxy configuration override
    */
   secureProxyConfig?: Partial<SecureProxyLevelConfig>;

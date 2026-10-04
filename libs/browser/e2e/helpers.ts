@@ -24,6 +24,8 @@ export interface RunOptions {
   transform?: boolean;
   toolNamespaces?: Record<string, string[] | Record<string, string>>;
   sanitizeStackTraces?: boolean;
+  maxSanitizeDepth?: number;
+  maxSanitizeProperties?: number;
 }
 
 /**
