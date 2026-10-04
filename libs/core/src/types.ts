@@ -515,7 +515,9 @@ export interface EnclaveConfig {
   maxIterations?: number;
 
   /**
-   * Sandbox adapter to use
+   * Sandbox adapter to use. Takes effect only with `doubleVm: { enabled: false }`: with the double
+   * VM on (the default), scripts run in the double VM whatever this says. To run scripts with an
+   * adapter of your own, pass `sandboxAdapter`.
    * Default: 'vm'
    */
   adapter?: 'vm' | 'isolated-vm' | 'worker_threads';
@@ -1053,6 +1055,25 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * ```
    */
   workerPoolConfig?: Partial<WorkerPoolConfig>;
+
+  /**
+   * Run scripts with this adapter instead of the double VM and the `adapter` option, for hosts
+   * without `node:vm` (a browser worker, an edge runtime): for example an `InterpreterAdapter`,
+   * or an adapter that hands the script to `@enclave-vm/browser`.
+   *
+   * The enclave still validates and transforms every script first, but isolation is then the
+   * adapter's job: it receives the transformed code and the `ExecutionContext` (limits, tool
+   * handler, stats, abort signal) and must enforce them. The caller owns the adapter:
+   * `Enclave.dispose()` does not dispose it, so one adapter can serve several enclaves.
+   *
+   * @example
+   * ```typescript
+   * import { Enclave, InterpreterAdapter } from '@enclave-vm/core';
+   *
+   * const enclave = new Enclave({ sandboxAdapter: new InterpreterAdapter() });
+   * ```
+   */
+  sandboxAdapter?: SandboxAdapter;
 
   /**
    * Secure proxy configuration override
