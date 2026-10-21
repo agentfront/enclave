@@ -833,6 +833,19 @@ npm run test:coverage
 - **Validation time**: ~1-10ms per rule (depends on complexity)
 - **Memory**: Minimal overhead, AST is shared across rules
 
+## ReDoS Analysis Without the Parser
+
+To check regular expressions for catastrophic backtracking without validating JavaScript, import the analyzer from `@enclave-vm/ast/redos`. It loads none of the parser (`acorn`, `acorn-walk`, `astring`) that the package root loads: about 8 KB instead of 240 KB plus the parser.
+
+```ts
+import { analyzeForReDoS, REDOS_THRESHOLDS } from '@enclave-vm/ast/redos';
+
+const { score } = analyzeForReDoS('(a+)+$', 'catastrophic');
+if (score >= REDOS_THRESHOLDS.BLOCK) throw new Error('Pattern can backtrack catastrophically');
+```
+
+It also exports `REDOS_PATTERNS`, `calculateStarHeight` and the `ReDoSAnalysisResult` type, the same as the package root.
+
 ## Comparison
 
 | Feature                | AST Guard      | ESLint       | TypeScript    |

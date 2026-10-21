@@ -37,6 +37,13 @@
       "import": "./dist/esm/index.mjs",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./redos": {
+      "development": "./src/redos.ts",
+      "types": "./dist/redos.d.ts",
+      "import": "./dist/esm/redos.mjs",
+      "require": "./dist/redos.js",
+      "default": "./dist/redos.js"
     }
   },
   "dependencies": {

@@ -129,8 +129,10 @@ The pre-scanner detects dangerous regex patterns that cause exponential backtrac
 
 ### Manual ReDoS Analysis
 
+`@enclave-vm/ast/redos` exports the analyzer on its own: it loads none of the parser (`acorn`, `acorn-walk`, `astring`) that the package root loads. The package root exports the same functions.
+
 ```ts
-import { analyzeForReDoS } from '@enclave-vm/ast';
+import { analyzeForReDoS } from '@enclave-vm/ast/redos';
 
 // Analyze a pattern for ReDoS vulnerabilities
 const result = analyzeForReDoS('(a+)+', 'catastrophic');
