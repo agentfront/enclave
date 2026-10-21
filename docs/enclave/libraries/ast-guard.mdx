@@ -114,7 +114,8 @@ The pre-scanner supports three regex handling modes:
 - **`allow`** - Allow all regex without analysis (Permissive only)
 
 ```ts
-import { createPreScannerConfig, analyzeForReDoS } from '@enclave-vm/ast';
+// The analyzer alone, without the parser the package root loads
+import { analyzeForReDoS } from '@enclave-vm/ast/redos';
 
 // Analyze a pattern for ReDoS vulnerabilities
 const result = analyzeForReDoS('(a+)+', 'catastrophic');
