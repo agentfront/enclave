@@ -26,6 +26,7 @@ import { safeDeserialize, safeSerialize, sanitizeObject } from './safe-deseriali
 import { encodeResult } from './result-encoding';
 import { sanitizeValue } from '../../value-sanitizer';
 import { TOOL_NAMESPACE_FACTORY_SOURCE, buildToolNamespaceBindings } from '../../tool-namespaces';
+import { CONSOLE_FACTORY_SOURCE, type ConsoleLevel } from '../../console-handler';
 import {
   SANDBOX_CONSOLE_FACTORY_SOURCE,
   createHostConsoleWriter,
@@ -202,6 +203,8 @@ const TOOL_NAMESPACE_FACTORY_SCRIPT = new vm.Script(TOOL_NAMESPACE_FACTORY_SOURC
 /** Builds the script's console inside the sandbox realm (see ../../sandbox-console). */
 const SANDBOX_CONSOLE_FACTORY_SCRIPT = new vm.Script(SANDBOX_CONSOLE_FACTORY_SOURCE, { filename: 'console.js' });
 
+const CONSOLE_FACTORY_SCRIPT = new vm.Script(CONSOLE_FACTORY_SOURCE, { filename: 'handler-console.js' });
+
 // ============================================================================
 // SECURITY: Capture parentPort then remove dangerous globals
 // ============================================================================
@@ -335,7 +338,11 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
       codeGeneration: { strings: false, wasm: false },
     });
 
-    installSandboxConsoles(context);
+    if (msg.config.hasConsoleHandler) {
+      installHandlerConsole(context, msg.requestId, msg.config);
+    } else {
+      installSandboxConsoles(context);
+    }
 
     const isStrictOrSecure = msg.config.securityLevel === 'STRICT' || msg.config.securityLevel === 'SECURE';
     const policyViolation: { type?: string } = {};
@@ -902,6 +909,31 @@ function installSandboxConsoles(context: vm.Context): void {
       'error',
       'info',
     ]);
+  }
+}
+
+/**
+ * With a host consoleHandler: the script's console (at every security level) is built inside the
+ * sandbox realm and sends each formatted line to the host, which calls the handler.
+ */
+function installHandlerConsole(context: vm.Context, requestId: string, config: SerializedConfig): void {
+  const install = CONSOLE_FACTORY_SCRIPT.runInContext(context) as (
+    write: (level: ConsoleLevel, line: string) => void,
+    maxCalls: number,
+    maxBytes: number,
+  ) => object;
+  const handlerConsole = install(
+    (level, line) => sendMessage({ type: 'console', requestId, level, args: [line] }),
+    config.maxConsoleCalls,
+    config.maxConsoleOutputBytes,
+  );
+  for (const name of ['console', '__safe_console']) {
+    Object.defineProperty(context, name, {
+      value: handlerConsole,
+      writable: false,
+      configurable: false,
+      enumerable: false,
+    });
   }
 }
 

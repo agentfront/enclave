@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { TOOL_NAMESPACE_TOOL_NAME_PATTERN, type NormalizedToolNamespace } from '@enclave-vm/ast';
 import type { ResourceUsage } from './config';
 import type { SpecialResultValue } from './result-encoding';
+import type { ConsoleLevel } from '../../console-handler';
 
 /**
  * Serialized error format for cross-thread communication
@@ -76,6 +77,11 @@ export interface SerializedConfig {
    * `mail.list` through the worker's callTool)
    */
   toolNamespaces?: NormalizedToolNamespace[];
+  /**
+   * Whether the host has a consoleHandler: the sandbox then gets the handler console at every
+   * security level, and each console message carries one formatted line as its only argument
+   */
+  hasConsoleHandler?: boolean;
 }
 
 // ============================================================================
@@ -213,7 +219,7 @@ export interface ConsoleMessage {
   /** Execution request identifier */
   requestId: string;
   /** Console level */
-  level: 'log' | 'warn' | 'error' | 'info';
+  level: ConsoleLevel;
   /** Console arguments */
   args: unknown[];
 }
@@ -318,7 +324,7 @@ export const consoleMessageSchema = z
   .object({
     type: z.literal('console'),
     requestId: z.string().min(1).max(100).regex(ID_PATTERN),
-    level: z.enum(['log', 'warn', 'error', 'info']),
+    level: z.enum(['log', 'warn', 'error', 'info', 'debug']),
     args: z.array(z.unknown()).max(100),
   })
   .strict();

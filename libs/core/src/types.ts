@@ -678,6 +678,7 @@ import type { ScoringGateConfig, ScoringGateResult } from './scoring/types';
 import type { WorkerPoolConfig } from './adapters/worker-pool/config';
 import type { DoubleVmConfig, PartialDoubleVmConfig, ParentValidationConfig } from './double-vm/types';
 import type { NormalizedToolNamespace, ToolNamespaces } from '@enclave-vm/ast';
+import type { ConsoleHandler, ConsoleLevel } from './console-handler';
 
 /**
  * Internal execution context (tracks state during execution)
@@ -722,6 +723,11 @@ export interface ExecutionContext {
    * Tool handler
    */
   toolHandler?: ToolHandler;
+
+  /**
+   * Receives the script's console calls (see `CreateEnclaveOptions.consoleHandler`)
+   */
+  consoleHandler?: ConsoleHandler;
 
   /**
    * Reference sidecar for pass-by-reference support (per-execution)
@@ -947,6 +953,33 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
   toolNamespaces?: ToolNamespaces;
 
   /**
+   * Receives the script's `console.log/info/warn/error/debug` calls instead of the host console.
+   *
+   * With a handler, scripts may use `console` at every security level. Each call is formatted as
+   * the built-in console formats it (arguments joined by spaces, objects JSON-serialized) and
+   * handed over as `(level, message)` strings, once `maxConsoleCalls` and `maxConsoleOutputBytes`
+   * have allowed it; past a limit the script's call throws and the handler is not called. The
+   * handler's return value is ignored and anything it throws or rejects with is swallowed. The
+   * script's `console` is a frozen, null-prototype object built inside the sandbox, so it leads
+   * to neither the handler nor any host object.
+   *
+   * Without a handler nothing changes: `console` is allowed only at PERMISSIVE and writes to the
+   * host process console.
+   *
+   * Supported by the double VM (default), the `vm` adapter and the `worker_threads` adapter. A
+   * `sandboxAdapter` receives the handler as `ExecutionContext.consoleHandler`; the built-in
+   * `InterpreterAdapter` has no `console`, so a script that uses it fails there.
+   *
+   * @example
+   * ```typescript
+   * const enclave = new Enclave({
+   *   consoleHandler: (level, message) => logger[level](message),
+   * });
+   * ```
+   */
+  consoleHandler?: ConsoleHandler;
+
+  /**
    * Whether to sanitize stack traces in error messages
    * Default: Determined by securityLevel (true for STRICT/SECURE)
    *
@@ -1159,6 +1192,13 @@ export type { DoubleVmConfig, PartialDoubleVmConfig, ParentValidationConfig };
  * @see {@link NormalizedToolNamespace} A validated namespace
  */
 export type { ToolNamespaces, NormalizedToolNamespace };
+
+/**
+ * Re-exported console handler types
+ * @see {@link ConsoleHandler} The `consoleHandler` option
+ * @see {@link ConsoleLevel} A console method a script can call
+ */
+export type { ConsoleHandler, ConsoleLevel };
 
 /**
  * Default double VM configuration

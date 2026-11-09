@@ -1087,11 +1087,21 @@ describe('worker-pool components', () => {
           expect(() => consoleMessageSchema.parse(msg)).not.toThrow();
         });
 
-        it('should reject invalid level', () => {
+        it('should accept the debug level (consoleHandler mode)', () => {
           const msg = {
             type: 'console',
             requestId: 'exec-123',
             level: 'debug',
+            args: ['line'],
+          };
+          expect(() => consoleMessageSchema.parse(msg)).not.toThrow();
+        });
+
+        it('should reject invalid level', () => {
+          const msg = {
+            type: 'console',
+            requestId: 'exec-123',
+            level: 'trace',
             args: [],
           };
           expect(() => consoleMessageSchema.parse(msg)).toThrow();

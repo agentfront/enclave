@@ -47,12 +47,32 @@ const enclave = new Enclave({
 | `validate` | boolean | true | Validate code with ast-guard before execution |
 | `transform` | boolean | true | Transform code before execution |
 
-## Console Limits
+## Console
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| `consoleHandler` | `(level, message) => void` | - | Receive the script's `console.log/info/warn/error/debug` calls instead of the host console; allows `console` at every security level |
 | `maxConsoleOutputBytes` | number | 1MB | Maximum total console output in bytes |
 | `maxConsoleCalls` | number | 1000 | Maximum number of console calls |
+
+Without a `consoleHandler`, `console` is allowed only at `PERMISSIVE` and writes to the host process console. With one, scripts may use `console` at every security level and each call reaches the handler instead:
+
+```ts
+const enclave = new Enclave({
+  securityLevel: 'STRICT',
+  consoleHandler: (level, message) => logger[level](message),
+});
+
+await enclave.run(`console.info('users', { count: 2 }); return 1;`);
+// logger.info('users {"count":2}')
+```
+
+- `level` is `'log' | 'info' | 'warn' | 'error' | 'debug'` (`ConsoleLevel`); `message` is the formatted line: arguments joined by spaces, objects JSON-serialized.
+- `maxConsoleCalls` and `maxConsoleOutputBytes` are checked before the handler runs. Past a limit, the script's call throws and the handler is not called.
+- The handler's return value is ignored, and anything it throws or rejects with is swallowed: the script sees neither.
+- The script's `console` is a frozen, null-prototype object built inside the sandbox. It holds no reference the script can reach to the handler or to any host object.
+- Supported by the double VM (default), the `vm` adapter and the `worker_threads` adapter. A [custom sandbox adapter](#custom-sandbox-adapter) receives the handler as `context.consoleHandler`; the built-in `InterpreterAdapter` has no `console`, so a script that uses it fails there (`'__safe_console' is not defined`). `@enclave-vm/browser` has its own options and is unchanged.
+- A `consoleHandler` cannot be combined with a `console` entry in `globals` (the constructor throws a `TypeError`).
 
 ## Memory Tracking
 

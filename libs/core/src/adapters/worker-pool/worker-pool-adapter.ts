@@ -27,6 +27,7 @@ import { sanitizeObject } from './safe-deserialize';
 import { decodeResult } from './result-encoding';
 import { WorkerPoolDisposedError, WorkerTimeoutError, TooManyPendingCallsError, QueueFullError } from './errors';
 import { sanitizeStackTrace } from '../../stack-trace';
+import { createConsoleSink } from '../../console-handler';
 
 /**
  * Worker Pool Adapter
@@ -348,6 +349,8 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     const requestId = `exec-${Date.now()}-${crypto.randomUUID()}`;
     const startTime = Date.now();
 
+    const consoleSink = context.consoleHandler ? createConsoleSink(context.consoleHandler, context.config) : undefined;
+
     // Serialize config (includes security level for defense-in-depth)
     const serializedConfig: SerializedConfig = {
       timeout: context.config.timeout,
@@ -363,6 +366,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       // This mirrors AST guard's allowed globals for defense-in-depth
       securityLevel: this.securityLevel,
       toolNamespaces: context.toolNamespaces ? [...context.toolNamespaces] : undefined,
+      hasConsoleHandler: consoleSink !== undefined,
     };
 
     return new Promise<ExecutionResult<T>>((resolve, reject) => {
@@ -391,8 +395,11 @@ export class WorkerPoolAdapter implements SandboxAdapter {
             const result = this.buildResult<T>(msg, duration, context.config.sanitizeStackTraces);
             resolve(result);
           } else if (isConsoleMessage(msg) && msg.requestId === requestId) {
-            // Forward console output
-            this.handleConsoleMessage(msg);
+            if (consoleSink) {
+              consoleSink(msg.level, msg.args[0]);
+            } else {
+              this.handleConsoleMessage(msg);
+            }
           }
         } catch (error) {
           cleanup();

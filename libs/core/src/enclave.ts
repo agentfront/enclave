@@ -55,6 +55,7 @@ import type {
   SecureProxyLevelConfig,
   DoubleVmConfig,
   PartialDoubleVmConfig,
+  ConsoleHandler,
 } from './types';
 import type { WorkerPoolConfig } from './adapters/worker-pool';
 import { SECURITY_LEVEL_CONFIGS, DEFAULT_DOUBLE_VM_CONFIG } from './types';
@@ -202,6 +203,7 @@ export class Enclave {
   private readonly customGlobalNames: string[];
   private readonly toolNamespaces: readonly NormalizedToolNamespace[];
   private readonly sandboxAdapter?: SandboxAdapter;
+  private readonly consoleHandler?: ConsoleHandler;
   private adapter?: SandboxAdapter;
 
   constructor(options: CreateEnclaveOptions = {}) {
@@ -220,6 +222,16 @@ export class Enclave {
         allowGettersSetters: false,
       });
     }
+
+    if (options.consoleHandler !== undefined) {
+      if (typeof options.consoleHandler !== 'function') {
+        throw new TypeError('consoleHandler must be a function');
+      }
+      if (options.globals && Object.hasOwn(options.globals, 'console')) {
+        throw new TypeError('consoleHandler cannot be combined with a custom `console` global');
+      }
+    }
+    this.consoleHandler = options.consoleHandler;
 
     // Normalize tool bridge configuration (defaults + validation)
     const normalizedToolBridge = {
@@ -538,6 +550,7 @@ export class Enclave {
         abortController: new AbortController(),
         aborted: false,
         toolHandler: toolHandler || this.config.toolHandler,
+        consoleHandler: this.consoleHandler,
         sidecar,
         referenceConfig: this.referenceConfig,
         secureProxyConfig: this.config.secureProxyConfig,
@@ -815,8 +828,16 @@ export class Enclave {
       '__safe_template', // Memory-safe template literals
     ];
 
+    // With a consoleHandler, console is allowed at every security level
+    const consoleGlobals = this.consoleHandler ? ['console', '__safe_console'] : [];
+
     // Combine: security-level globals + enclave-specific + custom
-    const allAllowedGlobals = [...securityLevelGlobals, ...enclaveSpecificGlobals, ...customAllowedGlobals];
+    const allAllowedGlobals = [
+      ...securityLevelGlobals,
+      ...enclaveSpecificGlobals,
+      ...consoleGlobals,
+      ...customAllowedGlobals,
+    ];
 
     switch (presetName) {
       case 'agentscript':

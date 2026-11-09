@@ -93,6 +93,11 @@ interface CreateEnclaveOptions {
   toolHandler?: ToolHandler; // Function to execute tool calls
   toolNamespaces?: ToolNamespaces; // Expose tools as `ns.method(args)` (see "Tool Namespaces")
 
+  // Console
+  consoleHandler?: ConsoleHandler; // Receive console calls as (level, message) instead of the host console (see "Console Handler")
+  maxConsoleCalls?: number; // Maximum console calls (default: by security level)
+  maxConsoleOutputBytes?: number; // Maximum total console output (default: by security level)
+
   // Custom globals
   globals?: Record<string, unknown>; // Additional globals for the VM
   allowFunctionsInGlobals?: boolean; // Allow functions in globals (default: false)
@@ -161,6 +166,8 @@ Both AST validation and runtime sandbox enforce the same allowed globals for def
 | **Debugging**         |        |        |          |            |
 | `console`             | ❌     | ❌     | ❌       | ✅         |
 
+With a `consoleHandler`, `console` is allowed at every level (see [Console Handler](#console-handler)).
+
 ### Blocked Globals (All Security Levels)
 
 These dangerous globals are **always blocked** regardless of security level:
@@ -179,6 +186,26 @@ These dangerous globals are **always blocked** regardless of security level:
 | **Binary/Wasm**    | `WebAssembly`, `ArrayBuffer`, `SharedArrayBuffer`, `Atomics`                   |
 | **Error Types**    | `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError`            |
 | **Symbols/Regex**  | `Symbol`, `RegExp`                                                             |
+
+### Console Handler
+
+Without a `consoleHandler`, `console` is allowed only at `PERMISSIVE` and writes to the host process console. With one, scripts may use `console` at every security level and each call goes to the handler instead:
+
+```typescript
+import { Enclave, type ConsoleHandler } from '@enclave-vm/core';
+
+const consoleHandler: ConsoleHandler = (level, message) => logger[level](message);
+const enclave = new Enclave({ securityLevel: 'STRICT', consoleHandler });
+
+await enclave.run(`console.info('users', { count: 2 }); return 1;`); // logger.info('users {"count":2}')
+```
+
+- `level` is a `ConsoleLevel` (`'log' | 'info' | 'warn' | 'error' | 'debug'`); `message` is the formatted line (arguments joined by spaces, objects JSON-serialized).
+- `maxConsoleCalls` and `maxConsoleOutputBytes` are checked before the handler runs; past a limit the script's call throws and the handler is not called.
+- The handler's return value is ignored and anything it throws or rejects with is swallowed.
+- The script's `console` is a frozen, null-prototype object built inside the sandbox; it leads to neither the handler nor any host object.
+- Supported by the double VM (default), the `vm` adapter and the `worker_threads` adapter. A custom `sandboxAdapter` receives the handler as `context.consoleHandler`; the built-in `InterpreterAdapter` has no `console`, so a script that uses it fails there.
+- Combining a `consoleHandler` with a `console` entry in `globals` throws a `TypeError`.
 
 ### AST Presets
 

@@ -37,6 +37,8 @@ export type {
   ToolCallErrorInfo,
   ToolNamespaces,
   NormalizedToolNamespace,
+  ConsoleHandler,
+  ConsoleLevel,
 } from './types';
 
 // Security level configurations

@@ -32,6 +32,7 @@ new Enclave(options?: EnclaveOptions)
 | `memoryLimit` | `number` | `67108864` | Memory limit in bytes (64MB) |
 | `toolHandler` | `ToolHandler` | `undefined` | Tool execution function |
 | `toolNamespaces` | `ToolNamespaces` | `undefined` | Expose tools as `ns.method(args)` bindings that are `callTool()` calls |
+| `consoleHandler` | `ConsoleHandler` | `undefined` | Receive the script's console calls as `(level, message)` instead of the host console; allows `console` at every security level |
 | `globals` | `Record<string, unknown>` | `{}` | Custom globals |
 | `allowFunctionsInGlobals` | `boolean` | by level | Allow functions in `globals` (calls are gated and results sanitized) |
 | `maxGlobalFunctionCalls` | `number` | 10 × `maxToolCalls` | Maximum calls into functions from `globals` |

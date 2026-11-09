@@ -16,6 +16,7 @@ import type { SerializableParentValidationConfig, SerializableSuspiciousPattern 
 import type { SecurityLevel } from '../types';
 import { globalFunctionLimitMessage } from '../global-function-gate';
 import { TOOL_NAMESPACE_FACTORY_SOURCE } from '../tool-namespaces';
+import { CONSOLE_FACTORY_SOURCE } from '../console-handler';
 
 /**
  * Recursion backstop for the in-VM secure-proxy membranes.
@@ -703,6 +704,7 @@ ${stackTraceHardeningCode}
     const hostMemoryTrack = typeof __host_memory_track__ === 'function' ? __host_memory_track__ : function(){};
     const hostInvokeGlobal = typeof __host_invokeGlobal__ === 'function' ? __host_invokeGlobal__ : null;
     const hostIsBuiltinMethod = typeof __host_isBuiltinMethod__ === 'function' ? __host_isBuiltinMethod__ : function() { return false; };
+    const hostConsoleSink = typeof __host_consoleSink__ === 'function' ? __host_consoleSink__ : null;
     const toolBridgeMode = ${JSON.stringify(toolBridgeMode)};
     const toolBridgeMaxPayloadBytes = ${toolBridgeMaxPayloadBytes};
 
@@ -717,6 +719,7 @@ ${stackTraceHardeningCode}
     try { delete globalThis.__host_memory_track__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_invokeGlobal__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_isBuiltinMethod__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_consoleSink__; } catch (e) { /* ignore */ }
 
     // Policy violation reporter (best-effort; host decides how to handle based on security level)
     function __ag_reportViolation(kind) {
@@ -1762,6 +1765,16 @@ ${stackTraceHardeningCode}
     info: createSafeConsoleMethod(console.info.bind(console))
   };
 
+  // With a consoleHandler, the script's console is built inside the inner realm and writes
+  // (level, line) strings to the host sink instead of the host console.
+  function createHandlerConsole() {
+    var installConsole = new vm.Script(${JSON.stringify(CONSOLE_FACTORY_SOURCE)}, {
+      filename: 'inner-console.js'
+    }).runInContext(innerContext);
+    var writeToSink = createSecureProxy(function(level, line) { hostConsoleSink(level, line); });
+    return installConsole(writeToSink, maxConsoleCalls, maxConsoleBytes);
+  }
+
   // ============================================================
   // Create Inner VM
   // ============================================================
@@ -2114,7 +2127,7 @@ ${stackTraceHardeningCode}
     __safe_while: createSecureProxy(innerWhile),
     __safe_doWhile: createSecureProxy(innerDoWhile),
     __safe_parallel: createSecureProxy(innerParallel),
-    __safe_console: createSecureProxy(innerConsole),
+    __safe_console: hostConsoleSink ? createHandlerConsole() : createSecureProxy(innerConsole),
     callTool: createSecureProxy(innerCallTool),
     parallel: createSecureProxy(innerParallel),
     // Loop transformation runtime support
