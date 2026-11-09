@@ -18,6 +18,7 @@ import { checkSerializedSize, sanitizeValue } from '../value-sanitizer';
 import { sanitizeStackTrace } from '../stack-trace';
 import { createGlobalFunctionGate, type SandboxRealmBridge } from '../global-function-gate';
 import { TOOL_NAMESPACE_FACTORY_SOURCE, buildToolNamespaceBindings } from '../tool-namespaces';
+import { CONSOLE_FACTORY_SOURCE, createConsoleSink, type ConsoleHandler, type ConsoleLimits } from '../console-handler';
 import {
   SANDBOX_CONSOLE_FACTORY_SOURCE,
   createHostConsoleWriter,
@@ -234,6 +235,18 @@ const TOOL_NAMESPACE_FACTORY_SCRIPT = new vm.Script(TOOL_NAMESPACE_FACTORY_SOURC
 
 /** Builds the script's console inside the sandbox realm (see ../sandbox-console). */
 const SANDBOX_CONSOLE_FACTORY_SCRIPT = new vm.Script(SANDBOX_CONSOLE_FACTORY_SOURCE, { filename: 'console.js' });
+
+const CONSOLE_FACTORY_SCRIPT = new vm.Script(CONSOLE_FACTORY_SOURCE, { filename: 'handler-console.js' });
+
+/** The script's console when a consoleHandler is set, built inside the sandbox realm (see ../console-handler). */
+function createHandlerConsole(sandbox: vm.Context, handler: ConsoleHandler, limits: ConsoleLimits): object {
+  const install = CONSOLE_FACTORY_SCRIPT.runInContext(sandbox) as (
+    write: ReturnType<typeof createConsoleSink>,
+    maxCalls: number,
+    maxBytes: number,
+  ) => object;
+  return install(createConsoleSink(handler, limits), limits.maxConsoleCalls, limits.maxConsoleOutputBytes);
+}
 
 /**
  * Protected identifier prefixes that cannot be modified from sandbox code
@@ -657,7 +670,12 @@ export class VmAdapter implements SandboxAdapter {
       const installToolNamespaces = executionContext.toolNamespaces?.length
         ? (TOOL_NAMESPACE_FACTORY_SCRIPT.runInContext(baseSandbox) as unknown)
         : undefined;
-      const installConsole = SANDBOX_CONSOLE_FACTORY_SCRIPT.runInContext(baseSandbox) as InstallSandboxConsole;
+      const handlerConsole = executionContext.consoleHandler
+        ? createHandlerConsole(baseSandbox, executionContext.consoleHandler, config)
+        : undefined;
+      const installConsole = handlerConsole
+        ? undefined
+        : (SANDBOX_CONSOLE_FACTORY_SCRIPT.runInContext(baseSandbox) as InstallSandboxConsole);
 
       // Every call into a host function passed in `globals` goes through this gate
       // (abort check, maxGlobalFunctionCalls, result sanitization, safe errors).
@@ -1080,18 +1098,20 @@ export class VmAdapter implements SandboxAdapter {
       if (!('__safe_console' in safeRuntime)) {
         const consoleStats: ConsoleStats = { totalBytes: 0, callCount: 0 };
         Object.defineProperty(baseSandbox, '__safe_console', {
-          value: installConsole(
-            createHostConsoleWriter(
-              createSafeConsole(
-                {
-                  maxConsoleOutputBytes: config.maxConsoleOutputBytes,
-                  maxConsoleCalls: config.maxConsoleCalls,
-                },
-                consoleStats,
+          value:
+            handlerConsole ??
+            installConsole?.(
+              createHostConsoleWriter(
+                createSafeConsole(
+                  {
+                    maxConsoleOutputBytes: config.maxConsoleOutputBytes,
+                    maxConsoleCalls: config.maxConsoleCalls,
+                  },
+                  consoleStats,
+                ),
               ),
+              ['log', 'error', 'warn', 'info'],
             ),
-            ['log', 'error', 'warn', 'info'],
-          ),
           writable: false,
           configurable: false,
           enumerable: false,

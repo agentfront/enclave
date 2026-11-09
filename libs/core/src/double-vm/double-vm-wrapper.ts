@@ -17,6 +17,7 @@ import { ReferenceResolver } from '../sidecar/reference-resolver';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 import { createHostToolBridge } from '../tool-bridge';
 import { sanitizeStackTrace } from '../stack-trace';
+import { createConsoleSink } from '../console-handler';
 import {
   createHostGlobalFunctionInvoker,
   isBuiltinMethod,
@@ -317,6 +318,14 @@ export class DoubleVmWrapper implements SandboxAdapter {
       writable: false,
       configurable: true, // Allow deletion after capture for defense-in-depth
     });
+
+    if (executionContext.consoleHandler) {
+      Object.defineProperty(parentContext, '__host_consoleSink__', {
+        value: createConsoleSink(executionContext.consoleHandler, config),
+        writable: false,
+        configurable: true, // Allow deletion after capture for defense-in-depth
+      });
+    }
 
     // Inject memory tracking callback (when memoryLimit is set)
     // This is called by innerConcat to track string allocation memory
