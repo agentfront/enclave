@@ -26,6 +26,12 @@ import { safeDeserialize, safeSerialize, sanitizeObject } from './safe-deseriali
 import { encodeResult } from './result-encoding';
 import { sanitizeValue } from '../../value-sanitizer';
 import { TOOL_NAMESPACE_FACTORY_SOURCE, buildToolNamespaceBindings } from '../../tool-namespaces';
+import {
+  SANDBOX_CONSOLE_FACTORY_SOURCE,
+  createHostConsoleWriter,
+  type HostConsoleMethods,
+  type InstallSandboxConsole,
+} from '../../sandbox-console';
 
 /**
  * Patch code executed inside the sandbox realm to prevent leaking host stack traces via `error.stack`.
@@ -193,6 +199,9 @@ const CODE_GENERATION_VIOLATION_DETECTOR_SCRIPT = new vm.Script(CODE_GENERATION_
  */
 const TOOL_NAMESPACE_FACTORY_SCRIPT = new vm.Script(TOOL_NAMESPACE_FACTORY_SOURCE, { filename: 'tool-namespaces.js' });
 
+/** Builds the script's console inside the sandbox realm (see ../../sandbox-console). */
+const SANDBOX_CONSOLE_FACTORY_SCRIPT = new vm.Script(SANDBOX_CONSOLE_FACTORY_SOURCE, { filename: 'console.js' });
+
 // ============================================================================
 // SECURITY: Capture parentPort then remove dangerous globals
 // ============================================================================
@@ -298,6 +307,9 @@ port.on('message', async (raw: string) => {
 // Execute Handler
 // ============================================================================
 
+/**
+ * Runs one script in a fresh sandbox context and posts its result (or error) to the host.
+ */
 async function handleExecute(msg: ExecuteMessage): Promise<void> {
   const startTime = Date.now();
 
@@ -322,6 +334,8 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
     const context = vm.createContext(sandbox, {
       codeGeneration: { strings: false, wasm: false },
     });
+
+    installSandboxConsoles(context);
 
     const isStrictOrSecure = msg.config.securityLevel === 'STRICT' || msg.config.securityLevel === 'SECURE';
     const policyViolation: { type?: string } = {};
@@ -869,6 +883,32 @@ function createSafeWhile() {
   };
 }
 
+/** The consoles `createSafeConsole` made, as opposed to a `console` or `__safe_console` value passed in `globals`. */
+const builtInConsoles = new WeakSet<object>();
+
+/**
+ * Replaces each console the sandbox got from `createSafeConsole` (`console` and `__safe_console`, at PERMISSIVE) with
+ * one built inside the sandbox realm that writes through it. A value passed in `globals` under either name is kept.
+ */
+function installSandboxConsoles(context: vm.Context): void {
+  const globals = context as Record<string, unknown>;
+  const consoles = ['console', '__safe_console'].filter((name) => builtInConsoles.has(globals[name] as object));
+  if (consoles.length === 0) return;
+  const install = SANDBOX_CONSOLE_FACTORY_SCRIPT.runInContext(context) as InstallSandboxConsole;
+  for (const name of consoles) {
+    globals[name] = install(createHostConsoleWriter(globals[name] as HostConsoleMethods), [
+      'log',
+      'warn',
+      'error',
+      'info',
+    ]);
+  }
+}
+
+/**
+ * The host console a PERMISSIVE sandbox writes through: it serializes the arguments, applies `maxConsoleCalls` and
+ * `maxConsoleOutputBytes`, and posts each call to the host.
+ */
 function createSafeConsole(requestId: string, config: SerializedConfig) {
   let totalBytes = 0;
   let callCount = 0;
@@ -905,12 +945,14 @@ function createSafeConsole(requestId: string, config: SerializedConfig) {
     });
   }
 
-  return {
+  const methods = {
     log: (...args: unknown[]) => safeLog('log', args),
     warn: (...args: unknown[]) => safeLog('warn', args),
     error: (...args: unknown[]) => safeLog('error', args),
     info: (...args: unknown[]) => safeLog('info', args),
   };
+  builtInConsoles.add(methods);
+  return methods;
 }
 
 // ============================================================================
