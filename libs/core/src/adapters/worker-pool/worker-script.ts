@@ -26,6 +26,12 @@ import { safeDeserialize, safeSerialize, sanitizeObject } from './safe-deseriali
 import { encodeResult } from './result-encoding';
 import { sanitizeValue } from '../../value-sanitizer';
 import { TOOL_NAMESPACE_FACTORY_SOURCE, buildToolNamespaceBindings } from '../../tool-namespaces';
+import {
+  SANDBOX_CONSOLE_FACTORY_SOURCE,
+  createHostConsoleWriter,
+  type HostConsoleMethods,
+  type InstallSandboxConsole,
+} from '../../sandbox-console';
 
 /**
  * Patch code executed inside the sandbox realm to prevent leaking host stack traces via `error.stack`.
@@ -193,6 +199,9 @@ const CODE_GENERATION_VIOLATION_DETECTOR_SCRIPT = new vm.Script(CODE_GENERATION_
  */
 const TOOL_NAMESPACE_FACTORY_SCRIPT = new vm.Script(TOOL_NAMESPACE_FACTORY_SOURCE, { filename: 'tool-namespaces.js' });
 
+/** Builds the script's console inside the sandbox realm (see ../../sandbox-console). */
+const SANDBOX_CONSOLE_FACTORY_SCRIPT = new vm.Script(SANDBOX_CONSOLE_FACTORY_SOURCE, { filename: 'console.js' });
+
 // ============================================================================
 // SECURITY: Capture parentPort then remove dangerous globals
 // ============================================================================
@@ -322,6 +331,8 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
     const context = vm.createContext(sandbox, {
       codeGeneration: { strings: false, wasm: false },
     });
+
+    installSandboxConsoles(context);
 
     const isStrictOrSecure = msg.config.securityLevel === 'STRICT' || msg.config.securityLevel === 'SECURE';
     const policyViolation: { type?: string } = {};
@@ -867,6 +878,25 @@ function createSafeWhile() {
       body();
     }
   };
+}
+
+/**
+ * Replaces each console the sandbox got (`console` and `__safe_console`, at PERMISSIVE) with one built inside the
+ * sandbox realm that writes through it.
+ */
+function installSandboxConsoles(context: vm.Context): void {
+  const globals = context as Record<string, unknown>;
+  const consoles = ['console', '__safe_console'].filter((name) => globals[name] !== undefined);
+  if (consoles.length === 0) return;
+  const install = SANDBOX_CONSOLE_FACTORY_SCRIPT.runInContext(context) as InstallSandboxConsole;
+  for (const name of consoles) {
+    globals[name] = install(createHostConsoleWriter(globals[name] as HostConsoleMethods), [
+      'log',
+      'warn',
+      'error',
+      'info',
+    ]);
+  }
 }
 
 function createSafeConsole(requestId: string, config: SerializedConfig) {

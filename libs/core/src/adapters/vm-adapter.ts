@@ -18,6 +18,11 @@ import { checkSerializedSize, sanitizeValue } from '../value-sanitizer';
 import { sanitizeStackTrace } from '../stack-trace';
 import { createGlobalFunctionGate, type SandboxRealmBridge } from '../global-function-gate';
 import { TOOL_NAMESPACE_FACTORY_SOURCE, buildToolNamespaceBindings } from '../tool-namespaces';
+import {
+  SANDBOX_CONSOLE_FACTORY_SOURCE,
+  createHostConsoleWriter,
+  type InstallSandboxConsole,
+} from '../sandbox-console';
 
 /**
  * Patch code executed inside the sandbox realm to prevent leaking host stack traces via `error.stack`.
@@ -226,6 +231,9 @@ const SANDBOX_REALM_BRIDGE_SCRIPT = new vm.Script(`
 
 /** Builds `toolNamespaces` objects inside the sandbox realm (see ../tool-namespaces). */
 const TOOL_NAMESPACE_FACTORY_SCRIPT = new vm.Script(TOOL_NAMESPACE_FACTORY_SOURCE, { filename: 'tool-namespaces.js' });
+
+/** Builds the script's console inside the sandbox realm (see ../sandbox-console). */
+const SANDBOX_CONSOLE_FACTORY_SCRIPT = new vm.Script(SANDBOX_CONSOLE_FACTORY_SOURCE, { filename: 'console.js' });
 
 /**
  * Protected identifier prefixes that cannot be modified from sandbox code
@@ -643,11 +651,13 @@ export class VmAdapter implements SandboxAdapter {
 
       // Capture sandbox-realm helpers before any sanitization touches the realm's globals:
       // - the realm bridge re-creates host-function results as sandbox-realm values;
-      // - the tool-namespace factory builds `toolNamespaces` objects inside the realm.
+      // - the tool-namespace factory builds `toolNamespaces` objects inside the realm;
+      // - the console factory builds the script's console inside the realm.
       const realmBridge = SANDBOX_REALM_BRIDGE_SCRIPT.runInContext(baseSandbox) as SandboxRealmBridge;
       const installToolNamespaces = executionContext.toolNamespaces?.length
         ? (TOOL_NAMESPACE_FACTORY_SCRIPT.runInContext(baseSandbox) as unknown)
         : undefined;
+      const installConsole = SANDBOX_CONSOLE_FACTORY_SCRIPT.runInContext(baseSandbox) as InstallSandboxConsole;
 
       // Every call into a host function passed in `globals` goes through this gate
       // (abort check, maxGlobalFunctionCalls, result sanitization, safe errors).
@@ -1070,12 +1080,17 @@ export class VmAdapter implements SandboxAdapter {
       if (!('__safe_console' in safeRuntime)) {
         const consoleStats: ConsoleStats = { totalBytes: 0, callCount: 0 };
         Object.defineProperty(baseSandbox, '__safe_console', {
-          value: createSafeConsole(
-            {
-              maxConsoleOutputBytes: config.maxConsoleOutputBytes,
-              maxConsoleCalls: config.maxConsoleCalls,
-            },
-            consoleStats,
+          value: installConsole(
+            createHostConsoleWriter(
+              createSafeConsole(
+                {
+                  maxConsoleOutputBytes: config.maxConsoleOutputBytes,
+                  maxConsoleCalls: config.maxConsoleCalls,
+                },
+                consoleStats,
+              ),
+            ),
+            ['log', 'error', 'warn', 'info'],
           ),
           writable: false,
           configurable: false,
