@@ -307,6 +307,9 @@ port.on('message', async (raw: string) => {
 // Execute Handler
 // ============================================================================
 
+/**
+ * Runs one script in a fresh sandbox context and posts its result (or error) to the host.
+ */
 async function handleExecute(msg: ExecuteMessage): Promise<void> {
   const startTime = Date.now();
 
@@ -880,13 +883,16 @@ function createSafeWhile() {
   };
 }
 
+/** The consoles `createSafeConsole` made, as opposed to a `console` or `__safe_console` value passed in `globals`. */
+const builtInConsoles = new WeakSet<object>();
+
 /**
- * Replaces each console the sandbox got (`console` and `__safe_console`, at PERMISSIVE) with one built inside the
- * sandbox realm that writes through it.
+ * Replaces each console the sandbox got from `createSafeConsole` (`console` and `__safe_console`, at PERMISSIVE) with
+ * one built inside the sandbox realm that writes through it. A value passed in `globals` under either name is kept.
  */
 function installSandboxConsoles(context: vm.Context): void {
   const globals = context as Record<string, unknown>;
-  const consoles = ['console', '__safe_console'].filter((name) => globals[name] !== undefined);
+  const consoles = ['console', '__safe_console'].filter((name) => builtInConsoles.has(globals[name] as object));
   if (consoles.length === 0) return;
   const install = SANDBOX_CONSOLE_FACTORY_SCRIPT.runInContext(context) as InstallSandboxConsole;
   for (const name of consoles) {
@@ -899,6 +905,10 @@ function installSandboxConsoles(context: vm.Context): void {
   }
 }
 
+/**
+ * The host console a PERMISSIVE sandbox writes through: it serializes the arguments, applies `maxConsoleCalls` and
+ * `maxConsoleOutputBytes`, and posts each call to the host.
+ */
 function createSafeConsole(requestId: string, config: SerializedConfig) {
   let totalBytes = 0;
   let callCount = 0;
@@ -935,12 +945,14 @@ function createSafeConsole(requestId: string, config: SerializedConfig) {
     });
   }
 
-  return {
+  const methods = {
     log: (...args: unknown[]) => safeLog('log', args),
     warn: (...args: unknown[]) => safeLog('warn', args),
     error: (...args: unknown[]) => safeLog('error', args),
     info: (...args: unknown[]) => safeLog('info', args),
   };
+  builtInConsoles.add(methods);
+  return methods;
 }
 
 // ============================================================================

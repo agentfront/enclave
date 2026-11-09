@@ -143,6 +143,13 @@ describe.each(PATHS)('console built in the sandbox realm (%s)', (_name, pathOpti
     expect(result.value).toBe('own error');
   });
 
+  it.each(levels)('keeps a console value passed in globals at %s', async (securityLevel) => {
+    const result = await run(`return console.note;`, { securityLevel, globals: { console: { note: 'from globals' } } });
+
+    expect(result.error?.message).toBeUndefined();
+    expect(result.value).toBe('from globals');
+  });
+
   it('writes the same output to the host console', async () => {
     const result = await run(`console.log('a', { b: 1 }, 2); console.error('oops'); return 'ok';`, {
       securityLevel: 'PERMISSIVE',
