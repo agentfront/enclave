@@ -432,13 +432,22 @@ describe('createConsoleSink', () => {
     expect(calls).toEqual([['log', '123456']]);
   });
 
-  it('returns undefined and never throws, whatever the handler does', () => {
+  it('never throws, whatever the handler does', () => {
+    const handled: string[] = [];
     const throwing = createConsoleSink(() => {
+      handled.push('throwing');
       throw new Error('boom');
     }, limits);
-    const returning = createConsoleSink((() => ({ host: true })) as unknown as ConsoleHandler, limits);
+    const returning = createConsoleSink(
+      (() => {
+        handled.push('returning');
+        return { host: true };
+      }) as unknown as ConsoleHandler,
+      limits,
+    );
 
-    expect(throwing('log', 'x')).toBeUndefined();
-    expect(returning('log', 'x')).toBeUndefined();
+    expect(() => throwing('log', 'x')).not.toThrow();
+    expect(() => returning('log', 'x')).not.toThrow();
+    expect(handled).toEqual(['throwing', 'returning']);
   });
 });
