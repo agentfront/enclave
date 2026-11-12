@@ -9,6 +9,13 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## [Unreleased]
 
+A follow-up to 2.19.0: two more layers behind the validator, and the dependency and code-scanning alerts of the repository. `libs/core/CHANGELOG.md` has the changes a host of `@enclave-vm/core` will notice.
+
+- `@enclave-vm/browser`: a script validated as AgentScript runs in a realm that cannot run a regular expression (ATK-RXRT in `SECURITY-TESTS.md`). The matcher methods of `RegExp.prototype` throw `TypeError: Regular expressions are not available in this sandbox`, the prototype is frozen, and the names `RegExp` and `URLPattern` are not in the realm. This is what `@enclave-vm/core` does with the realm allowlist; until now the browser had the validator only. With another preset, or with `validate: false`, the realm is as before.
+- `@enclave-vm/core`, interpreter adapter: `maxCallDepth` is counted along each chain of calls, and the new `maxPendingCalls` bounds the calls an execution has in progress.
+- `@enclave-vm/broker` depends on `minimatch` 11 (`^11.0.1`, was `^10.2.5`) for the glob patterns of its event filter. `minimatch` 11.0.4 and later need Node.js 20 or 22+; its changelog lists the matching edge cases that changed. The glob patterns of the event filter have a test now.
+- Tooling: the root `resolutions` move `glob` to 14 (Jest) and the `minimatch` of `@typescript-eslint/typescript-estree` to 11. Nx pins `minimatch` 10.2.5 and uses an API that 11 removed, so that copy stays until Nx moves.
+
 ## [2.19.0] - 2026-11-12
 
 Draft for the maintainer. A security release of `@enclave-vm/core`, `@enclave-vm/ast` and `@enclave-vm/browser`: the sandbox boundary, the limits and the host process, each change with the test that pins it. See `SECURITY-TESTS.md` for the catalog and `libs/core/CHANGELOG.md` for the list of behaviour changes a host will notice.

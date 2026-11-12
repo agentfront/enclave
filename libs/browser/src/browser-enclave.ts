@@ -266,6 +266,8 @@ export class BrowserEnclave {
   private readonly validator: JSAstValidator;
   private readonly validateCode: boolean;
   private readonly transformCode: boolean;
+  /** Whether scripts are validated as AgentScript, a language without regular expressions */
+  private readonly validatesAgentScript: boolean;
   private readonly customGlobalNames: string[];
   private readonly toolNamespaces: NormalizedToolNamespace[];
   /** The names of the custom globals when the enclave was created */
@@ -368,6 +370,7 @@ export class BrowserEnclave {
     // Config flags
     this.validateCode = options.validate !== false;
     this.transformCode = options.transform !== false;
+    this.validatesAgentScript = this.validateCode && presetName === 'agentscript';
 
     // Store custom serializable patterns
     this.customSerializablePatterns = options.customSerializablePatterns ?? [];
@@ -468,6 +471,8 @@ export class BrowserEnclave {
         allowComposites: false,
         globals,
         toolNamespaces: this.toolNamespaces,
+        // The runtime half of the rule the validator applies: see the inner iframe bootstrap
+        blockRegExp: this.validatesAgentScript,
       };
 
       // Step 4: Build validation config for outer iframe
