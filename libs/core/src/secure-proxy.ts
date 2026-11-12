@@ -637,9 +637,23 @@ const INTERNAL_SLOT_TYPES = new Set(['[object Promise]']);
  */
 const boundBuiltinMethods = new WeakSet<object>();
 
-// The guard of an object a script passed to a host function, and what each guard stands for
-// (see guardObjectArgument in createSecureProxy).
-const argumentGuards = new WeakMap<object, object>();
+// The guard of an object a script passed to a host function (see guardObjectArgument in
+// createSecureProxy). A guard hands values on through the membrane that made it, so it is kept
+// the way that membrane's proxies are: per call gate (per execution), otherwise per
+// configuration. The same object passed through another membrane gets that membrane's guard.
+const argumentGuards = new WeakMap<object, Map<string, object>>();
+const gatedArgumentGuards = new WeakMap<object, WeakMap<object, object>>();
+
+function gatedArgumentGuardCache(gate: object): WeakMap<object, object> {
+  let cache = gatedArgumentGuards.get(gate);
+  if (!cache) {
+    cache = new WeakMap<object, object>();
+    gatedArgumentGuards.set(gate, cache);
+  }
+  return cache;
+}
+
+// What each guard stands for, whichever membrane made it
 const guardedArguments = new WeakMap<object, unknown>();
 const JsonParse = JSON.parse;
 const JsonStringify = JSON.stringify;
@@ -729,6 +743,23 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
   const gateCache = options.callGate ? gatedProxyCache(options.callGate) : undefined;
   const lookupCached = (obj: object): object | undefined =>
     gateCache ? gateCache.get(obj) : proxyCache.get(obj)?.get(cacheKey);
+
+  // The guards this membrane made for the objects that were passed to its host functions
+  const gateGuards = options.callGate ? gatedArgumentGuardCache(options.callGate) : undefined;
+  const lookupGuard = (obj: object): object | undefined =>
+    gateGuards ? gateGuards.get(obj) : argumentGuards.get(obj)?.get(cacheKey);
+  const storeGuard = (obj: object, guard: object): void => {
+    if (gateGuards) {
+      gateGuards.set(obj, guard);
+      return;
+    }
+    let guards = argumentGuards.get(obj);
+    if (!guards) {
+      guards = new Map<string, object>();
+      argumentGuards.set(obj, guards);
+    }
+    guards.set(cacheKey, guard);
+  };
 
   // Check if already proxied with this config
   const cached = lookupCached(target);
@@ -854,7 +885,7 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
       if (value === null || typeof value !== 'object') return value;
       if (proxySet.has(value) || guardedArguments.has(value) || Array.isArray(value)) return value;
       if (heldBySandbox && heldBySandbox(value)) return value;
-      const existing = argumentGuards.get(value);
+      const existing = lookupGuard(value);
       if (existing) return existing;
       const original = value;
       // Over an empty object, not over the script's object: a frozen member of the target would
@@ -878,7 +909,7 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         // What a host function stores in the object is a host value like any other
         set: (_shell, property, stored) => ReflectSet(original, property, toSandbox(stored), original),
       });
-      argumentGuards.set(original, guard);
+      storeGuard(original, guard);
       guardedArguments.set(guard, original);
       return guard;
     };
