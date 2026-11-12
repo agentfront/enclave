@@ -10,12 +10,12 @@ Enclave uses a defense-in-depth approach with 6 independent security layers. Eac
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
 flowchart TD
-    L0["Layer 0: Pre-Scanner<br/>• Input size limits<br/>• Nesting depth limits<br/>• ReDoS pattern detection<br/>• Unicode attack detection"]
+    L0["Layer 0: Pre-Scanner<br/>• Input size limits<br/>• Nesting depth limits<br/>• ReDoS analysis of regex literals<br/>• Look-alike letter check"]
     L1["Layer 1: AST Validation<br/>• Block dangerous constructs<br/>• Enforce allowed globals<br/>• Restrict control flow"]
     L2["Layer 2: Code Transformation<br/>• Wrap in safe runtime<br/>• Proxy tool calls<br/>• Instrument loops"]
-    L3["Layer 3: AI Scoring Gate (Optional)<br/>• Semantic attack detection<br/>• Exfiltration pattern recognition<br/>• Risk scoring"]
+    L3["Layer 3: AI Scoring Gate (Optional)<br/>• Heuristic risk score<br/>• Exfiltration-like tool sequences<br/>• Thresholds"]
     L4["Layer 4: Runtime Sandbox<br/>• Isolated vm context<br/>• Controlled globals<br/>• Resource limits enforced"]
-    L5["Layer 5: Output Sanitization<br/>• Stack trace sanitization<br/>• Reference token resolution<br/>• Result validation"]
+    L5["Layer 5: Output Sanitization<br/>• Result copied into plain data<br/>• Errors as bounded text<br/>• Result size check"]
 
     L0 --> L1 --> L2 --> L3 --> L4 --> L5
 
@@ -29,20 +29,19 @@ flowchart TD
 
 ## Layer 0: Pre-Scanner
 
-Runs BEFORE parsing to catch DoS attacks that could crash the parser:
+Runs before the validator parses the script, so that the parser is not handed input it cannot cope with. `Enclave` runs the pre-scanner with its `standard` preset, whatever the AST preset:
 
-| Check | Limit | Purpose |
-|-------|-------|---------|
-| Input size | 100MB max | Memory exhaustion |
-| Line length | 100K chars | Minified code bombs |
-| Nesting depth | 200 levels | Stack overflow |
-| String literals | 5MB each | Embedded data attacks |
-| Regex patterns | 1K chars | ReDoS prevention |
+| Check | Limit in the enclave | Purpose |
+|-------|----------------------|---------|
+| Input size | 5MB | Memory exhaustion |
+| Lines | 10,000 lines of at most 10,000 chars | Minified code bombs |
+| Nesting depth | 50 levels | Stack overflow |
+| String literals | 500KB each, 5MB in total | Embedded data attacks |
+| Regex literals | 30 of at most 500 chars, analyzed for ReDoS | ReDoS prevention |
 
-Pre-scanner also detects:
-- **BiDi attacks** (Trojan Source CVE-2021-42574)
-- **Invisible characters** (zero-width spaces, etc.)
-- **Homoglyph attacks** (lookalike characters)
+The `standard` preset also refuses a null byte and a fixed list of look-alike letters (Cyrillic, Greek and full-width forms of letters such as `a`, `e` and `o`), anywhere in the script. It does not refuse bidirectional control characters (the characters of Trojan Source, CVE-2021-42574) or invisible characters. Those checks are part of the stricter [pre-scanner presets](/core-libraries/ast-guard/pre-scanner) of `@enclave-vm/ast`, which a host can run on a script itself before it calls `run()`.
+
+A script is also limited to 5,242,880 characters, checked before anything parses it.
 
 ## Layer 1: AST Validation
 
@@ -97,7 +96,7 @@ Transformations include:
 
 ## Layer 3: AI Scoring Gate
 
-Optional semantic analysis that detects attack patterns beyond static analysis:
+An optional heuristic: it scores a script by its tool calls (names, argument names, literal values, order, loops) and refuses it at a threshold. It flags patterns that look risky; a low score does not show that a script is safe.
 
 | Pattern | Score | Example |
 |---------|-------|---------|
@@ -123,8 +122,8 @@ Code executes in an isolated Node.js vm context:
 
 - **Fresh context** - No access to host scope
 - **Controlled globals** - Only whitelisted APIs available
-- **Resource limits** - Timeout, iterations, tool calls enforced
-- **Optional worker isolation** - OS-level memory separation
+- **Resource limits** - Timeout, memory accounting, iterations, tool calls
+- **Optional worker pool** - A heap limit per worker thread and a stop that does not depend on the script
 
 ### What's Available in the Sandbox
 
@@ -134,7 +133,7 @@ Math.random()               // ✓ Safe math
 JSON.parse('{"a":1}')       // ✓ JSON handling
 [1,2,3].map(x => x * 2)     // ✓ Array methods
 await callTool('api', {})   // ✓ Tool calls (proxied)
-console.log('debug')        // ✓ Console (rate-limited)
+console.log('debug')        // ✓ Console, with a consoleHandler or at PERMISSIVE (rate-limited)
 
 // NOT available:
 process.env.SECRET          // ✗ No process access
@@ -146,9 +145,9 @@ fetch('http://evil.com')    // ✗ No network
 
 Results are sanitized before returning to the caller:
 
-- **Stack trace sanitization** - Remove internal paths and sensitive info
-- **Reference resolution** - Resolve sidecar tokens to actual data
-- **Type validation** - Ensure result is serializable
+- **Plain data** - The returned value is copied into plain host data; functions, symbols and prototype keys are dropped
+- **Size check** - A value larger than the memory limit allows is refused
+- **Errors as text** - `result.error` holds a `name` and a `message` of bounded length. An error made inside the sandbox has no stack; for the errors that have one, `sanitizeStackTraces` removes paths and frames
 
 ## Security Level Presets
 
@@ -165,12 +164,11 @@ Enclave provides preset configurations:
 
 - **Code injection** - Blocked by AST validation
 - **Infinite loops** - Limited by maxIterations
-- **Resource exhaustion** - Limited by timeout and limits
-- **Prototype pollution** - Blocked by AST validation
+- **Resource exhaustion** - Limited by the timeout, the memory accounting and the other limits (see below for what they cover)
+- **Prototype pollution** - Blocked by AST validation and by the runtime
 - **Sandbox escape** - Blocked by controlled globals
-- **Information leakage** - Stack traces sanitized
-- **ReDoS attacks** - Pre-scanner detection
-- **Unicode attacks** - BiDi and homoglyph detection
+- **Information leakage** - Errors made in the sandbox carry no stack; host stacks can be sanitized
+- **ReDoS attacks** - AgentScript has no regular expressions, and with the default preset the script's realm cannot run one
 
 ## What Enclave Does NOT Protect Against
 
@@ -178,6 +176,9 @@ Enclave provides preset configurations:
 - **Algorithmic complexity** - O(n²) algorithms run within limits
 - **Business logic attacks** - Tool-level validation required
 - **Side effects** - Tool calls have real effects
+- **A hard time or memory bound in process** - In process, the timeout and `memoryLimit` are the enclave's own accounting, not the engine's. The deadline is checked between the steps of the script's own code, so one call into a built-in is bounded by the size of what it works on, not by `timeout`; `memoryLimit` counts the operations that make text and arrays grow, not copies, objects, Maps or Sets. For the engine's own bounds, use the [worker pool](/core-libraries/enclave-vm/worker-pool), or a child process or container with limits of the operating system
+- **A host process that survives whatever a worker allocates** - A worker thread shares the process; its heap limit is a backstop, not a guarantee
+- **Misleading text in a script** - With the enclave's pre-scanner preset, bidirectional control characters and invisible characters in a script are not refused
 
 ## Best Practices
 

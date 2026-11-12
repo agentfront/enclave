@@ -100,10 +100,10 @@ const customEnclave = new Enclave({
 | maxToolCalls          | 10     | 50     | 100      | 1,000      |
 | maxConsoleCalls       | 100    | 500    | 1,000    | 10,000     |
 | maxConsoleOutputBytes | 64KB   | 256KB  | 1MB      | 10MB       |
+| maxSanitizeDepth      | 5      | 10     | 20       | 50         |
+| maxSanitizeProperties | 50     | 100    | 500      | 1,000      |
 | sanitizeStackTraces   | YES    | YES    | NO       | NO         |
-| blockTimingAPIs       | YES    | NO     | NO       | NO         |
-| allowUnboundedLoops   | NO     | NO     | YES      | YES        |
-| unicodeSecurityCheck  | YES    | YES    | NO       | NO         |
+| allowFunctionsInGlobals | NO   | NO     | NO       | YES        |
 
 <Warning>
   Use `STRICT` for any untrusted code, including AI-generated scripts from external sources or user-submitted scripts.
@@ -171,16 +171,16 @@ Code executes in an isolated Node.js vm context:
 
 - **Isolated context**: Fresh context with no access to host environment
 - **Controlled globals**: Only whitelisted globals available (`Math`, `JSON`, `Array`, etc.)
-- **Resource limits**: Timeout, iteration count, tool call limits, and console rate limits enforced
-- **Stack sanitization**: Error stack traces sanitized to prevent information leakage
+- **Resource limits**: Timeout, memory accounting, iteration count, tool call limits, and console rate limits. In process the timeout and the memory limit are the enclave's own accounting, not the engine's
+- **No stack from the sandbox**: An error made inside the sandbox has no `stack`; the stack of an error made outside it is sanitized with `sanitizeStackTraces`
 
 ### Layer 4: Reference Sidecar (Optional)
 
 When enabled, large data is handled separately:
 
-- **Large data extraction**: Strings exceeding the threshold are stored in sidecar storage
-- **Reference tokens**: Large strings are replaced with safe reference tokens (`__ref_abc123`)
-- **Lazy resolution**: Data is only resolved when explicitly accessed
+- **Large string storage**: A string literal of the script, or a tool result that is a string as a whole, of at least the threshold size is stored in the sidecar
+- **Reference tokens**: The script holds a reference token (`__REF_<uuid>__`) in its place and cannot read the data
+- **Resolution at the tool boundary**: A token in the arguments of a tool call is replaced with the data before the tool handler is called
 - **Composite blocking**: String concatenation with references can be blocked (`allowComposites: false`)
 
 ---
@@ -191,13 +191,16 @@ When enabled, large data is handled separately:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `timeout` | number | 30000 | Maximum execution time in milliseconds |
+| `timeout` | number | 30000 | Maximum execution time in milliseconds (cooperative in process; the worker pool has a hard stop) |
 | `maxToolCalls` | number | 100 | Maximum number of tool calls allowed per execution |
 | `maxIterations` | number | 10000 | Maximum loop iterations allowed (prevents infinite loops) |
+| `memoryLimit` | number | 1048576 | Memory limit in bytes (1 MB), as the enclave counts it; `0` switches the tracking off |
 | `toolHandler` | function | - | Async function that handles `callTool()` invocations |
 | `globals` | object | - | Additional globals to make available in the script context |
 | `validate` | boolean | true | Whether to validate code with ast-guard before execution |
 | `transform` | boolean | true | Whether to transform code before execution |
+
+A limit must be a finite integer in its range and a switch a boolean; the constructor throws a `TypeError` otherwise, and an option passed as `undefined` has its default. See [Configuration](/core-libraries/enclave-vm/configuration) for the ranges and the complete list.
 
 ### Console Limits
 
@@ -211,10 +214,11 @@ When enabled, large data is handled separately:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `sidecar.enabled` | boolean | false | Enable the sidecar feature for large data handling |
-| `sidecar.maxTotalSize` | number | 10MB | Maximum total size of all stored references |
-| `sidecar.maxReferenceSize` | number | 1MB | Maximum size of a single reference |
-| `sidecar.extractionThreshold` | number | 1024 | Minimum string size to extract to sidecar |
-| `sidecar.allowComposites` | boolean | false | Allow string concatenation with reference tokens |
+| `sidecar.maxTotalSize` | number | by level (256MB at `STANDARD`) | Maximum total size of all stored references |
+| `sidecar.maxReferenceSize` | number | by level (64MB at `STANDARD`) | Maximum size of a single reference |
+| `sidecar.extractionThreshold` | number | by level (1MB at `STANDARD`) | Size from which a string is stored in the sidecar |
+| `sidecar.maxTotalResolvedSize` | number | twice `maxTotalSize` | Maximum size of everything one execution resolves for its tool calls |
+| `sidecar.allowComposites` | boolean | by level (`false` at `STRICT` and `SECURE`) | Allow string concatenation with reference tokens |
 
 ---
 
@@ -248,7 +252,7 @@ const enclave = new Enclave({
 | Pattern | Description |
 |---------|-------------|
 | `EXFIL_LIST_SEND` | List/query followed by send/export |
-| `RAPID_ENUMERATION` | Same operation called >10 times in 5s |
+| `RAPID_ENUMERATION` | Same operation called more than `rapidEnumerationThreshold` times (default 30) in 5s |
 | `CREDENTIAL_EXFIL` | Credential access + external operation |
 | `BULK_OPERATION` | Bulk/batch/mass operation names |
 | `DELETE_AFTER_ACCESS` | Delete operation after data access |
@@ -277,27 +281,27 @@ const enclave = new Enclave({
 
 ## AI Scoring Gate
 
-The Scoring Gate adds semantic security analysis that detects attack patterns beyond static AST validation:
+The Scoring Gate gives a script a heuristic risk score from its tool calls before it runs, and refuses it at a threshold. It flags patterns that look risky; a low score does not show that a script is safe. It looks for:
 
 - **Data exfiltration** - list followed by send or query followed by export sequences
 - **Excessive access** - High limits, wildcard queries
-- **Fan-out attacks** - Tool calls inside loops
-- **Sensitive data access** - Passwords, tokens, PII fields
+- **Fan-out** - Tool calls inside loops
+- **Sensitive data access** - Names that look like passwords, tokens, PII fields
 
 ```ts
 import { Enclave } from '@enclave-vm/core';
 
-// Rule-based scorer (~1ms latency, zero dependencies)
+// Rule-based scorer (zero dependencies)
 const enclave = new Enclave({
   scoringGate: {
     scorer: 'rule-based',
-    blockThreshold: 70,     // Score >= 70 blocks execution
-    warnThreshold: 40,      // Score >= 40 logs warning
-    failOpen: true,         // Allow if scoring fails (default)
+    blockThreshold: 70,     // Score >= 70: the script is not run
+    warnThreshold: 40,      // Score >= 40: scoringResult.warned is set
+    failOpen: true,         // Run the script if scoring fails (default)
   },
 });
 
-// External API scorer (best detection, ~100ms latency)
+// External API scorer (a scoring service of your own)
 const enclaveWithApi = new Enclave({
   scoringGate: {
     scorer: 'external-api',
@@ -313,12 +317,14 @@ const enclaveWithApi = new Enclave({
 
 ### Scorer Types
 
-| Type           | Latency | Dependencies   | Detection |
-| -------------- | ------- | -------------- | --------- |
-| `disabled`     | 0ms     | None           | None      |
-| `rule-based`   | ~1ms    | None           | Good      |
-| `local-llm`    | ~5-10ms | Model download | Better    |
-| `external-api` | ~100ms  | Network        | Best      |
+| Type           | Dependencies | What the score is computed from |
+| -------------- | ------------ | ------------------------------- |
+| `disabled`     | None         | No scoring |
+| `rule-based`   | None         | The rules below, over features extracted from the script |
+| `local-llm`    | Optional     | Your `customAnalyzer`, or a built-in keyword heuristic over the extracted features. No model computes the score |
+| `external-api` | Network      | The answer of your scoring service, which receives the extracted features |
+
+See [AI Scoring Gate](/core-libraries/enclave-vm/ai-scoring) for the options, among them `failOpen`, `customRules` and `toolNamespaces`.
 
 ### Detection Rules
 
@@ -337,7 +343,7 @@ const enclaveWithApi = new Enclave({
 
 ## Worker Pool Adapter
 
-For OS-level memory isolation, use the worker threads adapter:
+To run scripts in worker threads, with a heap limit per worker and a stop that does not depend on the script, use the worker threads adapter. A worker thread shares the process with the host; it is not process isolation:
 
 ```ts
 import { Enclave } from '@enclave-vm/core';
@@ -357,8 +363,8 @@ const enclave = new Enclave({
 - **Pool management** - Auto-scaling with min/max workers
 - **Memory monitoring** - Workers recycled when exceeding limits
 - **Hard halt** - Force terminate via `worker.terminate()`
-- **Rate limiting** - Message flood protection
-- **Dual-layer sandbox** - Worker thread + VM context isolation
+- **Rate and size limits** - Messages per second, counted per execution, and the size of one message (`maxMessageSizeBytes`)
+- **The same sandbox** - The double VM runs inside the worker
 
 ### Worker Pool Presets
 
@@ -374,17 +380,17 @@ const enclave = new Enclave({
 
 ## Memory Tracking & Limits
 
-Setting the `memoryLimit` option instruments string and array allocations:
+The `memoryLimit` option (default 1 MB; `0` switches it off) counts the operations that make text and arrays grow. A copy is not charged, and objects, Maps and Sets are not counted: it is an estimate, not a limit of the engine's heap.
 
 ```typescript
 import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({ memoryLimit: 32 * 1024 * 1024 });
-const result = await enclave.execute(code);
+const result = await enclave.run(code);
 
 if (!result.success && result.error?.code === 'MEMORY_LIMIT_EXCEEDED') {
   console.warn(
-    `Script used ${result.error.data.usedBytes} bytes (limit ${result.error.data.limitBytes})`,
+    `Script used ${result.error.data?.usedBytes} bytes (limit ${result.error.data?.limitBytes})`,
   );
 }
 
@@ -408,31 +414,38 @@ The sidecar handles large data in AgentScript without embedding it in the script
 
 ### How It Works
 
-1. **Extraction**: When a tool returns data with large strings (> `extractionThreshold`), those strings are stored in the sidecar and replaced with reference tokens (`__ref_abc123`)
-2. **Lazy Resolution**: When script code accesses a reference token, it's resolved just-in-time to the actual data
-3. **Safe Property Access**: Only explicit property accesses trigger resolution, preventing data exfiltration
+1. **Storing**: A string of at least `extractionThreshold` bytes is stored in the sidecar and replaced by a reference token (`__REF_<uuid>__`). This applies to a string literal in the script and to a tool result that is a string as a whole; an object or an array is returned as it is.
+2. **The script holds a token**: Nothing is resolved for the script. It cannot read the stored data.
+3. **Resolving at the tool boundary**: A token in the arguments of a tool call is replaced with the stored data before the tool handler is called.
 
 ```ts
 const enclave = new Enclave({
   toolHandler: async (name, args) => {
-    if (name === 'documents:get') {
-      // Returns a 2MB document - automatically stored in sidecar
-      return { content: '...2MB of text...' };
+    if (name === 'documents:getContent') {
+      // A 2MB string: stored in the sidecar, the script gets a token
+      return await loadDocumentText(args.id);
+    }
+    if (name === 'documents:save') {
+      // args.content is the text again: the token was resolved
+      return await saveDocument(args.id, args.content);
     }
   },
   sidecar: {
     enabled: true,
-    extractionThreshold: 1024,    // Extract strings > 1KB
-    allowComposites: false,        // Block: ref + "_suffix" (security)
+    extractionThreshold: 1024,    // Store strings of 1KB and more
+    allowComposites: false,        // Refuse: ref + "_suffix"
   },
 });
 
 const result = await enclave.run(`
-  const doc = await callTool('documents:get', { id: 'doc-123' });
-  // doc.content is a reference token, resolved on access
-  return { wordCount: doc.content.split(' ').length };
+  const content = await callTool('documents:getContent', { id: 'doc-123' });
+  // content is a reference token here, not the text
+  await callTool('documents:save', { id: 'doc-copy', content });
+  return 'copied';
 `);
 ```
+
+See [Reference Sidecar](/core-libraries/enclave-vm/reference-sidecar).
 
 ---
 
@@ -447,8 +460,9 @@ interface ExecutionResult<T> {
   error?: {               // Error details (if failed)
     name: string;
     message: string;
-    code: string;
-    stack?: string;
+    code?: string;
+    stack?: string;       // Only for errors made outside the sandbox
+    data?: Record<string, unknown>;
   };
   stats: {
     duration: number;      // Execution time in ms
@@ -462,11 +476,13 @@ interface ExecutionResult<T> {
 
 | Code               | Meaning                    | Action                                |
 | ------------------ | -------------------------- | ------------------------------------- |
-| `VALIDATION_ERROR` | AST validation failed      | Fix the code - blocked construct used |
-| `EXECUTION_ERROR`  | Runtime error in script    | Fix script logic                      |
-| `TIMEOUT`          | Execution exceeded timeout | Optimize or increase timeout          |
-| `TOOL_ERROR`       | Tool call failed           | Check tool input/availability         |
+| `VALIDATION_ERROR` | AST validation failed, or the script is too large | Fix the code - blocked construct used |
+| `DOUBLE_VM_EXECUTION_ERROR` | The script failed in the sandbox: an error it did not catch, a failed tool call, the tool-call or iteration limit, a timeout (`error.message` says which) | Fix script logic, check the tool, or raise the limit |
 | `MEMORY_LIMIT_EXCEEDED` | Memory limit exceeded | Reduce memory usage or increase limit |
+| `SECURITY_VIOLATION` | A dynamic import, or a blocked operation at `STRICT` or `SECURE` | Fix the code |
+| `ENCLAVE_ERROR` | A failure outside the sandbox, such as a syntax error in the script | Fix the code |
+
+See [Configuration](/core-libraries/enclave-vm/configuration#error-codes) for the complete list.
 
 ---
 
@@ -557,14 +573,15 @@ const enclave = new Enclave({
 - **Resource exhaustion** - Limited by `timeout` and `maxToolCalls`
 - **I/O flood attacks** - Limited by `maxConsoleOutputBytes` and `maxConsoleCalls`
 - **Global access** - Blocked by AST validation and isolated context
-- **Prototype pollution** - Blocked by AST validation
-- **Information leakage** - Stack traces sanitized
+- **Prototype pollution** - Blocked by AST validation and by the runtime
+- **Information leakage** - Errors made in the sandbox carry no stack; host stacks can be sanitized
 
 ### What Enclave Does NOT Protect Against
 
 - **Tool abuse** - Scripts can call allowed tools; limit what's available
 - **Algorithmic complexity** - Scripts can run O(n^2) algorithms within limits
-- **Memory exhaustion** - Large arrays/objects within timeout
+- **Memory exhaustion** - `memoryLimit` is an estimate over text and arrays that grow; copies, objects, Maps and Sets are not counted. For the engine's own limit, use the worker pool or a process with a memory limit of the operating system
+- **A hard time bound in process** - The deadline is checked between the steps of the script's own code, so one call into a built-in is not bounded by `timeout`
 - **Side effects** - Tool calls have real effects; use read-only tools where possible
 
 ## Links
