@@ -11,6 +11,7 @@
  */
 
 import { buildIframeDocument, escapeScriptText, safeJsonStringify, type IframeDocument } from './iframe-html-builder';
+import { isBindableName } from '../utils/global-names';
 import { numberLiteral } from '../utils/numeric-option';
 import type { SerializedIframeConfig } from '../types';
 
@@ -39,6 +40,15 @@ export function generateInnerIframeDocument(options: InnerIframeBootstrapOptions
   return buildIframeDocument(script, { title: 'Enclave Inner Sandbox' });
 }
 
+/**
+ * The names the host configured for the script (custom globals and tool namespaces) that become
+ * parameters of the function the script runs in. See the "Execute User Code" section.
+ */
+function scriptBindingNames(config: SerializedIframeConfig): string[] {
+  const names = [...Object.keys(config.globals ?? {}), ...(config.toolNamespaces ?? []).map((ns) => ns.name)];
+  return names.filter((name, index) => isBindableName(name) && names.indexOf(name) === index);
+}
+
 function generateInnerIframeScript(userCode: string, config: SerializedIframeConfig, requestId: string): string {
   const blockedProperties = safeJsonStringify(config.blockedProperties);
   const throwOnBlocked = config.throwOnBlocked;
@@ -51,6 +61,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   const maxConsoleOutputBytes = numberLiteral('maxConsoleOutputBytes', config.maxConsoleOutputBytes);
   const maxSanitizeDepth = numberLiteral('maxSanitizeDepth', config.maxSanitizeDepth);
   const maxSanitizeProperties = numberLiteral('maxSanitizeProperties', config.maxSanitizeProperties);
+  const bindingNames = scriptBindingNames(config);
 
   return `
 "use strict";
@@ -347,13 +358,13 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     msg.__enclave_msg__ = true;
     msg.requestId = requestId;
     try {
-      window.parent.postMessage(msg, '*');
+      outerWindow.postMessage(msg, '*');
     } catch(e) { /* ignore */ }
   }
 
   // Listen for messages from outer iframe
   window.addEventListener('message', function(event) {
-    if (event.source !== window.parent) return;
+    if (event.source !== outerWindow) return;
     var data = event.data;
     if (!data || data.__enclave_msg__ !== true) return;
     if (data.requestId !== requestId) return;
@@ -851,13 +862,30 @@ ${CONNECTION_BACKSTOP_SOURCE}
     decodeURIComponent: decodeURIComponent
   };
 
+  // What the host configured for the script, by name: its custom globals and tool namespaces.
+  // The script reaches them as parameters of the function it runs in (see "Execute User Code"),
+  // so a configured name means the host's value whatever else has that name here: a property
+  // of this window, or a variable of this code.
+  var scriptBindings = { __proto__: null };
+
+  // A configured name is also defined on the window, with its prefixed twin, where that takes
+  // nothing away: never over a property the window has, and never over a name of the runtime.
+  function addConfiguredGlobal(name, value) {
+    scriptBindings[name] = value;
+    if (!(name in window) && !_ReflectApply(_hasOwnProperty, safeGlobals, [name])) {
+      safeGlobals[name] = value;
+    }
+    var twin = '__safe_' + name;
+    if (!_ReflectApply(_hasOwnProperty, safeGlobals, [twin])) {
+      safeGlobals[twin] = value;
+    }
+  }
+
   // Inject custom globals if provided
   var customGlobals = ${safeJsonStringify(config.globals || {})};
-  for (var cgKey in customGlobals) {
-    if (customGlobals.hasOwnProperty(cgKey)) {
-      safeGlobals[cgKey] = createSecureProxy(customGlobals[cgKey]);
-      safeGlobals['__safe_' + cgKey] = createSecureProxy(customGlobals[cgKey]);
-    }
+  var customGlobalNames = _objectKeys(customGlobals);
+  for (var cg = 0; cg < customGlobalNames.length; cg++) {
+    addConfiguredGlobal(customGlobalNames[cg], createSecureProxy(customGlobals[customGlobalNames[cg]]));
   }
 
   // Tool namespaces (mail.list(args)): frozen, null-prototype objects built in this realm whose
@@ -884,21 +912,23 @@ ${CONNECTION_BACKSTOP_SOURCE}
         target[method.name] = bind(method.toolName);
       }
       Object.freeze(target);
-      safeGlobals[ns.name] = target;
-      safeGlobals['__safe_' + ns.name] = target;
+      addConfiguredGlobal(ns.name, target);
     }
   })();
 
-  for (var gKey in safeGlobals) {
-    if (safeGlobals.hasOwnProperty(gKey)) {
-      try {
-        _defineProperty(window, gKey, {
-          value: safeGlobals[gKey],
-          writable: false,
-          configurable: false,
-          enumerable: false
-        });
-      } catch(e) {}
+  var safeGlobalNames = _objectKeys(safeGlobals);
+  for (var sg = 0; sg < safeGlobalNames.length; sg++) {
+    var gKey = safeGlobalNames[sg];
+    try {
+      _defineProperty(window, gKey, {
+        value: safeGlobals[gKey],
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+    } catch(e) {
+      // A script must not run with one of its globals missing or still the browser's
+      failSetup('the global "' + gKey + '" could not be defined');
     }
   }
 
@@ -926,12 +956,19 @@ ${config.blockRegExp ? REGEXP_BACKSTOP_SOURCE : ''}
     }
 
     try {
-      // The transformed code defines __ag_main as a function declaration.
-      // We embed it directly — CSP 'unsafe-inline' allows inline scripts
-      // but blocks eval/new Function.
-      ${generateUserCodeExecution(userCode)}
+      // The script is the body of a function of its own, embedded as text (the document's policy
+      // allows this one script and no code made from a string). The function's parameters are the
+      // names the host configured: custom globals and tool namespaces. A parameter is the
+      // innermost binding of its name, so it is what the script reaches, not a property of this
+      // window or a variable of this code that has the same name. The transformed code defines
+      // __ag_main as a function declaration; that function is what is run.
+      var __ag_entry = await (async function(${bindingNames.join(', ')}) {
+        ${generateUserCodeExecution(userCode)}
 
-      var result = typeof __ag_main === 'function' ? await __ag_main() : undefined;
+        return typeof __ag_main === 'function' ? __ag_main : undefined;
+      })(${bindingNames.map((name) => `scriptBindings[${safeJsonStringify(name)}]`).join(', ')});
+
+      var result = typeof __ag_entry === 'function' ? await __ag_entry() : undefined;
 
       sendToOuter({
         type: 'result',

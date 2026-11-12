@@ -40,6 +40,7 @@ import type {
 } from './types';
 import { SECURITY_LEVEL_CONFIGS, DEFAULT_DOUBLE_IFRAME_CONFIG } from './types';
 import { sanitizeStackTrace } from './utils/sanitize-stack';
+import { isRuntimeName } from './utils/global-names';
 import { MAX_TIMER_DELAY_MS, requireFiniteNumber } from './utils/numeric-option';
 
 /**
@@ -338,6 +339,17 @@ export class BrowserEnclave {
       toolHandler: options.toolHandler,
       secureProxyConfig,
     };
+
+    // A custom global cannot take a name the runtime owns: the helpers transformed code calls,
+    // the loop counters and the iteration limit would otherwise be whatever the global holds.
+    for (const name of Object.keys(this.config.globals)) {
+      if (isRuntimeName(name)) {
+        throw new TypeError(
+          `Custom global "${name}" has a name that is reserved for the sandbox runtime ` +
+            '(names starting with __safe_, __ag_ or __iter_, and __maxIterations).',
+        );
+      }
+    }
 
     // Fails fast on a global that cannot reach the sandbox; run() serializes again to pick up later changes.
     const initialGlobals = serializeGlobals(this.config.globals);
