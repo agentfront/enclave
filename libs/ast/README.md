@@ -449,6 +449,16 @@ const rules = createAgentScriptPreset({
 | `reservedPrefixes`                | `string[]` | `['__ag_', '__safe_']`     | Reserved prefixes that user code cannot use                    |
 | `staticCallTarget`                | `object`   | `{ enabled: true }`        | Configuration for static call target validation                |
 | `callToolValidation`              | `object`   | -                          | Validation rules for callTool arguments                        |
+| `hostObjectGlobals`               | `string[]` | `[]`                       | Globals that are host objects (tool namespaces), not strings   |
+| `requireDirectRegexMethodCalls`   | `boolean`  | `false`                    | Refuse `match` / `matchAll` / `search` as anything but a call  |
+| `additionalAllowedSyntax`         | `string[]` | `[]`                       | Node types (or variants of one) to allow beyond the allowlist  |
+
+`requireDirectRegexMethodCalls` is for a host where the validator is the only thing between a script and the
+regular-expression engine. A direct call of `match`, `matchAll` or `search` is always checked, and `.call`,
+`.apply`, `.bind` and a template tag on them are always refused; with the option, the method cannot be read as a
+value or taken by destructuring either. That also refuses reading a field of ordinary data with one of these
+names (`params.search`), so it is off by default: `@enclave-vm/core` by default runs scripts in a realm where
+regular expressions cannot run whatever a script does.
 
 **Example with all options:**
 

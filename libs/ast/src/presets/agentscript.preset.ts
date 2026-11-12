@@ -322,6 +322,22 @@ export interface AgentScriptOptions {
   hostObjectGlobals?: string[];
 
   /**
+   * Refuse every use of a property named `match`, `matchAll` or `search` that is not a direct
+   * call: reading it as a value, a member of it, and taking it by destructuring. (A direct call
+   * is checked as always; `.call`, `.apply`, `.bind` and a template tag are always refused.)
+   *
+   * The method as a value is where every call the validator cannot check starts from. Refusing
+   * the value also refuses a field of ordinary data with one of these names (`params.search`),
+   * so it is off by default: by default the realm of `@enclave-vm/core` refuses to run a regular
+   * expression whatever a script does. Turn it on where the validator is the only thing between
+   * a script and the regular-expression engine (a realm that is not reduced to the allowlist).
+   * Methods of the globals listed in `hostObjectGlobals` are not affected.
+   *
+   * Default: false
+   */
+  requireDirectRegexMethodCalls?: boolean;
+
+  /**
    * Additional identifiers to block beyond the default dangerous set.
    *
    * These always take precedence over `allowedGlobals`. If an identifier
@@ -666,6 +682,7 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
     new NoRegexMethodsRule({
       allowStringArguments: false, // Block even string arguments for maximum security
       hostObjectNames: (options.hostObjectGlobals ?? []).flatMap((name) => [name, `__safe_${name}`]),
+      requireDirectCall: options.requireDirectRegexMethodCalls === true,
     }),
   );
 
