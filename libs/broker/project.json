@@ -55,6 +55,8 @@
     },
     "test": {
       "executor": "@nx/jest:jest",
+      "dependsOn": ["build", "^build"],
+      "inputs": ["default", "^production", "{workspaceRoot}/jest.preset.js", "securitySpecs"],
       "outputs": ["{workspaceRoot}/coverage/libs/broker"],
       "options": {
         "jestConfig": "libs/broker/jest.config.ts"

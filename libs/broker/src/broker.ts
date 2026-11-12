@@ -7,6 +7,9 @@
  */
 
 import type { SessionId, StreamEvent, SessionLimits } from '@enclave-vm/types';
+import { mergeSessionLimits, resolveSessionLimits } from './limits';
+import { resolveHistoryLimits } from './session-history';
+import type { SessionHistoryLimits } from './session-history';
 import type { CreateEnclaveOptions, SessionFinalResult } from '@enclave-vm/core';
 import { ToolRegistry, createToolRegistry } from './tool-registry';
 import type { ToolDefinition } from './tool-registry';
@@ -32,10 +35,20 @@ export interface BrokerConfig {
   enclave?: CreateEnclaveOptions;
 
   /**
-   * Default session limits
+   * Default session limits. They bound every session of this broker: a session created in
+   * process may name its own value for a limit, a session created over the HTTP routes may only
+   * lower one.
    */
   limits?: Partial<SessionLimits>;
+
+  /**
+   * Bounds of the events each session keeps for a replay.
+   * @default { maxEvents: 10000, maxBytes: 4194304 }
+   */
+  history?: SessionHistoryLimits;
 }
+
+const KNOWN_CONFIG_KEYS = ['sessions', 'enclave', 'limits', 'history'];
 
 /**
  * Quick execution options
@@ -86,18 +99,45 @@ export class Broker {
   private readonly sessionManager: SessionManager;
   private readonly config: BrokerConfig;
   private readonly openApiSources: OpenApiSource[] = [];
+  private readonly defaultLimits: Readonly<Required<SessionLimits>>;
   private disposed = false;
 
   constructor(config: BrokerConfig = {}) {
+    // A key nothing reads is reported: an option written in the wrong place (a sandbox option
+    // belongs under `enclave`) must not be taken for an option that is in force.
+    for (const key of Object.keys(config)) {
+      if (!KNOWN_CONFIG_KEYS.includes(key)) {
+        console.warn(
+          `[@enclave-vm/broker] Broker: unknown configuration key ${JSON.stringify(key.slice(0, 64))} is ignored`,
+        );
+      }
+    }
+
     this.config = config;
     this.toolRegistry = createToolRegistry();
+
+    // `limits` and `enclave` are the broker's defaults for every session. What the embedder put
+    // into `sessions.defaultSessionConfig` stays in force where these do not name a value.
+    const sessionDefaults = config.sessions?.defaultSessionConfig ?? {};
+    const limits = mergeSessionLimits(sessionDefaults.limits, config.limits);
+    this.defaultLimits = Object.freeze(resolveSessionLimits(limits));
     this.sessionManager = createSessionManager(this.toolRegistry, {
       ...config.sessions,
       defaultSessionConfig: {
-        limits: config.limits,
-        enclaveConfig: config.enclave,
+        ...sessionDefaults,
+        limits,
+        enclaveConfig: config.enclave ?? sessionDefaults.enclaveConfig,
+        history: resolveHistoryLimits({ ...sessionDefaults.history, ...config.history }),
       },
     });
+  }
+
+  /**
+   * The limits of a session that names none: the broker's configuration over the package
+   * defaults. The HTTP routes use them as the ceiling of what a request may ask for.
+   */
+  get sessionLimits(): Readonly<Required<SessionLimits>> {
+    return this.defaultLimits;
   }
 
   // ============================================================================
