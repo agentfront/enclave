@@ -71,6 +71,7 @@ import { guardSandboxRejections } from './sandbox-rejections';
 import { createHostActivity, trackToolCalls } from './execution-deadline';
 import { assertNodeVmAvailable } from './node-vm';
 import { normalizeEnclaveOptions } from './enclave-options';
+import { describeThrown, normalizeErrorText } from './thrown-value';
 
 /**
  * Default security level
@@ -477,10 +478,16 @@ export class Enclave {
    * execution, tool call) and adapter produced the error.
    */
   private applyStackTracePolicy<T>(result: ExecutionResult<T>): ExecutionResult<T> {
-    if (result.success || !result.error?.stack || !this.config.sanitizeStackTraces) {
+    if (result.success || !result.error) {
       return result;
     }
-    return { ...result, error: { ...result.error, stack: sanitizeStackTrace(result.error.stack, true) } };
+    // `name`, `message`, `stack` and `code` are text of bounded length, whichever adapter built
+    // the error and whatever the script threw (see ./thrown-value).
+    const error = normalizeErrorText(result.error);
+    if (error.stack !== undefined && this.config.sanitizeStackTraces) {
+      return { ...result, error: { ...error, stack: sanitizeStackTrace(error.stack, true) } };
+    }
+    return { ...result, error };
   }
 
   /**
@@ -728,13 +735,13 @@ export class Enclave {
         clearTimeout(timeoutId);
         hostActivity.close();
 
-        const err = error as Error;
+        const thrown = describeThrown(error);
         return {
           success: false,
           error: {
-            name: err.name || 'ExecutionError',
-            message: err.message || 'Unknown execution error',
-            stack: err.stack,
+            name: thrown.name || 'ExecutionError',
+            message: thrown.message || 'Unknown execution error',
+            stack: thrown.stack,
             code: 'EXECUTION_ERROR',
           },
           stats: {
@@ -745,13 +752,13 @@ export class Enclave {
         };
       }
     } catch (error: unknown) {
-      const err = error as Error;
+      const thrown = describeThrown(error);
       return {
         success: false,
         error: {
-          name: err.name || 'EnclaveError',
-          message: err.message || 'Unknown enclave error',
-          stack: err.stack,
+          name: thrown.name || 'EnclaveError',
+          message: thrown.message || 'Unknown enclave error',
+          stack: thrown.stack,
           code: 'ENCLAVE_ERROR',
         },
         stats: {

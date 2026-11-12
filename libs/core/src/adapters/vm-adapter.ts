@@ -28,6 +28,7 @@ import { guardSandboxRejections } from '../sandbox-rejections';
 import { createRealmAirlock, type RealmMembrane } from '../realm-airlock';
 import { numericLiteral } from '../enclave-options';
 import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
+import { describeThrown, isMemoryLimitPayload, THROWN_WITHOUT_MESSAGE } from '../thrown-value';
 import {
   INNER_REALM_GUARD_SOURCE,
   INNER_REALM_SYMBOL_REGISTRY_SOURCE,
@@ -1658,7 +1659,9 @@ export class VmAdapter implements SandboxAdapter {
         stats,
       };
     } catch (error: unknown) {
-      const err = error as Error;
+      // What the script threw, as text (see ../thrown-value): nothing below reads the thrown
+      // value itself, which may be any object of the sandbox.
+      const thrown = describeThrown(error);
 
       // Update stats
       stats.duration = Date.now() - startTime;
@@ -1670,22 +1673,24 @@ export class VmAdapter implements SandboxAdapter {
         stats.memoryUsage = memSnapshot.peakTrackedBytes;
       }
 
-      // Handle memory limit errors specially: the host error itself, or the safe error that
-      // replaces it wherever it would otherwise have reached the sandbox realm.
+      // The memory limit: the host error itself, or the safe error that replaces it wherever it
+      // would otherwise have reached the sandbox realm. The safe error only counts where the
+      // tracker did refuse an allocation: a script can throw an object that says the same about
+      // itself. The figures are the tracker's.
       const isMemoryLimit =
-        err instanceof MemoryLimitError ||
-        (typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'MEMORY_LIMIT_EXCEEDED');
+        error instanceof MemoryLimitError ||
+        (memoryTracker?.hasExceededLimit() === true && isMemoryLimitPayload(error));
       if (isMemoryLimit) {
         const snapshot = memoryTracker?.getSnapshot();
         return {
           success: false,
           error: {
             name: 'MemoryLimitError',
-            message: typeof err.message === 'string' ? err.message : 'Memory limit exceeded',
+            message: thrown.message ?? 'Memory limit exceeded',
             code: 'MEMORY_LIMIT_EXCEEDED',
             data: {
-              usedBytes: err instanceof MemoryLimitError ? err.usedBytes : (snapshot?.trackedBytes ?? 0),
-              limitBytes: err instanceof MemoryLimitError ? err.limitBytes : (config.memoryLimit ?? 0),
+              usedBytes: error instanceof MemoryLimitError ? error.usedBytes : (snapshot?.trackedBytes ?? 0),
+              limitBytes: error instanceof MemoryLimitError ? error.limitBytes : (config.memoryLimit ?? 0),
             },
           },
           stats,
@@ -1699,7 +1704,7 @@ export class VmAdapter implements SandboxAdapter {
           success: false,
           error: {
             name: 'VMExecutionError',
-            message: error,
+            message: thrown.message ?? '',
             code: 'VM_EXECUTION_ERROR',
           },
           stats,
@@ -1713,9 +1718,9 @@ export class VmAdapter implements SandboxAdapter {
       return {
         success: false,
         error: {
-          name: err.name || 'VMExecutionError',
-          message: err.message || 'Unknown VM execution error',
-          stack: sanitizeStackTrace(err.stack, shouldSanitize),
+          name: thrown.name || 'VMExecutionError',
+          message: thrown.message || THROWN_WITHOUT_MESSAGE,
+          stack: sanitizeStackTrace(thrown.stack, shouldSanitize),
           code: 'VM_EXECUTION_ERROR',
         },
         stats,
