@@ -87,6 +87,21 @@ describe('InterpreterAdapter (SandboxAdapter)', () => {
     expect(deep.error?.message).toContain('Max call depth exceeded (20)');
   });
 
+  it.each([
+    ['the callback of an array method', 'const rec = (n) => [n].map((m) => rec(m + 1))[0]; return rec(0);'],
+    ['a bound function', 'const rec = (n) => { const again = rec.bind(null, n + 1); return again(); }; return rec(0);'],
+    [
+      'a task of parallel',
+      'const rec = async (n) => (await __safe_parallel([n], (m) => rec(m + 1)))[0]; return rec(0);',
+    ],
+  ])('keeps one chain through %s: the recursion ends at the call depth', async (_name, body) => {
+    // A callback is a call of the function that invokes it, one call deeper
+    const res = await new InterpreterAdapter({ maxCallDepth: 20 }).execute(main(body), makeContext());
+
+    expect(res.success).toBe(false);
+    expect(res.error?.message).toContain('Max call depth exceeded (20)');
+  });
+
   it('bounds the calls in progress over all chains with maxPendingCalls', async () => {
     const script = main(`
       const items = [];
