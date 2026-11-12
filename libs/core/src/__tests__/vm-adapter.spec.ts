@@ -227,6 +227,73 @@ describe('VmAdapter', () => {
       expect(result.success).toBe(true);
       expect(result.value).toBe(50);
     });
+
+    it("should hand back a script's own values that went through a host array", async () => {
+      const items = [{ id: 1 }, { id: 2 }];
+      const enclave = createVmAdapterEnclave({ globals: { items } });
+
+      const result = await enclave.run(`
+        const double = (list) => list.map((n) => n * 2);
+        const mine = { count: 1 };
+        const functions = items.map(() => double);
+        const objects = items.map(() => mine);
+        objects[0].count = 5;
+        return {
+          sameFunction: functions[0] === double,
+          called: functions[0]([1, 2, 3]),
+          sameObject: objects[0] === mine,
+          count: mine.count,
+        };
+      `);
+      enclave.dispose();
+
+      expect(result.error?.message).toBeUndefined();
+      expect(result.value).toEqual({ sameFunction: true, called: [2, 4, 6], sameObject: true, count: 5 });
+      expect(items).toEqual([{ id: 1 }, { id: 2 }]);
+    });
+
+    it('should hand a host value on to a callback as the value the script passed', async () => {
+      const enclave = createVmAdapterEnclave({ globals: { items: [{ id: 1 }], settings: { factor: 3 } } });
+
+      const result = await enclave.run(`
+        const viaReduce = items.reduce((acc) => acc, settings);
+        const viaConcat = items.concat(settings);
+        return {
+          reduce: viaReduce === settings,
+          concat: viaConcat[1] === settings,
+          element: viaConcat[0].id,
+          factor: viaReduce.factor,
+        };
+      `);
+      enclave.dispose();
+
+      expect(result.error?.message).toBeUndefined();
+      expect(result.value).toEqual({ reduce: true, concat: true, element: 1, factor: 3 });
+    });
+
+    it('should run a built-in method of a host value on host values only', async () => {
+      const enclave = createVmAdapterEnclave({ globals: { items: ['a', 'b'] } });
+
+      const result = await enclave.run(`
+        const onHostValue = items.join('-');
+        const mine = { 0: 'x', 1: 'y', length: 2, join: items.join };
+        let onOwnValue = 'no error';
+        try {
+          mine.join('-');
+        } catch (e) {
+          onOwnValue = e.name + ': ' + e.message;
+        }
+        return { onHostValue, onOwnValue, own: ['x', 'y'].join('-') };
+      `);
+      enclave.dispose();
+
+      expect(result.error?.message).toBeUndefined();
+      expect(result.value).toEqual({
+        onHostValue: 'a-b',
+        onOwnValue: expect.stringMatching(/^TypeError: A built-in method of a value passed in globals/),
+        own: 'x-y',
+      });
+    });
   });
 
   describe('Protected Identifiers', () => {

@@ -928,7 +928,12 @@ export class VmAdapter implements SandboxAdapter {
 
       // Every call into a host function passed in `globals` goes through this gate
       // (abort check, maxGlobalFunctionCalls, result sanitization, safe errors).
-      const globalFunctionGate = createGlobalFunctionGate(executionContext, realmBridge, unwrapHostValue);
+      const globalFunctionGate = createGlobalFunctionGate(
+        executionContext,
+        realmBridge,
+        unwrapHostValue,
+        airlock.isRealmValue,
+      );
 
       // The host side of the runtime: only the direct-mode tool call function and the value
       // globals. The sandbox realm has intrinsics of its own; it is given none of the host's.
@@ -940,6 +945,7 @@ export class VmAdapter implements SandboxAdapter {
         globalFunctionGate,
         exposeToSandbox: airlock.toRealm,
         ownedBySandbox: airlock.isRealmValue,
+        heldBySandbox: airlock.isAirlockProxy,
         hostObjects: false,
       });
 
@@ -1484,6 +1490,7 @@ export class VmAdapter implements SandboxAdapter {
                     callGate: globalFunctionGate,
                     exposeToSandbox: airlock.toRealm,
                     ownedBySandbox: airlock.isRealmValue,
+                    heldBySandbox: airlock.isAirlockProxy,
                   }),
                 )
               : value;

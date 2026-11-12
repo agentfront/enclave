@@ -480,11 +480,16 @@ export interface GlobalFunctionCallGate {
  * Refuses calls once the execution is aborted or `maxGlobalFunctionCalls` is spent, sanitizes the
  * return value like a tool result and re-creates it in the sandbox realm (a promise becomes a
  * sandbox-realm promise), and turns host errors into safe errors.
+ *
+ * @param ownedBySandbox Whether a function was made in the sandbox realm. Such a function is the
+ *   script's own, not a host function: the gate does not take a call to it (it would run it on
+ *   copies of its arguments made for the host).
  */
 export function createGlobalFunctionGate(
   context: ExecutionContext,
   realm: SandboxRealmBridge,
   unwrap?: UnwrapSandboxValue,
+  ownedBySandbox?: (value: object) => boolean,
 ): GlobalFunctionCallGate {
   const limits = resultLimits(context);
   const max = resolveMaxGlobalFunctionCalls(context.config);
@@ -498,7 +503,9 @@ export function createGlobalFunctionGate(
   };
 
   return {
-    gates: (target) => !isBuiltinMethod(target),
+    gates: (target) =>
+      !isBuiltinMethod(target) &&
+      !(ownedBySandbox !== undefined && typeof target === 'function' && ownedBySandbox(target)),
     call: (target, thisArg, args) => {
       if (context.aborted) {
         throw createSafeError('Execution aborted');
