@@ -8,10 +8,12 @@
 
 import type { SessionId, StreamEvent, SessionLimits, ErrorPayload } from '@enclave-vm/types';
 import { generateSessionId, generateCallId, EventType, PROTOCOL_VERSION } from '@enclave-vm/types';
-import { SessionEmitter, createSessionEmitter, Enclave } from '@enclave-vm/core';
+import { SessionEmitter, Enclave } from '@enclave-vm/core';
 import type { SessionStateValue, SessionFinalResult, CreateEnclaveOptions, ExecutionStats } from '@enclave-vm/core';
 import type { ToolRegistry, ToolContext, ToolExecutionResult } from './tool-registry';
 import { resolveSessionLimits, timerDelay } from './limits';
+import { BoundedSessionEmitter } from './session-history';
+import type { SessionHistoryLimits } from './session-history';
 
 /**
  * What the sandbox allows for one tool request or response when the embedder sets nothing
@@ -46,6 +48,13 @@ export interface BrokerSessionConfig {
   heartbeatIntervalMs?: number;
 
   /**
+   * Bounds of the events the session keeps for a replay. When a bound is reached the oldest
+   * events are dropped.
+   * @default { maxEvents: 10000, maxBytes: 4194304 }
+   */
+  history?: SessionHistoryLimits;
+
+  /**
    * The caller this session belongs to. The HTTP routes set it from their `identify` hook and
    * answer for a session only to its owner. A session created in process has no owner unless
    * one is given here, and is then not reachable over routes that identify their callers.
@@ -68,7 +77,7 @@ export class BrokerSession {
    */
   readonly owner?: string;
 
-  private readonly emitter: SessionEmitter;
+  private readonly emitter: BoundedSessionEmitter;
   private readonly toolRegistry: ToolRegistry;
   private readonly enclave: Enclave;
   private readonly abortController: AbortController;
@@ -108,10 +117,15 @@ export class BrokerSession {
 
     this.expiresAt = this.createdAt + this.limits.sessionTtlMs;
 
-    // Create event emitter
-    this.emitter = createSessionEmitter(this.sessionId, {
-      expiresAt: new Date(this.expiresAt),
-    });
+    // Create event emitter; it keeps a bounded history for replays
+    this.emitter = new BoundedSessionEmitter(
+      {
+        sessionId: this.sessionId,
+        cancelUrl: `/sessions/${this.sessionId}/cancel`,
+        expiresAt: new Date(this.expiresAt).toISOString(),
+      },
+      config.history,
+    );
 
     // Create enclave for runtime execution
     this.enclave = new Enclave({
@@ -150,10 +164,19 @@ export class BrokerSession {
   }
 
   /**
-   * Get all emitted events
+   * Get the events the session keeps: all of them, or the most recent ones once a bound of
+   * the history was reached (see `firstReplayableSeq`)
    */
   getEvents(): StreamEvent[] {
     return this.emitter.getEmittedEvents();
+  }
+
+  /**
+   * The lowest sequence number from which every event is still kept. It is 1 until the history
+   * reaches a bound; from then on, events below it cannot be replayed.
+   */
+  get firstReplayableSeq(): number {
+    return this.emitter.firstReplayableSeq;
   }
 
   /**
@@ -169,6 +192,11 @@ export class BrokerSession {
 
     // Emit session init
     this.emitter.emitSessionInit();
+
+    // A listener may have cancelled the session on its first event: nothing is started then
+    if (this.executionPromise) {
+      return this.executionPromise;
+    }
 
     // Start heartbeat
     const heartbeatMs = this.limits.heartbeatIntervalMs;
@@ -422,8 +450,11 @@ export class BrokerSession {
       }
     }
 
-    // Emit tool call event
-    this.emitter.emitToolCall(callId, toolName, args);
+    // Emit tool call event. The event holds its own copy of the arguments: it is what was
+    // sent, whatever the handler does with the object it is given.
+    const snapshot = snapshotArguments(args);
+    this.emitter.nextEventSize = snapshot.size + TOOL_CALL_EVENT_OVERHEAD_BYTES;
+    this.emitter.emitToolCall(callId, toolName, snapshot.copy);
     this.toolCallCount++;
 
     // Emit initial progress
@@ -657,6 +688,30 @@ export class BrokerSession {
     this.abortController.abort();
     this.enclave.dispose();
   }
+}
+
+/**
+ * Serialized size of a tool call event without its arguments (an upper estimate).
+ */
+const TOOL_CALL_EVENT_OVERHEAD_BYTES = 256;
+
+/**
+ * A copy of tool arguments as they appear in an event, with its serialized size. Arguments
+ * that cannot be serialized appear as an empty object.
+ */
+function snapshotArguments(args: unknown): { copy: Record<string, unknown>; size: number } {
+  try {
+    const serialized = JSON.stringify(args);
+    if (serialized !== undefined) {
+      const copy: unknown = JSON.parse(serialized);
+      if (typeof copy === 'object' && copy !== null) {
+        return { copy: copy as Record<string, unknown>, size: serialized.length };
+      }
+    }
+  } catch {
+    // Not serializable
+  }
+  return { copy: {}, size: 2 };
 }
 
 /**

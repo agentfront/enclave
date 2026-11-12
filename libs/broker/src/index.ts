@@ -27,6 +27,10 @@ export type {
 export { BrokerSession, createBrokerSession } from './broker-session';
 export type { BrokerSessionConfig } from './broker-session';
 
+// Session History
+export { DEFAULT_SESSION_HISTORY_LIMITS } from './session-history';
+export type { SessionHistoryLimits } from './session-history';
+
 // Session Manager
 export { SessionManager, createSessionManager } from './session-manager';
 export type { SessionManagerConfig, SessionInfo, CreateSessionResult } from './session-manager';

@@ -67,6 +67,22 @@ export interface SessionHandlerConfig {
    * @default true
    */
   sessionList?: boolean;
+
+  /**
+   * Maximum number of streams one session has open at a time: the stream of the request that
+   * created it and the streams of `GET /sessions/:sessionId/stream`. A further stream is
+   * answered with 429.
+   * @default 8
+   */
+  maxStreamsPerSession?: number;
+
+  /**
+   * How far a reader may fall behind, in bytes written to it and not yet taken, before its
+   * stream is dropped. Dropping the stream of the request that created a session ends the
+   * session. Needs a response that reports `bufferedBytes()` (the Express adapter does).
+   * @default 8388608 (8MB)
+   */
+  maxBufferedBytes?: number;
 }
 
 /**
@@ -97,6 +113,9 @@ export class SessionHandler {
   private readonly allowedOrigins: string[];
   private readonly identify?: CallerIdentifier;
   private readonly sessionList: boolean;
+  private readonly maxStreamsPerSession: number;
+  private readonly maxBufferedBytes: number;
+  private readonly streams = new WeakMap<BrokerSession, number>();
 
   constructor(config: SessionHandlerConfig) {
     this.broker = config.broker;
@@ -107,7 +126,17 @@ export class SessionHandler {
     }
     this.identify = config.identify;
     this.sessionList = config.sessionList ?? true;
-    warnUnknownKeys('SessionHandler', config, ['broker', 'cors', 'allowedOrigins', 'identify', 'sessionList']);
+    this.maxStreamsPerSession = positiveNumber(config.maxStreamsPerSession, 'maxStreamsPerSession', 8);
+    this.maxBufferedBytes = positiveNumber(config.maxBufferedBytes, 'maxBufferedBytes', 8 * 1024 * 1024);
+    warnUnknownKeys('SessionHandler', config, [
+      'broker',
+      'cors',
+      'allowedOrigins',
+      'identify',
+      'sessionList',
+      'maxStreamsPerSession',
+      'maxBufferedBytes',
+    ]);
   }
 
   /**
@@ -295,15 +324,20 @@ export class SessionHandler {
       return;
     }
 
+    // The creator's stream is the first stream of the session
+    const release = this.acquireStream(session);
+
     // Handle client disconnect - use flag to prevent double cleanup
     let unsubscribe: () => void = () => undefined;
     let cleanedUp = false;
-    const cleanup = () => {
+    let dropped = false;
+    const cleanup = (reason = 'Client disconnected') => {
       if (cleanedUp) return;
       cleanedUp = true;
       unsubscribe();
+      release?.();
       if (!session.isTerminal()) {
-        session.cancel('Client disconnected').catch(() => {
+        session.cancel(reason).catch(() => {
           // Ignore cancellation errors
         });
       }
@@ -318,15 +352,21 @@ export class SessionHandler {
 
       // Subscribe to events and stream (with filtering)
       unsubscribe = session.onEvent((event: StreamEvent) => {
+        if (dropped) return;
         // Apply filter if configured
         if (eventFilter && !eventFilter.shouldSend(event)) {
           return; // Skip filtered events
         }
-        this.writeEvent(res, event);
+        if (!this.writeEvent(res, event)) {
+          // The creator does not take its stream: the session ends with it
+          dropped = true;
+          cleanup('Client is not reading its stream');
+          this.dropReader(res);
+        }
       });
 
       if (req.signal) {
-        req.signal.addEventListener('abort', cleanup, { once: true });
+        req.signal.addEventListener('abort', () => cleanup(), { once: true });
       }
     } catch {
       // The stream could not be set up: the session does not stay registered without one
@@ -343,7 +383,9 @@ export class SessionHandler {
       // Error already emitted through events
     } finally {
       cleanup();
-      res.end();
+      if (!dropped) {
+        res.end();
+      }
     }
   }
 
@@ -414,60 +456,85 @@ export class SessionHandler {
       }
     }
 
-    // Set up streaming response
-    res.setHeader('Content-Type', 'application/x-ndjson');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Session-ID', session.sessionId);
-
-    // Replay missed events (with filtering)
-    const pastEvents = session.getEvents();
-    for (const event of pastEvents) {
-      if (event.seq >= fromSeq) {
-        if (eventFilter && !eventFilter.shouldSend(event)) {
-          continue; // Skip filtered events
-        }
-        this.writeEvent(res, event);
-      }
-    }
-
-    // If session is terminal, end the response
-    if (session.isTerminal()) {
-      res.end();
+    // The session keeps a bounded history. A replay that would have to start below it is
+    // refused as a whole: a client is never handed a sequence with a hole at its start.
+    const firstReplayable = session.firstReplayableSeq;
+    if (firstReplayable > 1 && fromSeq < firstReplayable) {
+      this.sendError(res, 410, 'EVENTS_GONE', 'The requested events are no longer kept for this session');
       return;
     }
 
-    // Subscribe to new events (with filtering)
-    const unsubscribe = session.onEvent((event: StreamEvent) => {
-      if (event.seq >= fromSeq) {
-        // Apply filter if configured
-        if (eventFilter && !eventFilter.shouldSend(event)) {
-          // Still check for final event to end stream
-          if (event.type === 'final') {
-            unsubscribe();
-            res.end();
-          }
-          return; // Skip filtered events
-        }
-        this.writeEvent(res, event);
-      }
+    // The streams of one session are bounded in number
+    const release = this.acquireStream(session);
+    if (!release) {
+      this.sendError(res, 429, 'TOO_MANY_STREAMS', 'This session has too many open streams');
+      return;
+    }
 
-      // End stream when session completes
-      if (event.type === 'final') {
-        unsubscribe();
+    let unsubscribe: () => void = () => undefined;
+    let closed = false;
+    const close = (drop = false) => {
+      if (closed) return;
+      closed = true;
+      unsubscribe();
+      release();
+      if (drop) {
+        this.dropReader(res);
+      } else {
         res.end();
       }
-    });
+    };
 
-    // Handle client disconnect
-    if (req.signal) {
-      req.signal.addEventListener(
-        'abort',
-        () => {
-          unsubscribe();
-        },
-        { once: true },
-      );
+    try {
+      // Set up streaming response
+      res.setHeader('Content-Type', 'application/x-ndjson');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Session-ID', session.sessionId);
+
+      // Replay missed events (with filtering)
+      const pastEvents = session.getEvents();
+      for (const event of pastEvents) {
+        if (event.seq >= fromSeq) {
+          if (eventFilter && !eventFilter.shouldSend(event)) {
+            continue; // Skip filtered events
+          }
+          if (!this.writeEvent(res, event)) {
+            close(true);
+            return;
+          }
+        }
+      }
+
+      // If session is terminal, end the response
+      if (session.isTerminal()) {
+        close();
+        return;
+      }
+
+      // Subscribe to new events (with filtering)
+      unsubscribe = session.onEvent((event: StreamEvent) => {
+        if (closed) return;
+        if (event.seq >= fromSeq && (!eventFilter || eventFilter.shouldSend(event))) {
+          if (!this.writeEvent(res, event)) {
+            close(true);
+            return;
+          }
+        }
+
+        // End stream when session completes
+        if (event.type === 'final') {
+          close();
+        }
+      });
+
+      // Handle client disconnect
+      if (req.signal) {
+        req.signal.addEventListener('abort', () => close(), { once: true });
+      }
+    } catch (error) {
+      close(true);
+      throw error;
     }
   }
 
@@ -560,12 +627,47 @@ export class SessionHandler {
   }
 
   /**
-   * Write a stream event as NDJSON
+   * Count one more stream of a session. Returns the function that gives the place back, or
+   * undefined when the session has as many streams as `maxStreamsPerSession` allows.
    */
-  private writeEvent(res: BrokerResponse, event: StreamEvent): void {
+  private acquireStream(session: BrokerSession): (() => void) | undefined {
+    const open = this.streams.get(session) ?? 0;
+    if (open >= this.maxStreamsPerSession) {
+      return undefined;
+    }
+    this.streams.set(session, open + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.streams.set(session, Math.max(0, (this.streams.get(session) ?? 1) - 1));
+    };
+  }
+
+  /**
+   * Write a stream event as NDJSON. Returns false when the reader of this response has fallen
+   * behind by more than `maxBufferedBytes`: it must be dropped, nothing more is written to it.
+   */
+  private writeEvent(res: BrokerResponse, event: StreamEvent): boolean {
     res.write(JSON.stringify(event) + '\n');
     if (res.flush) {
       res.flush();
+    }
+    return !res.bufferedBytes || res.bufferedBytes() <= this.maxBufferedBytes;
+  }
+
+  /**
+   * Close the connection of a reader that does not take what it is sent.
+   */
+  private dropReader(res: BrokerResponse): void {
+    try {
+      if (res.destroy) {
+        res.destroy();
+      } else {
+        res.end();
+      }
+    } catch {
+      // The connection is gone already
     }
   }
 
@@ -576,6 +678,17 @@ export class SessionHandler {
     const error: ErrorResponse = { code, message };
     res.status(status).json(error);
   }
+}
+
+/**
+ * A configuration value that must be a number above zero, or its default.
+ */
+function positiveNumber(value: unknown, name: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'number' || Number.isNaN(value) || value <= 0) {
+    throw new TypeError(`SessionHandler: "${name}" must be a number above zero`);
+  }
+  return value;
 }
 
 /**

@@ -8,6 +8,8 @@
 
 import type { SessionId, StreamEvent, SessionLimits } from '@enclave-vm/types';
 import { mergeSessionLimits, resolveSessionLimits } from './limits';
+import { resolveHistoryLimits } from './session-history';
+import type { SessionHistoryLimits } from './session-history';
 import type { CreateEnclaveOptions, SessionFinalResult } from '@enclave-vm/core';
 import { ToolRegistry, createToolRegistry } from './tool-registry';
 import type { ToolDefinition } from './tool-registry';
@@ -38,9 +40,15 @@ export interface BrokerConfig {
    * lower one.
    */
   limits?: Partial<SessionLimits>;
+
+  /**
+   * Bounds of the events each session keeps for a replay.
+   * @default { maxEvents: 10000, maxBytes: 4194304 }
+   */
+  history?: SessionHistoryLimits;
 }
 
-const KNOWN_CONFIG_KEYS = ['sessions', 'enclave', 'limits'];
+const KNOWN_CONFIG_KEYS = ['sessions', 'enclave', 'limits', 'history'];
 
 /**
  * Quick execution options
@@ -119,6 +127,7 @@ export class Broker {
         ...sessionDefaults,
         limits,
         enclaveConfig: config.enclave ?? sessionDefaults.enclaveConfig,
+        history: resolveHistoryLimits({ ...sessionDefaults.history, ...config.history }),
       },
     });
   }

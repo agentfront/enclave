@@ -35,6 +35,8 @@ interface ExpressResponse {
   end(): void;
   flushHeaders?(): void;
   flush?(): void;
+  writableLength?: number;
+  destroy?(): void;
 }
 
 /**
@@ -92,10 +94,20 @@ function adaptResponse(res: ExpressResponse): BrokerResponse {
       return this;
     },
     write(data: string) {
-      res.write(data);
+      return res.write(data);
     },
     end() {
       res.end();
+    },
+    bufferedBytes() {
+      return res.writableLength ?? 0;
+    },
+    destroy() {
+      if (res.destroy) {
+        res.destroy();
+      } else {
+        res.end();
+      }
     },
     flush() {
       if (res.flushHeaders) {
