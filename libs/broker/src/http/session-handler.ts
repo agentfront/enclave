@@ -6,7 +6,8 @@
  * @packageDocumentation
  */
 
-import type { SessionId, StreamEvent } from '@enclave-vm/types';
+import type { SessionId, SessionLimits, StreamEvent } from '@enclave-vm/types';
+import { DEFAULT_SESSION_LIMITS } from '@enclave-vm/types';
 import type { Broker } from '../broker';
 import type { BrokerSession } from '../broker-session';
 import type { SessionInfo } from '../session-manager';
@@ -19,6 +20,15 @@ import type {
   ErrorResponse,
 } from './types';
 import { EventFilter, createEventFilter } from '../event-filter';
+import { parseCreateSessionRequest } from './request-validation';
+import type { RequestedLimits } from './request-validation';
+
+/**
+ * The shortest and the longest heartbeat interval a request can get. A broker configured with
+ * a shorter interval keeps its own as the lower bound.
+ */
+const MIN_REQUEST_HEARTBEAT_MS = 1000;
+const MAX_REQUEST_HEARTBEAT_MS = 300_000;
 
 /**
  * Session handler configuration
@@ -146,12 +156,14 @@ export class SessionHandler {
   async createSession(req: BrokerRequest, res: BrokerResponse): Promise<void> {
     this.addCorsHeaders(req, res);
 
-    // Validate request body
-    const body = req.body as CreateSessionRequest | undefined;
-    if (!body || typeof body.code !== 'string') {
-      this.sendError(res, 400, 'INVALID_REQUEST', 'Missing or invalid "code" field');
+    // Validate the request body as a whole before any part of it is used
+    const parsed = parseCreateSessionRequest(req.body);
+    if (!parsed.ok) {
+      this.sendError(res, 400, parsed.code, parsed.message);
       return;
     }
+    const { code, config } = parsed.value;
+    const body = req.body as CreateSessionRequest;
 
     // Check if broker is disposed
     if (this.broker.isDisposed) {
@@ -160,17 +172,8 @@ export class SessionHandler {
     }
 
     try {
-      // Build limits config, only including defined values
-      const limits: Record<string, number> = {};
-      if (body.config?.maxExecutionMs !== undefined) {
-        limits['sessionTtlMs'] = body.config.maxExecutionMs;
-      }
-      if (body.config?.maxToolCalls !== undefined) {
-        limits['maxToolCalls'] = body.config.maxToolCalls;
-      }
-      if (body.config?.heartbeatIntervalMs !== undefined) {
-        limits['heartbeatIntervalMs'] = body.config.heartbeatIntervalMs;
-      }
+      // What the request asks for, bounded by the broker's own limits
+      const limits = this.boundLimits(config);
 
       // Create event filter if configured
       let eventFilter: EventFilter | undefined;
@@ -181,7 +184,7 @@ export class SessionHandler {
       // Create session
       const session = this.broker.createSession({
         sessionId: body.sessionId,
-        limits: Object.keys(limits).length > 0 ? limits : undefined,
+        limits,
       });
 
       // Set up streaming response
@@ -218,7 +221,7 @@ export class SessionHandler {
 
       // Start execution
       try {
-        await session.execute(body.code);
+        await session.execute(code);
       } catch {
         // Error already emitted through events
       } finally {
@@ -368,6 +371,31 @@ export class SessionHandler {
     }
 
     res.status(200).json({ success: true, sessionId });
+  }
+
+  /**
+   * The limits a request gets: what it asks for, never above what the broker is configured
+   * with. A request may lower a limit; it cannot raise one.
+   */
+  private boundLimits(requested: RequestedLimits): Partial<SessionLimits> {
+    const ceiling: Required<SessionLimits> = this.broker.sessionLimits ?? DEFAULT_SESSION_LIMITS;
+    const limits: Partial<SessionLimits> = {};
+
+    if (requested.maxExecutionMs !== undefined) {
+      limits.sessionTtlMs = Math.min(requested.maxExecutionMs, ceiling.sessionTtlMs);
+    }
+    if (requested.maxToolCalls !== undefined) {
+      limits.maxToolCalls = Math.min(requested.maxToolCalls, ceiling.maxToolCalls);
+    }
+    // A heartbeat interval is not a limit that is safe to lower without a bound: it is kept
+    // within a range, and a broker that sends no heartbeats does not start to on request.
+    if (requested.heartbeatIntervalMs !== undefined && ceiling.heartbeatIntervalMs > 0) {
+      const shortest = Math.min(MIN_REQUEST_HEARTBEAT_MS, ceiling.heartbeatIntervalMs);
+      const longest = Math.max(MAX_REQUEST_HEARTBEAT_MS, ceiling.heartbeatIntervalMs);
+      limits.heartbeatIntervalMs = Math.min(Math.max(requested.heartbeatIntervalMs, shortest), longest);
+    }
+
+    return limits;
   }
 
   /**

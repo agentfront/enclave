@@ -7,16 +7,17 @@
  */
 
 import type { SessionId, StreamEvent, SessionLimits, ErrorPayload } from '@enclave-vm/types';
-import {
-  generateSessionId,
-  generateCallId,
-  DEFAULT_SESSION_LIMITS,
-  EventType,
-  PROTOCOL_VERSION,
-} from '@enclave-vm/types';
+import { generateSessionId, generateCallId, EventType, PROTOCOL_VERSION } from '@enclave-vm/types';
 import { SessionEmitter, createSessionEmitter, Enclave } from '@enclave-vm/core';
 import type { SessionStateValue, SessionFinalResult, CreateEnclaveOptions, ExecutionStats } from '@enclave-vm/core';
-import type { ToolRegistry, ToolContext } from './tool-registry';
+import type { ToolRegistry, ToolContext, ToolExecutionResult } from './tool-registry';
+import { resolveSessionLimits, timerDelay } from './limits';
+
+/**
+ * What the sandbox allows for one tool request or response when the embedder sets nothing
+ * (`toolBridge.maxPayloadBytes` of the Enclave options).
+ */
+const DEFAULT_BRIDGE_PAYLOAD_BYTES = 5 * 1024 * 1024;
 
 /**
  * Broker session configuration
@@ -28,7 +29,8 @@ export interface BrokerSessionConfig {
   sessionId?: SessionId;
 
   /**
-   * Session resource limits
+   * Session resource limits. A field that is not given keeps the value of the broker's
+   * configuration, or the package default.
    */
   limits?: Partial<SessionLimits>;
 
@@ -60,6 +62,7 @@ export class BrokerSession {
   private readonly enclave: Enclave;
   private readonly abortController: AbortController;
   private readonly limits: Required<SessionLimits>;
+  private readonly checkResultSize: boolean;
   private _state: SessionStateValue = 'starting';
   private executionPromise: Promise<SessionFinalResult> | null = null;
   private toolCallCount = 0;
@@ -75,11 +78,16 @@ export class BrokerSession {
     this.toolRegistry = toolRegistry;
     this.abortController = new AbortController();
 
-    // Merge limits (DEFAULT_SESSION_LIMITS provides all required values)
-    this.limits = {
-      ...DEFAULT_SESSION_LIMITS,
-      ...config.limits,
-    } as Required<SessionLimits>;
+    // The given limits over the package defaults; a limit of the wrong type is refused here,
+    // before it reaches a timer or the configuration of the sandbox.
+    this.limits = resolveSessionLimits(config.limits);
+
+    // The sandbox bounds a tool result by its own payload limit. The session checks the size
+    // itself only where its limit is the lower one, or where the sandbox does not serialize.
+    const bridge = config.enclaveConfig?.toolBridge;
+    this.checkResultSize =
+      (bridge?.mode ?? 'string') !== 'string' ||
+      this.limits.maxToolResultBytes < (bridge?.maxPayloadBytes ?? DEFAULT_BRIDGE_PAYLOAD_BYTES);
 
     this.expiresAt = this.createdAt + this.limits.sessionTtlMs;
 
@@ -152,7 +160,7 @@ export class BrokerSession {
         if (!this.isTerminal()) {
           this.emitter.emitHeartbeat();
         }
-      }, heartbeatMs);
+      }, timerDelay(heartbeatMs));
     }
 
     // Set up deadline timer if configured (compute remaining from createdAt epoch)
@@ -163,7 +171,7 @@ export class BrokerSession {
         this.deadlineTimer = setTimeout(() => {
           this._deadlineExceeded = true;
           this.cancel(`Deadline exceeded: ${deadlineMs}ms budget`);
-        }, remaining);
+        }, timerDelay(remaining));
       } else {
         // Deadline already passed before execution started
         this._deadlineExceeded = true;
@@ -404,8 +412,13 @@ export class BrokerSession {
     // Emit initial progress
     this.emitToolProgress(callId, 'connecting', 0);
 
-    // Compute per-tool timeout, capped by remaining session budget
+    // Compute per-tool timeout: the session's default or the tool's own (`ToolConfig.timeout`),
+    // whichever is lower, capped by remaining session budget
     let toolTimeout = this.limits.perToolDeadlineMs;
+    const ownTimeout = this.toolRegistry.get(toolName)?.config?.timeout;
+    if (typeof ownTimeout === 'number' && ownTimeout > 0) {
+      toolTimeout = toolTimeout > 0 ? Math.min(toolTimeout, ownTimeout) : ownTimeout;
+    }
     if (this.limits.deadlineMs > 0) {
       const remaining = this.limits.deadlineMs - (Date.now() - this.createdAt);
       toolTimeout = Math.min(toolTimeout, remaining);
@@ -415,7 +428,7 @@ export class BrokerSession {
     const toolAbort = new AbortController();
     let toolTimer: ReturnType<typeof setTimeout> | null = null;
     if (toolTimeout > 0) {
-      toolTimer = setTimeout(() => toolAbort.abort(), toolTimeout);
+      toolTimer = setTimeout(() => toolAbort.abort(), timerDelay(toolTimeout));
     }
     // Propagate session-level abort to per-tool controller
     const onSessionAbort = () => toolAbort.abort();
@@ -435,12 +448,24 @@ export class BrokerSession {
     // Emit processing progress
     this.emitToolProgress(callId, 'processing', Date.now() - toolStartTime);
 
-    let result;
+    let result: ToolExecutionResult;
     try {
       result = await this.toolRegistry.execute(toolName, args, context);
     } finally {
       if (toolTimer) clearTimeout(toolTimer);
       this.abortController.signal.removeEventListener('abort', onSessionAbort);
+    }
+
+    // A result above the session's limit is a failed call
+    if (result.success && !this.resultWithinLimit(result.value)) {
+      result = {
+        success: false,
+        error: {
+          code: 'TOOL_RESULT_TOO_LARGE',
+          message: `Tool result exceeds the limit of ${this.limits.maxToolResultBytes} bytes`,
+        },
+        durationMs: result.durationMs,
+      };
     }
 
     // Emit tool result event
@@ -458,6 +483,23 @@ export class BrokerSession {
       (error as Error & { code?: string }).code = result.error?.code;
       throw error;
     }
+  }
+
+  /**
+   * Whether a tool result is within `limits.maxToolResultBytes`, measured as serialized JSON.
+   */
+  private resultWithinLimit(value: unknown): boolean {
+    if (!this.checkResultSize) return true;
+    const limit = this.limits.maxToolResultBytes;
+    if (!(limit > 0) || limit === Infinity) return true;
+    let serialized: string | undefined;
+    try {
+      serialized = JSON.stringify(value);
+    } catch {
+      // Not serializable: the sandbox's own bridge decides what happens to it.
+      return true;
+    }
+    return serialized === undefined || Buffer.byteLength(serialized, 'utf8') <= limit;
   }
 
   /**

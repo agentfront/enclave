@@ -11,6 +11,7 @@ import type { SessionFinalResult } from '@enclave-vm/core';
 import { BrokerSession, createBrokerSession } from './broker-session';
 import type { BrokerSessionConfig } from './broker-session';
 import type { ToolRegistry } from './tool-registry';
+import { mergeSessionLimits } from './limits';
 
 /**
  * Session manager configuration
@@ -99,10 +100,16 @@ export class SessionManager {
       );
     }
 
-    const sessionConfig = {
-      ...this.config.defaultSessionConfig,
-      ...config,
-    };
+    // The session's configuration over the default one. A key the session does not define keeps
+    // the default, and limits are merged field by field: naming one limit does not drop the others.
+    const defaults = this.config.defaultSessionConfig;
+    const sessionConfig: BrokerSessionConfig = { ...defaults };
+    for (const [key, value] of Object.entries(config ?? {})) {
+      if (value !== undefined) {
+        (sessionConfig as Record<string, unknown>)[key] = value;
+      }
+    }
+    sessionConfig.limits = mergeSessionLimits(defaults.limits, config?.limits);
 
     const session = createBrokerSession(this.toolRegistry, sessionConfig);
     this.sessions.set(session.sessionId, session);
@@ -213,6 +220,13 @@ export class SessionManager {
 
     for (const [sessionId, session] of this.sessions) {
       if (session.isExpired() || session.isTerminal()) {
+        if (!session.isTerminal()) {
+          // Past its lifetime and still running: end it, so that it is not left running
+          // where no id reaches it any more.
+          session.cancel('Session expired').catch(() => {
+            // Ignore cancel errors during cleanup
+          });
+        }
         session.dispose();
         this.sessions.delete(sessionId);
         cleaned++;
