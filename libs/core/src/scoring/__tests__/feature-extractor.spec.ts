@@ -2,6 +2,7 @@
  * Feature Extractor Unit Tests
  */
 
+import { createHash } from 'crypto';
 import { FeatureExtractor } from '../feature-extractor';
 
 describe('FeatureExtractor', () => {
@@ -294,6 +295,14 @@ describe('FeatureExtractor', () => {
 
         expect(features.meta.codeHash).toBeDefined();
         expect(features.meta.codeHash.length).toBeGreaterThan(0);
+      });
+
+      it('should use the whole SHA-256 digest of the code as its hash', () => {
+        const code = `const x = 1;`;
+        const features = extractor.extract(code);
+
+        expect(features.meta.codeHash).toBe(createHash('sha256').update(code).digest('hex'));
+        expect(features.meta.codeHash).toMatch(/^[0-9a-f]{64}$/);
       });
 
       it('should produce same hash for same code', () => {

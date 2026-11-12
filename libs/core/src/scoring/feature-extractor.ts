@@ -443,10 +443,11 @@ export class FeatureExtractor {
   }
 
   /**
-   * Hash code for caching
+   * Hash code for caching: the whole SHA-256 digest. The hash is the only key of a cached
+   * decision, so two texts may share a decision only if they are the same text.
    */
   private hashCode(code: string): string {
-    return createHash('sha256').update(code).digest('hex').substring(0, 16);
+    return createHash('sha256').update(code).digest('hex');
   }
 
   /**
