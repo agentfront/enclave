@@ -98,6 +98,10 @@ export interface SecureProxyLevelConfig {
   blockConstructor: boolean;
   blockPrototype: boolean;
   blockLegacyAccessors: boolean;
+  /**
+   * Has no effect in the browser: the proxy wraps a value when it is read, at any depth, and
+   * refuses the blocked properties at every one of them.
+   */
   proxyMaxDepth: number;
   throwOnBlocked: boolean;
 }
@@ -212,7 +216,12 @@ export const SECURITY_LEVEL_CONFIGS: Record<SecurityLevel, SecurityLevelConfig> 
 };
 
 /**
- * Suspicious pattern detector
+ * Suspicious pattern detector, as a function (`doubleIframe.parentValidation.suspiciousPatterns`).
+ *
+ * A function cannot be sent into a frame, so the host page calls `detect` itself: for every tool
+ * call that passed its other checks, with the tool name, the copy of the arguments the handler
+ * would receive, and the earlier calls of the execution that reached a handler. A call it
+ * detects is refused (the script's `callTool` rejects), and so is a call for which it throws.
  */
 export interface SuspiciousPattern {
   id: string;
@@ -256,7 +265,9 @@ export interface ParentValidationConfig {
  * Double iframe configuration
  */
 export interface DoubleIframeConfig {
+  /** Has no effect: the two frames are how the package runs a script, and are always used. */
   enabled: boolean;
+  /** Milliseconds the host page adds to `timeout` for its own hard stop. A finite number, 0 or more. */
   parentTimeoutBuffer: number;
   parentValidation: ParentValidationConfig;
 }
@@ -283,6 +294,14 @@ export interface BrowserEnclaveOptions {
    * not cut off at the deadline; once `timeout` has passed since the start, the script's next
    * tool call fails with "Execution aborted". How long a call in progress may still take is
    * `toolCallGraceMs`.
+   *
+   * A finite number of milliseconds, at most 2,147,483,647 (the longest delay a timer takes).
+   * This and every other numeric limit must be a number: the constructor throws a `TypeError`
+   * for text, `NaN`, `Infinity` or a negative value.
+   *
+   * The timeout is kept by timers, and a timer cannot fire while a script holds the thread it
+   * is on. A script that never yields is ended at the timeout only in a browser that runs the
+   * sandbox frames in another process than the page; elsewhere it ends when it finishes.
    */
   timeout?: number;
 
@@ -292,7 +311,9 @@ export interface BrowserEnclaveOptions {
    * well, `run()` returns the timeout error; the handler's promise is left to settle and what it
    * returns is dropped. `0` ends the run at the deadline; `Infinity` waits for the handler
    * however long it takes, so a handler that never settles keeps `run()` waiting.
-   * @default the value of `timeout`: `run()` takes at most about twice `timeout`
+   * @default the value of `timeout`. `run()` then returns within about three times `timeout`
+   *   plus `doubleIframe.parentTimeoutBuffer`: tool calls may be in progress for `timeout`, the
+   *   buffer and the grace, and the script's own running time is bounded by `timeout` on top.
    */
   toolCallGraceMs?: number;
 
@@ -307,7 +328,10 @@ export interface BrowserEnclaveOptions {
   maxIterations?: number;
 
   /**
-   * Maximum memory limit in bytes (soft tracking only in browser)
+   * Limit in bytes on what the tracked operations allocate over a run: `String.prototype.repeat`,
+   * `padStart`, `padEnd`, `Array.prototype.join` and `fill`. Other allocations (concatenation,
+   * spreads, literals) are not counted: it stops the one-call memory bombs, it is not a memory
+   * budget. `0` turns the tracking off.
    */
   memoryLimit?: number;
 
@@ -397,8 +421,9 @@ export interface BrowserEnclaveOptions {
   /**
    * Custom serializable suspicious patterns for the outer iframe validation layer.
    * These are string-based (SerializableSuspiciousPattern[]) and are injected directly
-   * into the outer iframe script. For function-based patterns (SuspiciousPattern[]),
-   * use doubleIframe.parentValidation.suspiciousPatterns instead.
+   * into the outer iframe script, where they run next to the built-in ones. For function-based
+   * patterns (SuspiciousPattern[]), use doubleIframe.parentValidation.suspiciousPatterns: the
+   * host page evaluates those.
    */
   customSerializablePatterns?: SerializableSuspiciousPattern[];
 
