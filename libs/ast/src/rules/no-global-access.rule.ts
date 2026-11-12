@@ -9,7 +9,13 @@ import { analyzeScopes } from '../utils/scope-analysis';
  * Configuration options for NoGlobalAccessRule
  */
 export interface NoGlobalAccessOptions {
-  /** List of global object names to block access to */
+  /**
+   * List of global object names to block access to.
+   *
+   * With `'this'` on the list, `this` is refused as a value in every position (`const g = this`,
+   * `f(this)`, `const { x } = this`), not only as the object of a member access: outside a method
+   * it is the global object.
+   */
   blockedGlobals?: string[];
   /** Whether to block member access to globals */
   blockMemberAccess?: boolean;
@@ -84,6 +90,9 @@ export class NoGlobalAccessRule implements ValidationRule {
   validate(context: ValidationContext): void {
     const { ast, report } = context;
 
+    if (this.blockedGlobals.has('this')) {
+      this.checkThisValues(context);
+    }
     if (this.requireDirectObjectUse) {
       this.checkDirectObjectUse(context);
     }
@@ -259,6 +268,30 @@ export class NoGlobalAccessRule implements ValidationRule {
           });
         }
       },
+    });
+  }
+
+  /**
+   * `this` as a value. A member of it (`this.x`, `this[x]`) is reported by the member check, with
+   * its options; everywhere else the value itself is what leaves: bound to a variable, passed to
+   * a function, destructured, spread, returned.
+   */
+  private checkThisValues(context: ValidationContext): void {
+    walkAll(context.ast, (node, ancestors, key) => {
+      if (node.type !== 'ThisExpression') return;
+
+      const parent: AnyNode | undefined = ancestors[ancestors.length - 1];
+      if (parent?.type === 'MemberExpression' && key === 'object') return;
+
+      context.report({
+        code: 'NO_GLOBAL_ACCESS',
+        message: 'Use of this is not allowed: outside a method it is the global object',
+        location: node.loc ? { line: node.loc.start.line, column: node.loc.start.column } : undefined,
+        data: {
+          global: 'this',
+          accessType: 'value',
+        },
+      });
     });
   }
 

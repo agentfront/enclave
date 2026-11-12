@@ -8,7 +8,13 @@ import { walkAll } from '../utils/ast-walk';
  * Options for DisallowedIdentifierRule
  */
 export interface DisallowedIdentifierOptions {
-  /** List of identifier names that are not allowed */
+  /**
+   * List of identifier names that are not allowed.
+   *
+   * `'this'` on the list refuses the `this` keyword in every position. It is not an identifier
+   * in the syntax tree, but it is a name for a value like the others on such a list (outside a
+   * method, the global object).
+   */
   disallowed: string[];
   /**
    * Names refused only as PROPERTY names: `obj.name`, `obj['name']` (and every statically
@@ -57,6 +63,18 @@ export class DisallowedIdentifierRule implements ValidationRule {
     const messageTemplate = this.options.messageTemplate || 'Access to "{identifier}" is not allowed';
 
     this.checkPropertyNames(context, messageTemplate);
+
+    if (disallowedSet.has('this')) {
+      walkAll(context.ast, (node) => {
+        if (node.type !== 'ThisExpression') return;
+        context.report({
+          code: 'DISALLOWED_IDENTIFIER',
+          message: messageTemplate.replace('{identifier}', 'this'),
+          location: node.loc ? { line: node.loc.start.line, column: node.loc.start.column } : undefined,
+          data: { identifier: 'this' },
+        });
+      });
+    }
 
     walk.simple(context.ast as any, {
       Identifier: (node: any) => {

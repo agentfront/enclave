@@ -283,11 +283,38 @@ describe('Validation Rules', () => {
       });
       expect(result.issues[0].message).toBe('Cannot use eval here');
     });
+
+    it('should detect the `this` keyword when `this` is on the list', async () => {
+      const validator = new JSAstValidator([new DisallowedIdentifierRule({ disallowed: ['this'] })]);
+
+      const result = await validator.validate('const self = this;');
+      expect(result.valid).toBe(false);
+      expect(result.issues.map((issue) => issue.code)).toEqual(['DISALLOWED_IDENTIFIER']);
+      expect(result.issues[0].data).toEqual({ identifier: 'this' });
+
+      const other = new JSAstValidator([new DisallowedIdentifierRule({ disallowed: ['eval'] })]);
+      expect((await other.validate('const self = this;')).valid).toBe(true);
+    });
   });
 
   describe('NoGlobalAccessRule', () => {
     const codes = async (rule: NoGlobalAccessRule, source: string) =>
       (await new JSAstValidator([rule]).validate(source)).issues.map((issue) => issue.code);
+
+    it('should detect `this` as a value when it is a blocked global', async () => {
+      const rule = new NoGlobalAccessRule({ blockedGlobals: ['this'] });
+
+      expect(await codes(rule, 'const self = this;')).toEqual(['NO_GLOBAL_ACCESS']);
+      expect(await codes(rule, 'use(this);')).toEqual(['NO_GLOBAL_ACCESS']);
+      // A member of it is one issue, as before
+      expect(await codes(rule, 'const value = this.name;')).toEqual(['NO_GLOBAL_ACCESS']);
+    });
+
+    it('should leave `this` alone when it is not a blocked global', async () => {
+      const rule = new NoGlobalAccessRule({ blockedGlobals: ['window'] });
+
+      expect(await codes(rule, 'const self = this;')).toEqual([]);
+    });
 
     it.each([
       ['a call', 'const copy = Object.create(base);'],

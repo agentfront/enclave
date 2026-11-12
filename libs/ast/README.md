@@ -25,9 +25,15 @@ AST Guard is a powerful static analysis tool for JavaScript code. It provides a 
 - **Constructor chain escapes**: `[].constructor.constructor('code')()`
 - **Prototype pollution**: `__proto__`, `Object.setPrototypeOf`
 - **Reflection API bypasses**: `Reflect.get`, `Reflect.construct`
-- **Global object access**: `window`, `globalThis`, `this`
+- **Global object access**: members of `window`, `globalThis`, `self` and `global`, and `this` in any position
 
 The analysis of each CVE and the list of attack vectors these rules are tested against are kept with the security tests, which are not public; [SECURITY-TESTS.md](https://github.com/agentfront/enclave/blob/main/SECURITY-TESTS.md) lists the categories and the invariants they protect.
+
+### What a Preset Is, and What It Is Not
+
+The STRICT, SECURE, STANDARD and PERMISSIVE presets are **filters on source text**: each one refuses the constructs it lists, in the spellings a parser can see. A filter is not a security boundary. A script can build a property name while it runs, reach an object through a value instead of a name, or use a construct no rule of the preset lists, and a static rule cannot see that (see [Known Limitations](#known-limitations)). Passing one of these presets does not make code safe to run.
+
+To run code you do not trust, put the validator in front of a runtime sandbox: [`@enclave-vm/core`](https://github.com/agentfront/enclave/tree/main/libs/core) validates with the AgentScript preset (an allowlist of syntax, names and property keys, not a list of refusals) and then runs the script in a realm that holds nothing else, behind a membrane, with limits. There, a gap in a static rule is not a way out.
 
 ## Features
 
@@ -80,7 +86,7 @@ if (!result.valid) {
 
 ## Presets
 
-AST Guard provides pre-configured security presets for quick and easy setup. Choose from five security levels, from maximum lockdown to minimal restrictions.
+AST Guard provides pre-configured security presets for quick and easy setup. Choose from five security levels, from maximum lockdown to minimal restrictions. They decide which source a host accepts; they do not contain the code that is accepted (see [What a Preset Is, and What It Is Not](#what-a-preset-is-and-what-it-is-not)).
 
 ### Available Presets
 
@@ -120,7 +126,7 @@ const validator = new JSAstValidator(balancedRules);
 Includes all security rules to block known sandbox escape exploits:
 
 - ✅ NoEvalRule - Blocks eval() and Function constructor
-- ✅ NoGlobalAccessRule - Blocks constructor chains, Reflect API, global object access
+- ✅ NoGlobalAccessRule - Blocks constructor chains, Reflect API, members of the global objects, and `this` in any position
 - ✅ NoAsyncRule - Blocks async/await patterns
 - ✅ DisallowedIdentifierRule - Blocks dangerous identifiers
 - ✅ ForbiddenLoopRule - Blocks loops (or optionally allow bounded loops)
@@ -320,7 +326,7 @@ const result = await validator.validate(userCode, {
 });
 
 if (result.valid) {
-  // Safe to execute in sandbox
+  // Accepted by the filter: run it in a sandbox that holds on its own
   executeInSandbox(userCode);
 }
 ```
@@ -778,7 +784,8 @@ const validator = new JSAstValidator([
 
 const result = await validator.validate(userCode);
 if (result.valid) {
-  // Safe to execute
+  // Accepted by the filter. `node:vm` alone is not a security boundary: for code you do not
+  // trust, run it with @enclave-vm/core.
   vm.runInContext(userCode, sandbox);
 }
 ```
@@ -902,6 +909,9 @@ These are inherent to **any** static analyzer (not vulnerabilities):
 | Computed property access     | `obj['constructor']` | `Object.freeze(Object.prototype)` |
 | Runtime string construction  | `'con' + 'structor'` | VM isolation                      |
 | Destructuring property names | `{ constructor: c }` | Freeze prototypes                 |
+| A global under another name  | `const w = window`   | Remove the global from the realm  |
+
+They are why a preset is a filter and not a boundary: what a script does with a value at run time is decided where it runs.
 
 ## Documentation
 
