@@ -39,6 +39,7 @@ import {
   transformConcatenation,
   transformTemplateLiterals,
   guardComputedMemberKeys,
+  guardArrayWrites,
   normalizeToolNamespaces,
   type NormalizedToolNamespace,
 } from '@enclave-vm/ast';
@@ -696,6 +697,14 @@ export class Enclave {
         transformedCode = this.applyComputedKeyGuard(transformedCode);
       }
 
+      // Step 2.25: a write that can change the size of an array goes through the runtime that
+      // accounts for arrays, which keeps an array within what the memory limit holds (see
+      // ./realm-memory). After the computed-key guard: that guard looks for computed members,
+      // and a write rewritten here is a call.
+      if (this.config.memoryLimit && this.config.memoryLimit > 0 && this.accountsForArrays()) {
+        transformedCode = this.applyArrayWriteGuard(transformedCode);
+      }
+
       // Step 2.3: no dynamic import reaches an adapter. Every preset refuses it; this holds with
       // validation off as well (see ./dynamic-import).
       const importRefusal = refuseDynamicImport(transformedCode);
@@ -956,6 +965,18 @@ export class Enclave {
       return code;
     }
     return generate(ast);
+  }
+
+  /**
+   * Hand the writes that can change the size of an array to the runtime (see guardArrayWrites).
+   *
+   * @param code The validated, transformed code
+   * @returns The code with those writes rewritten
+   */
+  private applyArrayWriteGuard(code: string): string {
+    const ast = parseValidatedCode(code);
+    const { guardedCount } = guardArrayWrites(ast);
+    return guardedCount === 0 ? code : generate(ast);
   }
 
   /**

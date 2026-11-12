@@ -3723,6 +3723,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     var getIntrinsicsCode =
       '({ ' +
       '  Array: Array, ' +
+      '  objectAssign: Object.assign, ' +
       '  String: String, ' +
       '  Number: Number, ' +
       '  Boolean: Boolean, ' +
@@ -3746,6 +3747,13 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     var script = new vm.Script(getIntrinsicsCode);
     return script.runInContext(innerContext);
   })();
+
+  // Object.assign is the inner realm's: where memory is accounted for, that one keeps an array
+  // within what the limit holds (see ../realm-memory); this realm's own would write to an
+  // array of the script unseen.
+  if (typeof innerIntrinsics.objectAssign === 'function') {
+    SafeObject.assign = innerIntrinsics.objectAssign;
+  }
 
   // The constructors the script uses with new and instanceof. They are proxied directly (see
   // realmOwnedCallables): each belongs to the inner realm, except SafeObject, which is a

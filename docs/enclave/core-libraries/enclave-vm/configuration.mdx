@@ -123,7 +123,19 @@ console.log('Peak memory:', result.stats.memoryUsage);
 `memoryLimit` is the enclave's own accounting, not a limit of the engine's heap. It counts the operations that make text and arrays grow:
 
 - **Text**: concatenation (`a + b`, and `x += y`, which is charged like `x + y`) and the methods that multiply their input (`repeat`, `padStart`, `padEnd`, `join`).
-- **Arrays**: no single array is larger than the limit holds, at 8 bytes per element, and what an operation adds is charged: `push`, `unshift`, `splice`, `fill`, the elements `concat`, `flat`, `flatMap` and a spread literal add, and what `Array.from` makes out of something that is not an array.
+- **Arrays**: no array has more slots than the limit holds, at 8 bytes per slot, and the slots an operation adds are charged: `push`, `unshift`, `splice`, a write to an element beyond the end, an assignment to `length`, `Array(n)`, the elements `concat`, `flat`, `flatMap` and a spread literal add, and what `Array.from` makes out of something that is not an array.
+
+The slots count whether they hold anything or not, because that is what a built-in works through. An array used as a sparse map is therefore charged for its whole length, and refused above the limit:
+
+```js
+const seen = [];
+seen[5000000] = true; // MEMORY_LIMIT_EXCEEDED with the default limit: 5,000,001 slots
+
+const seenById = {}; // an object, or a Map, takes any key
+seenById[5000000] = true;
+```
+
+For the same reason an array method does not work on a receiver that is longer than an array may be: `[].indexOf.call({ length: 1e15 }, x)` fails with `MEMORY_LIMIT_EXCEEDED` instead of walking that length. One call into a built-in is not interrupted at the deadline, so its length is what bounds it. Of an object that is not an array the length is read once.
 
 It does not count a copy (a script can hold many arrays that are each within the limit), and it does not count object literals, Maps and Sets. A script that goes over the limit fails with `MEMORY_LIMIT_EXCEEDED`. With a limit set, the VM adapters also measure the returned value: one whose serialized size is estimated above `memoryLimit`, or above 50 MB where the limit is larger, fails with `SERIALIZATION_LIMIT_EXCEEDED`.
 

@@ -157,7 +157,12 @@ export {
   guardComputedMemberKeys,
   GUARD_KEY_FN,
   DEFAULT_GUARD_BLOCKED_KEYS,
+  guardArrayWrites,
+  ARRAY_WRITE_SET_FN,
+  ARRAY_WRITE_SLOT_FN,
 } from './transforms';
+
+export type { ArrayWriteGuardResult } from './transforms';
 
 export type {
   StringExtractionConfig,

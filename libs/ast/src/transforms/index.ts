@@ -39,3 +39,11 @@ export {
   type ComputedMemberGuardResult,
   type ComputedMemberGuardOptions,
 } from './computed-member-guard.transform';
+
+// Writes that can change the size of an array, handed to the runtime that accounts for arrays
+export {
+  guardArrayWrites,
+  ARRAY_WRITE_SET_FN,
+  ARRAY_WRITE_SLOT_FN,
+  type ArrayWriteGuardResult,
+} from './array-write-guard.transform';

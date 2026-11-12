@@ -31,12 +31,27 @@
  *    itself as the receiver of the read), and the built-in works on the plain copy. `flat`
  *    reads the elements of arrays too, so its result is built in the pass that counts it, and
  *    the built-in does not run. Otherwise an array is handed on as it is: its length is its
- *    own, and nothing here reads its elements before the built-in does. That rests on one
- *    property of the realm: a script has no `Proxy` to put in front of an array (ATK-GLOBALS,
- *    ATK-MEMACC-21).
+ *    own, and nothing here reads its elements before the built-in does. An array behind a
+ *    proxy is not its own answer. Where a realm leaves a script the Proxy constructor, the
+ *    script gets a stand-in for it that remembers the proxies it makes, and such a proxy is
+ *    read like any object that states a length (ATK-MEMACC-21).
+ * 4. No array has more slots than the limit holds, and no built-in works through more. The
+ *    slots between the elements of an array hold nothing and cost nothing to make, but every
+ *    built-in that goes by the length works through them, and one call into a built-in is
+ *    finished by the engine: the deadline is not looked at inside it. So the length is what
+ *    is bounded. A write that would give an array more slots than the limit holds is refused,
+ *    and the slots a write adds are charged, the empty ones included: an element beyond the
+ *    end and an assignment to `length` (the transform hands every such write to `__safe_set`
+ *    and `__safe_slot`, see guardArrayWrites in @enclave-vm/ast), `Array(n)` under any name
+ *    (the global is a guarded stand-in), `Object.assign`, the property definitions. And a
+ *    built-in that works through its receiver is not given an object that states a longer
+ *    length: of an object the length is read once, a built-in that reads works on a plain
+ *    copy, and one that moves the slots of its receiver works on the object itself only when
+ *    its length is a number it holds.
  *
  * What it does not cover: a copy is free, so a script can still hold many arrays that are each
- * within the limit; object literals, Maps and Sets are not counted. The limit is an estimate,
+ * within the limit; object literals, Maps and Sets are not counted. With no limit (0) none of
+ * the rules applies, the fourth included. The limit is an estimate,
  * not the engine's: where the host must survive whatever a script allocates, the script belongs
  * in a worker or a process of its own.
  *
@@ -56,6 +71,12 @@ export const ARRAY_SPREAD_FN = '__safe_spread';
 
 /** Name of the realm function that closes the accounting of an array literal with spreads. */
 export const ARRAY_FINISH_FN = '__safe_array';
+
+/** Name of the realm function a write `X[K] = V` goes through (see ARRAY_WRITE_SET_FN in @enclave-vm/ast). */
+export const ARRAY_SET_FN = '__safe_set';
+
+/** Name of the realm function that stands in for the target of every other write through a member. */
+export const ARRAY_SLOT_FN = '__safe_slot';
 
 /**
  * Source of a statement that patches the realm's array built-ins and defines the three helpers
@@ -79,6 +100,9 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
   var objectCreate = Object.create;
   var ObjectCtor = Object;
   var construct = Reflect.construct;
+  var ownKeys = Reflect.ownKeys;
+  var getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+  var ProxyCtor = typeof Proxy === 'function' ? Proxy : undefined;
   var RangeErrorCtor = RangeError;
   var TypeErrorCtor = TypeError;
   var StringCtor = String;
@@ -88,6 +112,7 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
   var iteratorSymbol = Symbol.iterator;
   var speciesSymbol = Symbol.species;
   var spreadableSymbol = Symbol.isConcatSpreadable;
+  var asyncIteratorSymbol = Symbol.asyncIterator;
   var MAX_SAFE_INTEGER = 9007199254740991;
   var limited = memoryLimit > 0 && typeof track === 'function';
   var BYTES = ${ARRAY_ELEMENT_BYTES};
@@ -99,6 +124,8 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
   // A refusal goes through the tracker, which answers an amount over the limit with the
   // execution's memory-limit error; the RangeError is for a tracker that did not.
   function refuse(label, bytes) {
+    // A finite amount: a length a script made up can be anything
+    if (!(bytes <= MAX_SAFE_INTEGER)) bytes = MAX_SAFE_INTEGER;
     track(bytes > memoryLimit ? bytes : memoryLimit + 1);
     throw new RangeErrorCtor(label + ' would exceed memory limit');
   }
@@ -210,6 +237,183 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
     return construct(kind, [0]);
   }
 
+  // A proxy a script makes answers for its length and its slots as its handler likes, and
+  // \`Array.isArray\` says yes to a proxy of an array. Where a realm leaves a script the Proxy
+  // constructor (the double VM at STANDARD and PERMISSIVE), the script gets a stand-in for it
+  // that makes the same proxy and remembers it. A remembered proxy is not handed to a built-in
+  // as an array: it is read once, like any object that states a length.
+  var scriptProxies = null;
+  var proxyMade = false;
+  if (limited && ProxyCtor !== undefined && typeof WeakSet === 'function') {
+    var remember = WeakSet.prototype.add;
+    var remembered = WeakSet.prototype.has;
+    var makeRevocable = ProxyCtor.revocable;
+    scriptProxies = new WeakSet();
+    var ProxyStandIn = function Proxy(target, handler) {
+      if (new.target === undefined) throw new TypeErrorCtor("Constructor Proxy requires 'new'");
+      var made = new ProxyCtor(target, handler);
+      apply(remember, scriptProxies, [made]);
+      proxyMade = true;
+      return made;
+    };
+    // Like the built-in, it has no prototype of its own to give
+    ProxyStandIn.prototype = undefined;
+    defineProperty(ProxyStandIn, 'revocable', {
+      value: function revocable(target, handler) {
+        var pair = apply(makeRevocable, ProxyCtor, [target, handler]);
+        apply(remember, scriptProxies, [pair.proxy]);
+        proxyMade = true;
+        return pair;
+      },
+      writable: true,
+      enumerable: false,
+      configurable: true
+    });
+    try {
+      defineProperty(globalThis, 'Proxy', { value: ProxyStandIn, writable: true, enumerable: false, configurable: true });
+    } catch (e) {
+      scriptProxies = null;
+    }
+  }
+
+  function isScriptProxy(value) {
+    return proxyMade && isObject(value) && apply(remembered, scriptProxies, [value]);
+  }
+
+  /** An array that answers for itself: not one behind a proxy a script made. */
+  function ownArray(value) {
+    return isArray(value) && !isScriptProxy(value);
+  }
+
+  // Rule 4: no array has more slots than the limit holds, and no built-in walks more.
+
+  /** The index a property key is on an array, or -1. */
+  function arrayIndex(key) {
+    if (typeof key === 'number') return (key >>> 0) === key && key !== 4294967295 ? key : -1;
+    if (typeof key !== 'string') return -1;
+    var number = +key;
+    return (number >>> 0) === number && number !== 4294967295 && StringCtor(number) === key ? number : -1;
+  }
+
+  /** ToPropertyKey, done once: what a member access makes of the key. */
+  function propertyKey(key) {
+    var type = typeof key;
+    return type === 'string' || type === 'symbol' || type === 'number' ? key : StringCtor(key);
+  }
+
+  /**
+   * A write to an array through its length or through an index beyond its end: refused when it
+   * would give the array more slots than the limit holds, and charged for the slots it adds
+   * (the slots between the old end and the new one are part of what a built-in walks).
+   * Returns the value to write: for the length, the number it was converted to, once.
+   */
+  function growing(target, key, value) {
+    // The bound is checked whatever the array says its length is now: behind a proxy that is
+    // not the array's own answer
+    if (key === 'length') {
+      var wanted = +value;
+      checkLength(wanted, 'Array length');
+      var before = target.length;
+      if (wanted > before) charge(wanted - before);
+      return wanted;
+    }
+    var index = arrayIndex(key);
+    if (index >= 0) {
+      checkLength(index + 1, 'Array index');
+      var length = target.length;
+      if (index >= length) charge(index + 1 - length);
+    }
+    return value;
+  }
+
+  /** \`target[key] = value\`, with the key converted once and an array kept within the limit. */
+  function guardedSet(target, key, value) {
+    // The common write: a number that is inside the array. Nothing grows, nothing to convert.
+    // (Not for an array behind a proxy a script made: the length it states is not the array's.)
+    if (typeof key === 'number' && key >= 0 && isArray(target) && !(proxyMade && isScriptProxy(target)) && key < target.length) {
+      target[key] = value;
+      return value;
+    }
+    var k = propertyKey(key);
+    if (limited && isArray(target)) {
+      target[k] = growing(target, k, value);
+    } else {
+      target[k] = value;
+    }
+    return value;
+  }
+
+  /**
+   * What stands in for \`X[K]\` where it is written in another way than \`X[K] = V\` (a compound
+   * assignment, \`++\`, a target in a destructuring pattern or in the head of a loop): an object
+   * whose one member \`v\` reads and writes that slot, so the write is the guarded one.
+   */
+  function Slot(target, key) {
+    this.t = target;
+    this.k = propertyKey(key);
+  }
+  Slot.prototype = ObjectCtor.freeze(objectCreate(null, {
+    v: {
+      get: function () { return this.t[this.k]; },
+      set: function (value) { guardedSet(this.t, this.k, value); },
+      enumerable: false,
+      configurable: false
+    }
+  }));
+  function slot(target, key) {
+    return new Slot(target, key);
+  }
+
+  /**
+   * The receiver of a built-in that reads its receiver by its length. An array is itself: its
+   * length is its own, and it has no more slots than a script could give it. Anything else is
+   * read here, once, into a plain array of the length it states, which is checked first. Null
+   * for a receiver the built-in refuses by itself.
+   */
+  function walked(self, label) {
+    if (isArray(self) && !(proxyMade && isScriptProxy(self))) return self;
+    var receiver = toObject(self);
+    if (receiver === null) return null;
+    var length = toLength(receiver.length);
+    checkLength(length, label);
+    return snapshot(receiver, length, true);
+  }
+
+  /**
+   * Whether a built-in that moves the slots of its receiver can be given the receiver itself:
+   * an array, or an object whose length is a number it holds (checked here) or that has none.
+   * The built-in reads the length again, and such a length answers the same.
+   */
+  function movable(self, label) {
+    if (!isObject(self) || ownArray(self)) return true;
+    if (isScriptProxy(self)) return false;
+    var held = getOwnPropertyDescriptor(self, 'length');
+    if (held === undefined) return !('length' in self);
+    if (!('value' in held) || typeof held.value !== 'number') return false;
+    checkLength(toLength(held.value), label);
+    return true;
+  }
+
+  /**
+   * A built-in that moves the slots of its receiver, applied to a receiver whose length is
+   * computed (an accessor, an inherited length, a proxy a script made): the receiver is read
+   * once into a plain array, the built-in works on that, and the result is written back.
+   */
+  function moveThroughCopy(original, self, given, label) {
+    var length = toLength(self.length);
+    checkLength(length, label);
+    var copy = snapshot(self, length, true);
+    var result = apply(original, copy, given);
+    var after = copy.length;
+    for (var i = 0; i < after; i++) {
+      if (i in copy) guardedSet(self, i, copy[i]);
+      else delete self[i];
+    }
+    for (var gone = after; gone < length; gone++) delete self[gone];
+    guardedSet(self, 'length', after);
+    return result === copy ? self : result;
+  }
+
   /** Rule 1, for a text: that many characters are not made. */
   function checkText(characters, label) {
     if (limited && characters * 2 > memoryLimit) refuse(label, characters * 2);
@@ -219,6 +423,11 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
     var original = holder[name];
     if (typeof original !== 'function') return;
     var replacement = make(original);
+    // The replacement answers for its name and its number of parameters like the built-in
+    try {
+      defineProperty(replacement, 'name', { value: name, writable: false, enumerable: false, configurable: true });
+      defineProperty(replacement, 'length', { value: original.length, writable: false, enumerable: false, configurable: true });
+    } catch (e) { /* left as it is */ }
     try {
       defineProperty(holder, name, { value: replacement, writable: true, enumerable: false, configurable: true });
     } catch (e) { /* frozen already: left as it is */ }
@@ -232,9 +441,12 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
         return apply(original, this, arguments);
       };
     });
+    // The global Array, once it is the guarded one (see the end of this block)
+    var guardedArray = null;
     patch(arrayProto, 'unshift', function (original) {
       return function unshift() {
         charge(arguments.length);
+        if (!movable(this, 'Array.unshift')) return moveThroughCopy(original, this, arguments, 'Array.unshift');
         return apply(original, this, arguments);
       };
     });
@@ -242,6 +454,7 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
     patch(arrayProto, 'splice', function (original) {
       return function splice() {
         if (arguments.length > 2) charge(arguments.length - 2);
+        if (!movable(this, 'Array.splice')) return moveThroughCopy(original, this, arguments, 'Array.splice');
         return apply(original, this, arguments);
       };
     });
@@ -262,9 +475,12 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
           var item = i < 0 ? receiver : arguments[i];
           var handed = item;
           if (isObject(item)) {
-            var array = isArray(item);
+            // An array behind a proxy a script made is spread like one, and read here like
+            // any other object that is spread
+            var spreadByKind = isArray(item);
+            var array = ownArray(item);
             var flag = item[spreadableSymbol];
-            if (flag === undefined ? array : !!flag) {
+            if (flag === undefined ? spreadByKind : !!flag) {
               var length = toLength(item.length);
               total += length;
               checkLength(total, 'Array.concat');
@@ -362,9 +578,18 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
     patch(arrayProto, 'flatMap', function (original) {
       return function flatMap(callback, thisArg) {
         if (typeof callback !== 'function') return apply(original, this, arguments);
+        var receiver = walked(this, 'Array.flatMap');
+        if (receiver === null) return apply(original, this, arguments);
         var produced = 0;
-        var result = apply(original, this, [function (value, index, array) {
+        var result = apply(original, receiver, [function (value, index, array) {
           var item = apply(callback, this, [value, index, array]);
+          if (isScriptProxy(item) && isArray(item)) {
+            // An array behind a proxy a script made: the built-in gets what was counted
+            var length = toLength(item.length);
+            produced += length;
+            checkLength(produced, 'Array.flatMap');
+            return snapshot(item, length, true);
+          }
           produced += isArray(item) ? item.length : 1;
           checkLength(produced, 'Array.flatMap');
           return item;
@@ -383,8 +608,26 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
             var receiver = toObject(this);
             if (receiver === null) return apply(original, this, arguments);
             var length = toLength(receiver.length);
-            checkLength(length + (name === 'toSpliced' && arguments.length > 2 ? arguments.length - 2 : 0), 'Array.' + name);
-            return apply(original, isArray(receiver) ? receiver : snapshot(receiver, length, false), arguments);
+            var array = ownArray(receiver);
+            // The copy that is made of something that is not an array has its length
+            if (!array) checkLength(length, 'Array.' + name);
+            var given = arguments;
+            if (name === 'toSpliced') {
+              // The result has the receiver's slots, less the ones skipped, plus the ones
+              // inserted: worked out here by the built-in's rules, and the built-in gets the
+              // two numbers
+              var start = relativeIndex(arguments[0], length, 0);
+              var skip = arguments.length === 0 ? 0 : arguments.length === 1 ? length - start : toInteger(arguments[1]);
+              if (skip < 0) skip = 0;
+              if (skip > length - start) skip = length - start;
+              var inserted = arguments.length > 2 ? arguments.length - 2 : 0;
+              checkLength(length + inserted - skip, 'Array.toSpliced');
+              given = [start, skip];
+              for (var g = 2; g < arguments.length; g++) given[g] = arguments[g];
+            } else {
+              checkLength(length, 'Array.' + name);
+            }
+            return apply(original, array ? receiver : snapshot(receiver, length, false), given);
           };
         });
       })(copying[c]);
@@ -407,7 +650,11 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
           var length = toLength(receiver.length);
           checkLength(length, 'Array.from');
           source = slotsOf(receiver, length);
-        } else if (typeof iterate === 'function' && isObject(items)) {
+        } else if (typeof iterate !== 'function') {
+          // What the built-in answers for an iterator that cannot be called: answered here, so
+          // that it is not asked a second time
+          throw new TypeErrorCtor('Array.from: the iterator of the source is not a function');
+        } else if (isObject(items)) {
           var held = {};
           held[iteratorSymbol] = { value: function () { return apply(iterate, items, []); } };
           source = objectCreate(null, held);
@@ -415,7 +662,8 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
 
         var produced = 0;
         var mapped = mapFn !== undefined;
-        var result = apply(original, this, [source, function (value, index) {
+        // The guarded Array stands for the built-in one: what is made here is counted here
+        var result = apply(original, this === guardedArray ? ArrayCtor : this, [source, function (value, index) {
           produced++;
           if (produced * BYTES > memoryLimit) refuse('Array.from', produced * BYTES);
           return mapped ? apply(mapFn, this, [value, index]) : value;
@@ -432,20 +680,213 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
     patch(arrayProto, 'fill', function (original) {
       return function fill(value, start, end) {
         if (!isObject(this)) return apply(original, this, arguments);
-        var array = isArray(this);
+        var array = ownArray(this);
         var length = array ? this.length : toLength(this.length);
         var from = relativeIndex(start, length, 0);
         var to = relativeIndex(end, length, length);
         var count = to > from ? to - from : 0;
         checkLength(count, 'Array.fill');
-        charge(count);
         if (array) {
+          // The slots of an array were charged when it got them
           return apply(original, this, [value, from, to]);
         }
+        charge(count);
         for (var i = from; i < to; i++) {
           this[i] = value;
         }
         return this;
+      };
+    });
+
+    // Every other built-in that works through its receiver by its length. One call into such a
+    // built-in is finished by the engine, however long the length says the receiver is: the
+    // deadline is not looked at inside it. So none of them is given a length above what an
+    // array may have, whether the receiver is an array with that many slots (most of them
+    // empty) or an object that states the length.
+    var reading = [
+      'indexOf', 'lastIndexOf', 'includes', 'forEach', 'map', 'filter', 'some', 'every', 'reduce',
+      'reduceRight', 'find', 'findIndex', 'findLast', 'findLastIndex', 'slice', 'keys', 'values', 'entries'
+    ];
+    for (var r = 0; r < reading.length; r++) {
+      (function (name) {
+        var label = 'Array.' + name;
+        patch(arrayProto, name, function (original) {
+          return function () {
+            var receiver = walked(this, label);
+            return apply(original, receiver === null ? this : receiver, arguments);
+          };
+        });
+      })(reading[r]);
+    }
+    var moving = ['reverse', 'sort', 'copyWithin', 'shift'];
+    for (var m = 0; m < moving.length; m++) {
+      (function (name) {
+        var label = 'Array.' + name;
+        patch(arrayProto, name, function (original) {
+          return function () {
+            if (!movable(this, label)) return moveThroughCopy(original, this, arguments, label);
+            return apply(original, this, arguments);
+          };
+        });
+      })(moving[m]);
+    }
+
+    // The other ways to write to an array. Each is the guarded write, or checked like it.
+    patch(ObjectCtor, 'assign', function (original) {
+      return function assign(target) {
+        if (!isArray(target)) return apply(original, this, arguments);
+        for (var s = 1; s < arguments.length; s++) {
+          var source = arguments[s];
+          if (source === null || source === undefined) continue;
+          var from = ObjectCtor(source);
+          var keys = ownKeys(from);
+          for (var i = 0; i < keys.length; i++) {
+            var held = getOwnPropertyDescriptor(from, keys[i]);
+            if (held !== undefined && held.enumerable) guardedSet(target, keys[i], from[keys[i]]);
+          }
+        }
+        return target;
+      };
+    });
+    // A descriptor, read once: the built-in reads its members again
+    var descriptorMembers = ['enumerable', 'configurable', 'value', 'writable', 'get', 'set'];
+    function pinned(descriptor) {
+      if (!isObject(descriptor)) return descriptor;
+      var copy = objectCreate(null);
+      for (var d = 0; d < descriptorMembers.length; d++) {
+        if (descriptorMembers[d] in descriptor) copy[descriptorMembers[d]] = descriptor[descriptorMembers[d]];
+      }
+      return copy;
+    }
+    // The key and the descriptor a definition on an array is made with
+    function definition(target, key, descriptor) {
+      var k = propertyKey(key);
+      var copy = pinned(descriptor);
+      if (isObject(copy)) {
+        if (k !== 'length') growing(target, k, undefined);
+        else if ('value' in copy) copy.value = growing(target, k, copy.value);
+      }
+      return [target, k, copy];
+    }
+    var defineOne = ObjectCtor.defineProperty;
+    patch(ObjectCtor, 'defineProperty', function (original) {
+      return function defineProperty(target, key, descriptor) {
+        if (!isArray(target)) return apply(original, this, arguments);
+        return apply(original, this, definition(target, key, descriptor));
+      };
+    });
+    patch(ObjectCtor, 'defineProperties', function (original) {
+      return function defineProperties(target, properties) {
+        if (!isArray(target) || properties === null || properties === undefined) return apply(original, this, arguments);
+        var from = ObjectCtor(properties);
+        var keys = ownKeys(from);
+        for (var i = 0; i < keys.length; i++) {
+          var held = getOwnPropertyDescriptor(from, keys[i]);
+          if (held !== undefined && held.enumerable) apply(defineOne, ObjectCtor, definition(target, keys[i], from[keys[i]]));
+        }
+        return target;
+      };
+    });
+    if (typeof Reflect === 'object' && Reflect !== null) {
+      patch(Reflect, 'defineProperty', function (original) {
+        return function defineProperty(target, key, descriptor) {
+          if (!isArray(target)) return apply(original, this, arguments);
+          return apply(original, this, definition(target, key, descriptor));
+        };
+      });
+      patch(Reflect, 'set', function (original) {
+        return function set(target, key, value, receiver) {
+          // The write lands on the receiver, which is the target unless one is given
+          var landing = arguments.length > 3 ? receiver : target;
+          if (!isArray(landing)) return apply(original, this, arguments);
+          var k = propertyKey(key);
+          var written = growing(landing, k, value);
+          return apply(original, this, arguments.length > 3 ? [target, k, written, receiver] : [target, k, written]);
+        };
+      });
+    }
+    var legacy = ['__defineGetter__', '__defineSetter__'];
+    for (var l = 0; l < legacy.length; l++) {
+      (function (name) {
+        patch(ObjectCtor.prototype, name, function (original) {
+          return function (key, accessor) {
+            if (!isArray(this)) return apply(original, this, arguments);
+            var k = propertyKey(key);
+            growing(this, k, undefined);
+            return apply(original, this, [k, accessor]);
+          };
+        });
+      })(legacy[l]);
+    }
+
+    // Array(n) and new Array(n) make n slots: checked and charged like every other way to get
+    // them. The global is put behind a proxy for that (made here, while the realm still has
+    // the means), so it holds for every way to call it; \`Array.prototype.constructor\` stays the
+    // built-in, which the results of the built-ins are made with.
+    patch(ArrayCtor, 'of', function (original) {
+      return function of() {
+        return apply(original, this === guardedArray ? ArrayCtor : this, arguments);
+      };
+    });
+    if (ProxyCtor !== undefined) {
+      var slotsFor = function (given) {
+        if (given.length === 1 && typeof given[0] === 'number') {
+          checkLength(given[0], 'Array');
+          charge(given[0]);
+        } else {
+          checkLength(given.length, 'Array');
+        }
+      };
+      guardedArray = new ProxyCtor(ArrayCtor, {
+        apply: function (target, self, given) {
+          slotsFor(given);
+          return apply(target, self, given);
+        },
+        construct: function (target, given, newTarget) {
+          slotsFor(given);
+          return construct(target, given, newTarget);
+        }
+      });
+      try {
+        defineProperty(globalThis, 'Array', { value: guardedArray, writable: true, enumerable: false, configurable: true });
+      } catch (e) {
+        guardedArray = null;
+      }
+    }
+
+    // Array.fromAsync: like Array.from. How the source is read is decided here, once, and what
+    // it yields is counted as it comes.
+    patch(ArrayCtor, 'fromAsync', function (original) {
+      return function fromAsync(items, mapFn, thisArg) {
+        if (items === null || items === undefined) return apply(original, this, arguments);
+        if (mapFn !== undefined && typeof mapFn !== 'function') return apply(original, this, arguments);
+        var source;
+        var iterate = asyncIteratorSymbol === undefined ? undefined : items[asyncIteratorSymbol];
+        var symbol = asyncIteratorSymbol;
+        if (iterate === undefined || iterate === null) {
+          iterate = items[iteratorSymbol];
+          symbol = iteratorSymbol;
+        }
+        if (iterate === undefined || iterate === null) {
+          var receiver = toObject(items);
+          var length = toLength(receiver.length);
+          checkLength(length, 'Array.fromAsync');
+          source = slotsOf(receiver, length);
+        } else if (typeof iterate !== 'function') {
+          throw new TypeErrorCtor('Array.fromAsync: the iterator of the source is not a function');
+        } else {
+          var held = {};
+          held[symbol] = { value: function () { return apply(iterate, items, []); } };
+          source = objectCreate(null, held);
+        }
+        var produced = 0;
+        var mapped = mapFn !== undefined;
+        return apply(original, this === guardedArray ? ArrayCtor : this, [source, function (value, index) {
+          produced++;
+          if (produced * BYTES > memoryLimit) refuse('Array.fromAsync', produced * BYTES);
+          charge(1);
+          return mapped ? apply(mapFn, this, [value, index]) : value;
+        }, thisArg]);
       };
     });
 
@@ -535,17 +976,50 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
   }
 
   function spread(source) {
-    if (isArray(source)) {
+    var frame = frames.length > 0 ? frames[frames.length - 1] : null;
+    if (ownArray(source) || typeof source === 'string') {
+      // An array, or a text (which yields at most as many items as it has characters): its
+      // size is known before it is spread
       var length = source.length;
       checkLength(length, 'Array spread');
-      var frame = frames.length > 0 ? frames[frames.length - 1] : null;
       if (frame) {
         frame.total += length;
-        if (length > frame.largest) frame.largest = length;
+        if (typeof source !== 'string' && length > frame.largest) frame.largest = length;
         checkLength(frame.total, 'Array spread');
       }
+      return source;
     }
-    return source;
+    if (!limited || source === null || source === undefined) return source;
+    // Anything else that is iterated yields as many items as it likes: it is spread through an
+    // iterator that counts them as they come, so the literal is stopped at the limit and not
+    // measured when it exists. The iterator is asked for once, and each step is read once.
+    var iterate = source[iteratorSymbol];
+    if (typeof iterate !== 'function') return source;
+    var counted = {};
+    counted[iteratorSymbol] = {
+      value: function () {
+        var iterator = apply(iterate, source, []);
+        if (!isObject(iterator)) throw new TypeErrorCtor('Result of the Symbol.iterator method is not an object');
+        var next = iterator.next;
+        return {
+          next: function () {
+            var step = apply(next, iterator, []);
+            if (!isObject(step)) throw new TypeErrorCtor('Iterator result is not an object');
+            if (step.done) return { done: true, value: undefined };
+            if (frame) {
+              frame.total += 1;
+              checkLength(frame.total, 'Array spread');
+            }
+            return { done: false, value: step.value };
+          },
+          return: function (value) {
+            var close = iterator.return;
+            return typeof close === 'function' ? apply(close, iterator, [value]) : { done: true, value: value };
+          }
+        };
+      }
+    };
+    return objectCreate(null, counted);
   }
 
   function arrayFinish(id, array) {
@@ -566,7 +1040,7 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
 
   var helpers = [[${JSON.stringify(ARRAY_START_FN)}, arrayStart], [${JSON.stringify(ARRAY_SPREAD_FN)}, spread], [${JSON.stringify(
     ARRAY_FINISH_FN,
-  )}, arrayFinish]];
+  )}, arrayFinish], [${JSON.stringify(ARRAY_SET_FN)}, guardedSet], [${JSON.stringify(ARRAY_SLOT_FN)}, slot]];
   for (var h = 0; h < helpers.length; h++) {
     defineProperty(globalThis, helpers[h][0], {
       value: helpers[h][1],

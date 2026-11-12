@@ -125,6 +125,8 @@ const enclave = new Enclave({
 });
 ```
 
+A used amount far above anything the script holds (`38.15MB used` for a short script, or gigabytes) points at an array's length, not at its contents: an array is counted by its slots, 8 bytes each, whether they hold anything or not. The usual causes are an array used as a sparse map (`seen[userId] = true`), an assignment to `length`, `Array(n)` with a large `n`, and an array method called on an object with a large `length`. Use an object or a `Map` for keys that are not small consecutive indexes.
+
 A returned value that is larger than the memory limit allows fails with `SERIALIZATION_LIMIT_EXCEEDED`.
 
 ### SECURITY_VIOLATION
