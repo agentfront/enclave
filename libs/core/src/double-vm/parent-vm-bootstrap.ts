@@ -1877,6 +1877,112 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     };
   }
 
+  // SECURITY (a function of the script on a value of this realm): a script can store a function
+  // of its own on a value of THIS realm that it holds behind the membrane (a tool result, the
+  // array a built-in made, a promise), as a property, a getter or a setter. Whoever finds the
+  // function there calls it: the script through the membrane, but also a built-in of this realm
+  // that works on the raw value (a conversion looks up toString, a read runs a getter), and that
+  // built-in calls it with the raw value as its receiver. So what is stored on the raw value is
+  // never the script's function but a guard of this realm that calls it with what the script may
+  // hold (see guardCallbackForRealm), and a read through the membrane gives the script its own
+  // function back.
+  const scriptFunctionGuards = new WeakMap();
+  const guardedScriptFunctions = new WeakMap();
+
+  function isScriptFunction(value) {
+    return typeof value === 'function' && !membraneProxies.has(value) && belongsToInnerRealm(value);
+  }
+
+  function guardScriptFunction(fn) {
+    var existing = scriptFunctionGuards.get(fn);
+    if (existing) {
+      return existing;
+    }
+    var guard = guardCallbackForRealm(fn);
+    scriptFunctionGuards.set(fn, guard);
+    guardedScriptFunctions.set(guard, fn);
+    return guard;
+  }
+
+  /**
+   * Whether a value is a raw object or function of this realm: not a primitive, not the script's
+   * own, not a safe error and not behind the membrane already.
+   */
+  function isRawRealmReference(value) {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+      return false;
+    }
+    return !membraneProxies.has(value) && !safeErrors.has(value) && !belongsToInnerRealm(value);
+  }
+
+  /**
+   * The descriptor to apply when a script defines a property on a value of this realm.
+   *
+   * - A function of the script (the value, the getter or the setter) is stored as its guard.
+   * - A data property that ends up neither configurable nor writable is pinned: the language
+   *   requires every later read through a Proxy to answer with exactly what is stored. What is
+   *   stored then is the membrane's own answer for the value (its proxy), so that freezing or
+   *   sealing a value does not turn its nested values into raw objects of this realm.
+   */
+  function descriptorForRealmValue(obj, property, descriptor, depth) {
+    if (descriptor === null || typeof descriptor !== 'object') {
+      return descriptor;
+    }
+    var next = {};
+    var fields = ['value', 'get', 'set', 'writable', 'enumerable', 'configurable'];
+    for (var f = 0; f < fields.length; f++) {
+      if (fields[f] in descriptor) next[fields[f]] = descriptor[fields[f]];
+    }
+    if (isScriptFunction(next.value)) next.value = guardScriptFunction(next.value);
+    if (isScriptFunction(next.get)) next.get = guardScriptFunction(next.get);
+    if (isScriptFunction(next.set)) next.set = guardScriptFunction(next.set);
+
+    if ('get' in next || 'set' in next) {
+      return next;
+    }
+    var current = __ag_getOwnPropertyDescriptor(obj, property);
+    var currentIsData = !!current && 'value' in current;
+    if (current && !currentIsData && !('value' in next) && !('writable' in next)) {
+      // Stays an accessor
+      return next;
+    }
+    if (currentIsData && !current.configurable && !current.writable) {
+      // Pinned already: nothing can be stored in its place
+      return next;
+    }
+    var configurable = 'configurable' in next ? next.configurable : (current ? current.configurable : false);
+    var writable = 'writable' in next ? next.writable : (currentIsData ? current.writable : false);
+    if (!configurable && !writable) {
+      var pinned = 'value' in next ? next.value : (currentIsData ? current.value : undefined);
+      if (isRawRealmReference(pinned)) {
+        next.value = createSecureProxy(pinned, depth + 1, false);
+      }
+    }
+    return next;
+  }
+
+  /**
+   * An object of this realm on its way behind the membrane: a function of the script that a
+   * built-in of this realm stored in it by name (Object.fromEntries, Object.groupBy) is replaced
+   * by its guard, as the membrane does for a function the script stores there itself. An array
+   * holds its items by index, which no built-in calls as a method of the array.
+   */
+  function guardScriptFunctionsOf(obj) {
+    var keys;
+    try {
+      keys = __ag_ReflectOwnKeys(obj);
+    } catch (e) {
+      return;
+    }
+    for (var k = 0; k < keys.length; k++) {
+      var own = __ag_getOwnPropertyDescriptor(obj, keys[k]);
+      if (!own || !('value' in own) || !own.writable || !isScriptFunction(own.value)) continue;
+      try {
+        obj[keys[k]] = guardScriptFunction(own.value);
+      } catch (e) { /* left as it is */ }
+    }
+  }
+
   /**
    * The result of a built-in method of host data. An array (map, filter, slice, concat, ...) is
    * copied into an array of this realm, so the script can sort or extend what it derived
@@ -2003,6 +2109,15 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     var shelled = typeof obj === 'function' && !realmOwnedCallables.has(obj);
     var proxyTarget = shelled ? newCallableShell() : obj;
 
+    // Whether obj is a value of THIS realm: neither the host's nor the script's own (an array a
+    // built-in made, a tool result, a promise of this realm, a forwarder). Decided once, here:
+    // the answer follows the prototype chain, which a script cannot change afterwards (see the
+    // setPrototypeOf trap).
+    var foreign = !host && !belongsToInnerRealm(obj);
+    if (foreign && typeof obj === 'object' && !__ag_ArrayIsArray(obj)) {
+      guardScriptFunctionsOf(obj);
+    }
+
     var handler = {
       get: function(_target, property, receiver) {
         var propName = String(property);
@@ -2030,6 +2145,15 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
           // A shelled callable is not the Proxy target, so no invariant pins its value: a
           // reference takes the blocking and wrapping path below like any other read.
           if (!shelled || !exactIsReference) {
+            // A raw object of this realm that is pinned in a value of this realm (a member of
+            // an intrinsic of this realm, which is frozen) can be neither handed over nor
+            // wrapped. What a script pins itself is stored wrapped (descriptorForRealmValue).
+            if (foreign && isRawRealmReference(exactValue)) {
+              throw createSafeError(
+                "Security violation: Access to '" + propName + "' is blocked. " +
+                "This property cannot be exposed without breaking the sandbox barrier."
+              );
+            }
             return exactValue;
           }
         }
@@ -2069,6 +2193,16 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         // block constructor access. It is a closure rather than value.bind(obj): a bound
         // function keeps the realm of its target (see realmOwnedCallables).
         if (typeof value === 'function') {
+          // A function of the script that sits on a value of this realm is the script's own: it
+          // gets it back as it is, and calls it on the value it holds (see guardScriptFunction).
+          if (foreign) {
+            if (guardedScriptFunctions.has(value)) {
+              return guardedScriptFunctions.get(value);
+            }
+            if (isScriptFunction(value)) {
+              return value;
+            }
+          }
           var hostBuiltin = host && hostIsBuiltinMethod(value);
           // push, sort, Map.prototype.set, ... called on host data would write to the host's
           // own object without ever reaching the set trap.
@@ -2079,7 +2213,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
           var method = createMethodForwarder(value, obj);
           if (hostBuiltin) {
             ungatedHostFunctions.add(method);
-          } else if (!host && typeof obj === 'object' && !belongsToInnerRealm(obj)) {
+          } else if (foreign && typeof obj === 'object') {
             parentRealmMethods.add(method);
           }
           return createSecureProxy(method, depth + 1, host);
@@ -2130,7 +2264,11 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
             "Security violation: Defining non-configurable property '" + propName + "' on a function is blocked."
           );
         }
-        return __ag_ReflectDefineProperty(obj, property, descriptor);
+        return __ag_ReflectDefineProperty(
+          obj,
+          property,
+          foreign ? descriptorForRealmValue(obj, property, descriptor, depth) : descriptor
+        );
       },
       deleteProperty: function(_target, property) {
         if (host) {
@@ -2195,6 +2333,23 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         // path below, described as configurable.
         if (descriptor && !descriptor.configurable) {
           if (!shelled) {
+            // On a value of this realm such a description would hand out a raw object of this
+            // realm. A writable property may be described with another value (the wrapped one);
+            // a pinned one may not, and is refused as the get trap refuses it.
+            if (foreign && 'value' in descriptor && isRawRealmReference(descriptor.value)) {
+              if (descriptor.writable === false) {
+                throw createSafeError(
+                  "Security violation: Access to property descriptor for '" + propName + "' is blocked. " +
+                  "This property cannot be exposed without breaking the sandbox barrier."
+                );
+              }
+              var described = {};
+              for (var nk in descriptor) { if (__ag_hasOwnProperty.call(descriptor, nk)) described[nk] = descriptor[nk]; }
+              described.value = guardedScriptFunctions.has(descriptor.value)
+                ? guardedScriptFunctions.get(descriptor.value)
+                : createSecureProxy(descriptor.value, depth + 1, false);
+              return described;
+            }
             return descriptor;
           }
           descriptor = reportable(descriptor);
@@ -2216,8 +2371,18 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         if (descriptor && (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')) {
           var accessorWrapped = {};
           for (var ak in descriptor) { if (__ag_hasOwnProperty.call(descriptor, ak)) accessorWrapped[ak] = descriptor[ak]; }
-          if (typeof descriptor.get === 'function') accessorWrapped.get = createSecureProxy(descriptor.get, depth + 1, host);
-          if (typeof descriptor.set === 'function') accessorWrapped.set = createSecureProxy(descriptor.set, depth + 1, host);
+          // A getter or setter of the script is described as the script's function, not as the
+          // guard that is stored for it (see guardScriptFunction).
+          if (typeof descriptor.get === 'function') {
+            accessorWrapped.get = guardedScriptFunctions.has(descriptor.get)
+              ? guardedScriptFunctions.get(descriptor.get)
+              : createSecureProxy(descriptor.get, depth + 1, host);
+          }
+          if (typeof descriptor.set === 'function') {
+            accessorWrapped.set = guardedScriptFunctions.has(descriptor.set)
+              ? guardedScriptFunctions.get(descriptor.set)
+              : createSecureProxy(descriptor.set, depth + 1, host);
+          }
           return accessorWrapped;
         }
 
@@ -2233,7 +2398,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
             var refusedValue = (host && typeof value === 'function' && hostIsBuiltinMethod(value))
               ? refusedHostBuiltin(value, propName, depth)
               : null;
-            wrapped.value = refusedValue || createSecureProxy(value, depth + 1, host);
+            wrapped.value = refusedValue || (guardedScriptFunctions.has(value)
+              ? guardedScriptFunctions.get(value)
+              : createSecureProxy(value, depth + 1, host));
             return wrapped;
           }
         }
@@ -2264,9 +2431,10 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         // Return null to hide prototype chain
         return null;
       },
-      // The default would change the prototype of the Proxy target: of the shell (pointless), or
-      // of a host-owned value (a write to the host).
-      setPrototypeOf: (host || shelled) ? function() {
+      // The default would change the prototype of the Proxy target: of the shell (pointless), of
+      // a host-owned value (a write to the host), or of a value of this realm, whose prototype
+      // chain is how the membrane tells it from a value of the script (see 'foreign' above).
+      setPrototypeOf: (host || shelled || foreign) ? function() {
         if (host) {
           return refuseHostWrite('Changing the prototype of the value', false);
         }
