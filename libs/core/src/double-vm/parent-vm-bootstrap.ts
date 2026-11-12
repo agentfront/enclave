@@ -19,6 +19,7 @@ import { TOOL_NAMESPACE_FACTORY_SOURCE } from '../tool-namespaces';
 import { CONSOLE_FACTORY_SOURCE } from '../console-handler';
 import { realmTickSource } from '../deadline-guard';
 import { booleanLiteral, numericLiteral } from '../enclave-options';
+import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
 
 /**
  * Recursion backstop for the in-VM secure-proxy membranes.
@@ -1280,6 +1281,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     // different scripts differ near their start: the engine's compilation cache compares a new
     // source with the sources of the same length it still holds, character by character.
     var userCode = ${asciiStringLiteral(userCode)};
+
+    // This realm captures no stack traces (see ../realm-stack). First, before any error is made.
+    ${STACK_CAPTURE_OFF_SOURCE}
 
     // Get injected references from host
     const vm = __host_vm_module__;
@@ -2859,6 +2863,10 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   var innerContext = vm.createContext(__ag_objectCreate(null), {
     codeGeneration: { strings: false, wasm: false }
   });
+
+  // The inner realm captures no stack traces, at every security level (see ../realm-stack): the
+  // first thing that runs there, while its Error is the intrinsic one.
+  new vm.Script(${JSON.stringify(STACK_CAPTURE_OFF_SOURCE)}, { filename: 'inner-stack.js' }).runInContext(innerContext);
 
   // The function that removes globals from the inner realm at the end of setup (see
   // INNER_REALM_SCRUB_SOURCE). Compiled before anything else runs there.

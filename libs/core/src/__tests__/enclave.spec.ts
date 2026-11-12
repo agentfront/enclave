@@ -496,7 +496,9 @@ describe('Enclave', () => {
 
       expect(result.success).toBe(false);
       expect(result.error?.name).toContain('Error');
-      expect(result.error?.stack).toBeDefined();
+      expect(result.error?.message).toMatch(/null/);
+      // An error made inside the sandbox carries no stack trace
+      expect(result.error?.stack).toBeUndefined();
 
       enclave.dispose();
     });

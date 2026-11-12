@@ -376,8 +376,9 @@ describe('VmAdapter', () => {
 
       expect(result.success).toBe(false);
       expect(result.error?.name).toBe('TypeError');
-      // Stack should be present when not sanitized
-      expect(result.error?.stack).toBeDefined();
+      expect(result.error?.message).toMatch(/undefined/);
+      // The error was made inside the sandbox, which captures no stack traces at any level
+      expect(result.error?.stack).toBeUndefined();
     });
   });
 

@@ -27,6 +27,7 @@ import { realmTickSource } from '../deadline-guard';
 import { guardSandboxRejections } from '../sandbox-rejections';
 import { createRealmAirlock, type RealmMembrane } from '../realm-airlock';
 import { numericLiteral } from '../enclave-options';
+import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
 import {
   INNER_REALM_GUARD_SOURCE,
   INNER_REALM_SYMBOL_REGISTRY_SOURCE,
@@ -147,6 +148,9 @@ const STACK_TRACE_HARDENING_CODE = `
 `.trim();
 
 const STACK_TRACE_HARDENING_SCRIPT = new ReusableSandboxScript(STACK_TRACE_HARDENING_CODE);
+
+/** Run first in the sandbox realm, at every security level: it captures no stack traces (see ../realm-stack). */
+const STACK_CAPTURE_OFF_SCRIPT = new ReusableSandboxScript(STACK_CAPTURE_OFF_SOURCE, { filename: 'realm-stack.js' });
 
 /**
  * Detect and report code-generation attempts (Function/eval) even if user code catches the thrown error.
@@ -840,6 +844,9 @@ export class VmAdapter implements SandboxAdapter {
       const baseSandbox = vm.createContext(Object.create(null) as Record<string, unknown>, {
         codeGeneration: { strings: false, wasm: false },
       });
+
+      // Before anything else runs in the realm: no stack traces for the errors made there.
+      STACK_CAPTURE_OFF_SCRIPT.runInContext(baseSandbox);
 
       // Capture sandbox-realm helpers before any sanitization touches the realm's globals:
       // - the realm bridge re-creates host-function results as sandbox-realm values;
