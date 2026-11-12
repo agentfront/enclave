@@ -642,9 +642,26 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     var ml = ${memoryLimit};
     if (ml <= 0) return;
     var totalTracked = 0;
+
+    // A size is only usable when it is a positive number. Anything else (a missing or
+    // non-numeric count, a receiver without a numeric length, a negative value) counts as
+    // nothing, so the running total stays a number and only ever grows.
+    function saneSize(n) { return (typeof n === 'number' && n > 0) ? n : 0; }
+
     function track(bytes) {
-      totalTracked += bytes;
+      totalTracked += saneSize(bytes);
       if (totalTracked > ml) throw new RangeError('Memory limit exceeded');
+    }
+
+    // Charge what was really built when it is more than the estimate (a receiver or an argument
+    // that reports one size and then produces another).
+    function chargeActual(result, estimated, label) {
+      var actual = (typeof result === 'string') ? result.length * 2 : 0;
+      if (actual > estimated) {
+        if (actual > ml) throw new RangeError(label + ' would exceed memory limit');
+        track(actual - estimated);
+      }
+      return result;
     }
 
     var stringProto = Object.getPrototypeOf('');
@@ -653,14 +670,12 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     try {
       var origRepeat = stringProto.repeat;
       Object.defineProperty(stringProto, 'repeat', { value: function(count) {
-        var est = this.length * count * 2;
+        var est = saneSize(this.length * saneSize(+count) * 2);
         if (est > ml) throw new RangeError('String.repeat would exceed memory limit');
         track(est);
-        return origRepeat.call(this, count);
+        return chargeActual(origRepeat.call(this, count), est, 'String.repeat');
       }, writable: false, configurable: false });
-    } catch(e) {}
 
-    try {
       var origJoin = arrayProto.join;
       Object.defineProperty(arrayProto, 'join', { value: function(sep) {
         var s = sep === undefined ? ',' : String(sep);
@@ -670,14 +685,28 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
           est += (item === null || item === undefined) ? 0 : String(item).length;
           if (i > 0) est += s.length;
         }
-        est *= 2;
+        est = saneSize(est * 2);
         if (est > ml) throw new RangeError('Array.join would exceed memory limit');
         track(est);
-        return origJoin.call(this, sep);
+        return chargeActual(origJoin.call(this, sep), est, 'Array.join');
       }, writable: false, configurable: false });
-    } catch(e) {}
 
-    try {
+      var origPadStart = stringProto.padStart;
+      Object.defineProperty(stringProto, 'padStart', { value: function(targetLength, padString) {
+        var est = saneSize(Math.max(saneSize(this.length), saneSize(+targetLength)) * 2);
+        if (est > ml) throw new RangeError('String.padStart would exceed memory limit');
+        track(est);
+        return chargeActual(origPadStart.call(this, targetLength, padString), est, 'String.padStart');
+      }, writable: false, configurable: false });
+
+      var origPadEnd = stringProto.padEnd;
+      Object.defineProperty(stringProto, 'padEnd', { value: function(targetLength, padString) {
+        var est = saneSize(Math.max(saneSize(this.length), saneSize(+targetLength)) * 2);
+        if (est > ml) throw new RangeError('String.padEnd would exceed memory limit');
+        track(est);
+        return chargeActual(origPadEnd.call(this, targetLength, padString), est, 'String.padEnd');
+      }, writable: false, configurable: false });
+
       var origFill = arrayProto.fill;
       Object.defineProperty(arrayProto, 'fill', { value: function(value, start, end) {
         var len = this.length >>> 0;
@@ -691,7 +720,9 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
         track(est);
         return origFill.call(this, value, start, end);
       }, writable: false, configurable: false });
-    } catch(e) {}
+    } catch(e) {
+      failSetup('memory accounting could not be installed');
+    }
   })();
 
   // Freeze all prototypes
