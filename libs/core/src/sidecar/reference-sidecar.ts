@@ -9,7 +9,13 @@
  */
 
 import { randomUUID } from 'crypto';
-import { ReferenceConfig, REF_ID_PREFIX, REF_ID_SUFFIX, isReferenceId } from './reference-config';
+import {
+  ReferenceConfig,
+  REF_ID_PREFIX,
+  REF_ID_SUFFIX,
+  isReferenceId,
+  getMaxTotalResolvedSize,
+} from './reference-config';
 
 /**
  * Source of a stored reference
@@ -96,10 +102,17 @@ export class ReferenceNotFoundError extends Error {
 export class ReferenceSidecar {
   private readonly storage = new Map<string, Buffer>();
   private readonly metadata = new Map<string, ReferenceMetadata>();
+  /** The stored values that were resolved for a tool call, as the string they were resolved to */
+  private readonly resolved = new Map<string, string>();
   private totalSize = 0;
+  /** Bytes of resolved data built for the tool calls of this execution so far */
+  private resolvedSize = 0;
+  private readonly maxTotalResolvedSize: number;
   private disposed = false;
 
-  constructor(private readonly config: ReferenceConfig) {}
+  constructor(private readonly config: ReferenceConfig) {
+    this.maxTotalResolvedSize = getMaxTotalResolvedSize(config);
+  }
 
   /**
    * Store data and return a reference ID
@@ -197,6 +210,78 @@ export class ReferenceSidecar {
   }
 
   /**
+   * Resolve a reference for a tool call: the stored data as a string
+   *
+   * A stored value is decoded once in the life of the sidecar (one execution) and counted
+   * against `maxTotalResolvedSize` then. Every later resolution, in the same call or in another,
+   * returns the same string and counts nothing: a string cannot be changed, so handing it out
+   * again takes no memory.
+   *
+   * @param refId - The reference ID to resolve
+   * @returns The stored data as a string, or undefined if the reference is not known
+   * @throws SidecarLimitError if the execution's total of resolved data would be exceeded
+   */
+  resolveString(refId: string): string | undefined {
+    if (this.disposed) {
+      return undefined;
+    }
+
+    const known = this.resolved.get(refId);
+    if (known !== undefined) {
+      return known;
+    }
+
+    const data = this.storage.get(refId);
+    if (data === undefined) {
+      return undefined;
+    }
+
+    this.countResolved(data.length);
+    const text = data.toString('utf-8');
+    this.resolved.set(refId, text);
+    return text;
+  }
+
+  /**
+   * Whether a reference was resolved before, so that resolving it again counts nothing
+   */
+  isResolved(refId: string): boolean {
+    return !this.disposed && this.resolved.has(refId);
+  }
+
+  /**
+   * Count resolved data that is about to be built for a tool call of this execution
+   *
+   * @param bytes - Size of the data in bytes
+   * @throws SidecarLimitError if the total would exceed `maxTotalResolvedSize`; nothing is counted then
+   */
+  countResolved(bytes: number): void {
+    if (!this.canResolve(bytes)) {
+      throw new SidecarLimitError(
+        `Total resolved size would exceed maximum: ${this.resolvedSize + bytes} > ${this.maxTotalResolvedSize}`,
+        'MAX_TOTAL_RESOLVED_SIZE',
+        this.maxTotalResolvedSize,
+        this.resolvedSize + bytes,
+      );
+    }
+    this.resolvedSize += bytes;
+  }
+
+  /**
+   * Whether `bytes` more of resolved data fit in what this execution may resolve in total
+   */
+  canResolve(bytes: number): boolean {
+    return bytes >= 0 && this.resolvedSize + bytes <= this.maxTotalResolvedSize;
+  }
+
+  /**
+   * Bytes of resolved data built for the tool calls of this execution so far
+   */
+  getResolvedSize(): number {
+    return this.resolvedSize;
+  }
+
+  /**
    * Check if a reference ID exists
    */
   has(refId: string): boolean {
@@ -286,6 +371,7 @@ export class ReferenceSidecar {
 
     this.storage.clear();
     this.metadata.clear();
+    this.resolved.clear();
     this.totalSize = 0;
     this.disposed = true;
   }

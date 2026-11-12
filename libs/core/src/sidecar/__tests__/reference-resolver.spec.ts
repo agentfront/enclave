@@ -97,6 +97,52 @@ describe('ReferenceResolver', () => {
 
       expect(resolver.wouldExceedLimit(refId)).toBe(false);
     });
+
+    it('should return true when the total of the execution would be exceeded', () => {
+      const config = { ...REFERENCE_CONFIGS.STANDARD, maxTotalResolvedSize: 250 };
+      const limitedSidecar = new ReferenceSidecar(config);
+      const limitedResolver = new ReferenceResolver(limitedSidecar, config);
+      const first = limitedSidecar.store('x'.repeat(100), 'extraction');
+      const second = limitedSidecar.store('y'.repeat(100), 'extraction');
+      const third = limitedSidecar.store('z'.repeat(100), 'extraction');
+
+      expect(limitedResolver.wouldExceedLimit({ a: first, b: second })).toBe(false);
+      limitedResolver.resolve({ a: first, b: second });
+
+      // 200 bytes are counted; a third value of 100 bytes does not fit, the first two still do
+      expect(limitedResolver.wouldExceedLimit({ c: third })).toBe(true);
+      expect(limitedResolver.wouldExceedLimit({ a: first, b: [second, first] })).toBe(false);
+      limitedSidecar.dispose();
+    });
+  });
+
+  describe('total of an execution', () => {
+    it('should count a stored value once and a concatenation every time', () => {
+      const refId = sidecar.store('x'.repeat(100), 'extraction');
+      const handle = resolver.createComposite([refId, '!']);
+
+      resolver.resolve({ a: refId, b: refId });
+      expect(sidecar.getResolvedSize()).toBe(100);
+
+      resolver.resolve({ text: handle });
+      resolver.resolve({ text: handle });
+      expect(sidecar.getResolvedSize()).toBe(100 + 2 * 101);
+    });
+
+    it('should throw a resolution limit error when the total is exceeded', () => {
+      const config = { ...REFERENCE_CONFIGS.STANDARD, maxTotalResolvedSize: 150 };
+      const limitedSidecar = new ReferenceSidecar(config);
+      const limitedResolver = new ReferenceResolver(limitedSidecar, config);
+      const first = limitedSidecar.store('x'.repeat(100), 'extraction');
+      const second = limitedSidecar.store('y'.repeat(100), 'extraction');
+
+      expect(limitedResolver.resolve(first)).toBe('x'.repeat(100));
+      expect(() => limitedResolver.resolve(second)).toThrow(ResolutionLimitError);
+      expect(() => limitedResolver.resolve(second)).toThrow(/Total resolved size would exceed maximum: 200 > 150/);
+      // What was resolved before stays available
+      expect(limitedResolver.resolve([first, first])).toEqual(['x'.repeat(100), 'x'.repeat(100)]);
+      limitedSidecar.dispose();
+    });
   });
 
   describe('resolve', () => {
