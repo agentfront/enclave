@@ -1,75 +1,123 @@
 ---
 title: 'Pre-Scanner'
-description: 'Layer 0 defense that runs before parsing to catch DoS attacks'
+description: 'Layer 0 checks that run on the source text before it is parsed'
 ---
 
-The pre-scanner runs BEFORE the JavaScript parser (acorn) to catch DoS attacks that could crash or hang the parser itself. It enforces mandatory security limits that cannot be disabled.
+The pre-scanner runs on the source text before the JavaScript parser (acorn) sees it, so that the parser is not handed input that could exhaust it: text that is too large, nested too deep, or made of very long lines and strings. Depending on the preset it also checks regular-expression literals and Unicode characters.
 
 ## Basic Usage
 
-```ts
-import { PreScanner, createPreScannerConfig } from '@enclave-vm/ast';
+`PreScanner` takes a preset name and, optionally, overrides of single settings:
 
-// Create pre-scanner with AgentScript config (strictest)
-const scanner = new PreScanner(createPreScannerConfig('agentscript'));
+```ts
+import { PreScanner } from '@enclave-vm/ast';
+
+// The AgentScript preset (strictest)
+const scanner = new PreScanner({ preset: 'agentscript' });
 
 const result = scanner.scan(userCode);
-if (!result.valid) {
-  console.log('Pre-scan failed:', result.issues);
-  // Don't even attempt to parse - could DoS the parser
+if (!result.success) {
+  console.log('Pre-scan failed:', result.fatalIssue?.code, result.fatalIssue?.message);
+  // Do not hand this source to the parser
+}
+```
+
+<Warning>
+The constructor takes `{ preset, config }`. Without a `preset` it uses `standard`. In particular `new PreScanner(createPreScannerConfig('agentscript'))` does not select the AgentScript preset: a configuration object passed in the place of the options has no `preset` key, so the scanner is built with `standard`. Pass `{ preset: 'agentscript' }`, or use `PreScanner.forAgentScript()`.
+</Warning>
+
+`scan()` returns:
+
+```ts
+interface PreScanResult {
+  success: boolean;            // false when a fatal issue was found
+  issues: PreScanIssue[];      // { code, severity, message, position?, line?, column?, data? }
+  fatalIssue?: PreScanIssue;   // The issue that stopped the scan
+  detectedRegex: DetectedRegex[];
+  stats: PreScanStats;         // inputSize, lineCount, maxNestingDepthFound, regexCount, scanDurationMs, ...
 }
 ```
 
 ## Why Pre-Scanning?
 
-The JavaScript parser itself can be vulnerable to:
+A parser works on whatever it is given, and some inputs cost it far more than their size suggests:
 
-- **Memory exhaustion** - Extremely large files
+- **Memory exhaustion** - Extremely large files and string literals
 - **Stack overflow** - Deeply nested expressions
-- **CPU exhaustion** - Complex regex patterns
-- **Parsing hangs** - Malformed Unicode sequences
+- **CPU exhaustion** - Very long lines, and regular expressions that backtrack
 
-Pre-scanning catches these before parsing begins.
+Pre-scanning refuses these before parsing begins.
+
+## Where It Runs
+
+- **`JSAstValidator.validate()`** runs the pre-scanner first, by default with the `standard` preset, whatever rules or rule preset the validator was built with. Select another pre-scanner preset per validation with the `preScan` option, or switch the pre-scan off:
+
+  ```ts
+  import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
+
+  const validator = new JSAstValidator(createAgentScriptPreset());
+
+  const result = await validator.validate(code, {
+    preScan: { preset: 'agentscript' }, // default: 'standard'; { enabled: false } switches it off
+  });
+  // result.preScanError and result.preScanStats report what the pre-scan found
+  ```
+
+- **`Enclave`** (`@enclave-vm/core`) validates without a `preScan` option, so it runs the pre-scanner with the `standard` preset whatever the AST preset is. It therefore does not refuse bidirectional control characters or invisible characters (see the table below). A host that wants the stricter checks runs a `PreScanner` of its own on the script before it calls `run()`.
 
 ## Mandatory Limits
 
-These limits protect against parser crashes and cannot be overridden:
+No configuration can raise a limit above these maxima. A limit given through `config` (or `createPreScannerConfig`) that is higher is lowered to the maximum:
 
-| Limit                       | Maximum       | Purpose                             |
-| --------------------------- | ------------- | ----------------------------------- |
-| `ABSOLUTE_MAX_INPUT_SIZE`   | 100MB         | Prevents memory exhaustion          |
-| `ABSOLUTE_MAX_NESTING`      | 200 levels    | Prevents parser stack overflow      |
-| `ABSOLUTE_MAX_LINE_LENGTH`  | 100,000 chars | Prevents minified/obfuscated DoS    |
-| `ABSOLUTE_MAX_LINES`        | 1,000,000     | Prevents extremely long files       |
-| `ABSOLUTE_MAX_STRING`       | 5MB           | Prevents huge embedded strings      |
-| `ABSOLUTE_MAX_REGEX_LENGTH` | 1,000 chars   | Prevents ReDoS via complex patterns |
+| Limit                               | Maximum       | Purpose                             |
+| ----------------------------------- | ------------- | ----------------------------------- |
+| `ABSOLUTE_MAX_INPUT_SIZE`           | 100MB         | Prevents memory exhaustion          |
+| `ABSOLUTE_MAX_NESTING`              | 200 levels    | Prevents parser stack overflow      |
+| `ABSOLUTE_MAX_LINE_LENGTH`          | 100,000 chars | Prevents minified/obfuscated DoS    |
+| `ABSOLUTE_MAX_LINES`                | 1,000,000     | Prevents extremely long files       |
+| `ABSOLUTE_MAX_STRING`               | 5MB           | Prevents huge embedded strings      |
+| `ABSOLUTE_MAX_TOTAL_STRING_CONTENT` | 50MB          | Prevents many smaller strings       |
+| `ABSOLUTE_MAX_REGEX_LENGTH`         | 1,000 chars   | Prevents very long patterns         |
+| `ABSOLUTE_MAX_REGEX_COUNT`          | 50            | Bounds the patterns to analyze      |
+
+A null byte in the source is refused by every preset.
 
 ## Pre-Scanner Presets
 
-| Config              | AgentScript | STRICT    | SECURE    | STANDARD  | PERMISSIVE |
-| ------------------- | ----------- | --------- | --------- | --------- | ---------- |
-| maxInputSize        | 100KB       | 500KB     | 1MB       | 5MB       | 10MB       |
-| maxLineLength       | 2,000       | 5,000     | 8,000     | 10,000    | 50,000     |
-| maxLines            | 1,000       | 2,000     | 5,000     | 10,000    | 100,000    |
-| maxNestingDepth     | 20          | 30        | 40        | 50        | 100        |
-| regexMode           | `block`     | `analyze` | `analyze` | `analyze` | `allow`    |
-| blockBidiPatterns   | YES         | YES       | YES       | NO        | NO         |
-| blockInvisibleChars | YES         | YES       | NO        | NO        | NO         |
+| Config                  | AgentScript | STRICT    | SECURE    | STANDARD  | PERMISSIVE |
+| ----------------------- | ----------- | --------- | --------- | --------- | ---------- |
+| maxInputSize            | 100KB       | 500KB     | 1MB       | 5MB       | 10MB       |
+| maxLineLength           | 2,000       | 5,000     | 8,000     | 10,000    | 50,000     |
+| maxLines                | 1,000       | 2,000     | 5,000     | 10,000    | 100,000    |
+| maxNestingDepth         | 20          | 30        | 40        | 50        | 100        |
+| maxConsecutiveOperators | 5           | 10        | 15        | 20        | 50         |
+| maxStringLength         | 10KB        | 50KB      | 100KB     | 500KB     | 1MB        |
+| maxTotalStringContent   | 100KB       | 500KB     | 1MB       | 5MB       | 10MB       |
+| regexMode               | `block`     | `analyze` | `analyze` | `analyze` | `allow`    |
+| unicodePreCheck         | YES         | YES       | YES       | YES       | NO         |
+| blockBidiPatterns       | YES         | YES       | YES       | NO        | NO         |
+| blockInvisibleChars     | YES         | YES       | NO        | NO        | NO         |
 
 ## Using Presets
 
 ```ts
-import { createPreScannerConfig, PreScanner } from '@enclave-vm/ast';
+import { PreScanner } from '@enclave-vm/ast';
 
 // AgentScript (strictest)
-const agentScript = new PreScanner(createPreScannerConfig('agentscript'));
+const agentScript = new PreScanner({ preset: 'agentscript' });
 
 // Other presets
-const strict = new PreScanner(createPreScannerConfig('strict'));
-const secure = new PreScanner(createPreScannerConfig('secure'));
-const standard = new PreScanner(createPreScannerConfig('standard'));
-const permissive = new PreScanner(createPreScannerConfig('permissive'));
+const strict = new PreScanner({ preset: 'strict' });
+const secure = new PreScanner({ preset: 'secure' });
+const standard = new PreScanner({ preset: 'standard' }); // the same as new PreScanner()
+const permissive = new PreScanner({ preset: 'permissive' });
+
+// The same, through the factory methods
+const agentScript2 = PreScanner.forAgentScript();
+const secure2 = PreScanner.forSecure({ maxInputSize: 200 * 1024 });
 ```
+
+`preScan(source, preset?)` scans once without creating a scanner, and `isPreScanValid(source, preset?)` runs only the size, Unicode and nesting checks and returns a boolean.
 
 ## Regex Handling Modes
 
@@ -80,43 +128,45 @@ The pre-scanner supports three regex handling modes:
 Block ALL regex literals (AgentScript default, maximum security):
 
 ```ts
-const scanner = new PreScanner(createPreScannerConfig('agentscript'));
+const scanner = new PreScanner({ preset: 'agentscript' });
 // regexMode: 'block'
 
-// This will fail:
-scanner.scan('const pattern = /foo/;');
+// This fails:
+scanner.scan('const pattern = /foo/;').success; // false
 ```
 
 ### Analyze Mode
 
-Allow regex but analyze for ReDoS patterns:
+Allow regex literals but analyze them for ReDoS patterns:
 
 ```ts
-const scanner = new PreScanner(createPreScannerConfig('secure'));
+const scanner = new PreScanner({ preset: 'secure' });
 // regexMode: 'analyze'
 
 // Safe patterns allowed:
-scanner.scan('const pattern = /^[a-z]+$/;'); // OK
+scanner.scan('const pattern = /^[a-z]+$/;').success; // true
 
 // Dangerous patterns blocked:
-scanner.scan('const evil = /(a+)+/;'); // Blocked - nested quantifier
+scanner.scan('const evil = /(a+)+/;').success; // false - nested quantifier
 ```
+
+In this mode the number of regex literals and the length of each are limited as well (10 of 100 chars for `strict`, 20 of 200 for `secure`, 30 of 500 for `standard`).
 
 ### Allow Mode
 
 Allow all regex without analysis (Permissive only):
 
 ```ts
-const scanner = new PreScanner(createPreScannerConfig('permissive'));
+const scanner = new PreScanner({ preset: 'permissive' });
 // regexMode: 'allow'
 
 // All regex allowed (not recommended for untrusted code)
-scanner.scan('const pattern = /(a+)+/;'); // OK
+scanner.scan('const pattern = /(a+)+/;').success; // true
 ```
 
 ## ReDoS Detection
 
-The pre-scanner detects dangerous regex patterns that cause exponential backtracking:
+In `analyze` mode each regex literal gets a score from 0 to 100. A score of 80 or more fails the scan; a score from 50 to 79 is reported as a warning and the scan goes on.
 
 | Pattern                 | Score | Example        | Risk                     |
 | ----------------------- | ----- | -------------- | ------------------------ |
@@ -126,6 +176,8 @@ The pre-scanner detects dangerous regex patterns that cause exponential backtrac
 | Overlapping alternation | 80    | `(a\|ab)+`     | Exponential backtracking |
 | Greedy backtracking     | 75    | `(.*a)+`       | Polynomial backtracking  |
 | Multiple greedy         | 70    | `.*foo.*bar`   | Polynomial backtracking  |
+
+The last two rows are looked for only at the analysis level `polynomial`, which the `standard` preset uses; `strict` and `secure` use `catastrophic`. The analysis is a set of heuristics over the text of a pattern: it finds the common shapes of a backtracking pattern, not every one.
 
 ### Manual ReDoS Analysis
 
@@ -137,51 +189,71 @@ import { analyzeForReDoS } from '@enclave-vm/ast/redos';
 // Analyze a pattern for ReDoS vulnerabilities
 const result = analyzeForReDoS('(a+)+', 'catastrophic');
 // {
+//   pattern: '(a+)+',
 //   vulnerable: true,
 //   score: 90,
-//   vulnerabilityType: 'nested_quantifier'
+//   vulnerabilityType: 'nested_quantifier',
+//   explanation: '...'
 // }
 ```
 
 ## Unicode Security
 
-The pre-scanner detects Unicode-based attacks:
+With `unicodePreCheck` on (every preset except `permissive`), the pre-scanner runs up to three checks on the whole source text, string literals and comments included:
 
 ### Bidirectional Text (Trojan Source)
 
-```ts
-const scanner = new PreScanner({
-  ...createPreScannerConfig('secure'),
-  blockBidiPatterns: true,
-});
+With `blockBidiPatterns` (on in `agentscript`, `strict` and `secure`), a bidirectional control character (U+202A to U+202E, U+2066 to U+2069) fails the scan. These characters can make code look different from what it does.
 
-// Blocks code with BiDi control characters that can
-// make code appear different than it executes
+```ts
+// The standard preset with the BiDi check added
+const scanner = new PreScanner({
+  preset: 'standard',
+  config: { blockBidiPatterns: true },
+});
 ```
 
 ### Invisible Characters
 
+With `blockInvisibleChars` (on in `agentscript` and `strict`), zero-width and other invisible characters are reported: up to three as a warning, more than three fail the scan. A byte-order mark at the very start is allowed.
+
 ```ts
 const scanner = new PreScanner({
-  ...createPreScannerConfig('strict'),
-  blockInvisibleChars: true,
+  preset: 'secure',
+  config: { blockInvisibleChars: true },
 });
-
-// Blocks zero-width spaces, invisible formatting, etc.
 ```
+
+### Look-Alike Letters
+
+Whenever `unicodePreCheck` is on, a letter from a fixed list of look-alikes of ASCII letters fails the scan: the Cyrillic `а`, `е`, `о`, `р`, `с`, `х`, `у`, the Greek `α` and `ο`, and the full-width `ａ` and `ｅ`. The check is on the whole text, so it also refuses these letters in a string literal. It is the one Unicode check of the `standard` preset.
 
 ## Custom Configuration
 
+Overrides go in `config`, on top of a preset:
+
 ```ts
 const scanner = new PreScanner({
-  maxInputSize: 200 * 1024,    // 200KB
-  maxLineLength: 3000,
-  maxLines: 2000,
-  maxNestingDepth: 25,
-  regexMode: 'analyze',
-  blockBidiPatterns: true,
-  blockInvisibleChars: true,
+  preset: 'secure',
+  config: {
+    maxInputSize: 200 * 1024,    // 200KB
+    maxLineLength: 3000,
+    maxLines: 2000,
+    maxNestingDepth: 25,
+    regexMode: 'analyze',
+    blockBidiPatterns: true,
+    blockInvisibleChars: true,
+  },
 });
+```
+
+`createPreScannerConfig(preset, overrides)` returns the merged configuration object (with the limits clamped to the mandatory maxima), for inspection or to pass as `config`:
+
+```ts
+import { PreScanner, createPreScannerConfig } from '@enclave-vm/ast';
+
+const config = createPreScannerConfig('agentscript', { maxLines: 500 });
+const scanner = new PreScanner({ preset: 'agentscript', config });
 ```
 
 ## Related

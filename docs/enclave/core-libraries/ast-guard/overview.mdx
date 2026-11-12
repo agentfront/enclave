@@ -6,11 +6,11 @@ description: 'Production ready JavaScript AST validation with extensible rules a
 ast-guard is a production-ready AST validation library for JavaScript. It inspects user-provided or LLM-generated code before execution, blocking dangerous constructs and enforcing API usage policies. ast-guard powers Enclave's first security layer and can be used standalone for any JavaScript validation needs.
 
 <CardGroup cols={3}>
-  <Card title="16 Built-in Rules" icon="shield">
+  <Card title="21 Built-in Rules" icon="shield">
     Block eval, dangerous globals, prototype manipulation, unbounded loops, ReDoS, and more with battle-tested validation rules.
   </Card>
   <Card title="Pre-Scanner Defense" icon="radar">
-    Layer 0 security that runs BEFORE parsing - catches DoS attacks that could crash the parser itself.
+    Layer 0 checks that run before parsing: size, nesting and line limits, and by preset regex and Unicode checks.
   </Card>
   <Card title="AgentScript Preset" icon="robot">
     Purpose-built preset for LLM-generated orchestration code with whitelist-only globals and strict control flow.
@@ -49,11 +49,13 @@ const result = await validator.validate(`
 `);
 
 if (result.valid) {
-  console.log('Code is safe to execute');
+  console.log('Accepted by the validator');
 } else {
   console.log('Blocked:', result.issues);
 }
 ```
+
+`valid` means that every rule ran and none reported an error. It does not mean the code is safe to run on its own: a validator is a filter on source text, and what code does when it runs is decided by where it runs (see the warning below).
 
 <Tip>
   Instantiate `JSAstValidator` once and reuse it. This keeps presets, custom rules, and caches consistent across requests.
@@ -63,18 +65,24 @@ if (result.valid) {
 
 ```ts
 interface ValidationResult {
-  valid: boolean;
-  issues: ValidationIssue[];
+  valid: boolean;              // true if every rule ran and none reported an error
+  issues: ValidationIssue[];   // The issues found, at most maxIssues
+  incomplete?: boolean;        // true if the list was cut at maxIssues or the validation stopped early
+  rulesExecuted?: number;      // Rules that were started
+  ast?: acorn.Node;            // Parsed AST (if parsing succeeded)
+  parseError?: Error;          // Parse error (if parsing failed)
+  preScanError?: Error;        // Pre-scanner error (if the pre-scan failed)
 }
 
 interface ValidationIssue {
-  rule: string;        // Rule that triggered
+  code: string;        // Issue code, e.g. 'UNKNOWN_GLOBAL'
   message: string;     // Human-readable message
-  severity: 'error' | 'warning';
+  severity: ValidationSeverity; // 'error' | 'warning' | 'info'
   location?: {
     line: number;
     column: number;
   };
+  data?: Record<string, unknown>;
 }
 ```
 
@@ -82,13 +90,16 @@ interface ValidationIssue {
 
 ```ts
 const result = await validator.validate(source, {
-  maxIssues: 10,           // Cap findings returned
+  maxIssues: 10,           // Cap findings returned (default: 100; 0 collects all)
   stopOnFirstError: true,  // Halt on first error (faster)
+  preScan: { preset: 'agentscript' }, // Pre-scanner preset (default: 'standard')
 });
 
 // Get stats for monitoring
 const stats = validator.getStats(result, durationMs);
 ```
+
+A validation result is bounded. Without `maxIssues` a validation collects at most `DEFAULT_MAX_ISSUES` (100) issues; `0` collects every issue. At the cap the validation stops as soon as an error is on the list. While only warnings were found the remaining rules still run, because one of them may refuse the source, and further warnings are not collected. A result whose list is not everything the rules had to report has `incomplete: true`. A validation that stopped early, at the cap or by `stopOnFirstError`, is never `valid`: `valid` is `true` only when every rule ran and none reported an error.
 
 <Warning>
   AST Guard prevents unsafe syntax from entering your sandbox, but it does not execute or sandbox code itself. Pair it with enclave-vm for complete defense-in-depth.
