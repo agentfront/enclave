@@ -157,6 +157,7 @@ flowchart LR
 // Broker
 import express from 'express';
 import { createBroker, createSessionHandler, registerExpressRoutes } from '@enclave-vm/broker';
+import type { SessionId } from '@enclave-vm/types';
 import { z } from 'zod';
 
 const broker = createBroker({ enclave: { securityLevel: 'SECURE' } });
@@ -164,7 +165,13 @@ const broker = createBroker({ enclave: { securityLevel: 'SECURE' } });
 broker.tool('users:list', {
   description: 'List users',
   argsSchema: z.object({ limit: z.number().optional() }),
-  handler: async ({ limit }) => db.users.findAll({ limit }),
+  handler: async ({ limit }, context) => {
+    // A handler is not handed the caller. It gets the id of its session, and the session
+    // holds the caller that `identify` (below) returned for the request that created it.
+    const caller = broker.getSession(context.sessionId as SessionId)?.owner;
+    if (!caller) throw new Error('This session has no caller');
+    return db.users.findAll({ visibleTo: caller, limit });
+  },
 });
 
 const app = express();
@@ -180,6 +187,8 @@ registerExpressRoutes(
 ```
 
 The broker does not authenticate callers, limit request rates or encrypt sessions, and the client does not encrypt either: use HTTPS, put your authentication in front of the routes, and give the routes an `identify` hook so that a session belongs to the caller that created it.
+
+The hook separates sessions, not data. Every caller that may create a session can run a script that calls any registered tool, and a tool handler receives the arguments and a context (`sessionId`, `callId`, `secrets`, `signal`), not the caller. A tool that reads data restricted per caller has to apply that restriction itself, as `users:list` does above with the owner of its session, or the data store has to enforce it. A session created in process has no owner unless it is created with `owner`.
 
 A third tier, in which the broker hands execution to a separate runtime worker, is not implemented: the broker has no option for it, and `@enclave-vm/runtime` does not execute scripts yet. To scale out, run several brokers (a session lives in the broker that created it, so a reconnect has to reach the same one).
 

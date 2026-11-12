@@ -64,11 +64,30 @@ flowchart TB
 - [ ] Set `securityLevel: 'STRICT'` for untrusted code
 - [ ] Configure memory limits: the sandbox's `memoryLimit` is an estimate, so give the container a limit as well
 - [ ] Set appropriate timeouts
-- [ ] Authenticate callers in front of every endpoint that accepts code (the EnclaveJS broker has no authentication of its own)
+- [ ] Authenticate callers in front of every endpoint that accepts code, and in front of every session route of the EnclaveJS broker (the broker has no authentication of its own)
+- [ ] Give the broker's session routes an `identify` hook, so that a session belongs to the caller that created it (see below)
 - [ ] Use HTTPS: the EnclaveJS client and broker exchange plain JSON
 - [ ] Enable input validation
 - [ ] Review tool permissions
 - [ ] Consider the AI Scoring Gate as an additional, heuristic signal
+
+Authentication in front of the broker does not tell its routes whose session is whose: without an `identify` hook they answer every caller for every session (the list of sessions, a session's state and events, and the request to end it). The hook returns the caller your authentication found:
+
+```ts
+import { createSessionHandler, registerExpressRoutes } from '@enclave-vm/broker';
+
+app.use(authenticate); // your middleware: checks the credential and sets req.user
+registerExpressRoutes(
+  app,
+  createSessionHandler({
+    broker,
+    // request.raw is the request object of the HTTP framework
+    identify: (request) => (request.raw as { user?: { id: string } }).user?.id,
+  }),
+);
+```
+
+A request for which the hook returns no identity is answered with `401`, and a session is answered only for the caller that created it. The hook can be left out only where a single trusted backend is the one caller of the routes. See [Who may see a session](/enclavejs/broker#who-may-see-a-session).
 
 ### Performance
 

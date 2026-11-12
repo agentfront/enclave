@@ -315,7 +315,7 @@ if (result.success) {
 }
 ```
 
-The client and the broker exchange plain JSON over HTTP and the broker does not authenticate callers: use HTTPS, and put your own authentication in front of the broker's routes.
+The client and the broker exchange plain JSON over HTTP and the broker does not authenticate callers: use HTTPS, and put your own authentication in front of the broker's routes. A broker that serves more than one caller also needs the `identify` hook of its session handler: without it the routes do not tell callers apart, whatever authentication stands in front of them. See [Who may see a session](/enclavejs/broker#who-may-see-a-session).
 
 ## Best Practices
 
