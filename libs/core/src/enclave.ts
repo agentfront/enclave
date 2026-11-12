@@ -589,7 +589,8 @@ export class Enclave {
       // not inside the validator because the validator sees the transformed code: by then the
       // script has been parsed and rewritten in full, and what its limits measured would be the
       // transform's output.
-      if (this.validateCode) {
+      // (An empty script has nothing to scan: it runs, and returns nothing, as before.)
+      if (this.validateCode && code.length > 0) {
         const preScan = this.preScanner.scan(code);
         if (!preScan.success) {
           const issues: ValidationIssue[] = preScan.issues.map((issue) => ({

@@ -89,6 +89,12 @@ describe('the pre-scanner an enclave uses', () => {
       expect(result.error).toBeUndefined();
       expect(result.value).toBe(400);
     });
+    it('an empty script has nothing to scan, and runs as before', async () => {
+      const result = await run('');
+
+      expect(result.error).toBeUndefined();
+      expect(result.value).toBeUndefined();
+    });
   });
 
   describe('the preScan option', () => {

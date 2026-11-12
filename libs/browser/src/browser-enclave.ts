@@ -431,7 +431,8 @@ export class BrowserEnclave {
     try {
       // Step 0: the pre-scanner, on the script as it was written and before anything parses it.
       // The validator sees the transformed code, so it does not run the pre-scanner again.
-      if (this.validateCode && typeof code === 'string') {
+      // (An empty script has nothing to scan: it runs, and returns nothing, as before.)
+      if (this.validateCode && typeof code === 'string' && code.length > 0) {
         const preScan = this.preScanner.scan(code);
         if (!preScan.success) {
           const issues: ValidationIssue[] = preScan.issues.map((issue) => ({
