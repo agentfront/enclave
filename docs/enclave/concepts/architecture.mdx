@@ -201,8 +201,8 @@ A third tier, in which the broker hands execution to a separate runtime worker, 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
 flowchart TD
-    S1["1. Code submitted"] --> S2["2. Code transformation<br/>(wrapping)"]
-    S2 --> S3["3. Pre-scanner checks<br/>(size, nesting)"]
+    S1["1. Code submitted"] --> S2["2. Pre-scanner checks<br/>(size, nesting)"]
+    S2 --> S3["3. Code transformation<br/>(wrapping)"]
     S3 --> S4["4. AST validation<br/>(blocked constructs)"]
     S4 --> S5["5. AI scoring<br/>(optional, heuristic)"]
     S5 --> S6["6. Sandbox execution"]

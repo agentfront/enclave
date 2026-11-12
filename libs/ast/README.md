@@ -917,7 +917,7 @@ Without a `preset` the scanner uses `standard`. A configuration object passed in
 | Invisible characters             | refused       | refused  | allowed  | allowed    | allowed      |
 | Look-alike letters               | refused       | refused  | refused  | refused    | allowed      |
 
-`@enclave-vm/core` validates without a `preScan` option, so an `Enclave` runs the `standard` pre-scanner whatever its AST preset is.
+`Enclave` (`@enclave-vm/core`) and `BrowserEnclave` (`@enclave-vm/browser`) run the pre-scanner themselves, on the script as it was written and before anything parses it, with the pre-scanner preset named like their AST preset: `agentscript` by default (the `babel` preset of the core enclave runs with `standard`). Their `preScan` option picks another preset or changes single limits. They then validate the transformed script with the validator's own pre-scan switched off.
 
 ## AgentScript Transformer and Transforms
 

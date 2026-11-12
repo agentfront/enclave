@@ -9,13 +9,21 @@ This page covers techniques for debugging issues with Enclave code execution.
 
 ### Pre-validate Code
 
-To see why a script is refused, run the steps of the enclave yourself: transform, then pre-scan and validate the transformed code. (AgentScript allows a top-level `return` and `await`, which only parse once the script is wrapped.)
+To see why a script is refused, run the steps of the enclave yourself: pre-scan the script as it was written, transform it, then validate the transformed code. (AgentScript allows a top-level `return` and `await`, which only parse once the script is wrapped.)
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset, transformAgentScript } from '@enclave-vm/ast';
+import { JSAstValidator, PreScanner, createAgentScriptPreset, transformAgentScript } from '@enclave-vm/ast';
 
 async function debugValidation(code: string) {
-  // Step 1: Transform, as the enclave does before it validates
+  // Step 1: Pre-scan the script as written. 'agentscript' is the preset of an enclave
+  // with the default AST preset; an enclave with a `preScan` option uses that instead.
+  const scan = new PreScanner({ preset: 'agentscript' }).scan(code);
+  if (!scan.success) {
+    console.log('Pre-scan failed:', scan.fatalIssue?.code, scan.fatalIssue?.message);
+    return;
+  }
+
+  // Step 2: Transform, as the enclave does before it validates
   let transformed: string;
   try {
     transformed = transformAgentScript(code, { maxIterations: 10000 });
@@ -24,14 +32,9 @@ async function debugValidation(code: string) {
     return;
   }
 
-  // Step 2: Pre-scan and AST validation. validate() runs the pre-scanner first,
-  // with the 'standard' preset by default, which is what the enclave uses.
+  // Step 3: AST validation of the transformed code. The pre-scan is done (step 1).
   const validator = new JSAstValidator(createAgentScriptPreset());
-  const result = await validator.validate(transformed);
-
-  if (result.preScanError) {
-    console.log('Pre-scan failed:', result.preScanError.message);
-  }
+  const result = await validator.validate(transformed, { preScan: { enabled: false } });
 
   if (!result.valid) {
     console.log('Validation failed:');
