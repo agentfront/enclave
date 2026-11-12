@@ -11,6 +11,8 @@
  */
 
 import { buildIframeDocument, escapeScriptText, safeJsonStringify, type IframeDocument } from './iframe-html-builder';
+import { MAX_TOOL_NAME_LENGTH } from './iframe-protocol';
+import { MAX_TOOL_ARGUMENT_DEPTH } from './host-boundary';
 import { isBindableName } from '../utils/global-names';
 import { numberLiteral } from '../utils/numeric-option';
 import type { SerializedIframeConfig } from '../types';
@@ -302,6 +304,13 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     if (!isPlain && hasBrand(_dateGetTime, value)) return new _Date(_ReflectApply(_dateGetTime, value, []));
 
     if (value instanceof _Error) {
+      // Copied into { name, message }: two properties, one level down. Counted here as the host
+      // page counts them, so that a result this frame accepts is one the host accepts.
+      if (depth + 1 > maxSanitizeDepth) {
+        throw createSafeError('Script result exceeds maximum depth (' + maxSanitizeDepth + ').');
+      }
+      context.propertyCount += 2;
+      checkResultProperties(context);
       var errorName = _ReflectGet(value, 'name');
       var errorMessage = _ReflectGet(value, 'message');
       return {
@@ -415,6 +424,24 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     return 'c-' + (++callIdCounter) + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   }
 
+  // Whether JSON data holds a value more than max levels down, counted as the host page counts
+  // tool arguments: the arguments object is level 0, and a value of any kind has a level.
+  function nestedDeeperThan(value, depth, max) {
+    if (depth > max) return true;
+    if (value === null || typeof value !== 'object') return false;
+    if (_isArray(value)) {
+      for (var i = 0; i < value.length; i++) {
+        if (nestedDeeperThan(value[i], depth + 1, max)) return true;
+      }
+      return false;
+    }
+    var keys = _objectKeys(value);
+    for (var k = 0; k < keys.length; k++) {
+      if (nestedDeeperThan(value[keys[k]], depth + 1, max)) return true;
+    }
+    return false;
+  }
+
   // callTool(name, args, options): only { throwOnError: false } changes behavior. Tool failures
   // then resolve to { success: false, error }; refusals by the enclave still throw.
   function __safe_callTool(toolName, args, options) {
@@ -433,10 +460,16 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
       throw createSafeError('Maximum tool call limit exceeded (${maxToolCalls}).');
     }
 
+    // What the host page would refuse as a broken protocol is refused here first, as an error of
+    // the call: a script that passes a bad name or bad arguments has made a mistake it can
+    // catch, and the sandbox has not misbehaved.
     if (typeof toolName !== 'string' || !toolName) {
       throw createSafeError('Tool name must be a non-empty string', 'TypeError');
     }
-    if (typeof args !== 'object' || args === null || Array.isArray(args)) {
+    if (toolName.length > ${MAX_TOOL_NAME_LENGTH}) {
+      throw createSafeError('Tool name must be at most ${MAX_TOOL_NAME_LENGTH} characters', 'TypeError');
+    }
+    if (typeof args !== 'object' || args === null || _isArray(args)) {
       throw createSafeError('Tool arguments must be an object', 'TypeError');
     }
 
@@ -444,6 +477,13 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     var sanitizedArgs;
     try { sanitizedArgs = JSON.parse(JSON.stringify(args)); }
     catch(e) { throw createSafeError('Tool arguments must be JSON-serializable'); }
+    // The copy is what is sent, so it is the copy that has to be an object.
+    if (typeof sanitizedArgs !== 'object' || sanitizedArgs === null || _isArray(sanitizedArgs)) {
+      throw createSafeError('Tool arguments must be an object', 'TypeError');
+    }
+    if (nestedDeeperThan(sanitizedArgs, 0, ${MAX_TOOL_ARGUMENT_DEPTH})) {
+      throw createSafeError('Tool arguments are nested more than ${MAX_TOOL_ARGUMENT_DEPTH} levels deep');
+    }
 
     var callId = generateCallId();
 

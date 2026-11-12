@@ -19,6 +19,7 @@
 
 import { buildIframeDocument, safeJsonStringify } from './iframe-html-builder';
 import { generateInnerIframeDocument } from './inner-iframe-bootstrap';
+import { MAX_TOOL_NAME_LENGTH } from './iframe-protocol';
 import { MAX_TIMER_DELAY_MS, numberLiteral } from '../utils/numeric-option';
 import type { SerializedIframeConfig, SerializableSuspiciousPattern } from '../types';
 
@@ -138,6 +139,9 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions, innerHt
     // Name validation
     if (typeof operationName !== 'string' || !operationName) {
       throw createSafeError('Operation name must be a non-empty string', 'TypeError');
+    }
+    if (operationName.length > ${MAX_TOOL_NAME_LENGTH}) {
+      throw createSafeError('Tool name must be at most ${MAX_TOOL_NAME_LENGTH} characters', 'TypeError');
     }
 
     // Whitelist check
