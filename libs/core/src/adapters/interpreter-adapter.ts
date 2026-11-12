@@ -176,6 +176,11 @@ export class InterpreterAdapter implements SandboxAdapter {
       typeof memoryLimit === 'number' && memoryLimit > 0 ? Math.min(memoryLimit, adapterLimit) : adapterLimit;
     const tracker = new MemoryTracker({ memoryLimit: Number.isFinite(allocationLimit) ? allocationLimit : 0 });
     const charge = (bytes: number): void => tracker.track(bytes);
+    // What a helper allocates is charged through the interpreter, which ends the run when the
+    // budget refuses: charged directly, the refusal would be an error the script can catch.
+    let chargeForHelper = (_bytes: number): void => {
+      throw sandboxError('The interpreter is not running');
+    };
 
     let interpreter: Interpreter;
     // How a helper calls a function it was handed: through the interpreter, which applies the
@@ -189,7 +194,7 @@ export class InterpreterAdapter implements SandboxAdapter {
       const safe = createSafeGlobals();
       // The helpers, namespaces and custom globals of this execution; none of them replaces a
       // standard global.
-      const runtime = this.runtimeGlobals(context, charge, callbacks);
+      const runtime = this.runtimeGlobals(context, (bytes) => chargeForHelper(bytes), callbacks);
       for (const name of Object.keys(runtime)) {
         if (!Object.prototype.hasOwnProperty.call(safe.globals, name)) safe.globals[name] = runtime[name];
       }
@@ -205,6 +210,7 @@ export class InterpreterAdapter implements SandboxAdapter {
       });
       const running = interpreter;
       callbacks.call = (fn, args) => running.call(fn, args);
+      chargeForHelper = (bytes) => running.chargeAllocation(bytes);
     } catch (error) {
       return this.fail<T>(error, startTime, stats.toolCallCount, 0, sanitizeStacks);
     }

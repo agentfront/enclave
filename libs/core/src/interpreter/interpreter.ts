@@ -562,6 +562,16 @@ export class Interpreter {
     if (this.fatal === undefined) this.fatal = new InterpreterError('Execution ended');
   }
 
+  /**
+   * Charge an allocation that a runtime helper of the host made for the script (the helpers a
+   * transformed `+` or template literal calls). The budget is one budget wherever it is asked:
+   * a refusal ends the run here as it does for what the interpreter charges itself, and no
+   * `catch` or `finally` of the script runs after it.
+   */
+  chargeAllocation(bytes: number): void {
+    this.charge(bytes);
+  }
+
   /** End the run with an error no `catch` of the script can stop. */
   private end(error: unknown): never {
     if (this.fatal === undefined) this.fatal = error;
