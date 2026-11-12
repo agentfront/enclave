@@ -995,11 +995,11 @@ For the limits `error.message` says which one ended the script: `Script executio
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Layer 0: Pre-Scanner (ast-guard, `standard` preset)        │
+│  Layer 0: Pre-Scanner (ast-guard, preset of the AST preset) │
 │  ├── Input size, line and string limits                     │
 │  ├── Nesting depth limits                                   │
-│  ├── ReDoS analysis of regex literals                       │
-│  └── Refuses a fixed list of look-alike letters             │
+│  ├── Regex literals refused (agentscript) or analyzed       │
+│  └── Bidirectional, invisible and look-alike characters     │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -1059,15 +1059,31 @@ For the limits `error.message` says which one ended the script: `Script executio
 
 ### What the Pre-Scanner Checks
 
-`Enclave` runs the validator's pre-scanner with its `standard` configuration, whatever the AST `preset` is. On the transformed script it refuses:
+`Enclave` runs the pre-scanner on the script as it was written, before anything parses it, with the pre-scanner preset named like the AST `preset`:
 
-- more than 5 MB of text, more than 10,000 lines, a line of more than 10,000 characters, and a null byte;
-- brackets nested more than 50 deep and more than 20 consecutive operators;
-- a string literal of more than 500 KB, and more than 5 MB of string literals in total;
-- more than 30 regular-expression literals, one of more than 500 characters, and one the ReDoS analysis rates as vulnerable (the `agentscript` preset then refuses every regular-expression literal anyway);
-- one of a fixed list of letters that look like ASCII letters (Cyrillic and Greek look-alikes of `a`, `c`, `e`, `o`, `p`, `x`, `y`, and the full-width `a` and `e`), anywhere in the text.
+| AST preset              | Pre-scanner preset | Script                                               | Lines                           | String literals             | Regex literals                              | Bidirectional controls | Invisible characters |
+| ----------------------- | ------------------ | ---------------------------------------------------- | ------------------------------- | --------------------------- | ------------------------------------------- | ---------------------- | -------------------- |
+| `agentscript` (default) | `agentscript`      | 100 KB, nesting 20                                   | 1,000 of at most 2,000 chars    | 10 KB each, 100 KB in total | refused                                     | refused                | refused              |
+| `strict`                | `strict`           | 500 KB, nesting 30                                   | 2,000 of at most 5,000 chars    | 50 KB each, 500 KB in total | 10 of at most 100 chars, analyzed for ReDoS | refused                | refused              |
+| `secure`                | `secure`           | 1 MB, nesting 40                                     | 5,000 of at most 8,000 chars    | 100 KB each, 1 MB in total  | 20 of at most 200 chars, analyzed           | refused                | allowed              |
+| `standard`, `babel`     | `standard`         | 5 MB, nesting 50                                     | 10,000 of at most 10,000 chars  | 500 KB each, 5 MB in total  | 30 of at most 500 chars, analyzed           | allowed                | allowed              |
+| `permissive`            | `permissive`       | 5,242,880 chars (the enclave's maximum), nesting 100 | 100,000 of at most 50,000 chars | 1 MB each, 10 MB in total   | allowed                                     | allowed                | allowed              |
 
-It does not refuse bidirectional control characters or invisible characters. Those checks belong to the stricter pre-scanner presets of `@enclave-vm/ast` (`agentscript` and `strict` have both, `secure` the first), which a host can run on a script itself before it calls `run()`.
+Every preset except `permissive` also refuses a null byte, more consecutive operators than its limit, and one of a fixed list of letters that look like ASCII letters (Cyrillic and Greek look-alikes of `a`, `c`, `e`, `o`, `p`, `x`, `y`, and the full-width `a` and `e`), anywhere in the text.
+
+The `preScan` option picks another preset or changes single limits of the one in force; the pre-scanner's own absolute maximums still hold:
+
+```typescript
+// The limits enclaves had before 2.19.2, whatever the AST preset
+const enclave = new Enclave({ preScan: { preset: 'standard' } });
+
+// The agentscript pre-scanner with room for larger string literals (for the reference sidecar, say)
+const enclave = new Enclave({
+  preScan: { config: { maxInputSize: 1024 * 1024, maxLineLength: 100000, maxStringLength: 512 * 1024 } },
+});
+```
+
+With `validate: false` the pre-scanner does not run; a script is limited to 5,242,880 characters in any case.
 
 ## Runtime Notes
 

@@ -47,6 +47,7 @@ Draft for the maintainer. A security review of 2.19.1 across all nine packages, 
   - The frame documents run the two scripts this package wrote and no other, and open no connection, also with the validator off; with `validate: false` the document of the inner frame cannot be changed.
   - `doubleIframe.parentValidation.suspiciousPatterns` now take effect, evaluated on the host; an entry without `detect` throws. The built-in detectors cost time in proportion to the arguments.
   - The cumulative memory accounting cannot be switched off, and `padStart` / `padEnd` count toward `memoryLimit`.
+  - The pre-scanner follows the AST preset, as in `@enclave-vm/core`: `BrowserEnclave` runs it on the script as it was written, with the pre-scanner preset named like `preset` (`agentscript` by default: 100 KB, 1,000 lines of at most 2,000 characters, no regular-expression literal, no bidirectional or invisible control character) and no longer with `standard`. New option `preScan: { preset?, config? }`; `preScan: { preset: 'standard' }` is the behaviour before.
   - The host prints and hands to tools only plain data it copied and measured. A script's own mistake in a tool call (a name over 256 characters, arguments nested over 100 levels) is an ordinary error, not a `PROTOCOL_VIOLATION`. New error code `SANDBOX_SETUP_FAILED`.
 - Repository: `yarn test:security`, its CI job and `npx nx test <library>` cover the security specs of `broker`, `client`, `stream`, `react` and `runtime`.
 

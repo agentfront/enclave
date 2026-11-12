@@ -213,6 +213,42 @@ describe('PreScanner', () => {
       expect(result.stats.scanDurationMs).toBeGreaterThanOrEqual(0);
     });
 
+    it('refuses a preset that does not exist, instead of scanning without limits', () => {
+      expect(() => new PreScanner({ preset: 'loose' as never })).toThrow(TypeError);
+      expect(() => new PreScanner({ preset: 'constructor' as never })).toThrow(TypeError);
+    });
+
+    it.each([
+      ['a limit that is not a number', { maxInputSize: '100' }],
+      ['a limit that is NaN', { maxLines: Number.NaN }],
+      ['a negative limit', { maxNestingDepth: -1 }],
+      ['a switch that is not a boolean', { blockBidiPatterns: 'no' }],
+      ['a regex mode that does not exist', { regexMode: 'ignore' }],
+      ['a regex analysis level that does not exist', { regexAnalysisLevel: 'none' }],
+    ])('refuses %s in a configuration', (_what, config) => {
+      expect(() => new PreScanner({ preset: 'standard', config: config as never })).toThrow(TypeError);
+    });
+
+    it('takes Infinity as the largest value the pre-scanner allows, and undefined as not given', () => {
+      const scanner = new PreScanner({
+        preset: 'agentscript',
+        config: { maxInputSize: Infinity, maxLines: undefined },
+      });
+
+      expect(scanner.getConfig().maxInputSize).toBe(MANDATORY_LIMITS.ABSOLUTE_MAX_INPUT_SIZE);
+      expect(scanner.getConfig().maxLines).toBe(AGENTSCRIPT_PRESCANNER_CONFIG.maxLines);
+    });
+
+    it('says that regular expressions are blocked, not that there are too many, where the mode is block', () => {
+      // The agentscript preset blocks every literal; its count limit of 0 is not what is reported
+      const scanner = new PreScanner({ preset: 'agentscript' });
+      const result = scanner.scan('const pattern = /a+b/; const other = /c/;');
+
+      expect(result.success).toBe(false);
+      expect(result.fatalIssue?.code).toBe(PRESCANNER_ERROR_CODES.REGEX_BLOCKED);
+      expect(result.fatalIssue?.message).toMatch(/blocked/i);
+    });
+
     it('should count regex patterns', () => {
       // Use 'standard' preset which has regexMode: 'analyze' (permissive uses 'allow' which skips counting)
       const scanner = new PreScanner({ preset: 'standard' });

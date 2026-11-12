@@ -685,7 +685,12 @@ import type { ReferenceConfig } from './sidecar/reference-config';
 import type { ScoringGateConfig, ScoringGateResult } from './scoring/types';
 import type { WorkerPoolConfig } from './adapters/worker-pool/config';
 import type { DoubleVmConfig, PartialDoubleVmConfig, ParentValidationConfig } from './double-vm/types';
-import type { NormalizedToolNamespace, ToolNamespaces } from '@enclave-vm/ast';
+import type {
+  NormalizedToolNamespace,
+  PartialPreScannerConfig,
+  PreScannerPresetLevel,
+  ToolNamespaces,
+} from '@enclave-vm/ast';
 import type { ConsoleHandler, ConsoleLevel } from './console-handler';
 import type { HostActivity } from './execution-deadline';
 
@@ -913,6 +918,41 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * ```
    */
   preset?: AstPreset;
+
+  /**
+   * The pre-scanner (layer 0): what is checked in the text of a script before anything parses
+   * it. Its size, the length and number of its lines, how deep it nests, its regular-expression
+   * and string literals, and Unicode that hides code.
+   *
+   * By default it runs with the pre-scanner preset named like the AST preset (`preset`):
+   * `agentscript`, `strict`, `secure`, `standard` or `permissive`. The `babel` preset runs with
+   * `standard`. The `agentscript` pre-scanner takes scripts of up to 100 KB in at most 1,000
+   * lines of at most 2,000 characters, string literals of up to 10 KB each, no
+   * regular-expression literal, and no bidirectional or invisible control character.
+   *
+   * - `preset` picks another pre-scanner preset.
+   * - `config` changes single limits of the preset in force (see `PreScannerConfig` of
+   *   `@enclave-vm/ast`); the pre-scanner's own absolute maximums still hold.
+   *
+   * A host that stores large string literals in the reference sidecar, or that runs scripts
+   * above these sizes, sets the limits it needs here. With `validate: false` the pre-scanner
+   * does not run; the maximum size of a script (5,242,880 characters) holds in any case.
+   *
+   * @example
+   * ```typescript
+   * // The limits enclaves had before 2.19.2, whatever the AST preset
+   * const enclave = new Enclave({ preScan: { preset: 'standard' } });
+   *
+   * // The agentscript pre-scanner with room for larger string literals
+   * const enclave = new Enclave({
+   *   preScan: { config: { maxInputSize: 1024 * 1024, maxLineLength: 100000, maxStringLength: 512 * 1024 } },
+   * });
+   * ```
+   */
+  preScan?: {
+    preset?: PreScannerPresetLevel;
+    config?: PartialPreScannerConfig;
+  };
 
   /**
    * Whether to validate AgentScript code before execution

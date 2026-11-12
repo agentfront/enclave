@@ -23,6 +23,8 @@ import {
   transformAgentScript,
   isWrappedInMain,
   normalizeToolNamespaces,
+  PreScanner,
+  ValidationSeverity,
   type NormalizedToolNamespace,
   type ValidationIssue,
 } from '@enclave-vm/ast';
@@ -271,6 +273,8 @@ function describeUnsupportedGlobal(name: string, unsupported: UnsupportedGlobalV
 export class BrowserEnclave {
   private readonly securityLevel: SecurityLevel;
   private readonly validator: JSAstValidator;
+  /** Layer 0: looks at the text of a script before anything parses it (see `preScan`) */
+  private readonly preScanner: PreScanner;
   private readonly validateCode: boolean;
   private readonly transformCode: boolean;
   /** Whether scripts are validated as AgentScript, a language without regular expressions */
@@ -391,6 +395,18 @@ export class BrowserEnclave {
     ];
     this.validator = this.createValidator(presetName, customAllowedGlobals, hostObjectGlobals);
 
+    // Layer 0 runs with the pre-scanner preset named like the AST preset; `preScan` picks
+    // another one or changes single limits. The pre-scanner refuses a preset that does not
+    // exist and a limit that would switch a check off.
+    const preScan: unknown = options.preScan;
+    if (preScan !== undefined && (preScan === null || typeof preScan !== 'object' || Array.isArray(preScan))) {
+      throw new TypeError('preScan must be an object with the optional members preset and config');
+    }
+    this.preScanner = new PreScanner({
+      preset: options.preScan?.preset ?? presetName,
+      config: options.preScan?.config,
+    });
+
     // Config flags
     this.validateCode = options.validate !== false;
     this.transformCode = options.transform !== false;
@@ -413,6 +429,42 @@ export class BrowserEnclave {
     const startTime = Date.now();
 
     try {
+      // Step 0: the pre-scanner, on the script as it was written and before anything parses it.
+      // The validator sees the transformed code, so it does not run the pre-scanner again.
+      if (this.validateCode && typeof code === 'string') {
+        const preScan = this.preScanner.scan(code);
+        if (!preScan.success) {
+          const issues: ValidationIssue[] = preScan.issues.map((issue) => ({
+            code: issue.code,
+            severity:
+              issue.severity === 'error'
+                ? ValidationSeverity.ERROR
+                : issue.severity === 'warning'
+                  ? ValidationSeverity.WARNING
+                  : ValidationSeverity.INFO,
+            message: issue.message,
+            location: issue.line !== undefined ? { line: issue.line, column: issue.column ?? 0 } : undefined,
+            data: issue.data,
+          }));
+          return {
+            success: false,
+            error: {
+              name: 'ValidationError',
+              message: `AgentScript validation failed:\n${this.formatValidationErrors(issues)}`,
+              code: 'VALIDATION_ERROR',
+              data: { issues },
+            },
+            stats: {
+              duration: Date.now() - startTime,
+              toolCallCount: 0,
+              iterationCount: 0,
+              startTime,
+              endTime: Date.now(),
+            },
+          };
+        }
+      }
+
       // Step 1: Transform
       let transformedCode = code;
       if (this.transformCode) {
@@ -427,7 +479,7 @@ export class BrowserEnclave {
 
       // Step 2: Validate
       if (this.validateCode) {
-        const validationResult = await this.validator.validate(transformedCode);
+        const validationResult = await this.validator.validate(transformedCode, { preScan: { enabled: false } });
         if (!validationResult.valid) {
           const errorMessages = this.formatValidationErrors(validationResult.issues);
           return {

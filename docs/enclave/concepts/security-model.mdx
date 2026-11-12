@@ -10,7 +10,7 @@ Enclave uses a defense-in-depth approach with 6 independent security layers. Eac
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
 flowchart TD
-    L0["Layer 0: Pre-Scanner<br/>• Input size limits<br/>• Nesting depth limits<br/>• ReDoS analysis of regex literals<br/>• Look-alike letter check"]
+    L0["Layer 0: Pre-Scanner<br/>• Input size and line limits<br/>• Nesting depth limits<br/>• Regex literals refused or analyzed<br/>• Unicode that hides code"]
     L1["Layer 1: AST Validation<br/>• Block dangerous constructs<br/>• Enforce allowed globals<br/>• Restrict control flow"]
     L2["Layer 2: Code Transformation<br/>• Wrap in safe runtime<br/>• Proxy tool calls<br/>• Instrument loops"]
     L3["Layer 3: AI Scoring Gate (Optional)<br/>• Heuristic risk score<br/>• Exfiltration-like tool sequences<br/>• Thresholds"]
@@ -29,17 +29,17 @@ flowchart TD
 
 ## Layer 0: Pre-Scanner
 
-Runs before the validator parses the script, so that the parser is not handed input it cannot cope with. `Enclave` runs the pre-scanner with its `standard` preset, whatever the AST preset:
+Runs on the script as it was written, before anything parses it, so that no parser is handed input it cannot cope with. `Enclave` runs the pre-scanner with the preset named like the AST preset:
 
-| Check | Limit in the enclave | Purpose |
-|-------|----------------------|---------|
-| Input size | 5MB | Memory exhaustion |
-| Lines | 10,000 lines of at most 10,000 chars | Minified code bombs |
-| Nesting depth | 50 levels | Stack overflow |
-| String literals | 500KB each, 5MB in total | Embedded data attacks |
-| Regex literals | 30 of at most 500 chars, analyzed for ReDoS | ReDoS prevention |
+| AST preset | Pre-scanner preset | Script | Lines | String literals | Regex literals | Bidirectional controls | Invisible characters |
+|------------|--------------------|--------|-------|-----------------|----------------|------------------------|----------------------|
+| `agentscript` (default) | `agentscript` | 100 KB, nesting 20 | 1,000 of at most 2,000 chars | 10 KB each, 100 KB in total | refused | refused | refused |
+| `strict` | `strict` | 500 KB, nesting 30 | 2,000 of at most 5,000 chars | 50 KB each, 500 KB in total | 10 of at most 100 chars, analyzed for ReDoS | refused | refused |
+| `secure` | `secure` | 1 MB, nesting 40 | 5,000 of at most 8,000 chars | 100 KB each, 1 MB in total | 20 of at most 200 chars, analyzed | refused | allowed |
+| `standard`, `babel` | `standard` | 5 MB, nesting 50 | 10,000 of at most 10,000 chars | 500 KB each, 5 MB in total | 30 of at most 500 chars, analyzed | allowed | allowed |
+| `permissive` | `permissive` | 5,242,880 chars (the enclave's maximum), nesting 100 | 100,000 of at most 50,000 chars | 1 MB each, 10 MB in total | allowed | allowed | allowed |
 
-The `standard` preset also refuses a null byte and a fixed list of look-alike letters (Cyrillic, Greek and full-width forms of letters such as `a`, `e` and `o`), anywhere in the script. It does not refuse bidirectional control characters (the characters of Trojan Source, CVE-2021-42574) or invisible characters. Those checks are part of the stricter [pre-scanner presets](/core-libraries/ast-guard/pre-scanner) of `@enclave-vm/ast`, which a host can run on a script itself before it calls `run()`.
+Every preset except `permissive` also refuses a null byte and a fixed list of look-alike letters (Cyrillic, Greek and full-width forms of letters such as `a`, `e` and `o`), anywhere in the script. The bidirectional control characters are the characters of Trojan Source (CVE-2021-42574). The `preScan` option picks another [pre-scanner preset](/core-libraries/ast-guard/pre-scanner) or changes single limits; with `validate: false` the pre-scanner does not run.
 
 A script is also limited to 5,242,880 characters, checked before anything parses it.
 

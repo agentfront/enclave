@@ -42,6 +42,7 @@ The constructor throws a `TypeError` for an option outside its type or range (a 
 | `allowFunctionsInGlobals` | `boolean` | by level | Allow functions in `globals` (calls are gated and results sanitized) |
 | `maxGlobalFunctionCalls` | `number` | 10 × `maxToolCalls` | Maximum calls into functions from `globals` |
 | `validate` | `boolean` | `true` | Validate the script before it runs. A dynamic import is refused also with `false` |
+| `preScan` | `{ preset?, config? }` | the pre-scanner preset named like `preset` (`standard` for `babel`) | Which pre-scanner preset checks the text of a script before anything parses it, and overrides of single limits (`PartialPreScannerConfig` of `@enclave-vm/ast`) |
 | `transform` | `boolean` | `true` | Transform the script before it runs |
 | `realmGlobals` | `'allowlist' \| 'security-level'` | by preset | Which standard globals exist in the script's realm |
 | `sanitizeStackTraces` | `boolean` | by level | Sanitize the stack of a returned error that has one (errors made inside the sandbox have none) |

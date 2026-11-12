@@ -216,7 +216,7 @@ items.map(item => item.value);
 
 ## Pre-Scanner Errors
 
-The enclave runs the pre-scanner with its `standard` preset (5 MB of input, 10,000 lines, nesting depth 50). A stricter preset applies only when you run a `PreScanner` yourself.
+The enclave runs the pre-scanner with the preset named like its AST preset, so by default with `agentscript`: 100 KB of script in at most 1,000 lines of at most 2,000 characters, nesting depth 20, string literals of at most 10 KB, no regular-expression literal, no bidirectional or invisible control character. A script that needs more room gets it through the `preScan` option, for example `preScan: { preset: 'standard' }` (5 MB, 10,000 lines, nesting depth 50) or `preScan: { config: { maxStringLength: 512 * 1024, maxLineLength: 100000 } }`.
 
 ### Input size exceeded
 

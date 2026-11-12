@@ -80,28 +80,20 @@ app.post('/execute', async (req, res) => {
 
 ### Layer 2: Pre-Scanner
 
-`Enclave` runs the validator's pre-scanner with its `standard` preset, which bounds the size, the nesting and the literals of a script and refuses a fixed list of look-alike letters. It does not refuse bidirectional control characters or invisible characters. For the stricter checks, run the `agentscript` pre-scanner preset yourself before you hand the code to the enclave:
+`Enclave` runs the pre-scanner on the script as it was written, before anything parses it, with the pre-scanner preset named like the AST preset. With the default `agentscript` preset that is the strictest one: 100 KB of code in at most 1,000 lines of at most 2,000 characters, string literals of at most 10 KB, no regular-expression literal, and no bidirectional or invisible control character.
+
+Loosen single limits only where your scripts need it, and keep the Unicode checks:
 
 ```ts
-import { PreScanner } from '@enclave-vm/ast';
-
-// The constructor takes { preset, config }; without a preset it uses 'standard'
-const scanner = new PreScanner({ preset: 'agentscript' });
-
-function preScreen(code: string): boolean {
-  const result = scanner.scan(code);
-  if (!result.success) {
-    logger.warn('Pre-scan blocked code', {
-      code: result.fatalIssue?.code,
-      message: result.fatalIssue?.message,
-    });
-    return false;
-  }
-  return true;
-}
+const enclave = new Enclave({
+  preScan: {
+    // The agentscript pre-scanner, with room for scripts of up to 500 KB
+    config: { maxInputSize: 500 * 1024, maxLines: 5000 },
+  },
+});
 ```
 
-The `agentscript` preset is strict about size as well: 100 KB of code, 1,000 lines, and no regular-expression literals.
+`preScan: { preset: 'standard' }` gives the limits enclaves had before 2.19.2 (5 MB, 10,000 lines, regular-expression literals analyzed, no check for bidirectional or invisible characters).
 
 ### Layer 3: AST Validation
 

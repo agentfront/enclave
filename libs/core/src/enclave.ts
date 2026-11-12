@@ -21,6 +21,9 @@ import {
   createBabelPreset,
   getBabelConfig,
   getAgentScriptGlobals,
+  PreScanner,
+  ValidationSeverity,
+  type PreScannerPresetLevel,
   type ValidationIssue,
 } from '@enclave-vm/ast';
 import {
@@ -94,8 +97,8 @@ function parseValidatedCode(source: string): acorn.Node {
 }
 
 /**
- * The longest script `run()` takes, in characters: what the validator's pre-scanner accepts
- * (its `standard` configuration), checked before the script is parsed for the first time.
+ * The longest script `run()` takes, in characters, whatever the pre-scanner is configured with
+ * and with validation off as well: checked before the script is parsed for the first time.
  */
 const MAX_SCRIPT_LENGTH = 5 * 1024 * 1024;
 
@@ -232,6 +235,8 @@ export class Enclave {
   };
   private readonly securityLevel: SecurityLevel;
   private readonly validator: JSAstValidator;
+  /** Layer 0: looks at the text of a script before anything parses it (see `preScan`) */
+  private readonly preScanner: PreScanner;
   private readonly validateCode: boolean;
   private readonly transformCode: boolean;
   /** Whether the run-time key guard also refuses the property names the AgentScript validator refuses */
@@ -424,6 +429,13 @@ export class Enclave {
     // Note: presetName is defined earlier (before config) for Babel global injection
     this.validator = this.createValidator(presetName, customAllowedGlobals, hostObjectGlobals);
 
+    // Layer 0 runs with the pre-scanner preset named like the AST preset. The Babel preset has
+    // no namesake: its scripts carry source text in string literals, which `standard` has room
+    // for. `preScan` picks another preset, or changes single limits of the one in force.
+    const preScanPreset: PreScannerPresetLevel =
+      options.preScan?.preset ?? (presetName === 'babel' ? 'standard' : presetName);
+    this.preScanner = new PreScanner({ preset: preScanPreset, config: options.preScan?.config });
+
     // Configuration flags
     this.validateCode = options.validate !== false; // Default: true
     this.transformCode = options.transform !== false; // Default: true
@@ -552,9 +564,7 @@ export class Enclave {
     let endExecution: (() => void) | undefined;
 
     try {
-      // Step 0: the size of the script, before anything parses it. The validator's pre-scanner
-      // has the same bound, but it runs on the transformed code: by then the script has been
-      // parsed and rewritten in full, whatever its size.
+      // Step 0: the size of the script, before anything parses it.
       if (typeof code !== 'string' || code.length > MAX_SCRIPT_LENGTH) {
         return {
           success: false,
@@ -572,6 +582,42 @@ export class Enclave {
             endTime: Date.now(),
           },
         };
+      }
+
+      // Step 0.5: the pre-scanner (layer 0), on the script as it was written. It is here and
+      // not inside the validator because the validator sees the transformed code: by then the
+      // script has been parsed and rewritten in full, and what its limits measured would be the
+      // transform's output.
+      if (this.validateCode) {
+        const preScan = this.preScanner.scan(code);
+        if (!preScan.success) {
+          const issues: ValidationIssue[] = preScan.issues.map((issue) => ({
+            code: issue.code,
+            severity:
+              issue.severity === 'error'
+                ? ValidationSeverity.ERROR
+                : issue.severity === 'warning'
+                  ? ValidationSeverity.WARNING
+                  : ValidationSeverity.INFO,
+            message: issue.message,
+            location: issue.line !== undefined ? { line: issue.line, column: issue.column ?? 0 } : undefined,
+            data: issue.data,
+          }));
+          return {
+            success: false,
+            error: {
+              name: 'ValidationError',
+              message: `AgentScript validation failed:\n${this.formatValidationErrors(issues)}`,
+              code: 'VALIDATION_ERROR',
+              data: { issues },
+            },
+            stats: {
+              ...stats,
+              duration: Date.now() - startTime,
+              endTime: Date.now(),
+            },
+          };
+        }
       }
 
       // Step 1: Transform (if enabled) - MUST happen before validation
@@ -598,7 +644,9 @@ export class Enclave {
       // This catches malicious patterns like constructor obfuscation BEFORE
       // they get transformed to __safe_concat calls (which would bypass detection)
       if (this.validateCode) {
-        const validationResult = await this.validator.validate(transformedCode);
+        // The pre-scanner has seen the script itself (step 0.5); what is validated here is the
+        // transform's output of it
+        const validationResult = await this.validator.validate(transformedCode, { preScan: { enabled: false } });
         if (!validationResult.valid) {
           // Format errors with location info and deduplicate
           const errorMessages = this.formatValidationErrors(validationResult.issues);

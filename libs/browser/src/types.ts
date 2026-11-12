@@ -6,7 +6,12 @@
  * @packageDocumentation
  */
 
-import type { NormalizedToolNamespace, ToolNamespaces } from '@enclave-vm/ast';
+import type {
+  NormalizedToolNamespace,
+  PartialPreScannerConfig,
+  PreScannerPresetLevel,
+  ToolNamespaces,
+} from '@enclave-vm/ast';
 
 export type { NormalizedToolNamespace, ToolNamespaces };
 
@@ -287,6 +292,21 @@ export interface BrowserEnclaveOptions {
    * @default 'agentscript'
    */
   preset?: AstPreset;
+
+  /**
+   * The pre-scanner (layer 0): what is checked in the text of a script before anything parses
+   * it (its size, its lines, how deep it nests, its regular-expression and string literals,
+   * Unicode that hides code). It runs with the pre-scanner preset named like `preset`, so by
+   * default with `agentscript`: scripts of up to 100 KB in at most 1,000 lines of at most 2,000
+   * characters, string literals of up to 10 KB, no regular-expression literal, no bidirectional
+   * or invisible control character. `preset` picks another pre-scanner preset and `config`
+   * changes single limits (see `PreScannerConfig` of `@enclave-vm/ast`). With `validate: false`
+   * the pre-scanner does not run.
+   */
+  preScan?: {
+    preset?: PreScannerPresetLevel;
+    config?: PartialPreScannerConfig;
+  };
 
   /**
    * Maximum execution time in milliseconds, with the same rules as @enclave-vm/core: time spent

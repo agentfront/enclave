@@ -48,11 +48,12 @@ const enclave = new Enclave({
 | `validate` | boolean | true | Validate code with ast-guard before execution. With `false`, a script that contains `import()` or `import.meta` still fails with `SECURITY_VIOLATION` before it runs |
 | `transform` | boolean | true | Transform code before execution |
 | `preset` | string | `'agentscript'` | AST validation preset: `agentscript`, `strict`, `secure`, `standard`, `permissive`, `babel` |
+| `preScan` | object | the pre-scanner preset named like `preset` (`standard` for `babel`) | `{ preset?, config? }`: the [pre-scanner](/core-libraries/ast-guard/pre-scanner) preset a script's text is checked with before anything parses it, and overrides of single limits. The default `agentscript` pre-scanner takes 100 KB in 1,000 lines of at most 2,000 characters, string literals of at most 10 KB and no regular-expression literal, and refuses bidirectional and invisible control characters. Not consulted with `validate: false` |
 | `realmGlobals` | string | varies | Which standard globals exist in the script's realm. `'allowlist'`: only the names the validator allows (the default with the `agentscript` or `babel` preset while `validate` is on); every other global, including `Function`, `globalThis`, `Proxy`, `Reflect`, `Symbol`, `Promise` and `RegExp`, is removed and regular expressions cannot run. `'security-level'`: only the dangerous globals listed for the security level are removed (the default otherwise) |
 
 Scripts run in strict mode at every security level: `this` is `undefined` outside a method call, an assignment to an undeclared name is an error, and a write that cannot happen (over a built-in method, or to a frozen object) throws a `TypeError` instead of being ignored.
 
-A script has a maximum size of 5,242,880 characters. A longer one, or a script that is not a string, fails with `VALIDATION_ERROR` before anything parses it.
+A script has a maximum size of 5,242,880 characters. A longer one, or a script that is not a string, fails with `VALIDATION_ERROR` before anything parses it. With validation on, the pre-scanner's limits come first: 100 KB with the default `agentscript` preset (see `preScan`).
 
 ### Option Values
 

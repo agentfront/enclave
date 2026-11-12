@@ -63,7 +63,7 @@ Pre-scanning refuses these before parsing begins.
   // result.preScanError and result.preScanStats report what the pre-scan found
   ```
 
-- **`Enclave`** (`@enclave-vm/core`) validates without a `preScan` option, so it runs the pre-scanner with the `standard` preset whatever the AST preset is. It therefore does not refuse bidirectional control characters or invisible characters (see the table below). A host that wants the stricter checks runs a `PreScanner` of its own on the script before it calls `run()`.
+- **`Enclave`** (`@enclave-vm/core`) and **`BrowserEnclave`** (`@enclave-vm/browser`) run the pre-scanner themselves, on the script as it was written and before anything parses it, with the pre-scanner preset named like their AST preset: `agentscript` by default (the `babel` preset of the core enclave runs with `standard`). Their `preScan` option picks another preset or changes single limits: `new Enclave({ preScan: { preset: 'standard' } })`, `new Enclave({ preScan: { config: { maxInputSize: 1024 * 1024 } } })`. With `validate: false` the pre-scanner does not run.
 
 ## Mandatory Limits
 

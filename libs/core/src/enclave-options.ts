@@ -92,6 +92,36 @@ function assertRecordOption(name: string, value: unknown): asserts value is Reco
   }
 }
 
+/** @throws TypeError when `value` has a key that is not one of `known` */
+function assertKnownKeys(name: string, value: Record<string, unknown>, known: readonly string[]): void {
+  for (const key of Object.keys(value)) {
+    if (!known.includes(key)) {
+      throw new TypeError(`${name} has no option ${JSON.stringify(key.slice(0, 40))}`);
+    }
+  }
+}
+
+function isOneOf(values: readonly string[], value: unknown): boolean {
+  return typeof value === 'string' && values.includes(value);
+}
+
+/** The pre-scanner presets, and the members of a pre-scanner configuration by kind. */
+const PRE_SCAN_PRESETS = ['agentscript', 'strict', 'secure', 'standard', 'permissive'] as const;
+const PRE_SCAN_INTEGERS = [
+  'maxInputSize',
+  'maxLineLength',
+  'maxLines',
+  'maxNestingDepth',
+  'maxConsecutiveOperators',
+  'maxRegexLength',
+  'maxRegexCount',
+  'maxStringLength',
+  'maxTotalStringContent',
+] as const;
+const PRE_SCAN_BOOLEANS = ['unicodePreCheck', 'blockBidiPatterns', 'blockInvisibleChars'] as const;
+const PRE_SCAN_REGEX_MODES = ['allow', 'analyze', 'block'] as const;
+const PRE_SCAN_REGEX_ANALYSIS_LEVELS = ['catastrophic', 'polynomial'] as const;
+
 /** The limits that are counts or sizes, with the smallest value each may have. */
 const INTEGER_OPTIONS: ReadonlyArray<readonly [keyof CreateEnclaveOptions, number, number?]> = [
   // `vm` takes a timeout as a positive unsigned 32-bit integer
@@ -163,6 +193,48 @@ export function normalizeEnclaveOptions(options: CreateEnclaveOptions): CreateEn
       assertBooleanOption('toolBridge.acknowledgeInsecureDirect', bridge['acknowledgeInsecureDirect']);
     }
     result.toolBridge = bridge as CreateEnclaveOptions['toolBridge'];
+  }
+
+  if (result.preScan !== undefined) {
+    assertRecordOption('preScan', result.preScan);
+    const preScan = withoutUndefined(result.preScan) as Record<string, unknown>;
+    assertKnownKeys('preScan', preScan, ['preset', 'config']);
+    if (preScan['preset'] !== undefined && !isOneOf(PRE_SCAN_PRESETS, preScan['preset'])) {
+      throw new TypeError(
+        `preScan.preset must be one of ${PRE_SCAN_PRESETS.join(', ')}, got ${describe(preScan['preset'])}`,
+      );
+    }
+    if (preScan['config'] !== undefined) {
+      assertRecordOption('preScan.config', preScan['config']);
+      const config = withoutUndefined(preScan['config']) as Record<string, unknown>;
+      assertKnownKeys('preScan.config', config, [
+        ...PRE_SCAN_INTEGERS,
+        ...PRE_SCAN_BOOLEANS,
+        'regexMode',
+        'regexAnalysisLevel',
+      ]);
+      for (const name of PRE_SCAN_INTEGERS) {
+        if (config[name] !== undefined) assertIntegerOption(`preScan.config.${name}`, config[name], 0);
+      }
+      for (const name of PRE_SCAN_BOOLEANS) {
+        if (config[name] !== undefined) assertBooleanOption(`preScan.config.${name}`, config[name]);
+      }
+      if (config['regexMode'] !== undefined && !isOneOf(PRE_SCAN_REGEX_MODES, config['regexMode'])) {
+        throw new TypeError(
+          `preScan.config.regexMode must be one of ${PRE_SCAN_REGEX_MODES.join(', ')}, got ${describe(config['regexMode'])}`,
+        );
+      }
+      if (
+        config['regexAnalysisLevel'] !== undefined &&
+        !isOneOf(PRE_SCAN_REGEX_ANALYSIS_LEVELS, config['regexAnalysisLevel'])
+      ) {
+        throw new TypeError(
+          `preScan.config.regexAnalysisLevel must be one of ${PRE_SCAN_REGEX_ANALYSIS_LEVELS.join(', ')}, got ${describe(config['regexAnalysisLevel'])}`,
+        );
+      }
+      preScan['config'] = config;
+    }
+    result.preScan = preScan as CreateEnclaveOptions['preScan'];
   }
 
   if (result.doubleVm !== undefined) {
