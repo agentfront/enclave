@@ -522,11 +522,11 @@ export class BrowserEnclave {
         doubleIframeConfig: this.doubleIframeConfig,
         secureProxyConfig: this.config.secureProxyConfig,
         blockedProperties: serializedConfig.blockedProperties,
-        // Function-based SuspiciousPattern[] from parentValidation are not serialized here;
-        // they require a serialization bridge (see serializePatterns in @enclave-vm/core).
-        // String-based SerializableSuspiciousPattern[] from customSerializablePatterns are
-        // appended directly since they are already in serializable form.
+        // The built-in patterns and the host's customSerializablePatterns are source text: they
+        // go into the outer iframe. The function-based patterns of parentValidation cannot be
+        // sent into a frame; the host page asks them itself (hostSuspiciousPatterns).
         suspiciousPatterns: [...DEFAULT_SERIALIZED_PATTERNS, ...this.customSerializablePatterns],
+        hostSuspiciousPatterns: pv.suspiciousPatterns,
         validationConfig,
       };
 
@@ -620,6 +620,22 @@ export class BrowserEnclave {
     const config = this.mergeDoubleIframeConfig(options);
     // Added to the timeout for the host's hard stop: a number, like the timeout
     requireFiniteNumber('doubleIframe.parentTimeoutBuffer', config.parentTimeoutBuffer, MAX_TIMER_DELAY_MS);
+    // A pattern here is a function the host page calls for every tool call. One that is not a
+    // function would never be asked, and the host would believe it is.
+    config.parentValidation.suspiciousPatterns.forEach((pattern, index) => {
+      if (
+        pattern === null ||
+        typeof pattern !== 'object' ||
+        typeof pattern.id !== 'string' ||
+        typeof pattern.description !== 'string' ||
+        typeof pattern.detect !== 'function'
+      ) {
+        throw new TypeError(
+          `doubleIframe.parentValidation.suspiciousPatterns[${index}] must have a string id, a string description ` +
+            'and a detect function. A pattern written as source text (detectBody) goes in customSerializablePatterns.',
+        );
+      }
+    });
     return config;
   }
 

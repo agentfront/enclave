@@ -222,3 +222,126 @@ test.describe('tool gate', () => {
     expect(raw.error?.stack).toMatch(HOST_LOCATION);
   });
 });
+
+test.describe('function-based suspicious patterns', () => {
+  test.beforeEach(async ({ page }) => {
+    await loadHarness(page);
+  });
+
+  /** Run `code` with one function-based pattern; `detectBody` is the body of its `detect(name, args, history)`. */
+  async function runWithPattern(
+    page: Page,
+    code: string,
+    detectBody: string,
+    parentValidation: Record<string, unknown> = {},
+  ) {
+    return page.evaluate(
+      async ({ code, detectBody, parentValidation }) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const EB = (window as any).EnclaveBrowser;
+        const handled: string[] = [];
+        const seen: Array<{ name: string; args: unknown; history: string[] }> = [];
+        const decide = new Function('name', 'args', 'history', detectBody) as (
+          name: string,
+          args: unknown,
+          history: Array<{ operationName: string }>,
+        ) => boolean;
+        const enclave = new EB.BrowserEnclave({
+          timeout: 5000,
+          toolHandler: async (name: string) => {
+            handled.push(name);
+            return name;
+          },
+          doubleIframe: {
+            parentValidation: {
+              ...parentValidation,
+              suspiciousPatterns: [
+                {
+                  id: 'NO_SECOND',
+                  description: 'the second step is not allowed',
+                  detect: (name: string, args: unknown, history: Array<{ operationName: string }>) => {
+                    seen.push({ name, args, history: history.map((entry) => entry.operationName) });
+                    return decide(name, args, history);
+                  },
+                },
+              ],
+            },
+          },
+        });
+        try {
+          const result = await enclave.run(code);
+          return { result, handled, seen };
+        } finally {
+          enclave.dispose();
+        }
+      },
+      { code, detectBody, parentValidation },
+    );
+  }
+
+  const TWO_STEPS = `
+    const first = await callTool('alpha:one', { id: 1 });
+    let second;
+    try { second = await callTool('alpha:two', { id: 2 }); } catch (e) { second = e.message; }
+    return [first, second];
+  `;
+
+  test('a pattern is asked about every tool call and refuses the ones it detects', async ({ page }) => {
+    const run = await runWithPattern(page, TWO_STEPS, `return name === 'alpha:two';`);
+
+    expect(run.result.error).toBeUndefined();
+    expect(run.result.value).toEqual([
+      'alpha:one',
+      'Suspicious pattern detected: the second step is not allowed [NO_SECOND]',
+    ]);
+    expect(run.handled).toEqual(['alpha:one']);
+    expect(run.seen).toEqual([
+      { name: 'alpha:one', args: { id: 1 }, history: [] },
+      { name: 'alpha:two', args: { id: 2 }, history: ['alpha:one'] },
+    ]);
+  });
+
+  test('a pattern can decide on the calls that came before', async ({ page }) => {
+    const run = await runWithPattern(
+      page,
+      TWO_STEPS,
+      `return history.some(function (entry) { return entry.operationName === 'alpha:one'; });`,
+    );
+
+    expect(run.result.value).toEqual([
+      'alpha:one',
+      'Suspicious pattern detected: the second step is not allowed [NO_SECOND]',
+    ]);
+    expect(run.handled).toEqual(['alpha:one']);
+  });
+
+  test('a pattern that throws refuses the call', async ({ page }) => {
+    const run = await runWithPattern(
+      page,
+      TWO_STEPS,
+      `if (name === 'alpha:two') throw new Error('broken'); return false;`,
+    );
+
+    expect(run.result.error).toBeUndefined();
+    expect((run.result.value as string[])[0]).toBe('alpha:one');
+    expect((run.result.value as string[])[1]).toContain('[NO_SECOND]');
+    expect(run.handled).toEqual(['alpha:one']);
+  });
+
+  test('blockSuspiciousSequences: false turns function-based patterns off as well', async ({ page }) => {
+    const run = await runWithPattern(page, TWO_STEPS, `return true;`, { blockSuspiciousSequences: false });
+
+    expect(run.result.error).toBeUndefined();
+    expect(run.result.value).toEqual(['alpha:one', 'alpha:two']);
+    expect(run.seen).toEqual([]);
+  });
+
+  test('a pattern without a detect function is refused at construction', async ({ page }) => {
+    const message = await constructorError(page, {
+      doubleIframe: { parentValidation: { suspiciousPatterns: [{ id: 'X', description: 'no detector' }] } },
+    });
+
+    expect(message).toContain('suspiciousPatterns');
+    expect(message).toContain('detect');
+  });
+});
