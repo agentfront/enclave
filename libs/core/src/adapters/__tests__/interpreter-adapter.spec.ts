@@ -281,6 +281,21 @@ describe('InterpreterAdapter (SandboxAdapter)', () => {
     ]);
   });
 
+  it('normalizes and encodes long texts that stay within the longest text a script may make', async () => {
+    // Three million letters: nine times as long in the worst case of an encoding, but letters stay as they are
+    const res = await adapter.execute(
+      main(`
+        const part = 'abc'.repeat(333333);
+        const text = part + part + part;
+        return [encodeURIComponent(text).length, encodeURI(text + ' ').length, text.normalize('NFKC').length];
+      `),
+      makeContext(),
+    );
+
+    expect(res.error).toBeUndefined();
+    expect(res.value).toEqual([2999997, 3000000, 2999997]);
+  });
+
   it('writes the locale text of an array as the engine does', async () => {
     const res = await adapter.execute(
       main(`return [[1234.5, 'a', null, [2, [3000]]].toLocaleString('en-US'),

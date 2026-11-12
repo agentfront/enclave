@@ -327,7 +327,8 @@ const SafeDate = frozenFunction((): string => new Date().toString(), {
 // ── URI encoding ─────────────────────────────────────────────────────────────
 /**
  * Encode a text for a URI, unless that could make it longer than a script's longest text: a
- * char becomes up to nine (`%XX` for each of its three bytes), in one step of the engine.
+ * char becomes up to nine (`%XX` for each of its three bytes), in one step of the engine. A
+ * letter or a digit of the basic Latin range stays as it is.
  */
 function encodedText(encode: (text: string) => string, value: unknown): string {
   const text = String(value);
@@ -335,7 +336,10 @@ function encodedText(encode: (text: string) => string, value: unknown): string {
     let produced = 0;
     for (let index = 0; index < text.length && produced <= MAX_JOIN_LENGTH; index++) {
       const code = text.charCodeAt(index);
-      produced += code < 0x80 ? 3 : code < 0x800 ? 6 : 9;
+      if (code >= 0x800) produced += 9;
+      else if (code >= 0x80) produced += 6;
+      else if ((code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122)) produced += 1;
+      else produced += 3;
     }
     if (produced > MAX_JOIN_LENGTH) {
       throw new RangeError(`The encoded text would be too long (more than ${MAX_JOIN_LENGTH} chars)`);
