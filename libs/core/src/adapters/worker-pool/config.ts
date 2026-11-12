@@ -73,8 +73,10 @@ export interface WorkerPoolConfig {
   gracefulShutdownTimeoutMs: number;
 
   /**
-   * Maximum messages per second allowed from a single worker
-   * Prevents message flooding attacks. An execution that is failed for it loses its worker.
+   * Maximum messages per second a worker may send while it runs one execution: what a script
+   * makes it send (tool calls, console output). The count starts with each execution; the
+   * result and the worker's confirmation that it is idle are not counted. An execution that
+   * sends more fails with `MessageFloodError`, and its worker is terminated.
    * @default 1000
    */
   maxMessagesPerSecond: number;

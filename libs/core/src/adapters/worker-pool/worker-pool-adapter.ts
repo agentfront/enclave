@@ -18,7 +18,14 @@ import type {
   SerializedConfig,
   SerializedDoubleVmConfig,
 } from './protocol';
-import { isToolCallMessage, isExecutionResultMessage, isConsoleMessage, isWorkerIdleMessage } from './protocol';
+import {
+  isToolCallMessage,
+  isExecutionResultMessage,
+  isConsoleMessage,
+  isWorkerIdleMessage,
+  isMemoryReportResultMessage,
+  isWorkerReadyMessage,
+} from './protocol';
 import { WorkerSlot } from './worker-slot';
 import { ExecutionQueue } from './execution-queue';
 import { MemoryMonitor, workerMemoryBytes } from './memory-monitor';
@@ -76,6 +83,11 @@ function serializeDoubleVmConfig(config: DoubleVmConfig): SerializedDoubleVmConf
  */
 const IDLE_CONFIRMATION_TIMEOUT_MS = 1000;
 
+/** A message that belongs to one execution: only a worker that is running that execution sends it */
+function isExecutionMessage(msg: WorkerToMainMessage): boolean {
+  return !isMemoryReportResultMessage(msg) && !isWorkerReadyMessage(msg);
+}
+
 /**
  * Worker Pool Adapter
  *
@@ -129,6 +141,11 @@ export class WorkerPoolAdapter implements SandboxAdapter {
   private _heapLimitKills = 0;
   /** Workers already counted as a memory kill (by the memory monitor or as a heap-limit kill) */
   private readonly memoryKilledSlots = new WeakSet<WorkerSlot>();
+  /**
+   * Workers that sent a message for an execution other than the one they are running. Such a
+   * worker is not in the state the pool believes: it is not given another execution.
+   */
+  private readonly distrustedSlots = new WeakSet<WorkerSlot>();
 
   /**
    * @param config Worker pool configuration
@@ -328,6 +345,14 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       this._forcedTerminations++;
     });
 
+    // An idle worker has nothing to say about an execution. One that does is not idle, whatever
+    // the pool's books say: it is replaced before anybody is given it.
+    slot.on('message', (msg) => {
+      if (slot.isIdle && isExecutionMessage(msg)) {
+        this.retireSlot(slot);
+      }
+    });
+
     let started = false;
     this.startingWorkers++;
     try {
@@ -425,6 +450,21 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     }
   }
 
+  /**
+   * End a worker that is alive but cannot be trusted to be free, and take it out of the pool.
+   * The next execution finds the pool below its size and gets a new worker.
+   */
+  private retireSlot(slot: WorkerSlot): void {
+    if (slot.isTerminated) {
+      return;
+    }
+    this._forcedTerminations++;
+    slot.terminate(false).catch((error) => {
+      console.error(`Failed to terminate worker ${slot.id}:`, error);
+    });
+    this.removeDeadSlot(slot);
+  }
+
   private releaseSlot(slot: WorkerSlot): void {
     if (slot.status === 'terminated' || slot.status === 'terminating') {
       this.removeDeadSlot(slot);
@@ -433,6 +473,11 @@ export class WorkerPoolAdapter implements SandboxAdapter {
 
     // A recycling slot is replaced by handleSlotRecycling
     if (slot.status === 'recycling') {
+      return;
+    }
+
+    if (this.distrustedSlots.has(slot)) {
+      this.retireSlot(slot);
       return;
     }
 
@@ -590,6 +635,10 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     // check, tool-call limit, argument sanitization, sidecar references, result sanitization.
     const toolBridge = createHostToolBridge(context, { updateStats: true });
 
+    // The message rate is the execution's: what an earlier execution sent from this worker is
+    // not held against this one.
+    this.rateLimiter.reset(slot.id);
+
     return new Promise<ExecutionResult<T>>((resolve, reject) => {
       // Pending tool calls for this execution
       const pendingToolCalls = new Map<string, boolean>();
@@ -680,7 +729,8 @@ export class WorkerPoolAdapter implements SandboxAdapter {
 
       // Message handler
       const messageHandler: (msg: WorkerToMainMessage) => Promise<void> = async (msg: WorkerToMainMessage) => {
-        if (over) {
+        // The answers to the pool's own memory requests are not messages of the script
+        if (over || isMemoryReportResultMessage(msg)) {
           return;
         }
         try {
@@ -703,18 +753,22 @@ export class WorkerPoolAdapter implements SandboxAdapter {
             return;
           }
 
-          // Rate limiting: everything else a worker sends
+          // Rate limiting: everything else a worker sends while it runs a script
           this.rateLimiter.checkLimit(slot.id);
 
-          if (isToolCallMessage(msg) && msg.requestId === requestId) {
+          if (!('requestId' in msg) || msg.requestId !== requestId) {
+            // Not a message of this execution. It is not acted on, and this execution is not
+            // failed for it, but a worker that sends one is not given to anybody afterwards.
+            this.distrustedSlots.add(slot);
+          } else if (isToolCallMessage(msg)) {
             await this.handleToolCall(slot, msg, toolBridge, context, pendingToolCalls);
-          } else if (isConsoleMessage(msg) && msg.requestId === requestId) {
+          } else if (isConsoleMessage(msg)) {
             if (consoleSink) {
               consoleSink(msg.level, msg.args[0]);
             } else {
               this.handleConsoleMessage(msg);
             }
-          } else if (isWorkerIdleMessage(msg) && msg.requestId === requestId) {
+          } else if (isWorkerIdleMessage(msg)) {
             throw new MessageValidationError('worker reported idle before it sent a result');
           }
         } catch (error) {
