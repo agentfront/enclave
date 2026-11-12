@@ -24,6 +24,9 @@
 //   nothing else;
 // - whatever a script catches is its own thrown value or a plain copy of an
 //   error, never a host Error object (which carries a host stack);
+// - the engine never calls a function for a script: data of a script holds no function under
+//   a name the engine looks up by itself (to convert a value, to serialize it, to await it), so
+//   whatever runs for a script runs where the script wrote a call, with the checks of a call;
 // - every promise an interpreted function returns has a rejection handler, so a
 //   call nobody awaits cannot become an unhandled rejection of the host process;
 // - every loop the interpreter runs on a script's behalf counts against the
@@ -69,6 +72,38 @@ function assertKeyAllowed(key: string): void {
 function readProperty(object: unknown, key: string): unknown {
   if (key === '__proto__' || BLOCKED_KEYS.has(key)) throw new InterpreterError(`Forbidden property access: ${key}`);
   return (object as Record<string, unknown>)[key];
+}
+
+/**
+ * Names under which the engine looks for a function on a value and calls it by itself: to turn
+ * the value into a text or a number (`toString`, `valueOf`), into JSON (`toJSON`, and for a date
+ * `toISOString`), into the text of a locale (`toLocaleString`, for every item of an array), or
+ * to wait for it (`then`, wherever a value passes an `await`).
+ */
+const ENGINE_CALLED_KEYS = new Set(['then', 'toString', 'valueOf', 'toJSON', 'toLocaleString', 'toISOString']);
+
+/** Whether the engine calls a function it finds under this name, without a call in the script. */
+export function isEngineCalledKey(key: string): boolean {
+  return ENGINE_CALLED_KEYS.has(key);
+}
+
+/**
+ * Refuse to store a function where the engine would call it by itself. Such a call is not a
+ * call of the script: it gets none of the checks of a call, a function of the script that is
+ * called that way is not awaited, and a value with a `then` function is waited for wherever it
+ * is evaluated. Data of a script therefore never holds a function under one of those names (an
+ * array neither under `join`, which the engine calls for the text of an array). Any other
+ * value may be stored there, and the conversions every object inherits keep working.
+ *
+ * @throws InterpreterError when `value` is a function and `key` is such a name
+ */
+export function assertStorable(target: unknown, key: string, value: unknown): void {
+  if (typeof value !== 'function') return;
+  if (ENGINE_CALLED_KEYS.has(key) || (key === 'join' && Array.isArray(target))) {
+    throw new InterpreterError(
+      `A function cannot be stored under '${key}': the sandbox runs a function only where the script calls it`,
+    );
+  }
 }
 
 /**
@@ -182,6 +217,18 @@ const CONVERTED_ARGUMENTS = new WeakMap<object, number>();
  */
 export function convertsArguments<F extends object>(fn: F, count: number): F {
   CONVERTED_ARGUMENTS.set(fn, count);
+  return fn;
+}
+
+const ARGUMENT_CONVERSIONS = new WeakMap<object, (args: unknown[]) => unknown[]>();
+
+/**
+ * Declare how `fn` converts its arguments before it looks at them. The conversion is made once,
+ * before the call is measured and charged, and `fn` is called with its result: what a bound was
+ * checked with is what the function gets.
+ */
+export function convertsBeforeCall<F extends object>(fn: F, convert: (args: unknown[]) => unknown[]): F {
+  ARGUMENT_CONVERSIONS.set(fn, convert);
   return fn;
 }
 
@@ -844,6 +891,7 @@ export class Interpreter {
               for (const [k, v] of Object.entries(spread as Record<string, unknown>)) {
                 this.tick();
                 if (!BLOCKED_KEYS.has(k)) {
+                  assertStorable(obj, k, v);
                   obj[k] = v;
                   count++;
                 }
@@ -854,7 +902,9 @@ export class Interpreter {
           if (prop.kind !== 'init') throw new InterpreterError('Getters and setters are not supported');
           const key = await this.propKey(prop, scope);
           if (BLOCKED_KEYS.has(key)) throw new InterpreterError(`Forbidden property key: ${key}`);
-          obj[key] = await this.evalExpr(prop.value as ESTree.Expression, scope);
+          const member = await this.evalExpr(prop.value as ESTree.Expression, scope);
+          assertStorable(obj, key, member);
+          obj[key] = member;
           count++;
         }
         this.charge(count * 16);
@@ -1100,7 +1150,10 @@ export class Interpreter {
   private writeMember(object: unknown, key: string, value: unknown): void {
     this.assertChangeable(object);
     assertKeyAllowed(key);
+    assertStorable(object, key, value);
     if (Array.isArray(object)) {
+      // A length is converted here, once: the number that is checked is the number that is set
+      if (key === 'length') value = convertedOnce(value, Number);
       const grownTo = arrayLengthAfterWrite(object, key, value);
       if (grownTo > MAX_ARRAY_LENGTH) {
         throw new InterpreterError(`An array cannot be longer than ${MAX_ARRAY_LENGTH} items`);
@@ -1319,8 +1372,10 @@ export class Interpreter {
     }
 
     if (stringMethod !== undefined) args = this.checkStringMethod(stringMethod, thisArg, args, arrayText);
-    else if (arrayMethod !== undefined) this.checkArrayMethod(arrayMethod, thisArg, args);
+    else if (arrayMethod !== undefined) args = this.checkArrayMethod(arrayMethod, thisArg, args);
 
+    const convert = ARGUMENT_CONVERSIONS.get(fn);
+    if (convert) args = convert(args);
     const cost = CALL_COSTS.get(fn);
     if (cost) this.charge(cost(args));
     return args;
@@ -1365,14 +1420,16 @@ export class Interpreter {
 
     // Cap string-amplifying ops whose allocation the step budget can't see.
     if (name === 'repeat' || name === 'padStart' || name === 'padEnd') {
-      const n = Number(args[0]);
+      // The count is converted once: the number that is checked is the number the engine gets
+      const count = convertedOnce(args[0], Number);
+      const n = Number(count);
       const produced = name === 'repeat' ? receiver.length * (n > 0 ? n : 0) : Math.max(receiver.length, n > 0 ? n : 0);
       if (produced > MAX_STRING_OP_LENGTH) {
         throw new InterpreterError(
           `String '${name}' would produce ${produced} chars, exceeding the ${MAX_STRING_OP_LENGTH} limit`,
         );
       }
-      return args;
+      return args.length === 0 ? args : [count, ...args.slice(1)];
     }
 
     // One call appends every argument; with a spread that is one string, many times.
@@ -1399,7 +1456,7 @@ export class Interpreter {
     return args;
   }
 
-  private checkArrayMethod(name: string, receiver: unknown, args: unknown[]): void {
+  private checkArrayMethod(name: string, receiver: unknown, args: unknown[]): unknown[] {
     // These methods accept any receiver with a `length`: `{ length: 1e9 }` is no array, and the
     // engine would work through it as if it were one.
     if (!Array.isArray(receiver)) throw new InterpreterError(`Array '${name}' works on an array only`);
@@ -1414,39 +1471,41 @@ export class Interpreter {
       case 'join':
       case 'toString':
       case 'toLocaleString': {
-        const separator = name !== 'join' || args.length === 0 || args[0] === undefined ? ',' : String(args[0]);
+        // The separator is converted once: the text that is measured is the text that is written
+        const given = name !== 'join' || args.length === 0 ? undefined : convertedOnce(args[0], String);
+        const separator = given === undefined ? ',' : String(given);
         const measure = newTextMeasure();
         measureArrayText(receiver, separator.length, measure, 0);
         if (measure.length > MAX_JOIN_LENGTH) {
           throw new InterpreterError(`Array '${name}' would produce more than ${MAX_JOIN_LENGTH} chars`);
         }
-        return;
+        return name === 'join' && args.length > 0 ? [given, ...args.slice(1)] : args;
       }
       // Without a comparison function the engine compares the items as text: strings as they
       // are, and an array among the items joined, again for every comparison.
       case 'sort':
       case 'toSorted': {
-        if (typeof args[0] === 'function') return;
+        if (typeof args[0] === 'function') return args;
         const measure = newTextMeasure();
         for (let i = 0; i < receiver.length && measure.length <= MAX_JOIN_LENGTH; i++) {
           const item: unknown = receiver[i];
           if (Array.isArray(item)) measureArrayText(item, 1, measure, 1);
         }
         if (measure.length > MAX_JOIN_LENGTH) throw new InterpreterError(TEXT_TOO_LONG);
-        return;
+        return args;
       }
       // Growth by the arguments (a spread makes them many): charged before it happens.
       case 'push':
       case 'unshift':
         if (receiver.length + args.length > MAX_ARRAY_LENGTH) tooLong();
         this.charge(args.length * 8);
-        return;
+        return args;
       case 'splice':
       case 'toSpliced': {
         const added = Math.max(0, args.length - 2);
         if (receiver.length + added > MAX_ARRAY_LENGTH) tooLong();
         if (name === 'splice') this.charge(added * 8);
-        return;
+        return args;
       }
       // A new array of the receiver and every array among the arguments: one array, given many
       // times, is small in memory and large once copied.
@@ -1457,15 +1516,17 @@ export class Interpreter {
           length += Array.isArray(arg) ? arg.length : 1;
         }
         if (length > MAX_ARRAY_LENGTH) tooLong();
-        return;
+        return args;
       }
       case 'flat': {
-        const depth = args[0] === undefined ? 1 : Number(args[0]);
+        // The depth is converted once: the depth that is measured is the depth the engine gets
+        const given = convertedOnce(args[0], Number);
+        const depth = given === undefined ? 1 : Number(given);
         if (flatLength(receiver, Number.isNaN(depth) ? 0 : depth, MAX_ARRAY_LENGTH) > MAX_ARRAY_LENGTH) tooLong();
-        return;
+        return args.length === 0 ? args : [given, ...args.slice(1)];
       }
       default:
-        return;
+        return args;
     }
   }
 
@@ -1663,7 +1724,9 @@ export class Interpreter {
             const rest: Record<string, unknown> = {};
             for (const key of Object.keys(source)) {
               this.tick();
-              if (!taken.has(key) && !BLOCKED_KEYS.has(key)) rest[key] = source[key];
+              if (taken.has(key) || BLOCKED_KEYS.has(key)) continue;
+              assertStorable(rest, key, source[key]);
+              rest[key] = source[key];
             }
             await this.applyPattern(prop.argument, rest, scope, mode);
             continue;
@@ -1775,6 +1838,15 @@ export function isScriptData(value: unknown): boolean {
   if (value === null || typeof value !== 'object') return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * An argument a built-in converts, converted here instead when the conversion is one the engine
+ * would repeat: of an object, whose answer need not be the same twice. Any other value is passed
+ * on as it is, and the engine converts it (or refuses it) as it always does.
+ */
+function convertedOnce(value: unknown, convert: (value: unknown) => unknown): unknown {
+  return typeof value === 'object' && value !== null ? convert(value) : value;
 }
 
 /** The length an array has after `array[key] = value`. */

@@ -28,6 +28,7 @@ import {
   Interpreter,
   StepLimitError,
   isBlockedKey,
+  isEngineCalledKey,
   isScriptError,
   takesArraysAsData,
 } from '../interpreter/interpreter';
@@ -96,6 +97,24 @@ function sandboxError(message: string, name = 'Error', code?: string): Error {
   error.name = name;
   if (code !== undefined) (error as Error & { code?: string }).code = code;
   return error;
+}
+
+function ignoreRejection(): void {
+  // Deliberately empty: see observed
+}
+
+/**
+ * A helper that returns a promise, as the script gets it: every promise it returns has a
+ * rejection handler. Whoever awaits the promise still sees a rejection; the handler only keeps
+ * a promise that nobody holds from becoming an unhandled rejection, which by default ends the
+ * host process. The interpreter does the same for the functions of a script.
+ */
+function observed<A extends unknown[]>(helper: (...args: A) => Promise<unknown>): (...args: A) => Promise<unknown> {
+  return (...args: A): Promise<unknown> => {
+    const result = helper(...args);
+    result.then(undefined, ignoreRejection);
+    return result;
+  };
 }
 
 function frozenRecord(members: Record<string, unknown>): Record<string, unknown> {
@@ -286,7 +305,7 @@ export class InterpreterAdapter implements SandboxAdapter {
     callbacks: CallbackInvoker,
   ): Record<string, unknown> {
     const { config } = context;
-    const callTool = this.createCallTool(context, callbacks);
+    const callTool = observed(this.createCallTool(context, callbacks));
     const resolver =
       context.sidecar && context.referenceConfig
         ? new ReferenceResolver(context.sidecar, context.referenceConfig)
@@ -352,7 +371,7 @@ export class InterpreterAdapter implements SandboxAdapter {
 
     // parallel(items, fn) and parallel([fn, fn, ...]): everything is started, all of it is
     // awaited, and the tool calls made on the way share the execution's tool-call limit.
-    const parallel = async (first: unknown, second?: unknown): Promise<unknown[]> => {
+    const parallel = observed(async (first: unknown, second?: unknown): Promise<unknown[]> => {
       // Every task is called through the interpreter: a task need not be a function of the
       // script (`parallel(items, String)`), and a built-in gets the checks of a direct call.
       let tasks: Array<() => unknown>;
@@ -378,7 +397,7 @@ export class InterpreterAdapter implements SandboxAdapter {
         throw sandboxError(`${failures.length} of ${tasks.length} parallel operations failed:\n${messages}`);
       }
       return settled.map((result) => (result as PromiseFulfilledResult<unknown>).value);
-    };
+    });
 
     const globals: Record<string, unknown> = {
       __safe_callTool: callTool,
@@ -429,7 +448,10 @@ export class InterpreterAdapter implements SandboxAdapter {
     for (const namespace of context.toolNamespaces ?? []) {
       const methods: Record<string, unknown> = {};
       for (const method of namespace.methods) {
-        if (isBlockedKey(method.name)) continue;
+        // A namespace is a value a script holds: like its data, it has no function under a name
+        // the engine calls by itself (a method named `then` would make every use of the
+        // namespace wait for a tool call nobody made).
+        if (isBlockedKey(method.name) || isEngineCalledKey(method.name)) continue;
         methods[method.name] = (args?: unknown, options?: unknown): Promise<unknown> =>
           callTool(method.toolName, args === undefined ? {} : args, options);
       }

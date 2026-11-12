@@ -11,8 +11,10 @@
 
 import {
   assertArrayTextWithinLimit,
+  assertStorable,
   chargedBeforeCall,
   convertsArguments,
+  convertsBeforeCall,
   createScriptError,
   isBlockedKey,
   isScriptData,
@@ -179,7 +181,11 @@ const SafeJSON = frozenRecord({
   },
 });
 
-// The engine builds the whole value in one step: the budget is asked first, from the text.
+// The engine builds the whole value in one step: the budget is asked first, from the text. The
+// text is converted once, so that the text the budget was asked for is the text that is parsed.
+convertsBeforeCall(SafeJSON['parse'] as object, (args) =>
+  args.length === 0 ? args : [String(args[0]), ...args.slice(1)],
+);
 chargedBeforeCall(SafeJSON['parse'] as object, (args) => parsedJsonCost(String(args[0])));
 // The value is data to `stringify` (measured above); it never converts an array to text itself.
 takesArraysAsData(SafeJSON['stringify'] as object);
@@ -198,7 +204,10 @@ const SafeObject = frozenRecord({
       if (entry === null || typeof entry !== 'object') throw new TypeError('Each entry must be a [key, value] pair');
       assertArrayTextWithinLimit((entry as Record<number, unknown>)[0]);
       const key = String((entry as Record<number, unknown>)[0]);
-      if (!isBlockedKey(key)) result[key] = (entry as Record<number, unknown>)[1];
+      if (isBlockedKey(key)) continue;
+      const value = (entry as Record<number, unknown>)[1];
+      assertStorable(result, key, value);
+      result[key] = value;
     }
     return result;
   },
@@ -210,7 +219,9 @@ const SafeObject = frozenRecord({
     for (const source of sources) {
       if (source === null || source === undefined) continue;
       for (const key of dataKeys(source)) {
-        (target as Record<string, unknown>)[key] = (source as Record<string, unknown>)[key];
+        const value = (source as Record<string, unknown>)[key];
+        assertStorable(target, key, value);
+        (target as Record<string, unknown>)[key] = value;
       }
     }
     return target;
