@@ -11,7 +11,7 @@ import { Worker, type WorkerOptions } from 'worker_threads';
 import fs from 'fs';
 import path from 'path';
 import { EventEmitter } from 'events';
-import type { WorkerSlotStatus, ResourceUsage } from './config';
+import { DEFAULT_WORKER_POOL_CONFIG, type WorkerSlotStatus, type ResourceUsage } from './config';
 import { workerToMainMessageSchema, type MainToWorkerMessage, type WorkerToMainMessage } from './protocol';
 import { safeDeserialize, safeSerialize } from './safe-deserialize';
 import { WorkerStartupError, WorkerCrashedError, MessageValidationError, WorkerMemoryError } from './errors';
@@ -42,6 +42,8 @@ export interface WorkerSlotOptions {
   memoryLimitMB: number;
   /** Startup timeout in milliseconds */
   startupTimeoutMs?: number;
+  /** How long an idle worker that was asked to leave gets before it is terminated. Default: 5000 */
+  gracefulShutdownTimeoutMs?: number;
 }
 
 /** Where the build puts the worker script, relative to the package's output folder. */
@@ -266,6 +268,9 @@ export class WorkerSlot extends EventEmitter {
   /** The host-side heap check of the running execution (only with `host` enforcement) */
   private heapWatchdog: ReturnType<typeof setInterval> | null = null;
 
+  /** The worker sent something the protocol does not allow: it is ended, not asked to leave */
+  private protocolViolated = false;
+
   /** Configuration */
   private readonly options: Required<WorkerSlotOptions>;
 
@@ -286,6 +291,8 @@ export class WorkerSlot extends EventEmitter {
     this.options = {
       memoryLimitMB: options.memoryLimitMB,
       startupTimeoutMs: options.startupTimeoutMs ?? 10000,
+      gracefulShutdownTimeoutMs:
+        options.gracefulShutdownTimeoutMs ?? DEFAULT_WORKER_POOL_CONFIG.gracefulShutdownTimeoutMs,
     };
 
     this.boundMessageHandler = this.handleMessage.bind(this);
@@ -567,10 +574,15 @@ export class WorkerSlot extends EventEmitter {
       return;
     }
 
+    // Only a worker with nothing to run is asked to leave. One that was given a script and has
+    // not been released, or that broke the protocol, is ended: asked, it would go on running the
+    // script until the grace period was over.
+    const ask = graceful && this._currentExecutionId === null && !this.protocolViolated;
+
     this.setStatus('terminating');
     const worker = this._worker; // Capture reference to avoid race condition
 
-    if (graceful) {
+    if (ask) {
       // Send terminate message and wait
       this.sendMessage({ type: 'terminate', graceful: true });
 
@@ -586,7 +598,7 @@ export class WorkerSlot extends EventEmitter {
           }
         }),
         new Promise<void>((resolve) => {
-          gracePeriod = setTimeout(resolve, 5000);
+          gracePeriod = setTimeout(resolve, this.options.gracefulShutdownTimeoutMs);
         }),
       ]);
       clearTimeout(gracePeriod);
@@ -660,7 +672,9 @@ export class WorkerSlot extends EventEmitter {
       }
       msg = parsed.data as WorkerToMainMessage;
     } catch (error) {
-      // The execution that is waiting on this worker fails now, and the worker is replaced.
+      // The execution that is waiting on this worker fails now, and the worker is replaced:
+      // ended at once (see terminate), whatever it is running.
+      this.protocolViolated = true;
       this.emit('error', error instanceof Error ? error : new MessageValidationError(String(error)));
       this.markForRecycle();
       return;

@@ -18,7 +18,7 @@ import type {
   SerializedConfig,
   SerializedDoubleVmConfig,
 } from './protocol';
-import { isToolCallMessage, isExecutionResultMessage, isConsoleMessage } from './protocol';
+import { isToolCallMessage, isExecutionResultMessage, isConsoleMessage, isWorkerIdleMessage } from './protocol';
 import { WorkerSlot } from './worker-slot';
 import { ExecutionQueue } from './execution-queue';
 import { MemoryMonitor, workerMemoryBytes } from './memory-monitor';
@@ -32,6 +32,7 @@ import {
   TooManyPendingCallsError,
   QueueFullError,
   ExecutionAbortedError,
+  MessageValidationError,
 } from './errors';
 import { sanitizeStackTrace } from '../../stack-trace';
 import { createConsoleSink } from '../../console-handler';
@@ -68,6 +69,14 @@ function serializeDoubleVmConfig(config: DoubleVmConfig): SerializedDoubleVmConf
 }
 
 /**
+ * How long a worker has, after it sent a result, to confirm that nothing of the script is left
+ * in it (see WorkerIdleMessage). A worker that is free confirms within a turn of its event loop;
+ * one second covers a loaded machine. A worker that does not confirm is terminated: the result
+ * it sent stands, and the worker is not given to another execution.
+ */
+const IDLE_CONFIRMATION_TIMEOUT_MS = 1000;
+
+/**
  * Worker Pool Adapter
  *
  * Provides a worker thread-based sandbox adapter with:
@@ -82,6 +91,11 @@ function serializeDoubleVmConfig(config: DoubleVmConfig): SerializedDoubleVmConf
  * by default (or a single VM when the double VM is disabled). The worker thread is an additional
  * layer around that sandbox, not a replacement for it. Tool calls come back to this thread and
  * go through the same tool bridge as in-process tool calls.
+ *
+ * A worker runs one execution at a time. It goes back into the pool only when it has confirmed,
+ * after its result, that nothing of the script is left in it; in every other case (no
+ * confirmation in time, an execution this side ended, a message the protocol does not allow)
+ * the worker is terminated and the pool goes on with a new one.
  */
 export class WorkerPoolAdapter implements SandboxAdapter {
   private readonly config: Required<WorkerPoolConfig>;
@@ -282,6 +296,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     const slotId = `worker-${Date.now()}-${crypto.randomUUID()}`;
     const slot = new WorkerSlot(slotId, {
       memoryLimitMB: Math.round(this.config.memoryLimitPerWorker / 1024 / 1024),
+      gracefulShutdownTimeoutMs: this.config.gracefulShutdownTimeoutMs,
     });
 
     // Set up slot event handlers
@@ -579,6 +594,17 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       // Pending tool calls for this execution
       const pendingToolCalls = new Map<string, boolean>();
 
+      /**
+       * The script's result, once the worker has sent it. The execution is not over then: the
+       * script may have left work behind that keeps the worker's thread. It is over when the
+       * worker has confirmed that it is free, or has been terminated because it did not.
+       */
+      let outcome: ExecutionResult<T> | undefined;
+      /** The execution has ended on this side: nothing below acts for it any more */
+      let over = false;
+      let idleTimeoutId: ReturnType<typeof setTimeout> | undefined;
+      let idleCheckId: ReturnType<typeof setImmediate> | undefined;
+
       // An abort on this side (the enclave's timeout, or the caller) is passed on to the worker,
       // whose sandbox then refuses further tool calls and loop iterations.
       const abortSignal = context.abortController?.signal;
@@ -593,54 +619,122 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       // Cleanup function to remove handlers
       const cleanup = () => {
         clearTimeout(watchdogId);
+        clearTimeout(idleTimeoutId);
+        clearImmediate(idleCheckId);
         slot.off('message', messageHandler);
         slot.off('error', errorHandler);
         abortSignal?.removeEventListener('abort', abortHandler);
       };
 
+      // The one way out: with the script's result when the worker delivered one, else with `error`
+      const end = (error?: Error) => {
+        if (over) {
+          return;
+        }
+        over = true;
+        cleanup();
+        if (outcome !== undefined) {
+          resolve(outcome);
+        } else {
+          reject(error ?? new ExecutionAbortedError());
+        }
+      };
+
+      // This side ends the execution (too many messages, too many tool calls in flight, a message
+      // it cannot use). The worker was told nothing and the script may be running in it: the
+      // worker ends with the execution. It is never released into the pool.
+      const endWithWorker = (error: Error) => {
+        if (over) {
+          return;
+        }
+        if (!slot.isTerminated) {
+          this._forcedTerminations++;
+        }
+        slot.failExecution(error);
+        end(error);
+      };
+
+      // The worker has sent its result. It gets a moment to say that it is free; one that does
+      // not is terminated. Either way the result stands.
+      const awaitIdleConfirmation = () => {
+        // The execution has its result: it can no longer time out or be aborted
+        clearTimeout(watchdogId);
+        abortSignal?.removeEventListener('abort', abortHandler);
+        idleTimeoutId = setTimeout(() => {
+          // When this thread was busy for the whole time, the confirmation may be waiting in its
+          // queue: messages are delivered before an immediate runs.
+          idleCheckId = setImmediate(() => {
+            if (over) {
+              return;
+            }
+            if (!slot.isTerminated) {
+              this._forcedTerminations++;
+            }
+            slot.terminate(false).catch((error) => {
+              console.error('Termination of a worker that did not become idle failed:', error);
+            });
+            end();
+          });
+        }, IDLE_CONFIRMATION_TIMEOUT_MS);
+      };
+
       // Message handler
       const messageHandler: (msg: WorkerToMainMessage) => Promise<void> = async (msg: WorkerToMainMessage) => {
+        if (over) {
+          return;
+        }
         try {
-          // Rate limiting
+          if (outcome !== undefined) {
+            // The result is in; what is awaited is the worker's word that it is free. Whatever
+            // else it sends now reaches nobody, and is counted.
+            if (isWorkerIdleMessage(msg) && msg.requestId === requestId) {
+              end();
+              return;
+            }
+            this.rateLimiter.checkLimit(slot.id);
+            return;
+          }
+
+          if (isExecutionResultMessage(msg) && msg.requestId === requestId) {
+            // One result per execution: the protocol's own message, not counted against the script
+            const duration = Date.now() - startTime;
+            outcome = this.buildResult<T>(msg, duration, context.config.sanitizeStackTraces);
+            awaitIdleConfirmation();
+            return;
+          }
+
+          // Rate limiting: everything else a worker sends
           this.rateLimiter.checkLimit(slot.id);
 
           if (isToolCallMessage(msg) && msg.requestId === requestId) {
             await this.handleToolCall(slot, msg, toolBridge, context, pendingToolCalls);
-          } else if (isExecutionResultMessage(msg) && msg.requestId === requestId) {
-            // Execution complete
-            cleanup();
-            const duration = Date.now() - startTime;
-            const result = this.buildResult<T>(msg, duration, context.config.sanitizeStackTraces);
-            resolve(result);
           } else if (isConsoleMessage(msg) && msg.requestId === requestId) {
             if (consoleSink) {
               consoleSink(msg.level, msg.args[0]);
             } else {
               this.handleConsoleMessage(msg);
             }
+          } else if (isWorkerIdleMessage(msg) && msg.requestId === requestId) {
+            throw new MessageValidationError('worker reported idle before it sent a result');
           }
         } catch (error) {
-          cleanup();
-          reject(error);
+          endWithWorker(error as Error);
         }
       };
 
-      // Handle slot error
+      // Handle slot error. Whoever reports it also ends the worker.
       const errorHandler: (error: Error) => void = (error: Error) => {
-        cleanup();
-        reject(error);
+        end(error);
       };
 
       // Set up watchdog timeout (VM timeout + buffer)
       const watchdogTimeout = context.config.timeout + 5000;
       const watchdogId: ReturnType<typeof setTimeout> = setTimeout(() => {
-        this._timeoutExecutions++;
         this._forcedTerminations++;
-        cleanup();
         slot.terminate(false).catch((error) => {
           console.error('Watchdog termination failed:', error);
         });
-        reject(new WorkerTimeoutError());
+        end(new WorkerTimeoutError());
       }, watchdogTimeout);
 
       slot.on('message', messageHandler);
@@ -648,12 +742,17 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       abortSignal?.addEventListener('abort', abortHandler, { once: true });
 
       // Send execute message
-      slot.sendMessage({
-        type: 'execute',
-        requestId,
-        code,
-        config: serializedConfig,
-      });
+      try {
+        slot.sendMessage({
+          type: 'execute',
+          requestId,
+          code,
+          config: serializedConfig,
+        });
+      } catch (error) {
+        // The script was not sent: nothing of it is in the worker
+        end(error as Error);
+      }
     });
   }
 

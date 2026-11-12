@@ -66,20 +66,22 @@ export interface WorkerPoolConfig {
   maxQueueSize: number;
 
   /**
-   * Time to wait for graceful shutdown before force terminating workers
+   * Time an idle worker that was asked to exit gets before it is terminated. Only a worker with
+   * nothing to run is asked: one that may still be running a script is terminated at once.
    * @default 5000
    */
   gracefulShutdownTimeoutMs: number;
 
   /**
    * Maximum messages per second allowed from a single worker
-   * Prevents message flooding attacks
+   * Prevents message flooding attacks. An execution that is failed for it loses its worker.
    * @default 1000
    */
   maxMessagesPerSecond: number;
 
   /**
-   * Maximum concurrent pending tool calls per execution
+   * Maximum concurrent pending tool calls per execution. An execution with more in flight fails
+   * with `TooManyPendingCallsError`, and its worker is terminated.
    * @default 100
    */
   maxPendingToolCalls: number;

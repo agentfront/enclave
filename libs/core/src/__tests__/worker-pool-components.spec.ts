@@ -19,10 +19,12 @@ import {
   isMemoryReportResultMessage,
   isConsoleMessage,
   isWorkerReadyMessage,
+  isWorkerIdleMessage,
   toolCallMessageSchema,
   executionResultMessageSchema,
   consoleMessageSchema,
   workerReadyMessageSchema,
+  workerIdleMessageSchema,
   workerToMainMessageSchema,
   type WorkerToMainMessage,
   type ToolCallMessage,
@@ -1115,9 +1117,24 @@ describe('worker-pool components', () => {
         });
       });
 
+      describe('workerIdleMessageSchema', () => {
+        it('should validate idle message', () => {
+          const msg = { type: 'idle', requestId: 'exec-1-abc' };
+          expect(() => workerIdleMessageSchema.parse(msg)).not.toThrow();
+          expect(isWorkerIdleMessage(msg as WorkerToMainMessage)).toBe(true);
+          expect(isWorkerIdleMessage({ type: 'ready' })).toBe(false);
+        });
+
+        it('should reject an idle message without a request id, or with extra fields', () => {
+          expect(() => workerIdleMessageSchema.parse({ type: 'idle' })).toThrow();
+          expect(() => workerIdleMessageSchema.parse({ type: 'idle', requestId: 'r1', extra: 1 })).toThrow();
+        });
+      });
+
       describe('workerToMainMessageSchema', () => {
         it('should validate all message types', () => {
           expect(() => workerToMainMessageSchema.parse({ type: 'ready' })).not.toThrow();
+          expect(() => workerToMainMessageSchema.parse({ type: 'idle', requestId: 'r1' })).not.toThrow();
           expect(() =>
             workerToMainMessageSchema.parse({
               type: 'tool-call',
