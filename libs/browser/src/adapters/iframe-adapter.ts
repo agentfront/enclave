@@ -323,9 +323,11 @@ export class IframeAdapter {
               });
             }
           } else if (message.type === 'console') {
-            // Console output - relay to the host console, within the limits of the execution
-            if (consoleBudget.admit(message.args)) {
-              console[message.level]('[Enclave]', ...message.args);
+            // Console output - relay to the host console, within the limits of the execution.
+            // What is printed is the copy the limit was counted on, never the value that arrived.
+            const printed = consoleBudget.admit(message.args);
+            if (printed) {
+              console[message.level]('[Enclave]', ...printed);
             }
           }
           // 'ready': the outer iframe is up; the inner one starts by itself
