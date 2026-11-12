@@ -188,7 +188,7 @@ const enclave = new Enclave({
 
 What these limits are, and are not:
 
-- In process, `timeout` and `memoryLimit` are the enclave's own accounting, not the engine's. The deadline is checked between the steps of the script's own code, so one call into a built-in is bounded by the size of what it works on, not by `timeout`. `memoryLimit` counts the operations that make text and arrays grow; it does not count copies, objects, Maps or Sets.
+- In process, `timeout` and `memoryLimit` are the enclave's own accounting, not the engine's. The deadline is checked between the steps of the script's own code, so one call into a built-in is not bounded by `timeout`. `memoryLimit` counts the operations that make text and arrays grow; it does not count copies, objects, Maps or Sets.
 - The worker pool adds the engine's heap limit and terminates a script that is still running five seconds after its timeout. A worker thread shares the process with the host: it is not process isolation, and the heap limit is a backstop, not a guarantee that the process survives.
 - A host that must survive whatever a script does runs the enclave in a child process or a container with limits of the operating system.
 

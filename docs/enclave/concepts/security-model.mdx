@@ -176,7 +176,7 @@ Enclave provides preset configurations:
 - **Algorithmic complexity** - O(n²) algorithms run within limits
 - **Business logic attacks** - Tool-level validation required
 - **Side effects** - Tool calls have real effects
-- **A hard time or memory bound in process** - In process, the timeout and `memoryLimit` are the enclave's own accounting, not the engine's. The deadline is checked between the steps of the script's own code, so one call into a built-in is bounded by the size of what it works on, not by `timeout`; `memoryLimit` counts the operations that make text and arrays grow, not copies, objects, Maps or Sets. For the engine's own bounds, use the [worker pool](/core-libraries/enclave-vm/worker-pool), or a child process or container with limits of the operating system
+- **A hard time or memory bound in process** - In process, the timeout and `memoryLimit` are the enclave's own accounting, not the engine's. The deadline is checked between the steps of the script's own code, so one call into a built-in is not bounded by `timeout`; `memoryLimit` counts the operations that make text and arrays grow, not copies, objects, Maps or Sets. For the engine's own bounds, use the [worker pool](/core-libraries/enclave-vm/worker-pool), or a child process or container with limits of the operating system
 - **A host process that survives whatever a worker allocates** - A worker thread shares the process; its heap limit is a backstop, not a guarantee
 - **Misleading text in a script** - With the enclave's pre-scanner preset, bidirectional control characters and invisible characters in a script are not refused
 

@@ -977,9 +977,8 @@ For the limits `error.message` says which one ended the script: `Script executio
   (With `adapter: 'worker_threads'` the pool ends such a script like a busy one: with its worker,
   five seconds after the deadline.)
 - Not covered: a single built-in call that does all its work natively, and a script run with
-  `transform: false`. The engine finishes one call into a built-in before the next check, so its
-  duration is bounded by the size of what it works on (which the memory limit bounds), not by
-  `timeout`. And the enclave cannot stop your
+  `transform: false`. The engine finishes one call into a built-in before the next check, so
+  `timeout` does not bound its duration. And the enclave cannot stop your
   `toolHandler`: a call it stops waiting for keeps running in the host, so a tool that changes
   something should be safe to repeat, or have a time limit of its own. For a
   stop the script cannot influence, use `adapter: 'worker_threads'`: a script that is still
