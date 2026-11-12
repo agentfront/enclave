@@ -139,19 +139,20 @@ export interface SecurityLevelConfig {
   sanitizeStackTraces: boolean;
 
   /**
-   * Whether to block Date.now() and performance timing APIs
-   * (prevents timing attacks)
+   * Descriptive only: nothing in the runtime reads this value, and setting it changes nothing.
+   * What a script can reach of `Date` and timing APIs follows from the realm's globals.
    */
   blockTimingAPIs: boolean;
 
   /**
-   * Whether to allow while/do-while loops
-   * (false = only bounded for/for-of loops allowed)
+   * Descriptive only: nothing in the runtime reads this value, and setting it changes nothing.
+   * Which loops a script may use is decided by the AST preset (`preset`).
    */
   allowUnboundedLoops: boolean;
 
   /**
-   * Whether to check for Unicode security attacks in code
+   * Descriptive only: nothing in the runtime reads this value, and setting it changes nothing.
+   * The Unicode checks are those of the pre-scanner preset the validation runs with.
    */
   unicodeSecurityCheck: boolean;
 
@@ -197,9 +198,6 @@ export const SECURITY_LEVEL_CONFIGS: Record<SecurityLevel, SecurityLevelConfig> 
    * - Limited tool calls (10)
    * - Deep value sanitization
    * - Full stack trace sanitization
-   * - Timing API blocking
-   * - No unbounded loops
-   * - Unicode security checks
    */
   STRICT: {
     timeout: 5000,
@@ -237,8 +235,6 @@ export const SECURITY_LEVEL_CONFIGS: Record<SecurityLevel, SecurityLevelConfig> 
    * - Moderate tool calls (50)
    * - Standard value sanitization
    * - Stack trace sanitization
-   * - No timing API blocking
-   * - No unbounded loops
    */
   SECURE: {
     timeout: 15000,
@@ -276,7 +272,6 @@ export const SECURITY_LEVEL_CONFIGS: Record<SecurityLevel, SecurityLevelConfig> 
    * - Standard tool calls (100)
    * - Basic value sanitization
    * - Minimal stack trace sanitization
-   * - Unbounded loops allowed
    */
   STANDARD: {
     timeout: 30000,
@@ -417,7 +412,9 @@ export interface ExecutionStats {
    * tracked during execution. Tracking monitors String and Array allocations.
    *
    * Note: This is an estimate based on allocation tracking, not actual V8 heap usage.
-   * For precise memory isolation, use the worker_threads adapter with `--max-old-space-size`.
+   * Where the engine's own bound is needed, use the `worker_threads` adapter: each worker has a
+   * heap limit of the engine (`workerPoolConfig.memoryLimitPerWorker`). Do not set the process
+   * flag `--max-old-space-size` for that: it replaces the limits of the workers.
    */
   memoryUsage?: number;
 
@@ -1044,7 +1041,7 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    *
    * Supported by the double VM (default), the `vm` adapter and the `worker_threads` adapter. A
    * `sandboxAdapter` receives the handler as `ExecutionContext.consoleHandler`; the built-in
-   * `InterpreterAdapter` has no `console`, so a script that uses it fails there.
+   * `InterpreterAdapter` gives the script a `console` when a handler is set, and none without one.
    *
    * @example
    * ```typescript
@@ -1086,10 +1083,12 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * - Extracts large strings from code and stores them in a sidecar
    * - Transforms concatenation to detect reference IDs
    * - Resolves references at the callTool boundary
-   * - Lifts large tool results back to the sidecar
+   * - Stores a tool result that is one large string in the sidecar and hands the script its
+   *   reference (a string inside an object or an array is not stored)
    *
-   * This enables scripts to manipulate large data (videos, PDFs, images)
-   * without loading them into the JavaScript sandbox.
+   * A script can pass such data (videos, PDFs, images) from one tool to another, and concatenate
+   * references where the level allows it, without the data entering the JavaScript sandbox. It
+   * cannot read or change the data: nothing is resolved for the script itself.
    *
    * @example
    * ```typescript
@@ -1107,11 +1106,11 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
   /**
    * AI Scoring Gate configuration
    *
-   * Adds semantic security analysis that detects attack patterns
-   * beyond what static AST validation can catch:
+   * A heuristic that scores what a script's tool calls look like, as a signal on top of the
+   * AST validation, not a boundary:
    * - Data exfiltration patterns (list→send)
    * - Excessive access (high limits, wildcards)
-   * - Fan-out attacks (tool calls in loops)
+   * - Fan-out (tool calls in loops)
    * - Sensitive data access (passwords, tokens)
    *
    * Runs AFTER AST validation but BEFORE code execution.
@@ -1126,7 +1125,7 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    *   },
    * });
    *
-   * // External API scorer (best detection)
+   * // External API scorer (the score is whatever the service returns)
    * const enclave = new Enclave({
    *   scoringGate: {
    *     scorer: 'external-api',
@@ -1144,7 +1143,8 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * Worker Pool Adapter configuration
    *
    * Only used when adapter is set to 'worker_threads'.
-   * Provides OS-level memory isolation via worker threads with:
+   * Runs each script in a worker thread: an isolate of the engine with its own heap limit, in
+   * the same process (not a boundary of the operating system), with:
    * - Pool management (min/max workers, scaling)
    * - Memory monitoring and enforcement
    * - Hard halt capability via worker.terminate()

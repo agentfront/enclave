@@ -286,8 +286,8 @@ export interface AgentScriptOptions {
    * Security level that determines default allowed globals.
    * If allowedGlobals is also provided, it takes precedence.
    *
-   * - STRICT/SECURE: Base globals only (core types + callTool)
-   * - STANDARD: Adds utility functions (parseInt, encodeURI, etc.)
+   * - STRICT: Base globals only (core types + callTool)
+   * - SECURE, STANDARD: Add utility functions (parseInt, encodeURI, etc.)
    * - PERMISSIVE: Adds console for debugging
    *
    * Default: 'STANDARD'
@@ -505,7 +505,7 @@ export interface AgentScriptOptions {
  * - Transform loops → `__safe_for`/`__safe_forOf`
  *
  * 3. **Runtime** (Enclave):
- * - Execute in isolated sandbox (vm2/nodevm/wasm)
+ * - Execute in the sandbox of `@enclave-vm/core` (a `node:vm` realm, a worker, or its interpreter)
  * - Provide only `__safe_*` globals
  * - Enforce timeouts and resource limits
  *

@@ -156,7 +156,7 @@ export type { InterpreterAdapterOptions } from './adapters/interpreter-adapter';
 export { Interpreter, InterpreterError, StepLimitError, DeadlineError } from './interpreter/interpreter';
 export type { InterpreterOptions } from './interpreter/interpreter';
 
-// Worker Pool Adapter (OS-level memory isolation)
+// Worker Pool Adapter (a worker thread per script, with the engine's heap limit)
 export {
   // Main adapter
   WorkerPoolAdapter,

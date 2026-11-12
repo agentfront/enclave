@@ -673,7 +673,8 @@ export interface ScoringGateConfig {
 
   /**
    * Score threshold for warning (0-100)
-   * Scripts with scores >= this value will log a warning
+   * Scripts with scores >= this value (and below `blockThreshold`) run, with `warned` set in the
+   * result. The gate writes to the console only with `verbose`.
    * @default 40
    */
   warnThreshold?: number;
@@ -704,8 +705,9 @@ export interface ScoringGateConfig {
    * A scoring error is anything that keeps the configured scorer from giving its answer: code
    * the feature extractor cannot parse, a scorer that throws, and in progressive mode a detailed
    * stage that fails or is missing once the fast score called for it. With `failOpen: false`
-   * each of these blocks the script; with `failOpen: true` the script runs (in progressive
-   * mode, on the fast score alone), and `reason` of the result says why.
+   * each of these blocks the script; with `failOpen: true` the script runs, and `reason` of the
+   * result says why. In progressive mode a detailed stage that fails leaves the fast score to
+   * decide, and the result has no reason for it.
    *
    * @default true
    */

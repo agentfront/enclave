@@ -875,13 +875,11 @@ export class Enclave {
   }
 
   /**
-   * Apply memory tracking transforms to code
+   * Guard the member accesses whose key is only known at run time (see guardComputedMemberKeys):
+   * the key is checked against the names this security level refuses before the access happens.
    *
-   * Transforms concatenation operations to use __safe_concat for memory tracking.
-   * This is used when memoryLimit is set but no sidecar is configured.
-   *
-   * @param code The code to transform
-   * @returns The transformed code
+   * @param code The validated, transformed code
+   * @returns The code with every computed member key guarded
    */
   private applyComputedKeyGuard(code: string): string {
     // Mirror the runtime membrane's policy for this security level: refuse the same keys, and
@@ -938,6 +936,15 @@ export class Enclave {
     return this.sandboxAdapter === undefined;
   }
 
+  /**
+   * Apply memory tracking transforms to code
+   *
+   * Transforms concatenation operations to use __safe_concat for memory tracking.
+   * This is used when memoryLimit is set but no sidecar is configured.
+   *
+   * @param code The code to transform
+   * @returns The transformed code
+   */
   private applyMemoryTrackingTransforms(code: string): string {
     // Parse the code into an AST
     const ast = parseValidatedCode(code);

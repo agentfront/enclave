@@ -107,7 +107,9 @@ export interface PreScannerConfig {
 
   // ===== UNICODE SECURITY =====
   /**
-   * Enable Unicode pre-check for BiDi attacks.
+   * Master switch of the Unicode checks: with `false` none of them runs. With `true` the
+   * look-alike check runs (letters of another script that read as ASCII), and the BiDi and
+   * invisible-character checks run where `blockBidiPatterns` and `blockInvisibleChars` are set.
    * Default: true for all presets except Permissive
    */
   unicodePreCheck: boolean;
