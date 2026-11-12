@@ -329,6 +329,23 @@ describe('InterpreterAdapter (SandboxAdapter)', () => {
     expect(res.value).toBe(Array.from({ length: 3000 }, (_, i) => 'item ' + i).join(', ').length);
   });
 
+  it('charges a text that reduce builds for what is appended', async () => {
+    const res = await new InterpreterAdapter({ maxAllocationBytes: 1024 * 1024 }).execute(
+      main(`
+        const rows = [];
+        for (let i = 0; i < 3000; i++) { rows.push('item ' + i); }
+        const joined = rows.reduce((text, row, index) => (index === 0 ? row : text + ', ' + row), '');
+        const lines = rows.reduce((text, row) => { text += row; return text + ';'; }, '');
+        return [joined.length, joined.slice(0, 14), lines.length];
+      `),
+      makeContext(),
+    );
+    const rows = Array.from({ length: 3000 }, (_, i) => 'item ' + i);
+
+    expect(res.error).toBeUndefined();
+    expect(res.value).toEqual([rows.join(', ').length, 'item 0, item 1', rows.join(';').length + 1]);
+  });
+
   it('computes with BigInt values up to the size a BigInt may have', async () => {
     const res = await adapter.execute(
       main(`

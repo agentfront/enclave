@@ -552,6 +552,21 @@ export class InterpreterError extends Error {
   }
 }
 
+/**
+ * What the callback of `reduce` returns when it returns its accumulator, or what it appended to
+ * it: the text, and what is still owed for it (see `Slot.owed`). It goes from the function to
+ * the `reduce` that called it and to nobody else: `reduce` hands the text to the next call of
+ * the callback with what is owed, and pays it before it returns the result to the script. So a
+ * text that is built with `reduce((text, item) => text + item, '')` costs what is appended, as
+ * one that is built with `text += item` in a loop does.
+ */
+class AccumulatedText {
+  constructor(
+    readonly value: string,
+    readonly owed: number,
+  ) {}
+}
+
 // Internal non-error control-flow signals (return / break / continue / `?.`).
 class ReturnSignal {
   constructor(readonly value: unknown) {}
@@ -622,6 +637,11 @@ class Scope {
   readonly depth: number;
   /** Charges what is still owed for the value of a variable that is read */
   private readonly settle: (bytes: number) => void;
+  /**
+   * In the body of a callback that `reduce` called with a text: the name of the parameter that
+   * holds it. A block inside has the name around it; a function inside does not.
+   */
+  accumulator: string | undefined;
 
   constructor(
     private readonly parent?: Scope,
@@ -633,7 +653,9 @@ class Scope {
   }
 
   child(): Scope {
-    return new Scope(this);
+    const scope = new Scope(this);
+    scope.accumulator = this.accumulator;
+    return scope;
   }
 
   /** The scope of one call of a function defined in this scope, running `depth` calls deep. */
@@ -780,6 +802,11 @@ export class Interpreter {
   private callerDepth = 0;
   private readonly maxPendingCalls: number;
   private readonly globals: Record<string, unknown>;
+  /**
+   * What is owed for the text `reduce` is handing to its callback, for that function to read as
+   * it starts (in the same synchronous step, like {@link callerDepth}); otherwise nothing.
+   */
+  private accumulatorOwed: number | undefined;
   /** The step count at which the clock is read next */
   private nextClockCheck = CLOCK_CHECK_STEPS;
   /** What built-ins worked through that has not made a full step yet (see {@link work}) */
@@ -1057,7 +1084,7 @@ export class Interpreter {
         // The value itself is thrown: what a script throws, a script (or the caller) catches.
         throw await this.evalExpr(node.argument, scope);
       case 'ReturnStatement':
-        throw new ReturnSignal(node.argument ? await this.evalExpr(node.argument, scope) : undefined);
+        throw new ReturnSignal(node.argument ? await this.evalReturned(node.argument, scope) : undefined);
       case 'BreakStatement':
         if (node.label) throw new InterpreterError('Labeled break is not supported');
         throw new BreakSignal();
@@ -1351,6 +1378,21 @@ export class Interpreter {
    */
   private async execAppend(name: string, operands: ESTree.Expression[], scope: Scope): Promise<unknown> {
     this.tick();
+    const { sum, owed } = await this.appendTo(name, operands, scope);
+    scope.append(name, sum, owed);
+    return sum;
+  }
+
+  /**
+   * The value of the variable `name` with the operands appended, charged for what is appended.
+   *
+   * @returns The sum, and what is still owed for it when it is a text that was appended to a text
+   */
+  private async appendTo(
+    name: string,
+    operands: ESTree.Expression[],
+    scope: Scope,
+  ): Promise<{ sum: unknown; owed: number }> {
     const variable = scope.slot(name);
     if (!variable) throw new InterpreterError(`'${name}' is not defined`);
     // Read as it is, without paying what is owed: the sum below is all that gets hold of it
@@ -1371,8 +1413,38 @@ export class Interpreter {
       // the operands were evaluated either); otherwise the text that was appended to.
       owed = owedAtStart > 0 && variable.owed === owedAtStart ? owedAtStart : start.length * 2;
     }
-    scope.append(name, sum, owed);
-    return sum;
+    return { sum, owed };
+  }
+
+  /**
+   * The value a function returns. In a callback that `reduce` called with a text, the
+   * accumulator itself and what is appended to it (`return text + item`) are returned as an
+   * {@link AccumulatedText}, without paying what is owed for them: `reduce` carries it on.
+   */
+  private async evalReturned(node: ESTree.Expression, scope: Scope): Promise<unknown> {
+    const name = scope.accumulator;
+    if (name === undefined) return this.evalExpr(node, scope);
+    if (node.type === 'ConditionalExpression') {
+      // `first ? item : text + item`: the branch that is taken is what is returned
+      this.tick();
+      const branch = (await this.evalTest(node.test, scope)) ? node.consequent : node.alternate;
+      return this.evalReturned(branch, scope);
+    }
+    if (node.type === 'Identifier' && node.name === name) {
+      const variable = scope.slot(name);
+      if (variable !== undefined && typeof variable.value === 'string') {
+        this.tick();
+        return new AccumulatedText(variable.value, variable.owed);
+      }
+    } else {
+      const appended = appendedTo(name, node);
+      if (appended !== undefined && scope.has(name)) {
+        this.tick();
+        const { sum, owed } = await this.appendTo(name, appended, scope);
+        return typeof sum === 'string' ? new AccumulatedText(sum, owed) : sum;
+      }
+    }
+    return this.evalExpr(node, scope);
   }
 
   /**
@@ -2511,10 +2583,34 @@ export class Interpreter {
           acc = arr[order[0]];
           start = 1;
         }
+        // What is still owed for `acc` while it is a text the callback appends to
+        let owed = 0;
         for (let n = start; n < order.length; n++) {
           this.tick();
-          acc = await reducer(acc, arr[order[n]], order[n], arr);
+          let pending: Promise<unknown>;
+          if (interpreted !== undefined && typeof acc === 'string') {
+            // A function of the script is told what is owed for the text it is handed, and
+            // answers with what is owed for the text it returns (see AccumulatedText)
+            this.accumulatorOwed = owed;
+            try {
+              pending = reducer(acc, arr[order[n]], order[n], arr);
+            } finally {
+              this.accumulatorOwed = undefined;
+            }
+          } else {
+            pending = reducer(acc, arr[order[n]], order[n], arr);
+          }
+          const next = await pending;
+          if (next instanceof AccumulatedText) {
+            acc = next.value;
+            owed = next.owed;
+          } else {
+            acc = next;
+            owed = 0;
+          }
         }
+        // The result is a value like any other: what is owed for it is paid before the script has it
+        if (owed > 0) this.charge(owed);
         return acc;
       }
       case 'sort':
@@ -2657,7 +2753,11 @@ export class Interpreter {
     // A named function expression can call itself by its name, which only its own body sees.
     const selfName = node.type === 'FunctionExpression' && node.id ? node.id.name : undefined;
     const outer = selfName === undefined ? closure : closure.child();
-    const call = async (args: unknown[], callerDepth: number): Promise<unknown> => {
+    const call = async (
+      args: unknown[],
+      callerDepth: number,
+      accumulatorOwed: number | undefined,
+    ): Promise<unknown> => {
       // Counted here, where the function starts, so that it holds whoever calls it: the
       // interpreter for a call the script writes, or a built-in that was handed the function.
       const fnScope = outer.activation(this.enterCall(callerDepth));
@@ -2670,11 +2770,21 @@ export class Interpreter {
           }
           await this.applyPattern(param, args[i], fnScope, 'let');
         }
+        // Called by `reduce` with a text: the parameter that holds it is a variable that is
+        // appended to, with what `reduce` still owes for the text
+        const first = node.params[0];
+        if (accumulatorOwed !== undefined && first?.type === 'Identifier' && typeof args[0] === 'string') {
+          const accumulator = fnScope.slot(first.name);
+          if (accumulator !== undefined) {
+            accumulator.owed = accumulatorOwed;
+            fnScope.accumulator = first.name;
+          }
+        }
         if (node.body.type === 'BlockStatement') {
           await this.execBlock(node.body.body, fnScope);
           return undefined;
         }
-        return await this.evalExpr(node.body, fnScope); // arrow shorthand
+        return await this.evalReturned(node.body, fnScope); // arrow shorthand
       } catch (e) {
         if (e instanceof ReturnSignal) return e.value;
         throw e;
@@ -2684,8 +2794,14 @@ export class Interpreter {
     };
     // Read as the function is called, before anything of it is awaited
     const depthOfCaller = (): number => this.callerDepth;
+    // Read and taken as the function is called: it is meant for this call and no other
+    const takeAccumulatorOwed = (): number | undefined => {
+      const owed = this.accumulatorOwed;
+      this.accumulatorOwed = undefined;
+      return owed;
+    };
     const interpreted = function interpreted(...args: unknown[]): Promise<unknown> {
-      const result = call(args, depthOfCaller());
+      const result = call(args, depthOfCaller(), takeAccumulatorOwed());
       // Whoever awaits this promise still sees a rejection. This handler only keeps a call that
       // nobody awaits (a callback a host built-in invoked and dropped) from becoming an unhandled
       // rejection, which by default ends the host process.
