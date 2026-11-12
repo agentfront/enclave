@@ -4,14 +4,23 @@
  * Provides a restricted Babel.transform() API for use inside the enclave sandbox.
  * Uses @babel/standalone for browser-compatible transformation.
  *
- * SECURITY: Babel transforms run in an isolated VM context with NO access to:
- * - File system (fs, path)
- * - Process/environment (process, env)
- * - Network (http, https, net)
- * - Child processes (child_process)
- * - Module loading (require, import)
+ * SECURITY: where Babel runs, and what restricts it.
  *
- * Only pure JavaScript transformation is allowed.
+ * `@babel/standalone` is loaded into the host realm and runs there, with the host's intrinsics
+ * and the host's authority, like any other function a host puts in `globals`. It is called from
+ * a separate VM context, and what that context provides is a timeout for the call: a function
+ * runs in the realm it was created in, whichever context calls it, so the context is not an
+ * isolation boundary and takes nothing away from Babel.
+ *
+ * What a script can make Babel do is restricted by what this wrapper passes on:
+ * - the source text is data: Babel parses and prints it and never executes it
+ * - presets are names from the security level's allowlist; plugins are always none
+ * - no configuration files, no source maps, no AST in the result
+ * - a sanitized file name, a size limit on the input and on the output, and the timeout
+ * - the work the wrapper itself does on a script's text is linear in its size
+ *
+ * A defect in Babel's parser or in a preset would therefore be a defect in host code. A host
+ * that needs Babel isolated from its process runs the enclave in a process of its own.
  *
  * @packageDocumentation
  */
@@ -123,10 +132,11 @@ function sanitizeTransformErrorMessage(message: unknown): string {
 }
 
 /**
- * Create an isolated VM context for Babel transforms
+ * Create the VM context Babel transforms are called from
  *
- * SECURITY: This context has NO access to Node.js APIs.
- * Only safe JavaScript globals are provided.
+ * The context exists so that a transform can be given a timeout (see the header of this file).
+ * The only code that ever runs in it is the one-line script that calls the host's Babel; Babel
+ * itself uses the host's globals, not the ones defined here, so nothing below restricts it.
  */
 function createIsolatedBabelContext(): vm.Context {
   // Create a fresh context with minimal globals
@@ -141,10 +151,10 @@ function createIsolatedBabelContext(): vm.Context {
     },
   );
 
-  // Inject ONLY the safe globals needed for Babel to work
-  // These are pure JavaScript APIs with no I/O capabilities
+  // Globals of the calling context. They are the host's own objects, and the calling script
+  // does not use them: they are not what Babel works with (Babel has the host's globals).
   const safeGlobals = {
-    // Core JavaScript types (needed for Babel's internal operations)
+    // Core JavaScript types
     Object,
     Array,
     String,
@@ -210,8 +220,8 @@ function createIsolatedBabelContext(): vm.Context {
     });
   }
 
-  // EXPLICITLY BLOCK dangerous Node.js globals by setting them to undefined
-  // This prevents any accidental access even if @babel/standalone tries
+  // Names of Node.js and browser APIs, defined as undefined in the calling context. This keeps
+  // the calling script from naming them; it does not affect Babel, which is host code.
   const blockedGlobals = [
     // Node.js core
     'process',
@@ -273,23 +283,24 @@ function createIsolatedBabelContext(): vm.Context {
   return context;
 }
 
-// Cache the isolated context and Babel instance for performance
+// The calling context and the Babel entry point, created once and shared by every Enclave of
+// the process
 let isolatedContext: vm.Context | null = null;
 let babelInContext: { transform: (code: string, options: unknown) => { code: string } } | null = null;
 
 /**
- * Get or create the isolated Babel context
+ * Get or create the context Babel is called from
  */
 function getIsolatedBabel(): { transform: (code: string, options: unknown) => { code: string } } {
   if (babelInContext) {
     return babelInContext;
   }
 
-  // Create isolated context
+  // Create the calling context
   isolatedContext = createIsolatedBabelContext();
 
-  // Inject Babel into the isolated context
-  // We serialize the Babel transform function and create a wrapper
+  // Make the host's Babel callable from that context. This is the host function itself: it
+  // is not copied or re-evaluated there, and it runs in the host realm when called.
   Object.defineProperty(isolatedContext, '__babel_transform__', {
     value: BabelStandalone.transform.bind(BabelStandalone),
     writable: false,
@@ -309,7 +320,7 @@ function getIsolatedBabel(): { transform: (code: string, options: unknown) => { 
     })()
   `);
 
-  // Run the script in the isolated context
+  // Run the script in the calling context
   babelInContext = wrapperScript.runInContext(isolatedContext) as {
     transform: (code: string, options: unknown) => { code: string };
   };
@@ -320,10 +331,10 @@ function getIsolatedBabel(): { transform: (code: string, options: unknown) => { 
 /**
  * Create a restricted Babel object for sandbox use
  *
- * SECURITY: All transforms run in an isolated VM context with:
- * - NO access to fs, process, require, or any Node.js APIs
- * - NO access to network APIs
- * - NO ability to load external code
+ * SECURITY: Babel runs in the host realm (see the header of this file). A transform is
+ * restricted by what this function passes to it and checks around it:
+ * - the source is parsed and printed, never executed
+ * - no plugins, no configuration files, no source maps, no AST output
  * - Timeout enforcement
  * - Input/output size limits
  * - Preset whitelist
@@ -420,19 +431,19 @@ export function createRestrictedBabel(config: BabelWrapperConfig): {
         configFile: false, // Don't load babel.config.js
       };
 
-      // 8. Execute the transform in isolated context with timeout
+      // 8. Call the transform from the separate context, which gives the call a timeout
       let result: { code: string };
       try {
-        // Ensure the isolated context is initialized
+        // Ensure the calling context is initialized
         getIsolatedBabel();
 
         // Create a script that calls transform with our options
-        // This runs in the isolated context with timeout
+        // The script runs in the calling context; the transform it calls runs in the host realm
         const transformScript = new vm.Script(`
           __babel_result__ = __babel_transform__(__babel_code__, __babel_options__);
         `);
 
-        // Inject the code and options into the isolated context
+        // Hand the code and options to the calling context
         Object.defineProperty(isolatedContext!, '__babel_code__', {
           value: code,
           writable: true,
@@ -534,7 +545,7 @@ export function getAvailableBabelPresets(): string[] {
 }
 
 /**
- * Reset the isolated Babel context
+ * Reset the context Babel is called from
  *
  * Useful for testing or if you want to ensure a fresh context.
  * Note: This is generally not needed as the context is reused for performance.
