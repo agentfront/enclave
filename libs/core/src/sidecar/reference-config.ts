@@ -32,10 +32,23 @@ export interface ReferenceConfig {
   extractionThreshold: number;
 
   /**
-   * Maximum expanded size when resolving references for tool calls
+   * Maximum expanded size when resolving references for one tool call
    * Prevents predictive expansion attacks
    */
   maxResolvedSize: number;
+
+  /**
+   * Maximum number of bytes the references of one execution may be expanded to, summed over
+   * all its tool calls. `maxResolvedSize` limits one call; a script can make many calls, and
+   * what was resolved for a call is held until its handler settles.
+   *
+   * A stored value counts once, the first time it is resolved: every later resolution hands
+   * out the same string. A concatenation of references counts every time it is built.
+   *
+   * @default twice `maxTotalSize`: every stored value can be passed as it is and once more
+   * inside a concatenation
+   */
+  maxTotalResolvedSize?: number;
 
   /**
    * Whether to allow composite handles from concatenation
@@ -157,6 +170,18 @@ export const REF_ID_PATTERN = /^__REF_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
  */
 export function isReferenceId(value: unknown): value is string {
   return typeof value === 'string' && REF_ID_PATTERN.test(value);
+}
+
+/**
+ * The limit on what one execution resolves in total: `maxTotalResolvedSize` when the
+ * configuration sets it to a number that is not negative, otherwise twice `maxTotalSize`.
+ */
+export function getMaxTotalResolvedSize(config: ReferenceConfig): number {
+  const configured = config.maxTotalResolvedSize;
+  if (typeof configured === 'number' && configured >= 0) {
+    return configured;
+  }
+  return 2 * config.maxTotalSize;
 }
 
 /**

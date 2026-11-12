@@ -11,196 +11,353 @@ API reference for the `@enclave-vm/broker` package - the orchestration layer for
 npm install @enclave-vm/broker
 ```
 
-## EnclaveBroker Class
+## Broker Class
 
-The main broker class for session management and tool orchestration.
+The main entry point: a tool registry, a secret store and a session manager.
 
 ### Constructor
 
 ```ts
-new EnclaveBroker(options: BrokerOptions)
+new Broker(config?: BrokerConfig)
+createBroker(config?: BrokerConfig): Broker
 ```
 
-### BrokerOptions
+### BrokerConfig
 
 ```ts
-interface BrokerOptions {
-  // Session management
-  redis?: Redis;
-  sessionTimeout?: number;
-  maxConcurrentSessions?: number;
-
-  // Tool registry
-  tools?: ToolRegistry;
-  toolHandler?: ToolHandler;
-
-  // Runtime pool
-  runtimePool?: RuntimePoolOptions;
-
-  // Security
-  authentication?: AuthConfig;
-  rateLimiting?: RateLimitConfig;
-
-  // Logging
-  logger?: Logger;
+interface BrokerConfig {
+  sessions?: SessionManagerConfig;
+  enclave?: CreateEnclaveOptions;
+  limits?: Partial<SessionLimits>;
+  history?: SessionHistoryLimits;
 }
 ```
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `redis` | `Redis` | In-memory | Redis client for distributed state |
-| `sessionTimeout` | `number` | `300000` | Session timeout in ms (5 min) |
-| `maxConcurrentSessions` | `number` | `1000` | Max concurrent sessions |
-| `tools` | `ToolRegistry` | `undefined` | Tool registry |
-| `toolHandler` | `ToolHandler` | `undefined` | Tool execution handler |
+| `sessions` | `SessionManagerConfig` | `{ maxSessions: 100, cleanupIntervalMs: 60000 }` | The session registry |
+| `enclave` | `CreateEnclaveOptions` | core defaults | Options of the sandbox of every session (`securityLevel`, `adapter`, ...) |
+| `limits` | `Partial<SessionLimits>` | package defaults | Limits of every session |
+| `history` | `SessionHistoryLimits` | `{ maxEvents: 10000, maxBytes: 4194304 }` | What a session keeps for a replay |
+
+A key that is not listed is ignored and reported with a warning. A limit that is not a number makes the constructor throw.
 
 ### Methods
 
-#### listen(port)
+#### tool(name, definition)
 
-Start the HTTP server.
-
-```ts
-async listen(port: number): Promise<void>
-```
-
-**Example:**
-```ts
-const broker = new EnclaveBroker({ /* options */ });
-await broker.listen(3001);
-console.log('Broker listening on port 3001');
-```
-
-#### close()
-
-Stop the server and clean up.
+Register a tool. Throws when a tool of that name is registered.
 
 ```ts
-async close(): Promise<void>
+tool<TArgs, TResult>(name: string, definition: Omit<ToolDefinition<TArgs, TResult>, 'name'>): this
+tools(definitions: Record<string, Omit<ToolDefinition, 'name'>>): this
+hasTool(name: string): boolean
+listTools(): string[]
+removeTool(name: string): boolean
 ```
+
+```ts
+interface ToolDefinition<TArgs = unknown, TResult = unknown> {
+  name: string;
+  description?: string;
+  argsSchema?: z.ZodType<TArgs>; // arguments are validated before the handler runs
+  handler: (args: TArgs, context: ToolContext) => Promise<TResult>;
+  config?: ToolConfig; // config.timeout: this tool's own timeout in ms
+  secrets?: string[]; // keys of the secret store the handler receives
+}
+
+interface ToolContext {
+  sessionId: string;
+  callId: string;
+  secrets: Record<string, string>;
+  signal: AbortSignal; // aborted on timeout and when the session is cancelled
+}
+```
+
+#### secret(key, value)
+
+```ts
+secret(key: string, value: string): this
+secrets(values: Record<string, string>): this
+hasSecret(key: string): boolean
+removeSecret(key: string): boolean
+```
+
+Secrets are handed to the handlers of the tools that name them, and to nothing else.
 
 #### execute(code, options?)
 
-Execute code and return a stream.
+Create a session, run the script, remove the session, and resolve with the result.
 
 ```ts
-execute(code: string, options?: ExecuteOptions): AsyncIterable<StreamEvent>
-```
+execute(code: string, options?: ExecuteOptions): Promise<SessionFinalResult>
 
-**Options:**
-```ts
 interface ExecuteOptions {
-  timeout?: number;
-  maxToolCalls?: number;
-  context?: Record<string, unknown>;
-  filter?: EventFilter;
+  session?: BrokerSessionConfig;
+  onEvent?: (event: StreamEvent) => void;
 }
 ```
 
 **Example:**
 ```ts
-const stream = broker.execute(code, { timeout: 30000 });
+const result = await broker.execute(`return await callTool('getUser', { id: '42' });`, {
+  session: { limits: { maxToolCalls: 5 } },
+  onEvent: (event) => console.log(event.type),
+});
 
-for await (const event of stream) {
-  console.log(event.type, event.payload);
+if (result.success) console.log(result.value);
+```
+
+#### createSession(config?)
+
+```ts
+createSession(config?: BrokerSessionConfig): BrokerSession
+getSession(sessionId: SessionId): BrokerSession | undefined
+listSessions(): SessionInfo[]
+listActiveSessions(): SessionInfo[]
+terminateSession(sessionId: SessionId, reason?: string): Promise<boolean>
+```
+
+```ts
+interface BrokerSessionConfig {
+  sessionId?: SessionId; // generated when left out; an id in use is refused
+  limits?: Partial<SessionLimits>; // fields that are not given keep the broker's values
+  enclaveConfig?: CreateEnclaveOptions;
+  history?: SessionHistoryLimits;
+  owner?: string; // the caller the session belongs to on the HTTP routes
 }
 ```
 
-#### getSession(sessionId)
+`createSession` throws a `BrokerError` with `code` `SESSION_EXISTS`, `INVALID_SESSION_ID` or `MAX_SESSIONS_REACHED`.
 
-Get session information.
+#### openapi(config)
 
-```ts
-async getSession(sessionId: string): Promise<Session | null>
-```
-
-#### submitToolResult(sessionId, callId, result)
-
-Submit a tool call result.
+Register an OpenAPI source. See [OpenApiSource](#openapisource-class).
 
 ```ts
-async submitToolResult(
-  sessionId: string,
-  callId: string,
-  result: unknown
-): Promise<void>
+openapi(config: OpenApiSourceConfig): OpenApiSource
+getOpenApiSources(): readonly OpenApiSource[]
 ```
 
-## HTTP API Endpoints
+#### Other members
 
-### POST /execute
+```ts
+sessionLimits: Readonly<Required<SessionLimits>> // the limits of a session that names none
+stats(): { tools: number; activeSessions: number; totalSessions: number }
+cleanup(): number // removes finished and expired sessions
+dispose(): Promise<void>
+isDisposed: boolean
+```
 
-Execute code with streaming response.
+## SessionLimits
+
+Defined in `@enclave-vm/types`.
+
+| Limit | Default | What it bounds |
+|-------|---------|----------------|
+| `maxToolCalls` | `50` | Tool calls of one session |
+| `toolTimeoutMs` | `30000` | The run time of the script (the sandbox timeout) |
+| `perToolDeadlineMs` | `30000` | One tool call; a tool's own `config.timeout` applies when it is lower |
+| `deadlineMs` | `0` (none) | The whole session, counted from its creation |
+| `sessionTtlMs` | `60000` | How long a session stays registered |
+| `maxToolResultBytes` | `5242880` | A tool result as serialized JSON |
+| `heartbeatIntervalMs` | `15000` | Interval of `heartbeat` events |
+| `cancelOnFirstError` | `false` | Whether the first failed tool call cancels the session |
+| `maxStdoutBytes` | `262144` | Not used by the broker: it emits no `stdout` events |
+
+## BrokerSession Class
+
+```ts
+class BrokerSession {
+  readonly sessionId: SessionId;
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly owner?: string;
+  readonly state: SessionStateValue;
+  readonly seq: number;
+  readonly firstReplayableSeq: number;
+
+  execute(code: string): Promise<SessionFinalResult>;
+  wait(): Promise<SessionFinalResult>;
+  cancel(reason?: string): Promise<void>;
+
+  onEvent(handler: (event: StreamEvent) => void): () => void;
+  getEvents(): StreamEvent[];
+
+  emitToolProgress(callId, phase, elapsedMs, bytesReceived?, totalBytes?): void;
+  emitPartialResult(path: string[], data?: unknown, error?: ErrorPayload, hasNext?: boolean): void;
+
+  isExpired(): boolean;
+  isTerminal(): boolean;
+  getStats(): ExecutionStats;
+  dispose(): void;
+}
+```
+
+- `getEvents()` returns the events the session keeps: all of them until a bound of `history` is reached, the most recent ones afterwards. `firstReplayableSeq` is the lowest sequence number from which every event is still kept.
+- A `tool_call` event holds its own copy of the arguments.
+- `cancel()` aborts the tool call in flight and refuses later ones. It does not interrupt a script that is computing; the script ends by itself or at `toolTimeoutMs`.
+
+```ts
+interface SessionHistoryLimits {
+  maxEvents?: number; // default 10000
+  maxBytes?: number; // default 4194304, measured as serialized JSON
+}
+```
+
+## SessionManager Class
+
+```ts
+interface SessionManagerConfig {
+  maxSessions?: number; // default 100
+  cleanupIntervalMs?: number; // default 60000
+  defaultSessionConfig?: Partial<BrokerSessionConfig>;
+}
+```
+
+`maxSessions` bounds the registered sessions. A finished session stays registered until the next cleanup, and a session past `sessionTtlMs` is cancelled at the next cleanup.
+
+## HTTP API
+
+### SessionHandler
+
+```ts
+createSessionHandler(config: SessionHandlerConfig): SessionHandler
+registerExpressRoutes(router, handler: SessionHandler): void
+
+interface SessionHandlerConfig {
+  broker: Broker;
+  cors?: boolean; // default true
+  allowedOrigins?: string[]; // default ['*']
+  allowedHeaders?: string[]; // default []: more request headers a cross-origin page may send
+  identify?: (request: BrokerRequest) => string | null | undefined | Promise<string | null | undefined>;
+  sessionList?: boolean; // default true
+  maxStreamsPerSession?: number; // default 8
+  maxBufferedBytes?: number; // default 8388608
+}
+```
+
+| Option | Description |
+|--------|-------------|
+| `identify` | Tells the routes who the caller of a request is. With it, a session belongs to the caller that created it; without it the routes do not tell callers apart |
+| `allowedOrigins` | Origins that get CORS headers. The default allows every origin |
+| `allowedHeaders` | Request headers a cross-origin page may send besides `Content-Type`, `Accept`, `Last-Event-ID` and `Authorization`, which are always allowed. Name the headers your clients add (an API-key header, say); an entry that is not a header name throws at construction |
+| `sessionList` | Whether `GET /sessions` is served |
+| `maxStreamsPerSession` | Streams one session has open at a time; a further one is answered with `429` |
+| `maxBufferedBytes` | How far a reader may fall behind before it is disconnected |
+
+<Warning>
+Without `identify`, whoever can reach the routes can list, read, replay and end every session. See [Who may see a session](/enclavejs/broker#who-may-see-a-session).
+</Warning>
+
+`handler.getRoutes()` returns `{ method, path, handler }` entries for other frameworks. `BrokerRequest` carries `method`, `path`, `params`, `query`, `body`, `headers`, `signal` (aborted when the caller goes away) and `raw` (the framework's request object). `BrokerResponse` needs `status()`, `json()`, `setHeader()`, `write()`, `end()` and may offer `flush()`, `bufferedBytes()` and `destroy()`.
+
+`createExpressRouter` is deprecated: it registers no route.
+
+### POST /sessions
+
+Create a session, run `code`, and stream the events.
 
 **Request:**
 ```ts
 {
   code: string;
-  timeout?: number;
-  maxToolCalls?: number;
-  context?: Record<string, unknown>;
-  filter?: {
-    types?: string[];
-    blockedTypes?: string[];
+  sessionId?: string; // 's_' + 1 to 128 characters of A-Z a-z 0-9 . _ : ~ -
+  config?: {
+    maxExecutionMs?: number; // lifetime; lowered to the broker's sessionTtlMs when larger
+    maxToolCalls?: number; // lowered to the broker's maxToolCalls when larger
+    heartbeatIntervalMs?: number; // kept between 1 s and 5 min
   };
+  filter?: EventFilterConfig; // at most 16 rules, 32 patterns, 256 characters per pattern
 }
 ```
 
-**Response:** NDJSON stream of events
+**Response:** NDJSON stream of events, ending with `final`. The header `X-Session-ID` holds the session id.
 
 **Example:**
 ```bash
-curl -X POST http://localhost:3001/execute \
+curl -X POST http://localhost:3000/sessions \
   -H "Content-Type: application/json" \
   -d '{"code": "return 1 + 2"}' \
   --no-buffer
 ```
 
-### GET /sessions/:sessionId
+### GET /sessions
 
-Get session status.
+List sessions: all of them, or the caller's own when `identify` is set.
 
 **Response:**
 ```ts
 {
-  id: string;
-  status: 'pending' | 'running' | 'completed' | 'error';
+  sessions: SessionInfoResponse[];
+  total: number;
+}
+```
+
+### GET /sessions/:sessionId
+
+**Response:**
+```ts
+interface SessionInfoResponse {
+  sessionId: string;
+  state: string;
   createdAt: number;
   expiresAt: number;
+  stats: { duration: number; toolCallCount: number };
 }
 ```
 
-### POST /sessions/:sessionId/tool-result
+### GET /sessions/:sessionId/stream
 
-Submit tool execution result.
+Replay the kept events with a sequence number of `fromSeq` or higher, then follow the session until its `final` event.
 
-**Request:**
-```ts
-{
-  callId: string;
-  result: unknown;
-  error?: {
-    message: string;
-    code?: string;
-  };
-}
-```
+| Query parameter | Description |
+|-----------------|-------------|
+| `fromSeq` | First sequence number to send (default `0`: everything) |
+| `filter` | An `EventFilterConfig` as JSON text (at most 8192 characters) |
+
+Answers `410 EVENTS_GONE` when events from `fromSeq` on are no longer kept, and `429 TOO_MANY_STREAMS` when the session has `maxStreamsPerSession` streams open.
+
+### DELETE /sessions/:sessionId
+
+End a session. `POST /sessions/:sessionId/cancel` does the same; it is the `cancelUrl` of the `session_init` event.
 
 **Response:**
 ```ts
 {
   success: true;
+  sessionId: string;
 }
 ```
 
+### Error answers
+
+```ts
+interface ErrorResponse {
+  code: string;
+  message: string;
+}
+```
+
+| Status | Code |
+|--------|------|
+| 400 | `INVALID_REQUEST`, `INVALID_FILTER`, `ENCRYPTION_NOT_SUPPORTED` |
+| 401 | `UNAUTHORIZED` |
+| 404 | `NOT_FOUND` |
+| 409 | `SESSION_EXISTS` |
+| 410 | `EVENTS_GONE` |
+| 429 | `TOO_MANY_STREAMS` |
+| 503 | `MAX_SESSIONS_REACHED`, `SERVICE_UNAVAILABLE` |
+| 500 | `SESSION_CREATE_ERROR`, `INTERNAL_ERROR` |
+
 ### GET /code/actions
 
-Returns the current action catalog derived from connected OpenAPI sources.
+Returns the current action catalog: every registered tool, with the OpenAPI service it comes from.
 
 **Response:**
 ```ts
 interface CatalogResponse {
-  /** Available actions from all connected OpenAPI sources */
+  /** Registered tools */
   actions: CatalogAction[];
   /** Connected OpenAPI service descriptors */
   services: CatalogService[];
@@ -213,320 +370,192 @@ interface CatalogAction {
   name: string;
   /** Human-readable description from the OpenAPI spec */
   description?: string;
-  /** JSON Schema for the tool's input parameters */
-  inputSchema?: Record<string, unknown>;
-  /** Name of the service this action belongs to */
+  /** Name of the service this action belongs to ("default" for tools registered by hand) */
   service: string;
-  /** Tags from the OpenAPI operation */
-  tags?: string[];
-  /** Whether the operation is deprecated */
-  deprecated?: boolean;
 }
 
 interface CatalogService {
   /** Service name (from OpenApiSourceConfig.name) */
   name: string;
-  /** Internal spec URL */
+  /** Always empty: the spec URL is not given out */
   specUrl: string;
-  /** ISO 8601 timestamp of the last successful spec poll */
+  /** ISO 8601 timestamp of the last specification that was applied */
   lastUpdated: string;
   /** Number of actions from this service */
   actionCount: number;
 }
 ```
 
-**Version semantics:** The `version` field is a deterministic hash of all source spec hashes. It changes whenever an OpenAPI spec is polled with additions or removals. Consumers can compare version strings to detect catalog changes.
-
-**Example:**
-```bash
-curl http://localhost:3001/code/actions
-```
-
-```json
-{
-  "actions": [
-    {
-      "name": "user-service_listUsers",
-      "description": "List all users",
-      "service": "user-service"
-    },
-    {
-      "name": "user-service_getUser",
-      "description": "Get user by ID",
-      "service": "user-service"
-    }
-  ],
-  "services": [
-    {
-      "name": "user-service",
-      "specUrl": "",
-      "lastUpdated": "2026-03-31T12:00:00.000Z",
-      "actionCount": 2
-    }
-  ],
-  "version": "a1b2c3d4..."
-}
-```
+**Version semantics:** The `version` field is derived from the hashes of all source specifications. Consumers can compare version strings to detect catalog changes.
 
 **Wiring:** Use `CatalogHandler` to register this route:
 ```ts
-import { CatalogHandler } from '@enclave-vm/broker';
+import { CatalogHandler, createToolRegistry } from '@enclave-vm/broker';
 
 const catalog = new CatalogHandler(toolRegistry, openApiSources);
 for (const route of catalog.getRoutes()) {
-  app[route.method.toLowerCase()](route.path, route.handler);
+  app.get(route.path, authenticate, (req, res) => route.handler(req, res));
 }
 ```
 
-The types `CatalogAction`, `CatalogService`, `CatalogResponse`, and `CatalogHandler` are all exported from the `@enclave-vm/broker` package.
+The route answers every caller alike: put your own authentication in front of it.
 
-### GET /health
+## EventFilter Class
 
-Health check endpoint.
-
-**Response:**
 ```ts
-{
-  status: 'ok';
-  uptime: number;
-  sessions: {
-    active: number;
-    total: number;
-  };
+createEventFilter(options: EventFilterOptions): EventFilter
+createTypeFilter(mode: 'include' | 'exclude', types: EventType[]): EventFilterConfig
+createContentFilter(mode: 'include' | 'exclude', pattern: string, patternType?: PatternType): EventFilterConfig
+
+interface EventFilterOptions {
+  config: EventFilterConfig;
+  onError?: (error: Error, event: StreamEvent) => void;
+  budgetMs?: number; // total time for regular expressions and globs; default: no budget
+  expandGlobs?: boolean; // expand {a,b} and +(a|b) in globs; default true
+}
+
+class EventFilter {
+  shouldSend(event: StreamEvent): boolean;
+  filter(events: StreamEvent[]): StreamEvent[];
 }
 ```
 
-## ToolRegistry Class
+```ts
+interface EventFilterConfig {
+  mode: 'include' | 'exclude';
+  rules: FilterRule[]; // a filter matches when one rule matches
+  alwaysAllow?: EventType[]; // default ['session_init', 'final']
+  regexTimeoutMs?: number; // time limit per evaluated event, default 100
+}
 
-Registry for managing tools.
+interface FilterRule {
+  types?: { types: EventType[] };
+  content?: { patterns: ContentPattern[]; match?: 'any' | 'all' };
+}
 
-### Constructor
+interface ContentPattern {
+  type: 'exact' | 'prefix' | 'regex' | 'glob';
+  pattern: string;
+  field?: string; // dot path into the event, e.g. 'payload.toolName'; default: the payload as JSON
+  caseInsensitive?: boolean;
+}
+```
+
+- An event the filter could not evaluate is not sent: a pattern that does not compile, a field that cannot be serialized, an evaluation that exceeded `regexTimeoutMs` or the budget.
+- In exclude mode a glob is matched as text (`*` also matches `/` and a leading dot).
+- A filter is not a confidentiality control.
+
+## OpenApiSource Class
 
 ```ts
-new ToolRegistry()
+const source = broker.openapi(config: OpenApiSourceConfig);
+
+interface OpenApiSourceConfig {
+  name: string; // prefix of the tool names: `${name}_${operationId}`
+  url: string; // where the specification is fetched from
+  baseUrl: string; // the upstream API
+  auth?: { type: 'bearer' | 'api-key' | 'basic'; token?: string; header?: string };
+  loaderOptions?: LoaderOptions;
+
+  // Polling
+  intervalMs?: number; // default 60000
+  fetchTimeoutMs?: number; // default 10000
+  changeDetection?: 'content-hash' | 'etag' | 'auto';
+  retry?: { maxRetries?: number; initialDelayMs?: number; maxDelayMs?: number; backoffMultiplier?: number };
+  unhealthyThreshold?: number; // default 3
+  headers?: Record<string, string>; // for the requests to the specification host
+  maxSpecBytes?: number; // default 33554432
+}
+
+interface LoaderOptions {
+  headers?: Record<string, string>; // for the requests to the upstream API
+  namingStrategy?: (method: string, path: string, operationId?: string) => string;
+  includeOperations?: string[];
+  excludeOperations?: string[];
+  perToolDeadlineMs?: number; // default 30000
+  maxResponseBytes?: number; // default 10485760
+}
 ```
 
 ### Methods
 
-#### register(tool)
-
-Register a tool.
-
 ```ts
-register(tool: ToolDefinition): void
+start(): Promise<void> // first load, then polling; rejects when the first load fails
+refresh(): Promise<void> // load now; rejects when the specification cannot be fetched or applied
+stop(): void
+getStats(): { toolCount: number; lastUpdate: string; specHash: string; pollHealth: 'healthy' | 'unhealthy' | 'unknown'; lastError?: string }
+getToolNames(): Set<string>
+getName(): string
+dispose(): void
 ```
 
-```ts
-interface ToolDefinition {
-  name: string;
-  description: string;
-  parameters: Record<string, ParameterDef>;
-  handler: ToolHandler;
-}
-
-interface ParameterDef {
-  type: 'string' | 'number' | 'boolean' | 'object' | 'array';
-  description: string;
-  required?: boolean;
-  default?: unknown;
-}
-
-type ToolHandler = (
-  args: Record<string, unknown>,
-  context?: ExecutionContext
-) => Promise<unknown>;
-```
-
-**Example:**
-```ts
-const registry = new ToolRegistry();
-
-registry.register({
-  name: 'users:list',
-  description: 'List all users',
-  parameters: {
-    limit: {
-      type: 'number',
-      description: 'Max users to return',
-      default: 10,
-    },
-  },
-  handler: async (args) => {
-    return db.users.findAll({ limit: args.limit });
-  },
-});
-```
-
-#### get(name)
-
-Get a tool by name.
+### Events
 
 ```ts
-get(name: string): ToolDefinition | undefined
+source.on('toolsUpdated', ({ added, removed, updated }) => {});
+source.on('catalogChanged', ({ version, addedActions, removedActions }) => {});
+source.on('unhealthy', (consecutiveFailures) => {});
+source.on('recovered', () => {});
+source.on('error', (error) => {}); // optional: without a listener, failures are in getStats()
 ```
 
-#### list()
+### Behaviour
 
-List all registered tools.
-
-```ts
-list(): ToolDefinition[]
-```
-
-#### getDocumentation()
-
-Get tool documentation for LLM prompts.
-
-```ts
-getDocumentation(): string
-```
-
-## RuntimePoolOptions
-
-```ts
-interface RuntimePoolOptions {
-  minSize: number;
-  maxSize: number;
-  scaleUpThreshold: number;
-  scaleDownThreshold: number;
-  scaleInterval: number;
-}
-```
-
-## Authentication
-
-```ts
-interface AuthConfig {
-  type: 'bearer' | 'api-key' | 'custom';
-  validate: (token: string) => Promise<AuthResult>;
-}
-
-interface AuthResult {
-  valid: boolean;
-  userId?: string;
-  tenantId?: string;
-  permissions?: string[];
-}
-```
-
-**Example:**
-```ts
-const broker = new EnclaveBroker({
-  authentication: {
-    type: 'bearer',
-    validate: async (token) => {
-      const decoded = verifyJWT(token);
-      return {
-        valid: true,
-        userId: decoded.sub,
-        permissions: decoded.permissions,
-      };
-    },
-  },
-});
-```
-
-## Rate Limiting
-
-```ts
-interface RateLimitConfig {
-  windowMs: number;
-  maxRequests: number;
-  keyGenerator?: (req: Request) => string;
-}
-```
-
-**Example:**
-```ts
-const broker = new EnclaveBroker({
-  rateLimiting: {
-    windowMs: 60000,
-    maxRequests: 100,
-    keyGenerator: (req) => req.headers['x-api-key'] || req.ip,
-  },
-});
-```
-
-## Events
-
-### BrokerEvents
-
-```ts
-broker.on('session:created', (session) => { });
-broker.on('session:completed', (session, result) => { });
-broker.on('session:error', (session, error) => { });
-broker.on('tool:called', (session, tool, args) => { });
-broker.on('tool:completed', (session, tool, result) => { });
-```
+- Tools are replaced in one step; a failed update changes nothing. A source never replaces a tool it does not manage: `start()` and `refresh()` reject, and a polled update is reported as a failure.
+- A path parameter fills its own segment of the path; a value that would leave the segment empty or turn it into `.` or `..` fails the call with `INVALID_PATH_PARAMETER`.
+- `auth` and `loaderOptions.headers` are sent to the origin of `baseUrl` only. A redirect to another origin is followed without them, and at most five redirects are followed.
+- A header parameter of the specification cannot replace `auth` or a header of `loaderOptions.headers`.
 
 ## Complete Example
 
 ```ts
-import { EnclaveBroker, ToolRegistry } from '@enclave-vm/broker';
-import Redis from 'ioredis';
+import express from 'express';
+import { z } from 'zod';
+import { createBroker, createSessionHandler, registerExpressRoutes } from '@enclave-vm/broker';
 
-// Create tool registry
-const tools = new ToolRegistry();
+const broker = createBroker({
+  enclave: { securityLevel: 'SECURE' },
+  limits: { maxToolCalls: 20, toolTimeoutMs: 10_000, sessionTtlMs: 120_000 },
+  sessions: { maxSessions: 200 },
+});
 
-tools.register({
-  name: 'users:list',
+broker.tool('listUsers', {
   description: 'List users',
-  parameters: {
-    limit: { type: 'number', description: 'Max results' },
-  },
-  handler: async (args) => {
-    return [
-      { id: '1', name: 'Alice' },
-      { id: '2', name: 'Bob' },
-    ].slice(0, args.limit || 10);
-  },
+  argsSchema: z.object({ limit: z.number().int().min(1).max(100).default(10) }),
+  handler: async ({ limit }) => db.users.list({ limit }),
 });
 
-tools.register({
-  name: 'users:get',
+broker.tool('getUser', {
   description: 'Get user by ID',
-  parameters: {
-    id: { type: 'string', description: 'User ID', required: true },
-  },
-  handler: async (args) => {
-    return { id: args.id, name: 'Alice' };
-  },
+  argsSchema: z.object({ id: z.string() }),
+  handler: async ({ id }) => db.users.get(id),
 });
 
-// Create broker
-const broker = new EnclaveBroker({
-  redis: new Redis(process.env.REDIS_URL),
-  tools,
-  sessionTimeout: 300000,
-  maxConcurrentSessions: 1000,
-  rateLimiting: {
-    windowMs: 60000,
-    maxRequests: 100,
-  },
+const handler = createSessionHandler({
+  broker,
+  identify: (request) => (request.raw as { user?: { id: string } }).user?.id,
+  allowedOrigins: ['https://app.example.com'],
 });
 
-// Event handlers
-broker.on('session:created', (session) => {
-  console.log('Session created:', session.id);
-});
+const app = express();
+app.use(express.json({ limit: '1mb' }));
+app.use(authenticate); // sets req.user or answers 401
+registerExpressRoutes(app, handler);
 
-broker.on('tool:called', (session, tool, args) => {
-  console.log(`Tool called: ${tool}`, args);
-});
-
-// Start server
-await broker.listen(3001);
-console.log('Broker running on port 3001');
+const server = app.listen(3001);
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
-  await broker.close();
+  server.close();
+  await broker.dispose();
   process.exit(0);
 });
 ```
 
+`identify` separates sessions, not data: the two tools above return the same users to every caller that may create a session. A tool that reads data restricted per caller applies that restriction itself, with the owner of its session (`broker.getSession(context.sessionId as SessionId)?.owner`, the caller `identify` returned), or leaves it to the data store. See the broker example in [Architecture](/concepts/architecture).
+
 ## Related
 
-- [Broker Overview](/enclavejs/broker) - Architecture guide
+- [Broker Overview](/enclavejs/broker) - Guide
 - [@enclave-vm/types](/api-reference/enclavejs-types) - Type definitions
 - [@enclave-vm/client](/api-reference/enclavejs-client) - Client SDK

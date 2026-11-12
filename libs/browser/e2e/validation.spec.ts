@@ -152,3 +152,43 @@ test.describe('regular expressions', () => {
     expect(otherPreset.value).toEqual([true, 'a#b#']);
   });
 });
+
+test.describe('the pre-scanner follows the AST preset', () => {
+  test.beforeEach(async ({ page }) => {
+    await loadHarness(page);
+  });
+
+  // A script of about 110 KB: comment lines of 1,900 characters, then a return
+  const large = `${`// ${'x'.repeat(1897)}\n`.repeat(60)}return 1;`;
+
+  test('agentscript (the default) refuses a script of more than 100 KB', async ({ page }) => {
+    const result = await runInEnclave(page, large);
+    expect(result.success).toBe(false);
+    expect(result.error?.name).toBe('ValidationError');
+    expect(result.error?.message).toContain('PRESCANNER_INPUT_TOO_LARGE');
+  });
+
+  test('agentscript refuses a line of more than 2,000 characters', async ({ page }) => {
+    const result = await runInEnclave(page, `// ${'x'.repeat(3000)}\nreturn 1;`);
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain('PRESCANNER_LINE_TOO_LONG');
+  });
+
+  test('preScan picks another preset', async ({ page }) => {
+    const result = await runInEnclave(page, large, { preScan: { preset: 'standard' } });
+    expect(result.error).toBeUndefined();
+    expect(result.value).toBe(1);
+  });
+
+  test('preScan changes a single limit', async ({ page }) => {
+    const result = await runInEnclave(page, large, { preScan: { config: { maxInputSize: 200 * 1024 } } });
+    expect(result.error).toBeUndefined();
+    expect(result.value).toBe(1);
+  });
+
+  test('a preset that does not exist is refused when the enclave is made', async ({ page }) => {
+    await expect(runInEnclave(page, 'return 1;', { preScan: { preset: 'loose' } })).rejects.toThrow(
+      /pre-scanner preset/i,
+    );
+  });
+});

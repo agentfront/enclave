@@ -43,14 +43,14 @@ Blocked constructs include:
 ### How secure is Enclave?
 
 Enclave uses a 6-layer defense-in-depth model:
-1. Pre-scanner (DoS protection)
+1. Pre-scanner (size, nesting and literal limits)
 2. AST validation (blocked constructs)
 3. Code transformation (safe wrappers)
-4. AI Scoring Gate (pattern detection)
-5. Runtime sandbox (isolation)
+4. AI Scoring Gate (optional, a heuristic risk score)
+5. Runtime sandbox (a realm with only the allowed globals, a membrane, limits)
 6. Output sanitization
 
-Even if one layer is bypassed, subsequent layers provide protection.
+The layers are built to hold independently: the runtime does not rely on the validator having refused a script. What the sandbox does not deliver is stated too. In process, the timeout and the memory limit are the enclave's own accounting, not the engine's, and the worker pool adds a hard stop and a heap limit per worker without leaving the host's process. A host that must survive whatever a script does runs the enclave in a child process or a container with limits of the operating system. See the [Security Model](/concepts/security-model#what-enclave-does-not-protect-against).
 
 ### Can scripts access the file system?
 
@@ -72,11 +72,11 @@ Typical overhead is 5-15ms per execution for validation and transformation. Actu
 
 ### How many concurrent executions can I run?
 
-With the default VM adapter, limited by Node.js event loop. With worker pool adapter, you can run concurrent executions across workers (configurable pool size).
+With the default VM adapter, scripts run on the thread that calls `run()`: executions interleave where they await tools, and a script that computes holds the thread. With the worker pool adapter, up to `maxWorkers` scripts run at the same time on worker threads.
 
 ### How much memory does each execution use?
 
-Base overhead is ~10-20MB per enclave instance. Actual usage depends on script data and tool responses. Use `memoryLimit` to cap usage.
+It depends on script data and tool responses. `memoryLimit` (1 MB by default) bounds what a script builds, as the enclave counts it: text and arrays that grow. It is an estimate, not a limit of the engine's heap. With the worker pool each worker also has a heap limit (`memoryLimitPerWorker`).
 
 ## Tools
 
@@ -103,16 +103,20 @@ Only tools you handle in `toolHandler` are available. Unknown tool calls throw e
 
 ### How do I limit tool access per user?
 
-Filter in your tool handler:
+A tool handler receives the tool name and the arguments. Create the enclave, or pass a handler to `run()`, for the user the script runs for:
 
 ```ts
-toolHandler: async (name, args, context) => {
-  const allowed = getAllowedToolsForUser(context.userId);
-  if (!allowed.includes(name)) {
-    throw new Error(`Tool ${name} not allowed`);
-  }
-  return executeToolSafely(name, args);
+function handlerFor(userId: string) {
+  const allowed = getAllowedToolsForUser(userId);
+  return async (name: string, args: Record<string, unknown>) => {
+    if (!allowed.includes(name)) {
+      throw new Error(`Tool ${name} not allowed`);
+    }
+    return executeToolSafely(name, args);
+  };
 }
+
+const result = await enclave.run(code, handlerFor(userId));
 ```
 
 ## Configuration
@@ -158,19 +162,22 @@ Use **enclave-vm** directly for:
 Use **EnclaveJS** for:
 - Real-time streaming UIs
 - React applications
-- Production SaaS with multiple clients
-- Distributed deployments
+- Browser or remote clients that follow a run on your server
+
+The EnclaveJS broker does not authenticate callers and the client does not encrypt: use HTTPS and put your own authentication in front of the broker.
 
 ## Troubleshooting
 
 ### Why is my code being blocked?
 
-Check validation results:
+Read the issues of the failed run:
 
 ```ts
-const validator = new JSAstValidator(createAgentScriptPreset());
-const result = await validator.validate(code);
-console.log(result.issues);
+const result = await enclave.run(code);
+if (result.error?.code === 'VALIDATION_ERROR') {
+  console.log(result.error.message);
+  console.log(result.error.data?.issues);
+}
 ```
 
 Common reasons:
@@ -188,7 +195,7 @@ Common causes:
 
 Debug by logging tool call durations and reviewing iteration counts.
 
-### Why am I getting MAX_TOOL_CALLS?
+### Why am I getting "Maximum tool call limit exceeded"?
 
 Your script is making too many tool calls. Solutions:
 - Batch operations in tools
@@ -203,7 +210,7 @@ Yes! Enclave is written in TypeScript and provides full type definitions.
 
 ### Can I use Enclave in the browser?
 
-No. Enclave requires Node.js for the vm module. For browser use, use the EnclaveJS client SDK to connect to a server running Enclave.
+`@enclave-vm/core` requires Node.js for the vm module. In a browser, either use [`@enclave-vm/browser`](/core-libraries/enclave-browser/overview), which runs validated AgentScript in nested iframes, or use the EnclaveJS client SDK to connect to a server running a broker.
 
 ### Does Enclave work with Next.js/Express/Fastify?
 

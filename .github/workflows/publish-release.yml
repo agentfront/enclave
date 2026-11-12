@@ -127,12 +127,15 @@ jobs:
       - name: Compute version
         id: version
         shell: bash
+        env:
+          INPUT_RELEASE_TYPE: ${{ inputs.release_type }}
+          INPUT_PRE_RELEASE_NUMBER: ${{ inputs.pre_release_number }}
         run: |
           set -euo pipefail
 
           RELEASE_LINE="${{ steps.context.outputs.release_line }}"
-          RELEASE_TYPE="${{ inputs.release_type }}"
-          PRE_RELEASE_NUM="${{ inputs.pre_release_number }}"
+          RELEASE_TYPE="$INPUT_RELEASE_TYPE"
+          PRE_RELEASE_NUM="$INPUT_PRE_RELEASE_NUMBER"
 
           # Fetch all tags
           git fetch --tags
@@ -454,7 +457,7 @@ jobs:
 
       - name: Create GitHub Release
         if: ${{ inputs.dry_run != true }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}

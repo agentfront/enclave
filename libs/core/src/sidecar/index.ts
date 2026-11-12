@@ -17,6 +17,7 @@ export {
   REF_ID_PATTERN,
   isReferenceId,
   getReferenceConfig,
+  getMaxTotalResolvedSize,
 } from './reference-config';
 
 // Sidecar

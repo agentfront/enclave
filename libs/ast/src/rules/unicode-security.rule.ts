@@ -169,7 +169,7 @@ const UNICODE_ATTACK_PATTERNS = {
   /**
    * Tag characters (U+E0000-U+E007F) - can be used to hide data
    */
-  tagCharacters: /[\uE0000-\uE007F]/u,
+  tagCharacters: /[\u{E0000}-\u{E007F}]/u,
 };
 
 /**
@@ -312,13 +312,16 @@ export class UnicodeSecurityRule implements ValidationRule {
     const bidiPattern = UNICODE_ATTACK_PATTERNS.bidi;
     let match;
     const globalPattern = new RegExp(bidiPattern.source, 'g');
+    // Where each line starts, computed once and only when there is something to locate
+    let lineStarts: number[] | undefined;
 
     while ((match = globalPattern.exec(source)) !== null) {
       const char = match[0];
       if (this.options.allowedCharacters.has(char)) continue;
 
       const position = match.index;
-      const { line, column } = this.getLineAndColumn(source, position);
+      lineStarts ??= this.getLineStarts(source);
+      const { line, column } = this.getLineAndColumn(lineStarts, position);
 
       context.report({
         code: 'UNICODE_BIDI_ATTACK',
@@ -400,9 +403,14 @@ export class UnicodeSecurityRule implements ValidationRule {
   private detectViolations(str: string): UnicodeViolation[] {
     const violations: UnicodeViolation[] = [];
 
-    for (let i = 0; i < str.length; i++) {
-      const char = str[i];
-      const codePoint = `U+${char.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`;
+    // By code point: a character outside the Basic Multilingual Plane is two units of the string
+    // and one character to whoever reads it.
+    let step = 1;
+    for (let i = 0; i < str.length; i += step) {
+      const code = str.codePointAt(i) as number;
+      const char = String.fromCodePoint(code);
+      step = char.length;
+      const codePoint = `U+${code.toString(16).toUpperCase().padStart(4, '0')}`;
 
       // Check zero-width
       if (UNICODE_ATTACK_PATTERNS.zeroWidth.test(char)) {
@@ -426,8 +434,9 @@ export class UnicodeSecurityRule implements ValidationRule {
         continue;
       }
 
-      // Check invisible
-      if (UNICODE_ATTACK_PATTERNS.invisible.test(char)) {
+      // Check invisible (tag characters are invisible as well, and each one stands for an ASCII
+      // character)
+      if (UNICODE_ATTACK_PATTERNS.invisible.test(char) || UNICODE_ATTACK_PATTERNS.tagCharacters.test(char)) {
         violations.push({
           type: 'invisible',
           character: char,
@@ -453,14 +462,30 @@ export class UnicodeSecurityRule implements ValidationRule {
     return violations;
   }
 
+  /** The position at which each line of the source starts. */
+  private getLineStarts(source: string): number[] {
+    const starts = [0];
+    for (let index = source.indexOf('\n'); index !== -1; index = source.indexOf('\n', index + 1)) {
+      starts.push(index + 1);
+    }
+    return starts;
+  }
+
   /**
    * Convert a character position to line and column numbers
    */
-  private getLineAndColumn(source: string, position: number): { line: number; column: number } {
-    const lines = source.slice(0, position).split('\n');
+  private getLineAndColumn(lineStarts: readonly number[], position: number): { line: number; column: number } {
+    // The last line that starts at or before the position
+    let low = 0;
+    let high = lineStarts.length - 1;
+    while (low < high) {
+      const middle = (low + high + 1) >> 1;
+      if (lineStarts[middle] <= position) low = middle;
+      else high = middle - 1;
+    }
     return {
-      line: lines.length,
-      column: lines[lines.length - 1].length,
+      line: low + 1,
+      column: position - lineStarts[low],
     };
   }
 }
@@ -496,6 +521,7 @@ export function isUnicodeSafe(str: string): boolean {
   if (UNICODE_ATTACK_PATTERNS.zeroWidth.test(str)) return false;
   if (UNICODE_ATTACK_PATTERNS.bidi.test(str)) return false;
   if (UNICODE_ATTACK_PATTERNS.invisible.test(str)) return false;
+  if (UNICODE_ATTACK_PATTERNS.tagCharacters.test(str)) return false;
 
   // Check for homoglyphs
   const allHomoglyphs = new Map<string, string>();

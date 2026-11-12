@@ -157,7 +157,6 @@ const result = await enclave.run(`
   const result = await callTool('users:get', { id: 'invalid-id' });
 
   if (result.error) {
-    console.log('Tool failed:', result.message);
     return { success: false, error: result.message };
   }
 
@@ -437,7 +436,6 @@ const enclave = new Enclave({
 const result = await enclave.run(`
   // List all users
   const users = await callTool('users:list', {});
-  console.log('Found', users.length, 'users');
 
   // Send email to each
   const emailResults = [];

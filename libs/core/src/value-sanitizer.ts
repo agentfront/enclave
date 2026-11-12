@@ -143,7 +143,12 @@ interface PropertyCounter {
 }
 
 /**
- * Internal context for tracking visited objects (circular reference detection)
+ * Internal context of one sanitization: the property count, and the objects on the way from the
+ * root down to the value being copied (circular reference detection).
+ *
+ * Only an object that contains itself is a circle. An object that is referenced twice without
+ * containing itself is copied twice: each copy counts against the property limit, so a value
+ * that is small as a graph and large as a tree is bounded like any other large value.
  */
 interface SanitizeContext {
   propCount: PropertyCounter;
@@ -182,8 +187,6 @@ export function sanitizeValue(
 ): unknown {
   const maxDepth = options.maxDepth ?? 20;
   const maxProperties = options.maxProperties ?? 10000;
-  const allowDates = options.allowDates ?? true;
-  const allowErrors = options.allowErrors ?? true;
 
   // Check depth limit
   if (depth > maxDepth) {
@@ -234,14 +237,40 @@ export function sanitizeValue(
     );
   }
 
-  // Check for circular references (only for objects)
+  // Check for circular references (only for objects): an object that is being copied further
+  // up, on the way from the root to this value
   if (type === 'object' && value !== null) {
     if (context.visited.has(value as object)) {
       // Return a marker for circular references instead of infinite recursion
       return '[Circular]';
     }
     context.visited.add(value as object);
+    try {
+      return sanitizeObjectValue(value as object, options, depth, context);
+    } finally {
+      // Done with this object: a second reference to it elsewhere is not a circle
+      context.visited.delete(value as object);
+    }
   }
+
+  // Unknown type - convert to string
+  return String(value);
+}
+
+/**
+ * The copy of an object, an array or one of the built-in kinds {@link sanitizeValue} knows.
+ * `value` is on the path of objects being copied (see SanitizeContext).
+ */
+function sanitizeObjectValue(
+  value: object,
+  options: SanitizeOptions,
+  depth: number,
+  context: SanitizeContext,
+): unknown {
+  const maxProperties = options.maxProperties ?? 10000;
+  const allowDates = options.allowDates ?? true;
+  const allowErrors = options.allowErrors ?? true;
+  const type = typeof value;
 
   // Handle arrays
   //

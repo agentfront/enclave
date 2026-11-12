@@ -13,49 +13,73 @@ npm install @enclave-vm/ast
 
 ## JSAstValidator Class
 
-Main AST validation class.
+Main AST validation class. It is built from an array of rules; a preset function returns such an array.
 
 ### Constructor
 
 ```ts
-new JSAstValidator(preset: ValidationPreset)
+new JSAstValidator(rules?: ValidationRule[])
 ```
 
 ### Methods
 
-#### validate(code)
+#### validate(source, config?)
 
-Validate JavaScript code against the preset rules.
+Validate JavaScript source against the rules.
 
 ```ts
-async validate(code: string): Promise<ValidationResult>
+async validate(source: string, config?: ValidationConfig): Promise<ValidationResult>
 ```
 
-**Returns:** `ValidationResult`
+The promise rejects in three cases:
+
+- with `InvalidSourceError`, for a source that is not a string or is empty;
+- with a `TypeError`, for a `preScan` option that names no preset or holds an invalid setting;
+- with whatever a rule throws. The validator does not turn the exception of a rule into an issue, so a validation with rules of your own belongs in a `try`/`catch` (see [Using Custom Rules](#using-custom-rules)).
+
+Every other outcome is in the result: a failed pre-scan, a parse error, the issues the rules report and a failed transform.
 
 ```ts
+interface ValidationConfig {
+  parseOptions?: acorn.Options;
+  rules?: Record<string, RuleConfig | boolean>; // Enable, disable or re-rate a rule by name
+  maxIssues?: number;          // Default: DEFAULT_MAX_ISSUES (100); 0 collects every issue
+  stopOnFirstError?: boolean;
+  transform?: TransformConfig;
+  preScan?: {
+    enabled?: boolean;         // Default: true
+    preset?: 'agentscript' | 'strict' | 'secure' | 'standard' | 'permissive'; // Default: 'standard'
+    config?: Partial<PreScannerConfig>;
+  };
+}
+
 interface ValidationResult {
-  valid: boolean;
-  issues: ValidationIssue[];
-  ast?: ESTree.Program;
+  valid: boolean;              // true if every rule ran and none reported an error
+  issues: ValidationIssue[];   // At most maxIssues
+  incomplete?: boolean;        // true if issues were left out or the validation stopped early
+  rulesExecuted?: number;
+  ast?: acorn.Node;
+  parseError?: Error;
+  transformedCode?: string;
+  preScanError?: Error;
+  preScanStats?: { inputSize; lineCount; maxNestingDepthFound; regexCount; scanDurationMs };
 }
 
 interface ValidationIssue {
-  rule: string;
+  code: string;                // e.g. 'UNKNOWN_GLOBAL', 'DISALLOWED_SYNTAX'
   message: string;
-  severity: 'error' | 'warning' | 'info';
+  severity: ValidationSeverity; // 'error' | 'warning' | 'info'
   location?: {
     line: number;
     column: number;
     endLine?: number;
     endColumn?: number;
   };
-  fix?: {
-    range: [number, number];
-    text: string;
-  };
+  data?: Record<string, unknown>;
 }
 ```
+
+A validation result is bounded: at the cap of `maxIssues` the validation stops as soon as an error is on the list, and a validation that stopped early is never `valid`. An `UNKNOWN_GLOBAL` issue states the list of allowed globals once per validation.
 
 **Example:**
 ```ts
@@ -68,76 +92,93 @@ const result = await validator.validate(`
 
 if (!result.valid) {
   for (const issue of result.issues) {
-    console.log(`${issue.rule}: ${issue.message}`);
+    console.log(`${issue.code}: ${issue.message}`);
   }
 }
 ```
 
+#### registerRule(rule), unregisterRule(name), getRules(), getRule(name), getStats(result, durationMs)
+
+Manage the rules of a validator, and count the issues of a result by severity.
+
 ## PreScanner Class
 
-Fast pre-scanning for DoS protection.
+Checks on the source text before it is parsed.
 
 ### Constructor
 
 ```ts
-new PreScanner(config: PreScannerConfig)
+new PreScanner(options?: { preset?: PreScannerPresetLevel; config?: Partial<PreScannerConfig> })
 ```
+
+`preset` is `'agentscript'`, `'strict'`, `'secure'`, `'standard'` (the default) or `'permissive'`; `config` overrides single settings of it. `PreScanner.forAgentScript(overrides?)`, `forStrict`, `forSecure`, `forStandard` and `forPermissive` do the same.
 
 ### Methods
 
-#### scan(code)
-
-Scan code for potential issues before parsing.
+#### scan(source)
 
 ```ts
-scan(code: string): PreScanResult
+scan(source: string): PreScanResult
 ```
-
-**Returns:** `PreScanResult`
 
 ```ts
 interface PreScanResult {
-  valid: boolean;
+  success: boolean;
   issues: PreScanIssue[];
+  fatalIssue?: PreScanIssue;
+  detectedRegex: DetectedRegex[];
+  stats: PreScanStats;
 }
 
 interface PreScanIssue {
+  code: PreScannerErrorCode;   // e.g. 'PRESCANNER_INPUT_TOO_LARGE'
+  severity: 'error' | 'warning' | 'info';
   message: string;
-  severity: 'error' | 'warning';
+  position?: number;
+  line?: number;
+  column?: number;
+  data?: Record<string, unknown>;
 }
 ```
 
 **Example:**
 ```ts
-import { PreScanner, createPreScannerConfig } from '@enclave-vm/ast';
+import { PreScanner } from '@enclave-vm/ast';
 
-const scanner = new PreScanner(createPreScannerConfig('agentscript'));
+const scanner = new PreScanner({ preset: 'agentscript' });
 const result = scanner.scan(code);
 
-if (!result.valid) {
-  console.log('Pre-scan failed:', result.issues);
+if (!result.success) {
+  console.log('Pre-scan failed:', result.fatalIssue);
 }
 ```
+
+`JSAstValidator.validate()` runs a pre-scan itself, with the `standard` preset unless `preScan.preset` says otherwise. See [Pre-Scanner](/core-libraries/ast-guard/pre-scanner).
 
 ## Factory Functions
 
 ### createAgentScriptPreset(options?)
 
-Create the AgentScript validation preset.
+Create the rules of the AgentScript preset.
 
 ```ts
-function createAgentScriptPreset(options?: AgentScriptOptions): ValidationPreset
+function createAgentScriptPreset(options?: AgentScriptOptions): ValidationRule[]
 ```
 
 **Options:**
 ```ts
 interface AgentScriptOptions {
   // Globals
+  securityLevel?: 'STRICT' | 'SECURE' | 'STANDARD' | 'PERMISSIVE'; // Default: 'STANDARD'
   allowedGlobals?: string[];
+  hostObjectGlobals?: string[];
   additionalDisallowedIdentifiers?: string[];
+  reservedPrefixes?: string[];  // In addition to '__ag_' and '__safe_'
 
-  // Features
+  // Tool calls
   requireCallTool?: boolean;
+  staticCallTarget?: { enabled?: boolean; allowedToolNames?: (string | RegExp)[] };
+  callToolValidation?: { minArgs?: number; maxArgs?: number; expectedTypes?: string[] };
 
   // Loops
   allowedLoops?: {
@@ -148,16 +189,18 @@ interface AgentScriptOptions {
     allowForIn?: boolean;
   };
 
-  // Functions
+  // Functions and syntax
   allowArrowFunctions?: boolean;
-  allowFunctionDeclarations?: boolean;
+  additionalAllowedSyntax?: string[];
+  requireDirectRegexMethodCalls?: boolean;
+  allowDynamicArrayFill?: boolean;
 }
 ```
 
 **Example:**
 ```ts
-const preset = createAgentScriptPreset({
-  allowedGlobals: ['callTool', 'Math', 'JSON', 'console', 'context'],
+const rules = createAgentScriptPreset({
+  allowedGlobals: ['callTool', 'Math', 'JSON', 'context'],
   allowedLoops: {
     allowFor: true,
     allowForOf: true,
@@ -166,88 +209,99 @@ const preset = createAgentScriptPreset({
 });
 ```
 
-### createPreScannerConfig(preset)
+### createStrictPreset, createSecurePreset, createStandardPreset, createPermissivePreset, createPreset(level, options?)
 
-Create pre-scanner configuration.
+The other presets, also available as `Presets.strict`, `Presets.secure`, `Presets.standard`, `Presets.permissive` and `Presets.create`. Each returns an array of rules. They are filters on source text: passing one does not make code safe to run.
+
+### createBabelPreset(options?), getBabelConfig(level?)
+
+The AgentScript preset with the `Babel` global, and the Babel limits of a security level. See [Babel Preset](/core-libraries/ast-guard/babel-preset).
+
+### createPreScannerConfig(preset, overrides?)
+
+The configuration object of a pre-scanner preset, merged with overrides and clamped to the mandatory maxima.
 
 ```ts
-function createPreScannerConfig(preset: 'agentscript' | 'standard'): PreScannerConfig
+function createPreScannerConfig(
+  preset: 'agentscript' | 'strict' | 'secure' | 'standard' | 'permissive',
+  overrides?: Partial<PreScannerConfig>,
+): PreScannerConfig
 ```
 
 **PreScannerConfig:**
 ```ts
 interface PreScannerConfig {
   maxInputSize: number;
+  maxLineLength: number;
+  maxLines: number;
   maxNestingDepth: number;
+  maxConsecutiveOperators: number;
+  regexMode: 'block' | 'analyze' | 'allow';
+  maxRegexLength?: number;
+  maxRegexCount?: number;
+  regexAnalysisLevel?: 'catastrophic' | 'polynomial';
   maxStringLength: number;
-  maxArrayLiteralLength: number;
-  checkReDoS: boolean;
-  blockedPatterns: RegExp[];
+  maxTotalStringContent: number;
+  unicodePreCheck: boolean;
+  blockBidiPatterns: boolean;
+  blockInvisibleChars?: boolean;
 }
 ```
 
-### createSecurityRules()
+Pass the result as `config` of `new PreScanner({ preset, config })`, not in the place of the options.
 
-Get all built-in security rules.
+### normalizeToolNamespaces(spec, options?)
 
-```ts
-function createSecurityRules(): ValidationRule[]
-```
-
-## ValidationPreset
-
-```ts
-interface ValidationPreset {
-  rules: ValidationRule[];
-  globals: GlobalConfig;
-  transforms?: TransformConfig[];
-}
-
-interface GlobalConfig {
-  allowed: string[];
-  disallowed: string[];
-}
-```
+Validates a `toolNamespaces` specification (`{ mail: ['list', 'send'] }` or `{ users: { get: 'users:get' } }`) and returns it as plain data. It throws a `TypeError` whose message starts with `Invalid toolNamespaces:` for a name no runtime may bind, among them the names the language calls on an object by itself: `then`, `toString`, `valueOf`, `toLocaleString` and `toJSON`, as a method name and as a namespace name.
 
 ## ValidationRule
 
 ```ts
 interface ValidationRule {
-  id: string;
-  name: string;
-  description: string;
-  severity: 'error' | 'warning' | 'info';
-  check: (node: ESTree.Node, context: RuleContext) => void;
+  readonly name: string;
+  readonly description: string;
+  readonly defaultSeverity: ValidationSeverity;
+  readonly enabledByDefault: boolean;
+  validate(context: ValidationContext): void | Promise<void>;
 }
 
-interface RuleContext {
-  report: (issue: Omit<ValidationIssue, 'rule'>) => void;
-  getSource: () => string;
-  getAncestors: () => ESTree.Node[];
+interface ValidationContext {
+  ast: acorn.Node;
+  source: string;
+  config: ValidationConfig;
+  report(issue: Omit<ValidationIssue, 'severity'> & { severity?: ValidationSeverity }): void;
+  visited: Set<acorn.Node>;
+  metadata: Map<string, unknown>;
 }
 ```
 
 ## Built-in Rules
 
-| Rule ID | Description |
-|---------|-------------|
-| `no-eval` | Block eval() and Function() |
-| `no-dynamic-code` | Block setTimeout/setInterval with strings |
-| `no-system-access` | Block process, require, import |
-| `no-global-access` | Block window, global, globalThis |
-| `no-prototype-access` | Block __proto__, constructor |
-| `no-metaprogramming` | Block Proxy, Reflect |
-| `no-network` | Block fetch, XMLHttpRequest, WebSocket |
-| `no-storage` | Block localStorage, sessionStorage |
-| `no-native-code` | Block WebAssembly, Worker |
-| `no-this` | Block this keyword |
-| `no-user-functions` | Block function declarations |
-| `no-unbounded-loops` | Block while, do-while |
-| `no-for-in` | Block for-in loops |
-| `allowed-globals-only` | Only allow specified globals |
-| `static-tool-calls` | Require string literals for tool names |
-| `bounded-iterations` | Enforce iteration limits |
-| `allowed-syntax` | Only allow the listed ESTree node types (`AllowedSyntaxRule`) |
+| Rule name | Class | Description |
+|-----------|-------|-------------|
+| `no-eval` | `NoEvalRule` | Blocks `eval()`, the `Function` constructor and string timers |
+| `allowed-syntax` | `AllowedSyntaxRule` | Only allows the listed ESTree node types |
+| `no-global-access` | `NoGlobalAccessRule` | Blocks the global objects, `this` as a value, `constructor`, `Reflect` and the reflection statics of `Object` |
+| `disallowed-identifier` | `DisallowedIdentifierRule` | Blocks identifiers and property names by name |
+| `unknown-global` | `UnknownGlobalRule` | Only allows the listed globals, resolved by lexical scope |
+| `reserved-prefix` | `ReservedPrefixRule` | Blocks names with the runtime's prefixes |
+| `no-user-functions` | `NoUserDefinedFunctionsRule` | Blocks function declarations and function expressions |
+| `forbidden-loop` | `ForbiddenLoopRule` | Blocks the loop types that are not allowed |
+| `infinite-loop` | (AgentScript preset) | Reports obvious infinite loops |
+| `no-async` | `NoAsyncRule` | Restricts async functions and `await` |
+| `static-call-target` | `StaticCallTargetRule` | Requires a string literal as the tool name |
+| `no-call-target-assignment` | `NoCallTargetAssignmentRule` | Blocks every write and declaration of a protected name |
+| `required-function-call` | `RequiredFunctionCallRule` | Requires calls of the listed functions |
+| `call-argument-validation` | `CallArgumentValidationRule` | Checks argument count and types |
+| `no-regex-literal` | `NoRegexLiteralRule` | Blocks or analyzes regex literals |
+| `no-regex-methods` | `NoRegexMethodsRule` | Blocks the methods that run a regular expression |
+| `no-computed-destructuring` | `NoComputedDestructuringRule` | Blocks computed keys in destructuring patterns |
+| `no-json-callbacks` | `NoJsonCallbacksRule` | Blocks JSON replacer and reviver functions |
+| `resource-exhaustion` | (AgentScript preset) | Reports literal sizes that exhaust CPU or memory |
+| `unicode-security` | `UnicodeSecurityRule` | Reports bidirectional, look-alike and invisible characters (in no preset) |
+| `unreachable-code` | `UnreachableCodeRule` | Reports code after `return` / `throw` |
+
+See [Security Rules](/core-libraries/ast-guard/security-rules) for the options.
 
 ### AllowedSyntaxRule
 
@@ -278,26 +332,31 @@ const result = await validator.validate('const greeting = `hello`;');
 
 ## Code Transformation
 
-### transformAgentScript(code, options)
+### transformAgentScript(code, config?)
 
 Transform code for safe execution.
 
 ```ts
 function transformAgentScript(
   code: string,
-  options?: TransformOptions
+  config?: AgentScriptTransformConfig
 ): string
 ```
 
 **Options:**
 ```ts
-interface TransformOptions {
-  wrapInMain?: boolean;
-  transformCallTool?: boolean;
-  transformLoops?: boolean;
-  transformConsole?: boolean;
+interface AgentScriptTransformConfig {
+  wrapInMain?: boolean;          // Default: true
+  transformCallTool?: boolean;   // Default: true
+  transformLoops?: boolean;      // Default: true
+  maxIterations?: number;        // Written into each loop check as a number
+  additionalIdentifiers?: string[]; // Names that keep their name (custom globals)
+  prefix?: string;               // Default: '__safe_'
+  parseOptions?: acorn.Options;
 }
 ```
+
+Without `maxIterations` a loop check compares its counter with the runtime's `__maxIterations`, and a script that uses that name is refused.
 
 **Example:**
 ```ts
@@ -313,6 +372,7 @@ const transformed = transformAgentScript(`
   wrapInMain: true,
   transformCallTool: true,
   transformLoops: true,
+  maxIterations: 10000,
 });
 
 // Output:
@@ -325,37 +385,37 @@ const transformed = transformAgentScript(`
 // }
 ```
 
+See [Code Transformation](/core-libraries/ast-guard/code-transform) for the other transforms (`transformConcatenation`, `rewriteImports`, ...).
+
 ## Custom Rules
 
 ### Creating a Custom Rule
 
 ```ts
-import { ValidationRule, RuleContext } from '@enclave-vm/ast';
+import { ValidationSeverity } from '@enclave-vm/ast';
+import type { ValidationRule, ValidationContext } from '@enclave-vm/ast';
+import * as walk from 'acorn-walk';
 
-const noConsoleRule: ValidationRule = {
-  id: 'no-console',
-  name: 'No Console',
-  description: 'Disallow console statements',
-  severity: 'warning',
+class NoConsoleRule implements ValidationRule {
+  readonly name = 'no-console';
+  readonly description = 'Disallow console statements';
+  readonly defaultSeverity = ValidationSeverity.WARNING;
+  readonly enabledByDefault = true;
 
-  check(node, context) {
-    if (
-      node.type === 'CallExpression' &&
-      node.callee.type === 'MemberExpression' &&
-      node.callee.object.type === 'Identifier' &&
-      node.callee.object.name === 'console'
-    ) {
-      context.report({
-        message: 'Console statements are not allowed',
-        severity: 'warning',
-        location: {
-          line: node.loc?.start.line || 0,
-          column: node.loc?.start.column || 0,
-        },
-      });
-    }
-  },
-};
+  validate(context: ValidationContext): void {
+    walk.simple(context.ast as any, {
+      MemberExpression: (node: any) => {
+        if (node.object.type === 'Identifier' && node.object.name === 'console') {
+          context.report({
+            code: 'NO_CONSOLE',
+            message: 'Console statements are not allowed',
+            location: node.loc ? { line: node.loc.start.line, column: node.loc.start.column } : undefined,
+          });
+        }
+      },
+    });
+  }
+}
 ```
 
 ### Using Custom Rules
@@ -363,55 +423,64 @@ const noConsoleRule: ValidationRule = {
 ```ts
 import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
-const preset = createAgentScriptPreset();
-preset.rules.push(noConsoleRule);
+const validator = new JSAstValidator([...createAgentScriptPreset(), new NoConsoleRule()]);
 
-const validator = new JSAstValidator(preset);
+try {
+  const result = await validator.validate(code);
+  // result.valid and result.issues: what the rules reported
+} catch (error) {
+  // InvalidSourceError, or what a rule threw. The script was not validated: do not run it.
+}
 ```
+
+A rule reports a finding with `context.report()`. An exception it throws instead ends the validation: `validate()` rejects with it, and there is no result.
 
 ## Complete Example
 
 ```ts
-import {
-  JSAstValidator,
-  PreScanner,
-  createAgentScriptPreset,
-  createPreScannerConfig,
-  transformAgentScript,
-} from '@enclave-vm/ast';
+import { JSAstValidator, PreScanner, createAgentScriptPreset, transformAgentScript } from '@enclave-vm/ast';
 
-async function validateAndTransform(code: string) {
-  // Step 1: Pre-scan
-  const scanner = new PreScanner(createPreScannerConfig('agentscript'));
-  const scanResult = scanner.scan(code);
+const validator = new JSAstValidator(createAgentScriptPreset());
+const preScanner = new PreScanner({ preset: 'agentscript' });
 
-  if (!scanResult.valid) {
-    return { valid: false, error: 'Pre-scan failed', issues: scanResult.issues };
+async function transformAndValidate(code: string) {
+  // Step 1: Pre-scan the script as it was written. transformAgentScript() parses its whole
+  // input and has no size limit of its own, so the limits (size first) have to hold before
+  // it runs.
+  const scan = preScanner.scan(code);
+  if (!scan.success) {
+    return { valid: false, error: scan.fatalIssue?.message ?? 'Pre-scan failed', issues: scan.issues };
   }
 
-  // Step 2: AST validation
-  const preset = createAgentScriptPreset({
-    allowedGlobals: ['callTool', 'Math', 'JSON', 'console'],
+  // Step 2: Transform. AgentScript allows a top-level return and await, which only parse
+  // once the script is wrapped in its main function.
+  let transformed: string;
+  try {
+    transformed = transformAgentScript(code, {
+      wrapInMain: true,
+      transformCallTool: true,
+      transformLoops: true,
+      maxIterations: 10000,
+    });
+  } catch (error) {
+    return { valid: false, error: (error as Error).message, issues: [] };
+  }
+
+  // Step 3: Validate the transformed script. The pre-scan has seen the script itself
+  // (step 1); its limits are not measured again on the transform's output.
+  const validation = await validator.validate(transformed, {
+    preScan: { enabled: false },
   });
-  const validator = new JSAstValidator(preset);
-  const validation = await validator.validate(code);
 
   if (!validation.valid) {
     return { valid: false, error: 'Validation failed', issues: validation.issues };
   }
 
-  // Step 3: Transform
-  const transformed = transformAgentScript(code, {
-    wrapInMain: true,
-    transformCallTool: true,
-    transformLoops: true,
-  });
-
   return { valid: true, code: transformed };
 }
 
 // Usage
-const result = await validateAndTransform(`
+const result = await transformAndValidate(`
   const users = await callTool('users:list', { limit: 10 });
   return users.length;
 `);
@@ -422,6 +491,10 @@ if (result.valid) {
   console.log('Validation errors:', result.issues);
 }
 ```
+
+The pre-scan comes first because `transformAgentScript()` parses the whole script and has no size limit of its own. The pre-scan that `validate()` runs by default would only see the transformed script, after that parse: a recipe that takes scripts from outside bounds the script as written, as step 1 does.
+
+A script that passes is accepted by the filter. To run it, use [`@enclave-vm/core`](/api-reference/enclave-vm), which does these steps itself and then runs the script in a sandbox.
 
 ## Related
 

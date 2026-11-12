@@ -1,6 +1,7 @@
-import { JSAstValidator } from '../validator';
+import { JSAstValidator, DEFAULT_MAX_ISSUES } from '../validator';
 import { DisallowedIdentifierRule } from '../rules/disallowed-identifier.rule';
 import { UnreachableCodeRule } from '../rules/unreachable-code.rule';
+import { UnknownGlobalRule } from '../rules/unknown-global.rule';
 import { ValidationSeverity } from '../interfaces';
 
 describe('JSAstValidator', () => {
@@ -134,6 +135,109 @@ describe('JSAstValidator', () => {
 
       expect(result.valid).toBe(false);
       expect(result.issues.length).toBeLessThanOrEqual(2);
+    });
+
+    describe('maxIssues', () => {
+      const calls = (count: number): string => Array.from({ length: count }, () => 'eval("x");').join('\n');
+      // Warnings first (unreachable code), then an error
+      const warningsThenError = `
+        function f() {
+          return 1;
+          1; 2; 3; 4;
+        }
+        eval("x");
+      `;
+      const mixedRules = () => [new UnreachableCodeRule(), new DisallowedIdentifierRule({ disallowed: ['eval'] })];
+
+      it('collects at most DEFAULT_MAX_ISSUES issues when it is not set', async () => {
+        const validator = new JSAstValidator([new DisallowedIdentifierRule({ disallowed: ['eval'] })]);
+
+        const result = await validator.validate(calls(DEFAULT_MAX_ISSUES + 50));
+
+        expect(result.valid).toBe(false);
+        expect(result.issues).toHaveLength(DEFAULT_MAX_ISSUES);
+        expect(result.incomplete).toBe(true);
+      });
+
+      it('collects every issue with maxIssues: 0', async () => {
+        const validator = new JSAstValidator([new DisallowedIdentifierRule({ disallowed: ['eval'] })]);
+
+        const result = await validator.validate(calls(DEFAULT_MAX_ISSUES + 50), { maxIssues: 0 });
+
+        expect(result.issues).toHaveLength(DEFAULT_MAX_ISSUES + 50);
+        expect(result.incomplete).toBeUndefined();
+      });
+
+      it('does not report a result as incomplete when the list has room left', async () => {
+        const validator = new JSAstValidator([new DisallowedIdentifierRule({ disallowed: ['eval'] })]);
+
+        const result = await validator.validate(calls(3), { maxIssues: 10 });
+
+        expect(result.issues).toHaveLength(3);
+        expect(result.incomplete).toBeUndefined();
+      });
+
+      it('keeps running the rules while the list holds only warnings', async () => {
+        const validator = new JSAstValidator(mixedRules());
+
+        const result = await validator.validate(warningsThenError, { maxIssues: 2 });
+
+        expect(result.valid).toBe(false);
+        expect(result.issues).toHaveLength(2);
+        expect(result.issues.map((issue) => issue.severity)).toContain(ValidationSeverity.ERROR);
+        expect(result.incomplete).toBe(true);
+        expect(result.rulesExecuted).toBe(2);
+      });
+
+      it('leaves a source with nothing but warnings valid, with the list cut at the cap', async () => {
+        const validator = new JSAstValidator([new UnreachableCodeRule()]);
+
+        const result = await validator.validate(warningsThenError, { maxIssues: 2 });
+
+        expect(result.valid).toBe(true);
+        expect(result.issues).toHaveLength(2);
+        expect(result.incomplete).toBe(true);
+      });
+
+      it('counts the rules that ran when it stops early', async () => {
+        const validator = new JSAstValidator([
+          new DisallowedIdentifierRule({ disallowed: ['eval'] }),
+          new UnreachableCodeRule(),
+        ]);
+
+        const stopped = await validator.validate(warningsThenError, { stopOnFirstError: true });
+        expect(stopped.rulesExecuted).toBe(1);
+        expect(stopped.incomplete).toBe(true);
+
+        const complete = await validator.validate(warningsThenError);
+        expect(complete.rulesExecuted).toBe(2);
+        expect(complete.incomplete).toBeUndefined();
+      });
+    });
+
+    describe('unknown-global issues', () => {
+      it('state the list of allowed globals once per validation', async () => {
+        const validator = new JSAstValidator([
+          new UnknownGlobalRule({ allowedGlobals: ['callTool', 'Math'], allowStandardGlobals: false }),
+        ]);
+
+        const result = await validator.validate('first; second; third;');
+
+        expect(result.issues.map((issue) => issue.code)).toEqual([
+          'UNKNOWN_GLOBAL',
+          'UNKNOWN_GLOBAL',
+          'UNKNOWN_GLOBAL',
+        ]);
+        expect(result.issues[0].message).toContain('Allowed globals: Math, callTool');
+        expect(result.issues[0].data).toEqual({ identifier: 'first', allowedGlobals: ['Math', 'callTool'] });
+        expect(result.issues[1].message).not.toContain('Allowed globals');
+        expect(result.issues[1].data).toEqual({ identifier: 'second' });
+        expect(result.issues[2].data).toEqual({ identifier: 'third' });
+
+        // Once per validation, not once per validator
+        const again = await validator.validate('fourth;');
+        expect(again.issues[0].message).toContain('Allowed globals: Math, callTool');
+      });
     });
   });
 

@@ -16,6 +16,9 @@ import { transformAst } from './transformer';
 import type { TransformConfig } from './interfaces';
 import { walkAll } from './utils/ast-walk';
 
+/** The runtime's name for the iteration limit of a loop (see `maxIterations` below). */
+const MAX_ITERATIONS_NAME = '__maxIterations';
+
 /**
  * Configuration for AgentScript transformation
  */
@@ -49,6 +52,14 @@ export interface AgentScriptTransformConfig {
    * Default: []
    */
   additionalIdentifiers?: string[];
+
+  /**
+   * The iteration limit of `for`, `while` and `do...while` loops, written into each loop's check
+   * as a number. Without it the check compares with the runtime's `__maxIterations`, a name the
+   * script must then not be able to declare (the validator reserves it; a script that uses the
+   * name is refused here as well).
+   */
+  maxIterations?: number;
 
   /**
    * Parse options for acorn
@@ -94,8 +105,12 @@ export function transformAgentScript(code: string, config: AgentScriptTransformC
     transformLoops = true,
     prefix = '__safe_',
     additionalIdentifiers = [],
+    maxIterations,
     parseOptions = {},
   } = config;
+  if (maxIterations !== undefined && !(typeof maxIterations === 'number' && Number.isFinite(maxIterations))) {
+    throw new TypeError('transformAgentScript: maxIterations must be a finite number');
+  }
 
   // Parse the code
   // AgentScript allows top-level return/await, so we wrap it in an async function for parsing
@@ -185,7 +200,7 @@ export function transformAgentScript(code: string, config: AgentScriptTransformC
 
   // Step 2: Transform loops (for, for-of, while, do-while)
   if (transformLoops) {
-    transformLoopsInAst(ast, prefix);
+    transformLoopsInAst(ast, prefix, maxIterations);
   }
 
   // Step 3: Wrap in async function __ag_main() if needed
@@ -273,7 +288,7 @@ function wrapInMainFunction(ast: any): any {
  * @param ast The AST to transform
  * @param prefix Prefix for safe functions (default: '__safe_')
  */
-function transformLoopsInAst(ast: any, prefix = '__safe_'): void {
+function transformLoopsInAst(ast: any, prefix = '__safe_', maxIterations?: number): void {
   let iterCounterIndex = 0;
 
   // Hygiene: a loop counter must be a name the script cannot mention. The counter lives in the
@@ -289,6 +304,21 @@ function transformLoopsInAst(ast: any, prefix = '__safe_'): void {
     while (scriptIdentifiers.has(name)) name = `__iter_${iterCounterIndex++}`;
     return name;
   };
+
+  // The limit a counter is compared with. A number when the caller knows it: nothing the script
+  // declares can stand in for a literal. Otherwise the runtime's `__maxIterations`, and then the
+  // script may not use that name at all: declared in any scope around a loop, it would be the
+  // limit of that loop.
+  if (maxIterations === undefined && scriptIdentifiers.has(MAX_ITERATIONS_NAME)) {
+    throw new Error(
+      `Failed to transform AgentScript code: "${MAX_ITERATIONS_NAME}" is the name of the runtime's ` +
+        `iteration limit and cannot be used in a script`,
+    );
+  }
+  const limitNode = (): any =>
+    maxIterations === undefined
+      ? { type: 'Identifier', name: MAX_ITERATIONS_NAME }
+      : { type: 'Literal', value: maxIterations, raw: String(maxIterations) };
 
   /**
    * Create the iteration check statement to inject at the start of loop body
@@ -309,10 +339,7 @@ function transformLoopsInAst(ast: any, prefix = '__safe_'): void {
             name: counterName,
           },
         },
-        right: {
-          type: 'Identifier',
-          name: '__maxIterations',
-        },
+        right: limitNode(),
       },
       consequent: {
         type: 'ThrowStatement',
@@ -420,7 +447,10 @@ function transformLoopsInAst(ast: any, prefix = '__safe_'): void {
     },
   });
 
-  // Transform collected loops (in reverse order to preserve indices when inserting)
+  // Transform collected loops. The counter declarations are gathered per statement list and
+  // each list is rebuilt once: searching the list and inserting into it for every loop made the
+  // cost of this step grow with the square of the number of loops in one block.
+  const declarationsByBody = new Map<any[], Map<any, any>>();
   for (let i = loopsToTransform.length - 1; i >= 0; i--) {
     const { node, ancestors } = loopsToTransform[i];
     const counterName = nextCounterName();
@@ -428,14 +458,26 @@ function transformLoopsInAst(ast: any, prefix = '__safe_'): void {
     // Inject iteration check at start of loop body
     injectIterationCheck(node, counterName);
 
-    // Insert counter declaration before the loop
+    // The counter is declared right before the loop
     const parentBody = findParentBody(ancestors);
     if (parentBody) {
-      const loopIndex = parentBody.indexOf(node);
-      if (loopIndex >= 0) {
-        parentBody.splice(loopIndex, 0, createCounterDeclaration(counterName));
+      let declarations = declarationsByBody.get(parentBody);
+      if (!declarations) {
+        declarations = new Map<any, any>();
+        declarationsByBody.set(parentBody, declarations);
       }
+      declarations.set(node, createCounterDeclaration(counterName));
     }
+  }
+  for (const [parentBody, declarations] of declarationsByBody) {
+    const rebuilt: any[] = [];
+    for (const statement of parentBody) {
+      const declaration = declarations.get(statement);
+      if (declaration) rebuilt.push(declaration);
+      rebuilt.push(statement);
+    }
+    parentBody.length = 0;
+    for (const statement of rebuilt) parentBody.push(statement);
   }
 }
 

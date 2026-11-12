@@ -9,7 +9,29 @@
 
 import { z } from 'zod';
 import { sha256Hex } from './hash-utils';
+import { fetchOriginBound, readBodyText, sameOrigin } from './http-utils';
+import { timerDelay } from '../limits';
 import type { ToolDefinition, ToolContext } from '../tool-registry';
+
+/**
+ * Largest upstream response body a tool call reads when the options name no limit.
+ */
+const DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Largest specification that is read when the options name no limit.
+ */
+export const DEFAULT_MAX_SPEC_BYTES = 32 * 1024 * 1024;
+
+/**
+ * How long fetching a specification may take, body included, when the options name no limit.
+ */
+const DEFAULT_SPEC_TIMEOUT_MS = 30000;
+
+/**
+ * How much of the body of an upstream error is put into the error of the tool call.
+ */
+const MAX_ERROR_BODY_BYTES = 4096;
 
 /**
  * Options for the OpenAPI tool loader.
@@ -29,6 +51,14 @@ export interface LoaderOptions {
   perToolDeadlineMs?: number;
   /** Source/service name prefix for default tool names (prevents collisions across sources) */
   sourceName?: string;
+  /** Largest upstream response body a tool call reads, in bytes @default 10485760 (10MB) */
+  maxResponseBytes?: number;
+  /** Headers for the request that fetches the specification (`fromURL`) */
+  specHeaders?: Record<string, string>;
+  /** Timeout of the request that fetches the specification, body included, in ms @default 30000 */
+  specTimeoutMs?: number;
+  /** Largest specification that is read, in bytes @default 33554432 (32MB) */
+  maxSpecBytes?: number;
 }
 
 /**
@@ -81,28 +111,51 @@ export class OpenApiToolLoader {
 
   /**
    * Create a loader from a URL.
+   *
+   * `auth` and `options.headers` belong to the upstream API. They go with the request for the
+   * specification only when the specification is on the origin of `options.baseUrl`, or when
+   * no base URL is given: the specification then decides where the tools send their requests,
+   * so its host is trusted with the credential either way. What the specification host itself
+   * needs goes into `options.specHeaders`.
    */
   static async fromURL(url: string, options?: LoaderOptions, auth?: UpstreamAuth): Promise<OpenApiToolLoader> {
-    const headers: Record<string, string> = { ...options?.headers };
-    if (auth) {
-      switch (auth.type) {
-        case 'bearer':
-          if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
-          break;
-        case 'api-key':
-          if (auth.token) headers[auth.header ?? 'X-API-Key'] = auth.token;
-          break;
-        case 'basic':
-          if (auth.token) headers['Authorization'] = `Basic ${auth.token}`;
-          break;
+    const headers: Record<string, string> = {};
+    if (!options?.baseUrl || sameOrigin(url, options.baseUrl)) {
+      for (const [name, value] of Object.entries(options?.headers ?? {})) {
+        setHeader(headers, name, value);
       }
+      OpenApiToolLoader.applyAuth(headers, auth);
+    }
+    for (const [name, value] of Object.entries(options?.specHeaders ?? {})) {
+      setHeader(headers, name, value);
     }
 
-    const response = await fetch(url, { headers });
-    if (!response.ok) {
-      throw new Error(`Failed to fetch OpenAPI spec from ${url}: ${response.status}`);
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      timerDelay(positive(options?.specTimeoutMs) ?? DEFAULT_SPEC_TIMEOUT_MS),
+    );
+    let parsed: unknown;
+    try {
+      const response = await fetchOriginBound(url, { method: 'GET', headers, signal: controller.signal });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(`Failed to fetch OpenAPI spec from ${url}: ${response.status}`);
+      }
+      const text = await readBodyText(response, positive(options?.maxSpecBytes) ?? DEFAULT_MAX_SPEC_BYTES);
+      parsed = JSON.parse(text);
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error(`Timed out fetching OpenAPI spec from ${url}`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
     }
-    const spec = (await response.json()) as Record<string, unknown>;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error(`The OpenAPI spec from ${url} is not a JSON object`);
+    }
+    const spec = parsed as Record<string, unknown>;
     const hash = await sha256Hex(JSON.stringify(spec));
 
     // Resolve baseUrl: explicit option > spec.servers[0].url > fetch origin
@@ -155,6 +208,24 @@ export class OpenApiToolLoader {
       resolvedBaseUrl ? { ...options, baseUrl: resolvedBaseUrl } : options,
       auth,
     );
+  }
+
+  /**
+   * Put the upstream credential into a set of request headers.
+   */
+  private static applyAuth(headers: Record<string, string>, auth?: UpstreamAuth): void {
+    if (!auth?.token) return;
+    switch (auth.type) {
+      case 'bearer':
+        setHeader(headers, 'Authorization', `Bearer ${auth.token}`);
+        break;
+      case 'api-key':
+        setHeader(headers, auth.header ?? 'X-API-Key', auth.token);
+        break;
+      case 'basic':
+        setHeader(headers, 'Authorization', `Basic ${auth.token}`);
+        break;
+    }
   }
 
   /**
@@ -401,23 +472,59 @@ export class OpenApiToolLoader {
     const auth = this.auth;
     const headers = this.options.headers ?? {};
 
+    const maxResponseBytes = positive(this.options.maxResponseBytes) ?? DEFAULT_MAX_RESPONSE_BYTES;
+    const pathParams = (op.parameters ?? []).filter((param) => param.in === 'path');
+
     return async (args: unknown, context: ToolContext): Promise<unknown> => {
       const params = args as Record<string, unknown>;
 
-      // Build URL with path parameters
+      // Build the path. A path parameter fills its own place in the template and nothing
+      // else: its value is percent-encoded, and a segment that a parameter fills must stay a
+      // segment of its own (not empty, not a dot segment).
+      const template = op.path.startsWith('/') ? op.path : '/' + op.path;
+      const path = template
+        .split('/')
+        .map((segment) => {
+          if (!segment.includes('{')) return segment;
+          let filled = segment;
+          for (const param of pathParams) {
+            const value = params[param.name];
+            if (value === undefined) continue;
+            filled = filled.split(`{${param.name}}`).join(encodeURIComponent(OpenApiToolLoader.serializeParam(value)));
+          }
+          const plain = filled.replace(/%2e/gi, '.');
+          if (plain === '' || plain === '.' || plain === '..') {
+            throw invalidPathParameter(op);
+          }
+          return filled;
+        })
+        .join('/');
+
       let normalizedBase = baseUrl;
       while (normalizedBase.endsWith('/')) normalizedBase = normalizedBase.slice(0, -1);
-      let url = `${normalizedBase}${op.path.startsWith('/') ? op.path : '/' + op.path}`;
-      const queryParams: Record<string, string> = {};
+      let url = `${normalizedBase}${path}`;
 
+      // The URL that is requested has the path that was built: same number of segments
+      let basePath: string;
+      let requestPath: string;
+      try {
+        basePath = new URL(normalizedBase).pathname.replace(/\/+$/, '');
+        requestPath = new URL(url).pathname;
+      } catch {
+        throw new Error(`Invalid request URL for ${op.method.toUpperCase()} ${op.path}`);
+      }
+      const expectedPath = basePath + (path.split(/[?#]/)[0] as string);
+      if (requestPath.split('/').length !== expectedPath.split('/').length) {
+        throw invalidPathParameter(op);
+      }
+
+      const queryParams: Record<string, string> = {};
       if (op.parameters) {
         for (const param of op.parameters) {
           const value = params[param.name];
           if (value === undefined) continue;
 
-          if (param.in === 'path') {
-            url = url.replace(`{${param.name}}`, encodeURIComponent(OpenApiToolLoader.serializeParam(value)));
-          } else if (param.in === 'query') {
+          if (param.in === 'query') {
             queryParams[param.name] = OpenApiToolLoader.serializeParam(value);
           }
         }
@@ -436,89 +543,109 @@ export class OpenApiToolLoader {
         params['body'] != null;
       const resolvedMediaType = bodyMediaType ?? 'application/json';
       const isMultipart = resolvedMediaType === 'multipart/form-data';
-      const requestHeaders: Record<string, string> = {
-        // Omit Content-Type for multipart/form-data to let the runtime set the boundary
-        ...(hasBody && !isMultipart && { 'Content-Type': resolvedMediaType }),
-        ...headers,
-      };
-
-      // Add auth headers
-      if (auth) {
-        switch (auth.type) {
-          case 'bearer':
-            if (auth.token) requestHeaders['Authorization'] = `Bearer ${auth.token}`;
-            break;
-          case 'api-key':
-            if (auth.token) requestHeaders[auth.header ?? 'X-API-Key'] = auth.token;
-            break;
-          case 'basic':
-            if (auth.token) requestHeaders['Authorization'] = `Basic ${auth.token}`;
-            break;
-        }
+      const requestHeaders: Record<string, string> = {};
+      // Omit Content-Type for multipart/form-data to let the runtime set the boundary
+      if (hasBody && !isMultipart) {
+        requestHeaders['Content-Type'] = resolvedMediaType;
       }
 
-      // Add header parameters (skip protected auth headers to prevent credential overwrite)
-      const protectedHeaders = new Set<string>();
-      if (auth) {
-        if (auth.type === 'bearer' || auth.type === 'basic') protectedHeaders.add('authorization');
-        if (auth.type === 'api-key') protectedHeaders.add((auth.header ?? 'X-API-Key').toLowerCase());
-      }
+      // Header parameters come from the caller of the tool. They are set first: the headers
+      // the embedder configured and the credential are set after them and replace a header
+      // of the same name, whatever its case.
       if (op.parameters) {
         for (const param of op.parameters) {
           if (param.in === 'header' && params[param.name] !== undefined) {
-            if (protectedHeaders.has(param.name.toLowerCase())) continue;
-            requestHeaders[param.name] = OpenApiToolLoader.serializeParam(params[param.name]);
+            setHeader(requestHeaders, param.name, OpenApiToolLoader.serializeParam(params[param.name]));
           }
         }
       }
+      for (const [name, value] of Object.entries(headers)) {
+        setHeader(requestHeaders, name, value);
+      }
+      OpenApiToolLoader.applyAuth(requestHeaders, auth);
 
-      // Build fetch options
-      const fetchOptions: RequestInit = {
-        method: op.method.toUpperCase(),
-        headers: requestHeaders,
-        signal: context.signal,
-      };
-
+      // Build the request body
+      let body: BodyInit | undefined;
       if (hasBody) {
         if (OpenApiToolLoader.isJsonContentType(resolvedMediaType)) {
-          fetchOptions.body = JSON.stringify(params['body']);
+          body = JSON.stringify(params['body']);
         } else if (resolvedMediaType === 'application/x-www-form-urlencoded') {
-          fetchOptions.body = new URLSearchParams(params['body'] as Record<string, string>).toString();
+          body = new URLSearchParams(params['body'] as Record<string, string>).toString();
         } else if (resolvedMediaType === 'multipart/form-data') {
           const formData = new FormData();
           const bodyObj = params['body'] as Record<string, unknown>;
           for (const [key, value] of Object.entries(bodyObj)) {
             formData.append(key, value instanceof Blob ? value : String(value));
           }
-          fetchOptions.body = formData;
+          body = formData;
         } else if (resolvedMediaType.startsWith('text/')) {
-          fetchOptions.body = String(params['body']);
+          body = String(params['body']);
         } else {
-          fetchOptions.body = JSON.stringify(params['body']);
+          body = JSON.stringify(params['body']);
         }
       }
 
-      const response = await fetch(url, fetchOptions);
+      // The credential and the configured headers stay on the upstream's origin: a redirect
+      // to another origin is followed without them.
+      const response = await fetchOriginBound(url, {
+        method: op.method.toUpperCase(),
+        headers: requestHeaders,
+        body,
+        signal: context.signal,
+      });
 
       if (!response.ok) {
         const contentType = response.headers.get('content-type') ?? '';
-        let body: string;
+        let errorBody: string;
         try {
-          body = OpenApiToolLoader.isJsonContentType(contentType)
-            ? JSON.stringify(await response.json())
-            : await response.text();
+          errorBody = await readBodyText(response, MAX_ERROR_BODY_BYTES, true);
+          if (OpenApiToolLoader.isJsonContentType(contentType)) {
+            try {
+              errorBody = JSON.stringify(JSON.parse(errorBody));
+            } catch {
+              // Not complete JSON: keep the text
+            }
+          }
         } catch {
-          body = '';
+          errorBody = '';
         }
-        throw new Error(`HTTP ${response.status} ${response.statusText}: ${body}`);
+        throw new Error(`HTTP ${response.status} ${response.statusText.slice(0, 128)}: ${errorBody}`);
       }
 
       const contentType = response.headers.get('content-type') ?? '';
+      const text = await readBodyText(response, maxResponseBytes);
 
       if (OpenApiToolLoader.isJsonContentType(contentType)) {
-        return response.json();
+        return JSON.parse(text);
       }
-      return response.text();
+      return text;
     };
   }
+}
+
+/**
+ * A number above zero, or undefined.
+ */
+function positive(value: unknown): number | undefined {
+  return typeof value === 'number' && value > 0 ? value : undefined;
+}
+
+/**
+ * Set a request header, replacing a header of the same name whatever its case.
+ */
+function setHeader(headers: Record<string, string>, name: string, value: string): void {
+  const lower = name.toLowerCase();
+  for (const existing of Object.keys(headers)) {
+    if (existing.toLowerCase() === lower) delete headers[existing];
+  }
+  headers[name] = value;
+}
+
+/**
+ * The error of a tool call whose path parameters do not fill their own segments.
+ */
+function invalidPathParameter(op: ParsedOperation): Error {
+  const error = new Error(`Invalid path parameter for ${op.method.toUpperCase()} ${op.path}`);
+  (error as Error & { code?: string }).code = 'INVALID_PATH_PARAMETER';
+  return error;
 }

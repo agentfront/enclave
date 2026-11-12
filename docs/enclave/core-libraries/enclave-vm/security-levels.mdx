@@ -32,10 +32,18 @@ const customEnclave = new Enclave({
 | maxToolCalls          | 10     | 50     | 100      | 1,000      |
 | maxConsoleCalls       | 100    | 500    | 1,000    | 10,000     |
 | maxConsoleOutputBytes | 64KB   | 256KB  | 1MB      | 10MB       |
+| maxSanitizeDepth      | 5      | 10     | 20       | 50         |
+| maxSanitizeProperties | 50     | 100    | 500      | 1,000      |
 | sanitizeStackTraces   | YES    | YES    | NO       | NO         |
-| blockTimingAPIs       | YES    | NO     | NO       | NO         |
-| allowUnboundedLoops   | NO     | NO     | YES      | YES        |
-| unicodeSecurityCheck  | YES    | YES    | NO       | NO         |
+| allowFunctionsInGlobals | NO   | NO     | NO       | YES        |
+
+The level also selects the globals a script may use (`STRICT` has no `parseInt`, `parseFloat`, `isNaN`, `isFinite` and URI functions; `console` without a `consoleHandler` exists only at `PERMISSIVE`), what the runtime refuses on every value (`secureProxyConfig`), and the defaults of the [worker pool](/core-libraries/enclave-vm/worker-pool), the [reference sidecar](/core-libraries/enclave-vm/reference-sidecar) and the [Babel transform](/core-libraries/enclave-vm/babel-transform). `memoryLimit` is 1 MB at every level.
+
+`sanitizeStackTraces` concerns errors made outside the sandbox: an error made inside it has no `stack` at any level (see [Configuration](/core-libraries/enclave-vm/configuration#security-options)).
+
+<Note>
+The exported `SECURITY_LEVEL_CONFIGS` table also has the fields `blockTimingAPIs`, `allowUnboundedLoops` and `unicodeSecurityCheck`. The enclave does not act on them: `Date` is available at every level, the `agentscript` preset refuses `while` and `do...while` loops at every level, and the Unicode checks are those of the validator's pre-scanner, which do not depend on the level.
+</Note>
 
 ## When to Use Each Level
 
@@ -122,7 +130,7 @@ const enclave = new Enclave({
   maxIterations: 20000,     // Allow more iterations
 
   // Add additional restrictions
-  sanitizeStackTraces: true, // Enable stack sanitization
+  sanitizeStackTraces: true, // Sanitize the stack of errors made outside the sandbox
 });
 ```
 
@@ -130,10 +138,10 @@ const enclave = new Enclave({
 
 Security levels configure multiple defense layers:
 
-1. **AST Validation** - Blocked constructs vary by level
+1. **AST Validation** - The allowed globals vary by level
 2. **Resource Limits** - Timeout, iterations, tool calls
-3. **Output Controls** - Console rate limiting, output size
-4. **Stack Sanitization** - Information leakage prevention
+3. **Output Controls** - Console rate limiting, output size, the depth and size of sanitized values
+4. **Stack Sanitization** - For the errors that carry a stack
 
 Each level provides appropriate defaults for its trust model.
 

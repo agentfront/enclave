@@ -21,6 +21,9 @@ import {
   createBabelPreset,
   getBabelConfig,
   getAgentScriptGlobals,
+  PreScanner,
+  ValidationSeverity,
+  type PreScannerPresetLevel,
   type ValidationIssue,
 } from '@enclave-vm/ast';
 import {
@@ -30,12 +33,13 @@ import {
   type MultiFileTransformOptions,
   type MultiFileTransformResult,
 } from './babel';
-import { transformAgentScript, isWrappedInMain } from '@enclave-vm/ast';
+import { transformAgentScript, isWrappedInMain, AGENTSCRIPT_DISALLOWED_PROPERTIES } from '@enclave-vm/ast';
 import {
   extractLargeStrings,
   transformConcatenation,
   transformTemplateLiterals,
   guardComputedMemberKeys,
+  guardArrayWrites,
   normalizeToolNamespaces,
   type NormalizedToolNamespace,
 } from '@enclave-vm/ast';
@@ -70,6 +74,39 @@ import { injectDeadlineChecks } from './deadline-guard';
 import { guardSandboxRejections } from './sandbox-rejections';
 import { createHostActivity, trackToolCalls } from './execution-deadline';
 import { assertNodeVmAvailable } from './node-vm';
+import { normalizeEnclaveOptions } from './enclave-options';
+import { describeThrown, normalizeErrorText } from './thrown-value';
+import { refuseDynamicImport } from './dynamic-import';
+import { separateAsyncContexts } from './async-context';
+import { ARRAY_ELEMENT_BYTES } from './realm-memory';
+
+/**
+ * Parse code for one of the transforms that run after validation.
+ *
+ * With the goal the validator parsed it with and the engine will compile it with: a script. The
+ * two goals read the same text differently in one place that changes its meaning without a
+ * syntax error (an HTML-like comment is a comment in a script and an expression in a module), so
+ * a transform that parsed as a module could print, and the engine then run, code the validator
+ * never saw.
+ */
+function parseValidatedCode(source: string): acorn.Node {
+  return acorn.parse(source, {
+    ecmaVersion: 'latest',
+    sourceType: 'script',
+    allowReturnOutsideFunction: true,
+    allowAwaitOutsideFunction: true,
+  }) as unknown as acorn.Node;
+}
+
+/**
+ * The longest script `run()` takes, in characters, whatever the pre-scanner is configured with
+ * and with validation off as well: checked before the script is parsed for the first time.
+ */
+const MAX_SCRIPT_LENGTH = 5 * 1024 * 1024;
+
+/** The longest text one validation issue contributes to an error message, and the longest message. */
+const MAX_ISSUE_TEXT_LENGTH = 500;
+const MAX_VALIDATION_MESSAGE_LENGTH = 32 * 1024;
 
 /**
  * Default security level
@@ -151,6 +188,8 @@ function buildReferenceConfig(
     maxReferenceSize: sidecarOptions.maxReferenceSize ?? baseConfig.maxReferenceSize,
     extractionThreshold: sidecarOptions.extractionThreshold ?? baseConfig.extractionThreshold,
     maxResolvedSize: sidecarOptions.maxResolvedSize ?? baseConfig.maxResolvedSize,
+    // Left undefined where the host did not set it: the limit is then twice maxTotalSize
+    maxTotalResolvedSize: sidecarOptions.maxTotalResolvedSize ?? baseConfig.maxTotalResolvedSize,
     allowComposites: sidecarOptions.allowComposites ?? baseConfig.allowComposites,
     maxReferenceCount: sidecarOptions.maxReferenceCount ?? baseConfig.maxReferenceCount,
     maxResolutionDepth: baseConfig.maxResolutionDepth,
@@ -198,8 +237,12 @@ export class Enclave {
   };
   private readonly securityLevel: SecurityLevel;
   private readonly validator: JSAstValidator;
+  /** Layer 0: looks at the text of a script before anything parses it (see `preScan`) */
+  private readonly preScanner: PreScanner;
   private readonly validateCode: boolean;
   private readonly transformCode: boolean;
+  /** Whether the run-time key guard also refuses the property names the AgentScript validator refuses */
+  private readonly guardsReflectionKeys: boolean;
   private readonly referenceConfig?: ReferenceConfig;
   private readonly scoringGate?: ScoringGate;
   private readonly doubleVmConfig: DoubleVmConfig;
@@ -215,7 +258,11 @@ export class Enclave {
   /** The adapter while it is being created: executions that start at once share it */
   private adapterCreation?: Promise<SandboxAdapter>;
 
-  constructor(options: CreateEnclaveOptions = {}) {
+  constructor(rawOptions: CreateEnclaveOptions = {}) {
+    // Every scalar option has its documented type and range, or the constructor refuses it; and
+    // an option that is `undefined` is an option that was not set (see ./enclave-options).
+    const options = normalizeEnclaveOptions(rawOptions);
+
     // Determine security level (default: STANDARD)
     this.securityLevel = options.securityLevel ?? DEFAULT_SECURITY_LEVEL;
 
@@ -384,9 +431,17 @@ export class Enclave {
     // Note: presetName is defined earlier (before config) for Babel global injection
     this.validator = this.createValidator(presetName, customAllowedGlobals, hostObjectGlobals);
 
+    // Layer 0 runs with the pre-scanner preset named like the AST preset. The Babel preset has
+    // no namesake: its scripts carry source text in string literals, which `standard` has room
+    // for. `preScan` picks another preset, or changes single limits of the one in force.
+    const preScanPreset: PreScannerPresetLevel =
+      options.preScan?.preset ?? (presetName === 'babel' ? 'standard' : presetName);
+    this.preScanner = new PreScanner({ preset: preScanPreset, config: options.preScan?.config });
+
     // Configuration flags
     this.validateCode = options.validate !== false; // Default: true
     this.transformCode = options.transform !== false; // Default: true
+    this.guardsReflectionKeys = presetName === 'agentscript' || presetName === 'babel';
 
     // Realm globals: by default the script's realm holds exactly the names its validator accepts.
     // That only holds when this validator is the one checking the script (an allowlist preset,
@@ -405,7 +460,12 @@ export class Enclave {
 
     // Initialize scoring gate if configured
     if (options.scoringGate && options.scoringGate.scorer !== 'disabled') {
-      this.scoringGate = new ScoringGate(options.scoringGate);
+      // The gate reads a call through a tool namespace as the tool call it is: it gets the
+      // namespaces of this enclave unless the host configured the gate's own.
+      this.scoringGate = new ScoringGate({
+        ...options.scoringGate,
+        toolNamespaces: options.scoringGate.toolNamespaces ?? this.toolNamespaces,
+      });
     }
 
     // Build double VM config (default enabled for all adapters)
@@ -472,10 +532,16 @@ export class Enclave {
    * execution, tool call) and adapter produced the error.
    */
   private applyStackTracePolicy<T>(result: ExecutionResult<T>): ExecutionResult<T> {
-    if (result.success || !result.error?.stack || !this.config.sanitizeStackTraces) {
+    if (result.success || !result.error) {
       return result;
     }
-    return { ...result, error: { ...result.error, stack: sanitizeStackTrace(result.error.stack, true) } };
+    // `name`, `message`, `stack` and `code` are text of bounded length, whichever adapter built
+    // the error and whatever the script threw (see ./thrown-value).
+    const error = normalizeErrorText(result.error);
+    if (error.stack !== undefined && this.config.sanitizeStackTraces) {
+      return { ...result, error: { ...error, stack: sanitizeStackTrace(error.stack, true) } };
+    }
+    return { ...result, error };
   }
 
   /**
@@ -500,6 +566,63 @@ export class Enclave {
     let endExecution: (() => void) | undefined;
 
     try {
+      // Step 0: the size of the script, before anything parses it.
+      if (typeof code !== 'string' || code.length > MAX_SCRIPT_LENGTH) {
+        return {
+          success: false,
+          error: {
+            name: 'ValidationError',
+            message:
+              typeof code !== 'string'
+                ? 'The script must be a string'
+                : `The script is too large: ${code.length} characters, the maximum is ${MAX_SCRIPT_LENGTH}`,
+            code: 'VALIDATION_ERROR',
+          },
+          stats: {
+            ...stats,
+            duration: Date.now() - startTime,
+            endTime: Date.now(),
+          },
+        };
+      }
+
+      // Step 0.5: the pre-scanner (layer 0), on the script as it was written. It is here and
+      // not inside the validator because the validator sees the transformed code: by then the
+      // script has been parsed and rewritten in full, and what its limits measured would be the
+      // transform's output.
+      // (An empty script has nothing to scan: it runs, and returns nothing, as before.)
+      if (this.validateCode && code.length > 0) {
+        const preScan = this.preScanner.scan(code);
+        if (!preScan.success) {
+          const issues: ValidationIssue[] = preScan.issues.map((issue) => ({
+            code: issue.code,
+            severity:
+              issue.severity === 'error'
+                ? ValidationSeverity.ERROR
+                : issue.severity === 'warning'
+                  ? ValidationSeverity.WARNING
+                  : ValidationSeverity.INFO,
+            message: issue.message,
+            location: issue.line !== undefined ? { line: issue.line, column: issue.column ?? 0 } : undefined,
+            data: issue.data,
+          }));
+          return {
+            success: false,
+            error: {
+              name: 'ValidationError',
+              message: `AgentScript validation failed:\n${this.formatValidationErrors(issues)}`,
+              code: 'VALIDATION_ERROR',
+              data: { issues },
+            },
+            stats: {
+              ...stats,
+              duration: Date.now() - startTime,
+              endTime: Date.now(),
+            },
+          };
+        }
+      }
+
       // Step 1: Transform (if enabled) - MUST happen before validation
       // because AgentScript allows top-level return, await, etc. which are only
       // valid after wrapping in async function __ag_main()
@@ -512,6 +635,9 @@ export class Enclave {
           wrapInMain: needsWrapping,
           transformCallTool: true,
           transformLoops: true,
+          // The limit is written into each loop's check as a number: nothing a script declares
+          // can stand in for it
+          maxIterations: this.config.maxIterations,
           // Pass custom global names so they aren't transformed to __safe_ prefix
           additionalIdentifiers: this.customGlobalNames,
         });
@@ -521,7 +647,9 @@ export class Enclave {
       // This catches malicious patterns like constructor obfuscation BEFORE
       // they get transformed to __safe_concat calls (which would bypass detection)
       if (this.validateCode) {
-        const validationResult = await this.validator.validate(transformedCode);
+        // The pre-scanner has seen the script itself (step 0.5); what is validated here is the
+        // transform's output of it
+        const validationResult = await this.validator.validate(transformedCode, { preScan: { enabled: false } });
         if (!validationResult.valid) {
           // Format errors with location info and deduplicate
           const errorMessages = this.formatValidationErrors(validationResult.issues);
@@ -571,6 +699,33 @@ export class Enclave {
         transformedCode = this.applyComputedKeyGuard(transformedCode);
       }
 
+      // Step 2.25: a write that can change the size of an array goes through the runtime that
+      // accounts for arrays, which keeps an array within what the memory limit holds (see
+      // ./realm-memory). After the computed-key guard: that guard looks for computed members,
+      // and a write rewritten here is a call.
+      if (this.config.memoryLimit && this.config.memoryLimit > 0 && this.accountsForArrays()) {
+        transformedCode = this.applyArrayWriteGuard(transformedCode);
+      }
+
+      // Step 2.3: no dynamic import reaches an adapter. Every preset refuses it; this holds with
+      // validation off as well (see ./dynamic-import).
+      const importRefusal = refuseDynamicImport(transformedCode);
+      if (importRefusal) {
+        return {
+          success: false,
+          error: {
+            name: 'SecurityError',
+            message: importRefusal,
+            code: 'SECURITY_VIOLATION',
+          },
+          stats: {
+            ...stats,
+            duration: Date.now() - startTime,
+            endTime: Date.now(),
+          },
+        };
+      }
+
       // Step 2.5: AI Scoring Gate (if configured)
       // This runs AFTER AST validation but BEFORE code execution
       let scoringResult: ScoringGateResult | undefined;
@@ -578,14 +733,21 @@ export class Enclave {
         scoringResult = await this.scoringGate.evaluate(transformedCode);
 
         if (!scoringResult.allowed) {
+          // A refusal without a score is one where the scorer could not answer (failOpen: false):
+          // the reason says so, there are no signals to list.
+          const hasScore = typeof scoringResult.totalScore === 'number';
           const signalSummary =
-            scoringResult.signals?.map((s) => `${s.id}: ${s.description}`).join('; ') ?? 'Unknown risk';
+            scoringResult.signals && scoringResult.signals.length > 0
+              ? scoringResult.signals.map((s) => `${s.id}: ${s.description}`).join('; ')
+              : (scoringResult.reason ?? 'Unknown risk');
 
           return {
             success: false,
             error: {
               name: 'ScoringGateError',
-              message: `Script blocked by AI scoring (score: ${scoringResult.totalScore}): ${signalSummary}`,
+              message: hasScore
+                ? `Script blocked by AI scoring (score: ${scoringResult.totalScore}): ${signalSummary}`
+                : `Script blocked by AI scoring: ${signalSummary}`,
               code: 'SCORING_BLOCKED',
               data: {
                 totalScore: scoringResult.totalScore,
@@ -620,6 +782,11 @@ export class Enclave {
       // waiting for something of its own that will never happen; one that is waiting for the host
       // gets `toolCallGraceMs` more: see ./execution-deadline.
       const hostActivity = createHostActivity(this.toolCallGraceMs);
+      // The script runs in an async context of its own, which carries no AsyncLocalStorage store
+      // of the host; the host's callbacks run in the context run() was called in (see
+      // ./async-context).
+      const asyncContexts = separateAsyncContexts();
+      hostActivity.inHostContext = asyncContexts.inHostContext;
       const hostToolHandler = toolHandler || this.config.toolHandler;
       // Once run() has returned, the script's execution is over for the host as well. A script
       // can leave work behind (a tool call it did not await, a `then` on one): when that wakes up
@@ -639,7 +806,8 @@ export class Enclave {
         toolHandler: hostToolHandler ? trackToolCalls(hostToolHandler, hostActivity) : undefined,
         hostActivity,
         consoleHandler: hostConsoleHandler
-          ? (level, message) => (returned ? undefined : hostConsoleHandler(level, message))
+          ? (level, message) =>
+              returned ? undefined : asyncContexts.inHostContext(() => hostConsoleHandler(level, message))
           : undefined,
         sidecar,
         referenceConfig: this.referenceConfig,
@@ -675,7 +843,7 @@ export class Enclave {
         // Not with the worker pool: from this thread a script that waits in a worker looks the
         // same as one that keeps its worker busy, and the pool ends both itself, five seconds
         // after the deadline, by terminating the worker.
-        const execution = adapter.execute<T>(transformedCode, context);
+        const execution = asyncContexts.inScriptContext(() => adapter.execute<T>(transformedCode, context));
         const outcome =
           this.config.adapter === 'worker_threads'
             ? await execution
@@ -723,13 +891,13 @@ export class Enclave {
         clearTimeout(timeoutId);
         hostActivity.close();
 
-        const err = error as Error;
+        const thrown = describeThrown(error);
         return {
           success: false,
           error: {
-            name: err.name || 'ExecutionError',
-            message: err.message || 'Unknown execution error',
-            stack: err.stack,
+            name: thrown.name || 'ExecutionError',
+            message: thrown.message || 'Unknown execution error',
+            stack: thrown.stack,
             code: 'EXECUTION_ERROR',
           },
           stats: {
@@ -740,13 +908,13 @@ export class Enclave {
         };
       }
     } catch (error: unknown) {
-      const err = error as Error;
+      const thrown = describeThrown(error);
       return {
         success: false,
         error: {
-          name: err.name || 'EnclaveError',
-          message: err.message || 'Unknown enclave error',
-          stack: err.stack,
+          name: thrown.name || 'EnclaveError',
+          message: thrown.message || 'Unknown enclave error',
+          stack: thrown.stack,
           code: 'ENCLAVE_ERROR',
         },
         stats: {
@@ -766,13 +934,11 @@ export class Enclave {
   }
 
   /**
-   * Apply memory tracking transforms to code
+   * Guard the member accesses whose key is only known at run time (see guardComputedMemberKeys):
+   * the key is checked against the names this security level refuses before the access happens.
    *
-   * Transforms concatenation operations to use __safe_concat for memory tracking.
-   * This is used when memoryLimit is set but no sidecar is configured.
-   *
-   * @param code The code to transform
-   * @returns The transformed code
+   * @param code The validated, transformed code
+   * @returns The code with every computed member key guarded
    */
   private applyComputedKeyGuard(code: string): string {
     // Mirror the runtime membrane's policy for this security level: refuse the same keys, and
@@ -782,10 +948,18 @@ export class Enclave {
     if (blockedKeys.length === 0) {
       return code;
     }
+    // Where the validator refuses a property by name (the reflection statics and the legacy
+    // accessors of AgentScript), the guard refuses the same names under a key that is only
+    // known at run time: one list for both. Not for a preset that allows those names when
+    // they are written out.
+    if (this.guardsReflectionKeys) {
+      for (const name of AGENTSCRIPT_DISALLOWED_PROPERTIES) {
+        if (!blockedKeys.includes(name)) blockedKeys.push(name);
+      }
+    }
     const throwOnBlocked = proxyConfig.throwOnBlocked ?? true;
 
-    const parseModule = (source: string): acorn.Node =>
-      acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'module' }) as unknown as acorn.Node;
+    const parseModule = parseValidatedCode;
 
     const ast = parseModule(code);
     const { guardedCount } = guardComputedMemberKeys(ast, parseModule, { blockedKeys, throwOnBlocked });
@@ -796,14 +970,28 @@ export class Enclave {
   }
 
   /**
+   * Hand the writes that can change the size of an array to the runtime (see guardArrayWrites).
+   *
+   * @param code The validated, transformed code
+   * @returns The code with those writes rewritten
+   */
+  private applyArrayWriteGuard(code: string): string {
+    const ast = parseValidatedCode(code);
+    // A write to a small literal index is left as it is where it cannot take an array past the
+    // limit: below the number of slots the limit holds (the transform leaves at most 64)
+    const slots = Math.floor((this.config.memoryLimit ?? 0) / ARRAY_ELEMENT_BYTES);
+    const { guardedCount } = guardArrayWrites(ast, { unguardedBelow: slots });
+    return guardedCount === 0 ? code : generate(ast);
+  }
+
+  /**
    * Insert cooperative deadline checks (see ./deadline-guard).
    *
    * @param code The validated, transformed code
    * @returns The code with a deadline check at the start of every function and loop body
    */
   private applyDeadlineGuard(code: string): string {
-    const parseModule = (source: string): acorn.Node =>
-      acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'module' }) as unknown as acorn.Node;
+    const parseModule = parseValidatedCode;
 
     const ast = parseModule(code);
     const { guardedCount } = injectDeadlineChecks(ast, parseModule);
@@ -813,16 +1001,31 @@ export class Enclave {
     return generate(ast);
   }
 
+  /**
+   * Whether the runtime the script will run in defines the array accounting helpers (see
+   * ./realm-memory): the built-in VM adapters do, in process and in a worker. A host-supplied
+   * adapter gets the code without the calls to them.
+   */
+  private accountsForArrays(): boolean {
+    return this.sandboxAdapter === undefined;
+  }
+
+  /**
+   * Apply memory tracking transforms to code
+   *
+   * Transforms concatenation operations to use __safe_concat for memory tracking.
+   * This is used when memoryLimit is set but no sidecar is configured.
+   *
+   * @param code The code to transform
+   * @returns The transformed code
+   */
   private applyMemoryTrackingTransforms(code: string): string {
     // Parse the code into an AST
-    const ast = acorn.parse(code, {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-    });
+    const ast = parseValidatedCode(code);
 
     // Transform concatenation operations (a + b -> __safe_concat(a, b))
     // This allows the runtime to track memory allocations for string concatenation
-    transformConcatenation(ast);
+    transformConcatenation(ast, { arraySpread: this.accountsForArrays() });
 
     // Transform template literals (`Hello ${name}` -> __safe_template(['Hello ', ''], name))
     // This also enables memory tracking for template string creation
@@ -843,10 +1046,7 @@ export class Enclave {
    */
   private applySidecarTransforms(code: string, sidecar: ReferenceSidecar): string {
     // Parse the code into an AST
-    const ast = acorn.parse(code, {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-    });
+    const ast = parseValidatedCode(code);
 
     // Extract large strings (if extraction threshold is set)
     if (this.referenceConfig?.extractionThreshold) {
@@ -859,7 +1059,7 @@ export class Enclave {
     }
 
     // Transform concatenation operations (a + b -> __safe_concat(a, b))
-    transformConcatenation(ast);
+    transformConcatenation(ast, { arraySpread: this.accountsForArrays() });
 
     // Transform template literals (`Hello ${name}` -> __safe_template(['Hello ', ''], name))
     transformTemplateLiterals(ast);
@@ -1152,11 +1352,21 @@ export class Enclave {
 
         // Format: "CODE (line:col): message" or "CODE: message" if no location
         const formattedLocation = issue.location ? ` (line ${issue.location.line})` : '';
-        uniqueErrors.push(`${issue.code}${formattedLocation}: ${issue.message}`);
+        // A message quotes the script (an identifier, a property name): cut what one issue
+        // contributes, so that the text of a refusal is not in proportion to the script
+        const text = String(issue.message);
+        uniqueErrors.push(
+          `${issue.code}${formattedLocation}: ${
+            text.length > MAX_ISSUE_TEXT_LENGTH ? `${text.slice(0, MAX_ISSUE_TEXT_LENGTH)}...` : text
+          }`,
+        );
       }
     }
 
-    return uniqueErrors.join('\n');
+    const joined = uniqueErrors.join('\n');
+    return joined.length > MAX_VALIDATION_MESSAGE_LENGTH
+      ? `${joined.slice(0, MAX_VALIDATION_MESSAGE_LENGTH)}\n... (${uniqueErrors.length} issues in all)`
+      : joined;
   }
 }
 

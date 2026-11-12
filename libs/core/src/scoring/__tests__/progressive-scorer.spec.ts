@@ -2,7 +2,7 @@
  * Progressive Scorer Tests
  */
 
-import { ProgressiveScorer } from '../scorers/progressive.scorer';
+import { ProgressiveScorer, ProgressiveScorerError } from '../scorers/progressive.scorer';
 import { RuleBasedScorer } from '../scorers/rule-based.scorer';
 import type { ExtractedFeatures, ProgressiveScoringConfig } from '../types';
 
@@ -390,6 +390,77 @@ describe('ProgressiveScorer', () => {
       scorer.dispose();
 
       expect(scorer.isReady()).toBe(false);
+    });
+  });
+
+  describe('requireDetailed', () => {
+    const withoutDetailedScorer: ProgressiveScoringConfig = {
+      strategy: 'progressive',
+      fast: { type: 'rule-based' },
+      detailed: { type: 'local-llm' }, // No config, so won't create scorer
+      escalationThreshold: 10,
+    };
+
+    it('should throw when escalation is called for and there is no detailed scorer', async () => {
+      const scorer = new ProgressiveScorer(withoutDetailedScorer, { requireDetailed: true });
+      await scorer.initialize();
+
+      await expect(scorer.score(createHighRiskFeatures())).rejects.toThrow(ProgressiveScorerError);
+      await expect(scorer.score(createHighRiskFeatures())).rejects.toThrow(/no detailed scorer is configured/);
+
+      scorer.dispose();
+    });
+
+    it('should throw when the detailed scorer fails', async () => {
+      const scorer = new ProgressiveScorer(
+        {
+          strategy: 'progressive',
+          fast: { type: 'rule-based' },
+          detailed: {
+            type: 'local-llm',
+            localLlm: {
+              modelId: 'test-model',
+              fallbackToRules: true,
+              customAnalyzer: { analyze: async () => ({ score: 10, signals: [] }) },
+            },
+          },
+          escalationThreshold: 10,
+        },
+        { requireDetailed: true },
+      );
+      await scorer.initialize();
+      // The detailed scorer, as the progressive scorer holds it
+      const detailed = (scorer as unknown as { detailedScorer: { score: () => Promise<unknown> } }).detailedScorer;
+      jest.spyOn(detailed, 'score').mockRejectedValue(new Error('analysis failed'));
+
+      await expect(scorer.score(createHighRiskFeatures())).rejects.toThrow(
+        /Detailed scoring failed at a fast score of \d+ \(escalation threshold 10\): analysis failed/,
+      );
+
+      scorer.dispose();
+    });
+
+    it('should not need the detailed scorer below the escalation threshold', async () => {
+      const scorer = new ProgressiveScorer(
+        { ...withoutDetailedScorer, escalationThreshold: 101 },
+        { requireDetailed: true },
+      );
+      await scorer.initialize();
+
+      const result = await scorer.score(createHighRiskFeatures());
+
+      expect(result.scorerType).toBe('progressive');
+      scorer.dispose();
+    });
+
+    it('should answer with the fast result by default', async () => {
+      const scorer = new ProgressiveScorer(withoutDetailedScorer);
+      await scorer.initialize();
+
+      const result = await scorer.score(createHighRiskFeatures());
+
+      expect(result.totalScore).toBeGreaterThan(0);
+      scorer.dispose();
     });
   });
 

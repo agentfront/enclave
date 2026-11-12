@@ -110,6 +110,9 @@ export class UnknownGlobalRule implements ValidationRule {
   readonly enabledByDefault = true;
 
   private readonly allowedGlobals: Set<string>;
+  /** The allowed globals in the order they are shown, computed once: the list does not change */
+  private readonly allowedGlobalsSorted: readonly string[];
+  private readonly allowedGlobalsText: string;
   private readonly allowGlobalAssignment: boolean;
   private readonly customMessage?: string;
 
@@ -131,6 +134,9 @@ export class UnknownGlobalRule implements ValidationRule {
       STANDARD_SAFE_GLOBALS.forEach((g) => this.allowedGlobals.add(g));
     }
 
+    this.allowedGlobalsSorted = Object.freeze(Array.from(this.allowedGlobals).sort());
+    this.allowedGlobalsText = this.allowedGlobalsSorted.join(', ');
+
     this.allowGlobalAssignment = options.allowGlobalAssignment === true;
     this.customMessage = options.message;
   }
@@ -138,6 +144,11 @@ export class UnknownGlobalRule implements ValidationRule {
   validate(context: ValidationContext): void {
     // Every reference that no enclosing scope declares reaches a global.
     const { freeReferences } = analyzeScopes(context.ast);
+
+    // The list of allowed globals is the host's configuration, the same for every identifier. It
+    // is stated in the first issue of a validation and not repeated: an issue then costs what
+    // the identifier costs, however many globals the host declared.
+    let listStated = false;
 
     for (const ref of freeReferences) {
       const identifierName = ref.name;
@@ -151,18 +162,19 @@ export class UnknownGlobalRule implements ValidationRule {
         : undefined;
 
       if (!this.allowedGlobals.has(identifierName)) {
+        const stateList = !listStated;
+        listStated = true;
         context.report({
           code: 'UNKNOWN_GLOBAL',
           message:
             this.customMessage ||
             `Unknown identifier "${identifierName}". ` +
-              `All identifiers must be either declared locally or in the allowed globals list. ` +
-              `Allowed globals: ${Array.from(this.allowedGlobals).sort().join(', ')}`,
+              `All identifiers must be either declared locally or in the allowed globals list.` +
+              (stateList ? ` Allowed globals: ${this.allowedGlobalsText}` : ''),
           location,
-          data: {
-            identifier: identifierName,
-            allowedGlobals: Array.from(this.allowedGlobals).sort(),
-          },
+          data: stateList
+            ? { identifier: identifierName, allowedGlobals: [...this.allowedGlobalsSorted] }
+            : { identifier: identifierName },
         });
         continue;
       }

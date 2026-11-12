@@ -15,7 +15,7 @@ An AI agent that:
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 22+
 - An OpenAI API key (or other LLM provider)
 - Basic TypeScript knowledge
 
@@ -264,18 +264,17 @@ export async function runAgent(userRequest: string) {
     // Generate code
     const code = await generateCode(userRequest);
 
-    // Validate before execution (optional but recommended)
-    const validation = await enclave.validate(code);
-    if (!validation.valid) {
+    // Execute. run() validates the code first: code that fails validation comes back
+    // with error.code 'VALIDATION_ERROR' and the issues in error.data.issues
+    const result = await enclave.run(code);
+
+    if (!result.success && result.error?.code === 'VALIDATION_ERROR') {
       return {
         success: false,
         error: 'Generated code failed validation',
-        issues: validation.issues,
+        issues: result.error.data?.issues,
       };
     }
-
-    // Execute
-    const result = await enclave.run(code);
 
     if (!result.success) {
       // Retry with error context
@@ -294,31 +293,29 @@ export async function runAgent(userRequest: string) {
 
 ## Step 8: Add Streaming (Optional)
 
-For real-time output, use EnclaveJS:
+To follow an execution from another process or from a browser, run the script on an [EnclaveJS broker](/enclavejs/broker) and use the client. The tools are then registered on the broker and run there:
 
 ```ts
 import { EnclaveClient } from '@enclave-vm/client';
 
 const client = new EnclaveClient({
-  serverUrl: 'http://localhost:3001',
+  baseUrl: 'http://localhost:3001',
 });
 
-const stream = client.execute(code);
+const result = await client.execute(code, {
+  onToolCall: (callId, toolName, args) => {
+    console.log('[Tool]', toolName, args);
+  },
+});
 
-for await (const event of stream) {
-  switch (event.type) {
-    case 'stdout':
-      console.log('[Output]', event.payload.data);
-      break;
-    case 'tool_call':
-      console.log('[Tool]', event.payload.tool);
-      break;
-    case 'final':
-      console.log('[Result]', event.payload.result);
-      break;
-  }
+if (result.success) {
+  console.log('[Result]', result.value);
+} else {
+  console.error('[Failed]', result.error?.code, result.error?.message);
 }
 ```
+
+The client and the broker exchange plain JSON over HTTP and the broker does not authenticate callers: use HTTPS, and put your own authentication in front of the broker's routes. A broker that serves more than one caller also needs the `identify` hook of its session handler: without it the routes do not tell callers apart, whatever authentication stands in front of them. See [Who may see a session](/enclavejs/broker#who-may-see-a-session).
 
 ## Best Practices
 

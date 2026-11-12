@@ -1,11 +1,16 @@
 /**
  * Local LLM Scorer
  *
- * Provides ML-based security scoring with multiple options:
+ * Scores the extracted features with one of:
  * - Built-in heuristics: Keyword-based risk detection (default)
  * - Custom analyzer: Plug in external LLM or static code analyzer
  *
- * Optionally loads Hugging Face transformers.js for on-device ML support.
+ * At initialization the scorer loads a Hugging Face transformers.js pipeline when the optional
+ * dependency is installed (the model is downloaded on first use, into `cacheDir`). No score is
+ * computed from that model: the pipeline is not called. Whether it loaded decides which of two
+ * scorings applies when there is no custom analyzer: the keyword heuristics when it did, the
+ * rule-based fallback when it did not (and `fallbackToRules` is on). Set
+ * `ENCLAVE_DISABLE_LOCAL_LLM_MODEL=1` to skip the load.
  *
  * @packageDocumentation
  */
@@ -67,7 +72,8 @@ const RISK_KEYWORDS = {
 };
 
 /**
- * Local LLM Scorer - ML-based security scoring
+ * Local LLM Scorer - keyword heuristics or a host-supplied analyzer (see the file header for
+ * what the loaded model is and is not used for)
  *
  * @example Basic usage with built-in heuristics
  * ```typescript

@@ -1,8 +1,12 @@
 /**
  * Runtime Worker
  *
- * Standalone worker that executes Enclave sessions.
- * Can run as a separate process/worker and communicate via WebSocket.
+ * Session bookkeeping of a runtime worker, for requests that the embedding application hands
+ * to `handleRequest()` together with a channel.
+ *
+ * What it does not do: it opens no port (`start()` only changes the worker's state; `port`,
+ * `host` and `wsPath` are not used), it authenticates nobody, and it does not execute code
+ * (an `execute` request is answered with `RuntimeNotImplementedError`).
  *
  * @packageDocumentation
  */
@@ -24,7 +28,7 @@ import { SessionExecutor, createSessionExecutor } from './session-executor';
  */
 const DEFAULT_CONFIG: Required<RuntimeConfig> = {
   port: 3001,
-  host: '0.0.0.0',
+  host: '127.0.0.1',
   wsPath: '/ws',
   maxSessions: 10,
   defaultLimits: {},
@@ -34,10 +38,36 @@ const DEFAULT_CONFIG: Required<RuntimeConfig> = {
 };
 
 /**
+ * The configuration to use: the defaults, with the values that were given.
+ * An option given as `undefined` is the default; a session limit that is not a positive
+ * integer is refused, so that it can never mean "no limit".
+ */
+function resolveConfig(config: RuntimeConfig): Required<RuntimeConfig> {
+  const resolved: Required<RuntimeConfig> = { ...DEFAULT_CONFIG };
+  const target = resolved as unknown as Record<string, unknown>;
+
+  for (const [key, value] of Object.entries(config ?? {})) {
+    if (value !== undefined) {
+      target[key] = value;
+    }
+  }
+
+  if (
+    typeof resolved.maxSessions !== 'number' ||
+    !Number.isSafeInteger(resolved.maxSessions) ||
+    resolved.maxSessions < 1
+  ) {
+    throw new RangeError('maxSessions must be a positive integer');
+  }
+
+  return resolved;
+}
+
+/**
  * Runtime worker implementation
  *
- * Manages multiple session executors and provides a WebSocket interface
- * for communication with the broker.
+ * Keeps the session executors of the requests it is handed. It has no network interface of
+ * its own, and executing a session's code is not implemented.
  */
 export class RuntimeWorker implements IRuntimeWorker {
   private readonly config: Required<RuntimeConfig>;
@@ -47,10 +77,7 @@ export class RuntimeWorker implements IRuntimeWorker {
   private totalSessions = 0;
 
   constructor(config: RuntimeConfig = {}) {
-    this.config = {
-      ...DEFAULT_CONFIG,
-      ...config,
-    };
+    this.config = resolveConfig(config);
     this.sessions = new Map();
   }
 
@@ -62,7 +89,10 @@ export class RuntimeWorker implements IRuntimeWorker {
   }
 
   /**
-   * Start the runtime worker
+   * Start the runtime worker: mark it as running, so that `handleRequest()` accepts requests.
+   *
+   * No server is started and no port is opened. The requests come from the application that
+   * embeds the worker.
    */
   async start(): Promise<void> {
     if (this.state !== 'idle' && this.state !== 'stopped') {
@@ -71,9 +101,6 @@ export class RuntimeWorker implements IRuntimeWorker {
 
     this.state = 'starting';
     this.startedAt = Date.now();
-
-    // In a full implementation, this would start the WebSocket server
-    // For now, we mark as running for embedded use
     this.state = 'running';
 
     this.log('Runtime worker started');
@@ -141,8 +168,15 @@ export class RuntimeWorker implements IRuntimeWorker {
 
   /**
    * Handle incoming request from channel
+   *
+   * The caller is trusted: nothing here authenticates where a request came from. An `execute`
+   * request rejects with `RuntimeNotImplementedError`.
    */
   async handleRequest(request: RuntimeRequest, channel: RuntimeChannel): Promise<void> {
+    if (typeof request !== 'object' || request === null || typeof request.type !== 'string') {
+      throw new TypeError('Invalid runtime request');
+    }
+
     switch (request.type) {
       case 'execute':
         await this.handleExecute(request, channel);
@@ -167,7 +201,10 @@ export class RuntimeWorker implements IRuntimeWorker {
   }
 
   /**
-   * Handle execute request
+   * Handle execute request: the session is created, ended with the error code
+   * `NOT_IMPLEMENTED` on its channel, and removed again.
+   *
+   * @throws RuntimeNotImplementedError when the request was valid
    */
   private async handleExecute(
     request: { type: 'execute'; sessionId: SessionId; code: string; limits?: unknown },
@@ -182,6 +219,10 @@ export class RuntimeWorker implements IRuntimeWorker {
     }
 
     const { sessionId, code, limits } = request;
+
+    if (typeof code !== 'string') {
+      throw new TypeError('Invalid execute request: `code` must be a string');
+    }
 
     // Check if session already exists
     if (this.sessions.has(sessionId)) {
@@ -200,16 +241,15 @@ export class RuntimeWorker implements IRuntimeWorker {
     this.sessions.set(executor.sessionId, executor);
     this.totalSessions++;
 
-    // Execute asynchronously
-    executor
-      .execute()
-      .catch((error) => {
-        this.log(`Session ${executor.sessionId} execution error: ${error}`);
-      })
-      .finally(() => {
-        // Clean up after completion
-        this.cleanupSession(executor.sessionId);
-      });
+    try {
+      await executor.execute();
+    } catch (error) {
+      this.log(`Session ${executor.sessionId} execution error: ${error}`);
+      throw error;
+    } finally {
+      // A session that is over does not count against the session limit
+      this.cleanupSession(executor.sessionId);
+    }
   }
 
   /**

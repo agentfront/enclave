@@ -9,7 +9,7 @@
  *   yarn test-script [args]            the AgentScript case runner (`--help` lists its options)
  *   yarn test-script --suite           every case of the case suite
  *   yarn test:security                 everything: the case suite, the specs and the browser specs
- *   node scripts/security-tests.mjs --specs [ast|core ...] [-- <jest arguments>]
+ *   node scripts/security-tests.mjs --specs [ast|core|broker|client|stream|react|runtime ...] [-- <jest arguments>]
  *   node scripts/security-tests.mjs --e2e [-- <playwright arguments>]
  *
  *   --summary      print totals only (see below)
@@ -37,7 +37,7 @@ const scratch = path.join(root, 'tmp', 'security-tests');
 const rootRequire = createRequire(path.join(root, 'package.json'));
 
 /** Libraries whose security specs run under Jest, with the library's own Jest configuration. */
-const JEST_LIBRARIES = ['ast', 'core'];
+const JEST_LIBRARIES = ['ast', 'core', 'broker', 'client', 'stream', 'react', 'runtime'];
 /** The Playwright project of libs/browser/playwright.config.ts that holds the browser specs. */
 const BROWSER_PROJECT = 'chromium-security';
 

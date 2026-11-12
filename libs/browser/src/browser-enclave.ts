@@ -23,6 +23,8 @@ import {
   transformAgentScript,
   isWrappedInMain,
   normalizeToolNamespaces,
+  PreScanner,
+  ValidationSeverity,
   type NormalizedToolNamespace,
   type ValidationIssue,
 } from '@enclave-vm/ast';
@@ -40,6 +42,8 @@ import type {
 } from './types';
 import { SECURITY_LEVEL_CONFIGS, DEFAULT_DOUBLE_IFRAME_CONFIG } from './types';
 import { sanitizeStackTrace } from './utils/sanitize-stack';
+import { isRuntimeName } from './utils/global-names';
+import { MAX_TIMER_DELAY_MS, requireFiniteNumber } from './utils/numeric-option';
 
 /**
  * Default security level
@@ -116,8 +120,13 @@ const DEFAULT_SERIALIZED_PATTERNS: SerializableSuspiciousPattern[] = [
       var isBulk = /\\b(bulk|batch|mass|dump)\\b|export[_-]all\\b/i.test(operationName);
       if (typeof args === 'object' && args !== null) {
         try {
+          // Each test reads the text once, whatever it holds: "limit" with four digits in a row
+          // anywhere after it, a "*" value, "no limit".
           var argStr = JSON.stringify(args).toLowerCase();
-          if (/limit.*[0-9]{4,}|"\\*"|no[_-]?limit/i.test(argStr)) return true;
+          var limitAt = argStr.indexOf('limit');
+          if (limitAt !== -1 && /[0-9]{4}/.test(argStr.slice(limitAt + 5))) return true;
+          if (argStr.indexOf('"*"') !== -1) return true;
+          if (/no[_-]?limit/.test(argStr)) return true;
         } catch(e) {}
       }
       return isBulk;
@@ -264,6 +273,8 @@ function describeUnsupportedGlobal(name: string, unsupported: UnsupportedGlobalV
 export class BrowserEnclave {
   private readonly securityLevel: SecurityLevel;
   private readonly validator: JSAstValidator;
+  /** Layer 0: looks at the text of a script before anything parses it (see `preScan`) */
+  private readonly preScanner: PreScanner;
   private readonly validateCode: boolean;
   private readonly transformCode: boolean;
   /** Whether scripts are validated as AgentScript, a language without regular expressions */
@@ -304,7 +315,13 @@ export class BrowserEnclave {
       ...(options.secureProxyConfig ?? {}),
     };
 
-    const timeout = options.timeout ?? levelConfig.timeout;
+    // Every limit is a finite number. They are compared in three places and written into the
+    // source of both frames: text, NaN or Infinity would be a limit that means something else in
+    // each of them. The timeout is also the delay of a timer, which takes no more than
+    // MAX_TIMER_DELAY_MS.
+    const limit = (name: keyof BrowserEnclaveOptions & keyof typeof levelConfig, max?: number): number =>
+      requireFiniteNumber(name, options[name] ?? levelConfig[name], max);
+    const timeout = limit('timeout', MAX_TIMER_DELAY_MS);
     const toolCallGraceMs = options.toolCallGraceMs ?? timeout;
     if (typeof toolCallGraceMs !== 'number' || Number.isNaN(toolCallGraceMs) || toolCallGraceMs < 0) {
       throw new TypeError('toolCallGraceMs must be a non-negative number (Infinity to wait without limit)');
@@ -314,18 +331,29 @@ export class BrowserEnclave {
     this.config = {
       timeout,
       toolCallGraceMs,
-      maxIterations: options.maxIterations ?? levelConfig.maxIterations,
-      maxToolCalls: options.maxToolCalls ?? levelConfig.maxToolCalls,
-      maxConsoleOutputBytes: options.maxConsoleOutputBytes ?? levelConfig.maxConsoleOutputBytes,
-      maxConsoleCalls: options.maxConsoleCalls ?? levelConfig.maxConsoleCalls,
+      maxIterations: limit('maxIterations'),
+      maxToolCalls: limit('maxToolCalls'),
+      maxConsoleOutputBytes: limit('maxConsoleOutputBytes'),
+      maxConsoleCalls: limit('maxConsoleCalls'),
       sanitizeStackTraces: options.sanitizeStackTraces ?? levelConfig.sanitizeStackTraces,
-      maxSanitizeDepth: options.maxSanitizeDepth ?? levelConfig.maxSanitizeDepth,
-      maxSanitizeProperties: options.maxSanitizeProperties ?? levelConfig.maxSanitizeProperties,
-      memoryLimit: options.memoryLimit ?? 1 * 1024 * 1024,
+      maxSanitizeDepth: limit('maxSanitizeDepth'),
+      maxSanitizeProperties: limit('maxSanitizeProperties'),
+      memoryLimit: requireFiniteNumber('memoryLimit', options.memoryLimit ?? 1 * 1024 * 1024),
       globals: options.globals ?? {},
       toolHandler: options.toolHandler,
       secureProxyConfig,
     };
+
+    // A custom global cannot take a name the runtime owns: the helpers transformed code calls,
+    // the loop counters and the iteration limit would otherwise be whatever the global holds.
+    for (const name of Object.keys(this.config.globals)) {
+      if (isRuntimeName(name)) {
+        throw new TypeError(
+          `Custom global "${name}" has a name that is reserved for the sandbox runtime ` +
+            '(names starting with __safe_, __ag_ or __iter_, and __maxIterations).',
+        );
+      }
+    }
 
     // Fails fast on a global that cannot reach the sandbox; run() serializes again to pick up later changes.
     const initialGlobals = serializeGlobals(this.config.globals);
@@ -367,6 +395,18 @@ export class BrowserEnclave {
     ];
     this.validator = this.createValidator(presetName, customAllowedGlobals, hostObjectGlobals);
 
+    // Layer 0 runs with the pre-scanner preset named like the AST preset; `preScan` picks
+    // another one or changes single limits. The pre-scanner refuses a preset that does not
+    // exist and a limit that would switch a check off.
+    const preScan: unknown = options.preScan;
+    if (preScan !== undefined && (preScan === null || typeof preScan !== 'object' || Array.isArray(preScan))) {
+      throw new TypeError('preScan must be an object with the optional members preset and config');
+    }
+    this.preScanner = new PreScanner({
+      preset: options.preScan?.preset ?? presetName,
+      config: options.preScan?.config,
+    });
+
     // Config flags
     this.validateCode = options.validate !== false;
     this.transformCode = options.transform !== false;
@@ -389,6 +429,43 @@ export class BrowserEnclave {
     const startTime = Date.now();
 
     try {
+      // Step 0: the pre-scanner, on the script as it was written and before anything parses it.
+      // The validator sees the transformed code, so it does not run the pre-scanner again.
+      // (An empty script has nothing to scan: it runs, and returns nothing, as before.)
+      if (this.validateCode && typeof code === 'string' && code.length > 0) {
+        const preScan = this.preScanner.scan(code);
+        if (!preScan.success) {
+          const issues: ValidationIssue[] = preScan.issues.map((issue) => ({
+            code: issue.code,
+            severity:
+              issue.severity === 'error'
+                ? ValidationSeverity.ERROR
+                : issue.severity === 'warning'
+                  ? ValidationSeverity.WARNING
+                  : ValidationSeverity.INFO,
+            message: issue.message,
+            location: issue.line !== undefined ? { line: issue.line, column: issue.column ?? 0 } : undefined,
+            data: issue.data,
+          }));
+          return {
+            success: false,
+            error: {
+              name: 'ValidationError',
+              message: `AgentScript validation failed:\n${this.formatValidationErrors(issues)}`,
+              code: 'VALIDATION_ERROR',
+              data: { issues },
+            },
+            stats: {
+              duration: Date.now() - startTime,
+              toolCallCount: 0,
+              iterationCount: 0,
+              startTime,
+              endTime: Date.now(),
+            },
+          };
+        }
+      }
+
       // Step 1: Transform
       let transformedCode = code;
       if (this.transformCode) {
@@ -403,7 +480,7 @@ export class BrowserEnclave {
 
       // Step 2: Validate
       if (this.validateCode) {
-        const validationResult = await this.validator.validate(transformedCode);
+        const validationResult = await this.validator.validate(transformedCode, { preScan: { enabled: false } });
         if (!validationResult.valid) {
           const errorMessages = this.formatValidationErrors(validationResult.issues);
           return {
@@ -498,11 +575,11 @@ export class BrowserEnclave {
         doubleIframeConfig: this.doubleIframeConfig,
         secureProxyConfig: this.config.secureProxyConfig,
         blockedProperties: serializedConfig.blockedProperties,
-        // Function-based SuspiciousPattern[] from parentValidation are not serialized here;
-        // they require a serialization bridge (see serializePatterns in @enclave-vm/core).
-        // String-based SerializableSuspiciousPattern[] from customSerializablePatterns are
-        // appended directly since they are already in serializable form.
+        // The built-in patterns and the host's customSerializablePatterns are source text: they
+        // go into the outer iframe. The function-based patterns of parentValidation cannot be
+        // sent into a frame; the host page asks them itself (hostSuspiciousPatterns).
         suspiciousPatterns: [...DEFAULT_SERIALIZED_PATTERNS, ...this.customSerializablePatterns],
+        hostSuspiciousPatterns: pv.suspiciousPatterns,
         validationConfig,
       };
 
@@ -593,6 +670,29 @@ export class BrowserEnclave {
    * Build double iframe configuration
    */
   private buildDoubleIframeConfig(options?: Partial<DoubleIframeConfig>): DoubleIframeConfig {
+    const config = this.mergeDoubleIframeConfig(options);
+    // Added to the timeout for the host's hard stop: a number, like the timeout
+    requireFiniteNumber('doubleIframe.parentTimeoutBuffer', config.parentTimeoutBuffer, MAX_TIMER_DELAY_MS);
+    // A pattern here is a function the host page calls for every tool call. One that is not a
+    // function would never be asked, and the host would believe it is.
+    config.parentValidation.suspiciousPatterns.forEach((pattern, index) => {
+      if (
+        pattern === null ||
+        typeof pattern !== 'object' ||
+        typeof pattern.id !== 'string' ||
+        typeof pattern.description !== 'string' ||
+        typeof pattern.detect !== 'function'
+      ) {
+        throw new TypeError(
+          `doubleIframe.parentValidation.suspiciousPatterns[${index}] must have a string id, a string description ` +
+            'and a detect function. A pattern written as source text (detectBody) goes in customSerializablePatterns.',
+        );
+      }
+    });
+    return config;
+  }
+
+  private mergeDoubleIframeConfig(options?: Partial<DoubleIframeConfig>): DoubleIframeConfig {
     if (!options) {
       return {
         ...DEFAULT_DOUBLE_IFRAME_CONFIG,

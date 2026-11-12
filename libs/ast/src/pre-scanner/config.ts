@@ -107,7 +107,9 @@ export interface PreScannerConfig {
 
   // ===== UNICODE SECURITY =====
   /**
-   * Enable Unicode pre-check for BiDi attacks.
+   * Master switch of the Unicode checks: with `false` none of them runs. With `true` the
+   * look-alike check runs (letters of another script that read as ASCII), and the BiDi and
+   * invisible-character checks run where `blockBidiPatterns` and `blockInvisibleChars` are set.
    * Default: true for all presets except Permissive
    */
   unicodePreCheck: boolean;
@@ -281,7 +283,62 @@ export const PRESCANNER_PRESETS: Record<PreScannerPresetLevel, PreScannerConfig>
  * Get a pre-scanner configuration by preset level
  */
 export function getPreScannerPreset(level: PreScannerPresetLevel): PreScannerConfig {
+  // By own key: a name that is not a preset would otherwise give a configuration without a
+  // single limit, and every check would pass
+  if (typeof level !== 'string' || !Object.prototype.hasOwnProperty.call(PRESCANNER_PRESETS, level)) {
+    throw new TypeError(
+      `Unknown pre-scanner preset: ${typeof level === 'string' ? JSON.stringify(level.slice(0, 40)) : typeof level}`,
+    );
+  }
   return { ...PRESCANNER_PRESETS[level] };
+}
+
+/** The members of a configuration that are limits (numbers) and switches (booleans). */
+const LIMIT_KEYS = [
+  'maxInputSize',
+  'maxLineLength',
+  'maxLines',
+  'maxNestingDepth',
+  'maxConsecutiveOperators',
+  'maxRegexLength',
+  'maxRegexCount',
+  'maxStringLength',
+  'maxTotalStringContent',
+] as const;
+const SWITCH_KEYS = ['unicodePreCheck', 'blockBidiPatterns', 'blockInvisibleChars'] as const;
+
+/**
+ * Refuse an override that would switch a check off without saying so: a limit that is not a
+ * number of at least 0 (`NaN` compares false with everything, so nothing would be over it), a
+ * switch that is not a boolean, a mode that does not exist. `Infinity` is a number: it stands
+ * for the pre-scanner's own maximum.
+ *
+ * @throws TypeError
+ */
+function assertOverrides(overrides: PartialPreScannerConfig): void {
+  if (overrides === null || typeof overrides !== 'object' || Array.isArray(overrides)) {
+    throw new TypeError('A pre-scanner configuration must be an object');
+  }
+  const values = overrides as Record<string, unknown>;
+  for (const key of LIMIT_KEYS) {
+    const value = values[key];
+    if (value !== undefined && (typeof value !== 'number' || Number.isNaN(value) || value < 0)) {
+      throw new TypeError(`Pre-scanner limit ${key} must be a number of at least 0`);
+    }
+  }
+  for (const key of SWITCH_KEYS) {
+    if (values[key] !== undefined && typeof values[key] !== 'boolean') {
+      throw new TypeError(`Pre-scanner switch ${key} must be true or false`);
+    }
+  }
+  const mode = values['regexMode'];
+  if (mode !== undefined && mode !== 'block' && mode !== 'analyze' && mode !== 'allow') {
+    throw new TypeError("Pre-scanner regexMode must be 'block', 'analyze' or 'allow'");
+  }
+  const level = values['regexAnalysisLevel'];
+  if (level !== undefined && level !== 'catastrophic' && level !== 'polynomial') {
+    throw new TypeError("Pre-scanner regexAnalysisLevel must be 'catastrophic' or 'polynomial'");
+  }
 }
 
 /**
@@ -293,7 +350,10 @@ export function createPreScannerConfig(
   overrides?: PartialPreScannerConfig,
 ): PreScannerConfig {
   const base = getPreScannerPreset(basePreset);
-  const merged = { ...base, ...overrides };
+  if (overrides !== undefined) assertOverrides(overrides);
+  // An override passed as `undefined` is an override that was not given
+  const given = Object.fromEntries(Object.entries(overrides ?? {}).filter(([, value]) => value !== undefined));
+  const merged = { ...base, ...given } as PreScannerConfig;
 
   // Clamp all size limits to mandatory maximums
   return {

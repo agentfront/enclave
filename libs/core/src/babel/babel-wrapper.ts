@@ -4,14 +4,23 @@
  * Provides a restricted Babel.transform() API for use inside the enclave sandbox.
  * Uses @babel/standalone for browser-compatible transformation.
  *
- * SECURITY: Babel transforms run in an isolated VM context with NO access to:
- * - File system (fs, path)
- * - Process/environment (process, env)
- * - Network (http, https, net)
- * - Child processes (child_process)
- * - Module loading (require, import)
+ * SECURITY: where Babel runs, and what restricts it.
  *
- * Only pure JavaScript transformation is allowed.
+ * `@babel/standalone` is loaded into the host realm and runs there, with the host's intrinsics
+ * and the host's authority, like any other function a host puts in `globals`. It is called from
+ * a separate VM context, and what that context provides is a timeout for the call: a function
+ * runs in the realm it was created in, whichever context calls it, so the context is not an
+ * isolation boundary and takes nothing away from Babel.
+ *
+ * What a script can make Babel do is restricted by what this wrapper passes on:
+ * - the source text is data: Babel parses and prints it and never executes it
+ * - presets are names from the security level's allowlist; plugins are always none
+ * - no configuration files, no source maps, no AST in the result
+ * - a sanitized file name, a size limit on the input and on the output, and the timeout
+ * - the work the wrapper itself does on a script's text is linear in its size
+ *
+ * A defect in Babel's parser or in a preset would therefore be a defect in host code. A host
+ * that needs Babel isolated from its process runs the enclave in a process of its own.
  *
  * @packageDocumentation
  */
@@ -19,6 +28,7 @@
 import * as vm from 'vm';
 import * as BabelStandalone from '@babel/standalone';
 import { rewriteImports, type ImportRewriteConfig } from '@enclave-vm/ast';
+import { removeStackLocations } from './text-scan';
 
 /**
  * Safe transform options that can be passed by sandbox code
@@ -96,10 +106,37 @@ function sanitizeFilename(filename: string): string {
 }
 
 /**
- * Create an isolated VM context for Babel transforms
+ * Longest error text of a failed transform that is cleaned and passed on. Babel quotes the
+ * source around a syntax error in its message, so the message can be as long as the source; a
+ * script gets the diagnosis, not a copy of its text.
+ */
+const MAX_ERROR_MESSAGE_LENGTH = 2000;
+
+/**
+ * The message of a failed transform without host paths, stack locations and VM internals.
+ * The text is cut to `MAX_ERROR_MESSAGE_LENGTH` before anything is applied to it and again
+ * afterwards, and each step is linear in its length.
+ */
+function sanitizeTransformErrorMessage(message: unknown): string {
+  const text = typeof message === 'string' && message.length > 0 ? message : 'Unknown transform error';
+  const truncated = text.length > MAX_ERROR_MESSAGE_LENGTH;
+  const bounded = truncated ? text.slice(0, MAX_ERROR_MESSAGE_LENGTH) : text;
+
+  const sanitized = removeStackLocations(bounded.replace(/\/[^\s:]+/g, '<path>')) // Remove file paths, stack locations
+    .replace(/evalmachine\.<anonymous>/g, '<transform>') // Remove VM internals
+    .trim();
+
+  return sanitized.length > MAX_ERROR_MESSAGE_LENGTH || truncated
+    ? sanitized.slice(0, MAX_ERROR_MESSAGE_LENGTH) + '...'
+    : sanitized;
+}
+
+/**
+ * Create the VM context Babel transforms are called from
  *
- * SECURITY: This context has NO access to Node.js APIs.
- * Only safe JavaScript globals are provided.
+ * The context exists so that a transform can be given a timeout (see the header of this file).
+ * The only code that ever runs in it is the one-line script that calls the host's Babel; Babel
+ * itself uses the host's globals, not the ones defined here, so nothing below restricts it.
  */
 function createIsolatedBabelContext(): vm.Context {
   // Create a fresh context with minimal globals
@@ -114,10 +151,10 @@ function createIsolatedBabelContext(): vm.Context {
     },
   );
 
-  // Inject ONLY the safe globals needed for Babel to work
-  // These are pure JavaScript APIs with no I/O capabilities
+  // Globals of the calling context. They are the host's own objects, and the calling script
+  // does not use them: they are not what Babel works with (Babel has the host's globals).
   const safeGlobals = {
-    // Core JavaScript types (needed for Babel's internal operations)
+    // Core JavaScript types
     Object,
     Array,
     String,
@@ -183,8 +220,8 @@ function createIsolatedBabelContext(): vm.Context {
     });
   }
 
-  // EXPLICITLY BLOCK dangerous Node.js globals by setting them to undefined
-  // This prevents any accidental access even if @babel/standalone tries
+  // Names of Node.js and browser APIs, defined as undefined in the calling context. This keeps
+  // the calling script from naming them; it does not affect Babel, which is host code.
   const blockedGlobals = [
     // Node.js core
     'process',
@@ -246,23 +283,24 @@ function createIsolatedBabelContext(): vm.Context {
   return context;
 }
 
-// Cache the isolated context and Babel instance for performance
+// The calling context and the Babel entry point, created once and shared by every Enclave of
+// the process
 let isolatedContext: vm.Context | null = null;
 let babelInContext: { transform: (code: string, options: unknown) => { code: string } } | null = null;
 
 /**
- * Get or create the isolated Babel context
+ * Get or create the context Babel is called from
  */
 function getIsolatedBabel(): { transform: (code: string, options: unknown) => { code: string } } {
   if (babelInContext) {
     return babelInContext;
   }
 
-  // Create isolated context
+  // Create the calling context
   isolatedContext = createIsolatedBabelContext();
 
-  // Inject Babel into the isolated context
-  // We serialize the Babel transform function and create a wrapper
+  // Make the host's Babel callable from that context. This is the host function itself: it
+  // is not copied or re-evaluated there, and it runs in the host realm when called.
   Object.defineProperty(isolatedContext, '__babel_transform__', {
     value: BabelStandalone.transform.bind(BabelStandalone),
     writable: false,
@@ -282,7 +320,7 @@ function getIsolatedBabel(): { transform: (code: string, options: unknown) => { 
     })()
   `);
 
-  // Run the script in the isolated context
+  // Run the script in the calling context
   babelInContext = wrapperScript.runInContext(isolatedContext) as {
     transform: (code: string, options: unknown) => { code: string };
   };
@@ -293,10 +331,10 @@ function getIsolatedBabel(): { transform: (code: string, options: unknown) => { 
 /**
  * Create a restricted Babel object for sandbox use
  *
- * SECURITY: All transforms run in an isolated VM context with:
- * - NO access to fs, process, require, or any Node.js APIs
- * - NO access to network APIs
- * - NO ability to load external code
+ * SECURITY: Babel runs in the host realm (see the header of this file). A transform is
+ * restricted by what this function passes to it and checks around it:
+ * - the source is parsed and printed, never executed
+ * - no plugins, no configuration files, no source maps, no AST output
  * - Timeout enforcement
  * - Input/output size limits
  * - Preset whitelist
@@ -393,19 +431,19 @@ export function createRestrictedBabel(config: BabelWrapperConfig): {
         configFile: false, // Don't load babel.config.js
       };
 
-      // 8. Execute the transform in isolated context with timeout
+      // 8. Call the transform from the separate context, which gives the call a timeout
       let result: { code: string };
       try {
-        // Ensure the isolated context is initialized
+        // Ensure the calling context is initialized
         getIsolatedBabel();
 
         // Create a script that calls transform with our options
-        // This runs in the isolated context with timeout
+        // The script runs in the calling context; the transform it calls runs in the host realm
         const transformScript = new vm.Script(`
           __babel_result__ = __babel_transform__(__babel_code__, __babel_options__);
         `);
 
-        // Inject the code and options into the isolated context
+        // Hand the code and options to the calling context
         Object.defineProperty(isolatedContext!, '__babel_code__', {
           value: code,
           writable: true,
@@ -432,29 +470,27 @@ export function createRestrictedBabel(config: BabelWrapperConfig): {
 
         // Get the result
         result = (isolatedContext as Record<string, unknown>)['__babel_result__'] as { code: string };
-
-        // Clean up temporary variables
-        delete (isolatedContext as Record<string, unknown>)['__babel_code__'];
-        delete (isolatedContext as Record<string, unknown>)['__babel_options__'];
-        delete (isolatedContext as Record<string, unknown>)['__babel_result__'];
       } catch (error) {
-        // Re-throw with sanitized message (remove file paths)
-        const err = error as Error;
-        const sanitizedMessage = (err.message || 'Unknown transform error')
-          .replace(/\/[^\s:]+/g, '<path>') // Remove file paths
-          .replace(/at\s+[^\s]+\s+\([^)]+\)/g, '') // Remove stack locations
-          .replace(/evalmachine\.<anonymous>/g, '<transform>') // Remove VM internals
-          .trim();
+        const message = (error as { message?: unknown } | null)?.message;
 
         // Check for timeout
-        if (err.message?.includes('Script execution timed out')) {
+        if (typeof message === 'string' && message.includes('Script execution timed out')) {
           throw new Error(
             `Babel transform timed out after ${config.transformTimeout}ms. ` +
               `The code may be too complex or contain infinite loops.`,
           );
         }
 
-        throw new Error(`Babel transform failed: ${sanitizedMessage}`);
+        // Re-throw with sanitized message (remove file paths)
+        throw new Error(`Babel transform failed: ${sanitizeTransformErrorMessage(message)}`);
+      } finally {
+        // Clean up temporary variables, also after a failed transform: the context is shared,
+        // and the source text of one call is not kept on it for the next
+        if (isolatedContext) {
+          delete (isolatedContext as Record<string, unknown>)['__babel_code__'];
+          delete (isolatedContext as Record<string, unknown>)['__babel_options__'];
+          delete (isolatedContext as Record<string, unknown>)['__babel_result__'];
+        }
       }
 
       // 9. Validate output
@@ -464,8 +500,17 @@ export function createRestrictedBabel(config: BabelWrapperConfig): {
         throw new Error('Transform produced invalid output');
       }
 
-      // 10. Apply import rewriting if configured
+      // 10. Apply import rewriting if configured. The output limit holds for the text the
+      // rewrite is about to read, not only for the text it produces.
       if (options?.importRewrite?.enabled) {
+        const transformedBytes = Buffer.byteLength(outputCode, 'utf-8');
+        if (transformedBytes > config.maxOutputSize) {
+          throw new Error(
+            `Output exceeds maximum size (${transformedBytes} bytes > ${config.maxOutputSize} bytes). ` +
+              `The transformed code is too large.`,
+          );
+        }
+
         try {
           const rewriteResult = rewriteImports(outputCode, options.importRewrite);
           outputCode = rewriteResult.code;
@@ -500,7 +545,7 @@ export function getAvailableBabelPresets(): string[] {
 }
 
 /**
- * Reset the isolated Babel context
+ * Reset the context Babel is called from
  *
  * Useful for testing or if you want to ensure a fresh context.
  * Note: This is generally not needed as the context is reused for performance.

@@ -1,21 +1,22 @@
 /**
  * @enclave-vm/runtime
  *
- * Standalone runtime worker for EnclaveJS.
- * Can be deployed as a separate process/worker for distributed execution.
+ * Building blocks of a runtime worker for EnclaveJS: session bookkeeping and the channels
+ * between a worker and a broker.
+ *
+ * This package is not a runnable service. It does not execute code (an `execute` request ends
+ * with `RuntimeNotImplementedError`), it starts no server and opens no port, and it has no
+ * authentication. To run scripts use `@enclave-vm/broker` or `@enclave-vm/core`.
  *
  * @example
  * ```typescript
- * import { createRuntimeWorker } from '@enclave-vm/runtime';
+ * import { createRuntimeWorker, createMemoryChannel } from '@enclave-vm/runtime';
  *
- * const worker = createRuntimeWorker({
- *   port: 3001,
- *   maxSessions: 10,
- *   debug: true,
- * });
+ * const worker = createRuntimeWorker({ maxSessions: 10 });
+ * await worker.start(); // marks the worker as running; nothing is listening
  *
- * await worker.start();
- * console.log('Runtime is ready!');
+ * const channel = createMemoryChannel();
+ * await worker.handleRequest({ type: 'ping', timestamp: Date.now() }, channel);
  * ```
  *
  * @packageDocumentation
@@ -43,7 +44,12 @@ export type {
 export { RuntimeWorker as RuntimeWorkerImpl, createRuntimeWorker } from './runtime-worker';
 
 // Session executor
-export { SessionExecutor, createSessionExecutor, type SessionExecutorOptions } from './session-executor';
+export {
+  SessionExecutor,
+  createSessionExecutor,
+  RuntimeNotImplementedError,
+  type SessionExecutorOptions,
+} from './session-executor';
 
 // Channels
 export {

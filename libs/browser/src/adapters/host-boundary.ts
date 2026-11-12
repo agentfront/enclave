@@ -47,8 +47,20 @@ export interface CopyLimits {
  */
 export const MAX_TOOL_ARGUMENT_PROPERTIES = 1_000_000;
 
-/** Tool arguments are JSON; the depth is far beyond what a tool takes and well within the stack */
-const TOOL_ARGUMENT_LIMITS: CopyLimits = { maxDepth: 100, maxProperties: MAX_TOOL_ARGUMENT_PROPERTIES };
+/**
+ * Deepest nesting of the arguments of one tool call, the arguments object being level 0. Far
+ * beyond what a tool takes and well within the stack. The inner iframe refuses a deeper call
+ * itself, with an ordinary error.
+ */
+export const MAX_TOOL_ARGUMENT_DEPTH = 100;
+
+const TOOL_ARGUMENT_LIMITS: CopyLimits = {
+  maxDepth: MAX_TOOL_ARGUMENT_DEPTH,
+  maxProperties: MAX_TOOL_ARGUMENT_PROPERTIES,
+};
+
+/** Deepest nesting of one console line the host prints; a deeper one is dropped */
+const MAX_CONSOLE_DEPTH = 100;
 
 /**
  * The arguments of a tool call are larger than the host copies. Unlike a
@@ -68,6 +80,22 @@ const RESULT_KEYS_DROPPED: ReadonlySet<string> = new Set(['__proto__', 'construc
 /** Keys that are never passed to a tool handler, as in @enclave-vm/core */
 const ARGUMENT_KEYS_DROPPED: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
 
+/** What one kind of data from the sandbox may hold, and how it is named in an error */
+interface CopyRules {
+  /** What is being copied, for the error text: "a result", "tool arguments" */
+  what: string;
+  limits: CopyLimits;
+  /** Keys that are not copied */
+  dropped: ReadonlySet<string>;
+  /**
+   * JSON data and nothing else: no `undefined`, no number that is not finite, no array with a
+   * hole. What a JSON copy made in the sandbox cannot contain is refused, not passed on.
+   */
+  json: boolean;
+  /** Whether a `Date` is data (a result may hold one) */
+  dates: boolean;
+}
+
 interface CopyState {
   properties: number;
   /** Thrown in place of a ProtocolViolationError when `maxProperties` is exceeded */
@@ -77,27 +105,32 @@ interface CopyState {
 /**
  * Copy `value` into fresh host objects.
  *
- * Only what the sandbox legitimately sends is accepted: primitives, arrays, dates and plain
- * objects. Anything else (a Map, a typed array, an Error, a BigInt, ...) cannot have come from
- * the inner iframe's own copy of a result, or from the JSON its tool arguments are, and is
- * refused. The copy never assigns to a key that would reach `Object.prototype`.
+ * Only what the sandbox legitimately sends is accepted: primitives, arrays, plain objects and,
+ * where the rules say so, dates. Anything else (a Map, a typed array, an Error, a BigInt, ...)
+ * cannot have come from the inner iframe's own copy of a result or of a console line, or from the
+ * JSON its tool arguments are, and is refused. The copy never assigns to a key that would reach
+ * `Object.prototype`.
  */
-function copySandboxData(
-  value: unknown,
-  depth: number,
-  limits: CopyLimits,
-  state: CopyState,
-  dropped: ReadonlySet<string>,
-  what: string,
-): unknown {
+function copySandboxData(value: unknown, depth: number, rules: CopyRules, state: CopyState): unknown {
+  const { what, limits } = rules;
   if (depth > limits.maxDepth) {
     throw new ProtocolViolationError(`${what} nested more than ${limits.maxDepth} levels deep`);
   }
-  if (value === null || value === undefined) {
+  if (value === null) {
+    return value;
+  }
+  if (value === undefined) {
+    if (rules.json) throw new ProtocolViolationError(`${what} holding undefined`);
     return value;
   }
   const type = typeof value;
-  if (type === 'string' || type === 'number' || type === 'boolean') {
+  if (type === 'number') {
+    if (rules.json && !Number.isFinite(value)) {
+      throw new ProtocolViolationError(`${what} holding a number that is not finite`);
+    }
+    return value;
+  }
+  if (type === 'string' || type === 'boolean') {
     return value;
   }
   if (type !== 'object') {
@@ -105,15 +138,18 @@ function copySandboxData(
   }
 
   if (Array.isArray(value)) {
-    countProperties(value.length, limits, state, what);
+    countProperties(value.length, rules, state);
     const copy: unknown[] = new Array(value.length);
     for (let index = 0; index < value.length; index++) {
-      copy[index] = copySandboxData(value[index], depth + 1, limits, state, dropped, what);
+      if (rules.json && !Object.prototype.hasOwnProperty.call(value, index)) {
+        throw new ProtocolViolationError(`${what} holding an array with a missing item`);
+      }
+      copy[index] = copySandboxData(value[index], depth + 1, rules, state);
     }
     return copy;
   }
 
-  if (value instanceof Date) {
+  if (rules.dates && value instanceof Date) {
     return new Date(value.getTime());
   }
 
@@ -123,21 +159,21 @@ function copySandboxData(
   }
 
   const keys = Object.keys(value as object);
-  countProperties(keys.length, limits, state, what);
+  countProperties(keys.length, rules, state);
   const copy: Record<string, unknown> = {};
   for (const key of keys) {
-    if (dropped.has(key)) continue;
-    copy[key] = copySandboxData((value as Record<string, unknown>)[key], depth + 1, limits, state, dropped, what);
+    if (rules.dropped.has(key)) continue;
+    copy[key] = copySandboxData((value as Record<string, unknown>)[key], depth + 1, rules, state);
   }
   return copy;
 }
 
-function countProperties(count: number, limits: CopyLimits, state: CopyState, what: string): void {
+function countProperties(count: number, rules: CopyRules, state: CopyState): void {
   state.properties += count;
-  if (state.properties > limits.maxProperties) {
+  if (state.properties > rules.limits.maxProperties) {
     throw state.tooLarge
       ? state.tooLarge()
-      : new ProtocolViolationError(`${what} with more than ${limits.maxProperties} properties`);
+      : new ProtocolViolationError(`${rules.what} with more than ${rules.limits.maxProperties} properties`);
   }
 }
 
@@ -149,13 +185,20 @@ function countProperties(count: number, limits: CopyLimits, state: CopyState, wh
  * @throws ProtocolViolationError for a value the inner iframe could not have sent
  */
 export function copyScriptResult(value: unknown, limits: CopyLimits): unknown {
-  return copySandboxData(value, 0, limits, { properties: 0 }, RESULT_KEYS_DROPPED, 'a result');
+  return copySandboxData(
+    value,
+    0,
+    { what: 'a result', limits, dropped: RESULT_KEYS_DROPPED, json: false, dates: true },
+    { properties: 0 },
+  );
 }
 
 /**
  * Copy the arguments of a tool call for the host's tool handler. The handler is host code that
  * will read them, merge them and pass them on: it gets ordinary objects that have no
- * `__proto__`, `constructor` or `prototype` key at any depth.
+ * `__proto__`, `constructor` or `prototype` key at any depth, and that hold JSON data only
+ * (strings, finite numbers, booleans, null, arrays without holes and plain objects), which is all
+ * the JSON copy the sandbox makes of them can hold.
  *
  * @throws ProtocolViolationError for arguments that are not JSON data
  * @throws ToolArgumentsTooLargeError for more than {@link MAX_TOOL_ARGUMENT_PROPERTIES} items and
@@ -165,11 +208,34 @@ export function copyToolArguments(args: Record<string, unknown>): Record<string,
   return copySandboxData(
     args,
     0,
-    TOOL_ARGUMENT_LIMITS,
+    { what: 'tool arguments', limits: TOOL_ARGUMENT_LIMITS, dropped: ARGUMENT_KEYS_DROPPED, json: true, dates: false },
     { properties: 0, tooLarge: () => new ToolArgumentsTooLargeError() },
-    ARGUMENT_KEYS_DROPPED,
-    'tool arguments',
   ) as Record<string, unknown>;
+}
+
+/** Nothing is dropped from a console line: it is printed, not merged into host objects */
+const NO_KEYS: ReadonlySet<string> = new Set();
+
+/**
+ * Copy the arguments of one console call. The inner iframe sends strings, numbers, booleans,
+ * `null`, `undefined` and the JSON copy of an object; anything else is not a line it wrote.
+ *
+ * @param maxProperties Most array items and object keys in the line
+ * @throws ProtocolViolationError for a value that is not plain data, or a line beyond the bounds
+ */
+function copyConsoleArguments(args: readonly unknown[], maxProperties: number): unknown[] {
+  return copySandboxData(
+    args,
+    0,
+    {
+      what: 'a console line',
+      limits: { maxDepth: MAX_CONSOLE_DEPTH, maxProperties },
+      dropped: NO_KEYS,
+      json: false,
+      dates: false,
+    },
+    { properties: 0 },
+  ) as unknown[];
 }
 
 /** The part of the validation configuration that decides which operation names are allowed */
@@ -247,6 +313,10 @@ export function normalizeStats(stats: WorkerExecutionStats): ExecutionStats {
 /**
  * Counts console output against the limits of the execution, as the inner iframe does before it
  * sends a line. The host console is the host's: what reaches it is the host's to bound.
+ *
+ * A line is measured by the JSON text of the copy the host makes of it, and that copy is what is
+ * printed: what reaches the console is what was counted. A value that is not plain data is not a
+ * line the inner iframe wrote; it has no such copy and is dropped.
  */
 export class ConsoleBudget {
   private calls = 0;
@@ -257,21 +327,30 @@ export class ConsoleBudget {
     private readonly maxBytes: number,
   ) {}
 
-  /** Whether one more console message with these arguments is within the limits */
-  admit(args: readonly unknown[]): boolean {
+  /**
+   * Count one console message.
+   *
+   * @returns The copy to print, or undefined when the message is beyond the limits or is not a
+   *   line the inner iframe could have written
+   */
+  admit(args: readonly unknown[]): unknown[] | undefined {
     this.calls++;
-    if (this.calls > this.maxCalls) {
-      return false;
+    if (this.calls > this.maxCalls || this.bytes > this.maxBytes) {
+      return undefined;
     }
+    let copy: unknown[];
     let size: number;
     try {
-      size = JSON.stringify(args).length;
+      // An item or a key takes two characters of JSON text or more, so a line with more of them
+      // than bytes are left is over the limit before it is measured.
+      copy = copyConsoleArguments(args, this.maxBytes - this.bytes);
+      size = JSON.stringify(copy).length;
     } catch {
-      // Not measurable as JSON (a BigInt, a cycle). The inner iframe only sends what it measured
+      // Not plain data, too deep or too large. The inner iframe only sends what it measured
       // itself; output whose size is unknown is not within any limit.
-      return false;
+      return undefined;
     }
     this.bytes += size;
-    return this.bytes <= this.maxBytes;
+    return this.bytes <= this.maxBytes ? copy : undefined;
   }
 }

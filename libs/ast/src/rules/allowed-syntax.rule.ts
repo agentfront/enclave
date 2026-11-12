@@ -1,12 +1,21 @@
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
 import { RuleConfigurationError } from '../errors';
-import { walkAll } from '../utils/ast-walk';
+import { walkAll, type AnyNode } from '../utils/ast-walk';
 
 /**
  * Options for AllowedSyntaxRule
  */
 export interface AllowedSyntaxOptions {
-  /** ESTree node types a script may contain. Every other node type is refused. */
+  /**
+   * ESTree node types a script may contain. Every other node type is refused.
+   *
+   * Some constructs share their node type with an ordinary one and differ in a flag. They are
+   * constructs of their own and are refused unless listed under their own name:
+   * `UsingDeclaration` and `AwaitUsingDeclaration` (a `VariableDeclaration` that is not `var`,
+   * `let` or `const`), `ForAwaitStatement` (a `ForOfStatement` with `await`) and
+   * `GeneratorFunction` (a function with `*`). Listing `ForOfStatement` allows `for…of`, not
+   * `for await…of`.
+   */
   allowedNodeTypes: readonly string[];
   /** Custom message template (use the {nodeType} and {construct} placeholders) */
   messageTemplate?: string;
@@ -29,6 +38,9 @@ export interface AllowedSyntaxOptions {
  * - `MetaProperty`: `new.target`, `import.meta`.
  * - `YieldExpression`, `WithStatement`, `DebuggerStatement`, `ImportExpression` and module
  *   declarations.
+ * - The constructs that share a node type with an allowed one (see `allowedNodeTypes`): `using`
+ *   and `await using` declarations (an implicit call of a method the script never names, when
+ *   the scope ends), `for await` loops and generator functions.
  *
  * `FunctionExpression`, `FunctionDeclaration` and the loop statements are listed here because
  * their own rules (`no-user-functions`, `forbidden-loop`) decide them with better messages.
@@ -108,8 +120,39 @@ export const AGENTSCRIPT_ALLOWED_NODE_TYPES: readonly string[] = Object.freeze([
   'AssignmentPattern',
 ]);
 
+/**
+ * The construct a node is when its type alone does not say it: a declaration that is not `var`,
+ * `let` or `const`, a `for…of` loop with `await`, a function with `*`. Returns the name such a
+ * construct is allowed under, or `undefined` for the ordinary form of the node type.
+ *
+ * A node type on the allowlist stands for the construct the list was written for. Without this,
+ * every form a later ECMAScript version adds to an existing node type would be allowed with it.
+ */
+function syntaxVariant(node: AnyNode): string | undefined {
+  switch (node.type) {
+    case 'VariableDeclaration':
+      if (node.kind === 'var' || node.kind === 'let' || node.kind === 'const') return undefined;
+      if (node.kind === 'using') return 'UsingDeclaration';
+      if (node.kind === 'await using') return 'AwaitUsingDeclaration';
+      // A kind this rule has not heard of: no name allows it
+      return `VariableDeclaration(${String(node.kind)})`;
+    case 'ForOfStatement':
+      return node.await ? 'ForAwaitStatement' : undefined;
+    case 'FunctionDeclaration':
+    case 'FunctionExpression':
+    case 'ArrowFunctionExpression':
+      return node.generator ? 'GeneratorFunction' : undefined;
+    default:
+      return undefined;
+  }
+}
+
 /** What to call a refused node type in an error message. */
 const CONSTRUCT_NAMES: Record<string, string> = {
+  UsingDeclaration: '`using` declarations',
+  AwaitUsingDeclaration: '`await using` declarations',
+  ForAwaitStatement: '`for await` loops',
+  GeneratorFunction: 'generator functions',
   ThisExpression: '`this`',
   Super: '`super`',
   MetaProperty: 'meta properties (`new.target`, `import.meta`)',
@@ -165,15 +208,27 @@ export class AllowedSyntaxRule implements ValidationRule {
 
   validate(context: ValidationContext): void {
     walkAll(context.ast, (node) => {
-      if (this.allowed.has(node.type)) return;
+      if (!this.allowed.has(node.type)) {
+        this.report(context, node, node.type);
+        return;
+      }
 
-      const construct = CONSTRUCT_NAMES[node.type] ?? `"${node.type}" nodes`;
-      context.report({
-        code: 'DISALLOWED_SYNTAX',
-        message: this.messageTemplate.replace('{construct}', construct).replace('{nodeType}', node.type),
-        location: node.loc ? { line: node.loc.start.line, column: node.loc.start.column } : undefined,
-        data: { nodeType: node.type },
-      });
+      // The type is allowed; the construct may still be another one
+      const variant = syntaxVariant(node);
+      if (variant !== undefined && !this.allowed.has(variant)) {
+        this.report(context, node, variant);
+      }
+    });
+  }
+
+  /** @param construct The node type, or the name of the variant of it that the node is */
+  private report(context: ValidationContext, node: AnyNode, construct: string): void {
+    const name = CONSTRUCT_NAMES[construct] ?? `"${construct}" nodes`;
+    context.report({
+      code: 'DISALLOWED_SYNTAX',
+      message: this.messageTemplate.replace('{construct}', name).replace('{nodeType}', construct),
+      location: node.loc ? { line: node.loc.start.line, column: node.loc.start.column } : undefined,
+      data: construct === node.type ? { nodeType: node.type } : { nodeType: node.type, variant: construct },
     });
   }
 }

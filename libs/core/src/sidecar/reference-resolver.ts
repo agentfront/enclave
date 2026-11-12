@@ -8,7 +8,7 @@
  * @packageDocumentation
  */
 
-import { ReferenceSidecar } from './reference-sidecar';
+import { ReferenceSidecar, SidecarLimitError } from './reference-sidecar';
 import { ReferenceConfig, isReferenceId } from './reference-config';
 
 /**
@@ -206,15 +206,94 @@ export class ReferenceResolver {
   /**
    * Check if resolution would exceed size limits
    *
+   * Two limits apply: `maxResolvedSize` to what this value expands to, and
+   * `maxTotalResolvedSize` to what the execution has had resolved so far plus what resolving
+   * this value would add (see `predictAddedSize`).
+   *
    * @param value - The value to check
-   * @returns true if resolution would exceed maxResolvedSize
+   * @returns true if resolution would exceed maxResolvedSize or the execution's total
    */
   wouldExceedLimit(value: unknown): boolean {
     try {
       const size = this.predictExpandedSize(value);
-      return size > this.config.maxResolvedSize;
+      if (size > this.config.maxResolvedSize) {
+        return true;
+      }
+      return !this.sidecar.canResolve(this.predictAddedSize(value, 0, new Set()));
     } catch {
       return true; // Treat errors as exceeding limit
+    }
+  }
+
+  /**
+   * Predict what resolving a value would add to the execution's total of resolved data,
+   * WITHOUT allocating memory
+   *
+   * A stored value adds its size the first time it is resolved in the execution and nothing
+   * afterwards (`counted` holds the ones this walk has seen). A composite adds the size of the
+   * string it is joined into, every time, besides what its parts add.
+   */
+  private predictAddedSize(value: unknown, depth: number, counted: Set<string>): number {
+    if (depth > this.config.maxResolutionDepth) {
+      throw new ResolutionLimitError(
+        `Maximum resolution depth exceeded (${this.config.maxResolutionDepth})`,
+        'MAX_RESOLUTION_DEPTH',
+        this.config.maxResolutionDepth,
+        depth,
+      );
+    }
+
+    if (isReferenceId(value)) {
+      if (counted.has(value) || this.sidecar.isResolved(value)) {
+        return 0;
+      }
+      counted.add(value);
+      return this.sidecar.getSize(value) ?? 0;
+    }
+
+    // SECURITY: iterate by index, never with a method looked up on the untrusted value: see header
+    if (isCompositeHandle(value)) {
+      const parts = value.__parts as unknown;
+      const len = untrustedLength(parts);
+      let sum = this.predictExpandedSize(value, depth);
+      for (let i = 0; i < len; i++) {
+        sum += this.predictAddedSize(untrustedAt(parts, i), depth + 1, counted);
+      }
+      return sum;
+    }
+
+    if (Array.isArray(value)) {
+      const len = untrustedLength(value);
+      let sum = 0;
+      for (let i = 0; i < len; i++) {
+        sum += this.predictAddedSize(untrustedAt(value, i), depth + 1, counted);
+      }
+      return sum;
+    }
+
+    if (value !== null && typeof value === 'object') {
+      let sum = 0;
+      for (const val of Object.values(value)) {
+        sum += this.predictAddedSize(val, depth + 1, counted);
+      }
+      return sum;
+    }
+
+    return 0;
+  }
+
+  /**
+   * Run a step that counts resolved data against the execution's total; when the sidecar
+   * refuses it, the refusal is thrown as the resolution error callers of `resolve` handle
+   */
+  private withinTotal(count: () => void): void {
+    try {
+      count();
+    } catch (error: unknown) {
+      if (error instanceof SidecarLimitError) {
+        throw new ResolutionLimitError(error.message, error.code, error.limit, error.current);
+      }
+      throw error;
     }
   }
 
@@ -241,9 +320,13 @@ export class ReferenceResolver {
       );
     }
 
-    // Handle reference IDs
+    // Handle reference IDs. The sidecar decodes a stored value once per execution and counts it
+    // against the execution's total then; later resolutions get the same string.
     if (isReferenceId(value)) {
-      const data = this.sidecar.retrieveString(value);
+      let data: string | undefined;
+      this.withinTotal(() => {
+        data = this.sidecar.resolveString(value);
+      });
       if (data === undefined) {
         throw new Error(`Unknown reference: ${value}`);
       }
@@ -297,6 +380,11 @@ export class ReferenceResolver {
    * Resolve a composite handle by concatenating its parts
    */
   private resolveComposite(handle: CompositeHandle, depth: number): string {
+    // The joined string is new memory every time: count it against the execution's total
+    // before any of it is built
+    const joinedSize = this.predictExpandedSize(handle, depth);
+    this.withinTotal(() => this.sidecar.countResolved(joinedSize));
+
     const out: string[] = [];
 
     // SECURITY: iterate __parts by index rather than for..of, so an attacker Proxy cannot

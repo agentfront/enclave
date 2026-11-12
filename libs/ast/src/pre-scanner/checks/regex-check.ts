@@ -92,6 +92,23 @@ export function detectRegexLiterals(source: string, config: PreScannerConfig, st
 
   const regexes = findRegexLiterals(source);
 
+  // Where literals are blocked, the first one is what is reported: the count limit is for the
+  // modes that allow some (a preset that blocks has a count of 0, which would otherwise answer
+  // "too many" for a script that may have none)
+  if (config.regexMode === 'block') {
+    const first = regexes[0];
+    if (first !== undefined) {
+      state.reportFatalError({
+        code: PRESCANNER_ERROR_CODES.REGEX_BLOCKED,
+        message: `Regex literals are blocked in this security mode: /${truncate(first.pattern, 50)}/`,
+        position: first.position,
+        line: first.line,
+        data: { pattern: first.pattern },
+      });
+    }
+    return;
+  }
+
   // Check regex count limit
   const maxCount = config.maxRegexCount ?? 20;
   if (regexes.length > maxCount) {
@@ -105,18 +122,6 @@ export function detectRegexLiterals(source: string, config: PreScannerConfig, st
 
   // Process each regex
   for (const regex of regexes) {
-    // Check if regex should be blocked entirely
-    if (config.regexMode === 'block') {
-      state.reportFatalError({
-        code: PRESCANNER_ERROR_CODES.REGEX_BLOCKED,
-        message: `Regex literals are blocked in this security mode: /${truncate(regex.pattern, 50)}/`,
-        position: regex.position,
-        line: regex.line,
-        data: { pattern: regex.pattern },
-      });
-      return;
-    }
-
     // Check regex length
     const maxLength = config.maxRegexLength ?? 200;
     if (regex.pattern.length > maxLength) {

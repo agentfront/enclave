@@ -1,0 +1,103 @@
+---
+title: '@enclave-vm/runtime'
+description: 'Building blocks of a runtime worker for EnclaveJS: session bookkeeping and channels'
+---
+
+# @enclave-vm/runtime
+
+Building blocks of a runtime worker for EnclaveJS: a worker object that keeps track of sessions, a session executor, and the channels between a worker and a broker.
+
+<Warning>
+  This package is not a runnable service. It does not execute code, starts no server and opens no port, and it has no authentication. An `execute` request never runs code: it ends with `RuntimeNotImplementedError`. To run scripts use [@enclave-vm/broker](/enclavejs/broker) or [@enclave-vm/core](/core-libraries/enclave-vm/overview).
+</Warning>
+
+## Installation
+
+```bash
+npm install @enclave-vm/runtime
+```
+
+## What It Contains
+
+| Export | Description |
+|--------|-------------|
+| `createRuntimeWorker(config?)` | A worker that keeps the sessions of the requests handed to `handleRequest()` |
+| `SessionExecutor`, `createSessionExecutor` | Holds one session and forwards its events to a channel |
+| `RuntimeNotImplementedError` | Thrown by the operations that are not implemented (code `NOT_IMPLEMENTED`) |
+| `MemoryChannel`, `createMemoryChannel`, `createMemoryChannelPair` | In-process channels |
+| `WebSocketChannel`, `createWebSocketChannel` | The client side of a WebSocket connection |
+
+## Runtime Worker
+
+```typescript
+import { createRuntimeWorker, createMemoryChannel, RuntimeNotImplementedError } from '@enclave-vm/runtime';
+
+const worker = createRuntimeWorker({ maxSessions: 10 });
+
+// Marks the worker as running. Nothing is listening: port, host and wsPath are not used.
+await worker.start();
+
+const channel = createMemoryChannel();
+
+try {
+  await worker.handleRequest({ type: 'execute', sessionId: 's_123', code: 'return 1 + 1' }, channel);
+} catch (error) {
+  if (error instanceof RuntimeNotImplementedError) {
+    console.log(error.code); // 'NOT_IMPLEMENTED'
+  }
+}
+
+// The channel received a session that started and ended with an error
+console.log(channel.getEvents().map((event) => event.type)); // ['session_init', 'final']
+
+// No session is left behind
+console.log(worker.getSessions()); // []
+console.log(worker.getStats().activeSessions); // 0
+
+await worker.stop();
+```
+
+`handleRequest(request, channel)` takes `execute`, `cancel`, `tool_result` and `ping` requests from the application that embeds the worker. The caller is trusted: nothing authenticates a request.
+
+An `execute` request never runs the code. The channel receives `session_init`, then a `final` event with `ok: false` and `error.code: 'NOT_IMPLEMENTED'`; the request rejects with `RuntimeNotImplementedError`, and no session is left behind. `SessionExecutor.execute()` ends its session the same way.
+
+`maxSessions` (default 10) must be a positive integer.
+
+## Channels
+
+```typescript
+import { createMemoryChannel, createMemoryChannelPair, createWebSocketChannel } from '@enclave-vm/runtime';
+
+// In process: keeps the events that were sent
+const channel = createMemoryChannel();
+
+// Two connected channels: what one sends, the handlers of the other receive
+const { client, server } = createMemoryChannelPair();
+
+// Client side of a WebSocket connection
+const remote = createWebSocketChannel({ url: 'wss://worker.example.com/ws' });
+await remote.connect();
+```
+
+`WebSocketChannel` connects to a URL. It sends no credentials and does not validate incoming messages against a schema, so authenticate the connection in the server behind the URL and validate messages in the handler. While it is not connected it keeps at most `maxBufferedMessages` events (default 1000) and drops the rest.
+
+## Command Line
+
+The `enclave-runtime` program does not start a worker. It checks its arguments, prints that a standalone worker is not implemented, and exits with code 1. `--help` exits with code 0.
+
+## Running Scripts
+
+<CardGroup cols={2}>
+  <Card title="@enclave-vm/broker" icon="server" href="/enclavejs/broker">
+    Sessions, tools and streaming over HTTP
+  </Card>
+  <Card title="@enclave-vm/core" icon="lock" href="/core-libraries/enclave-vm/overview">
+    The sandbox
+  </Card>
+</CardGroup>
+
+## Links
+
+- [API Reference](/api-reference/enclavejs-runtime)
+- [GitHub](https://github.com/agentfront/enclave/tree/main/libs/runtime)
+- [npm](https://www.npmjs.com/package/@enclave-vm/runtime)

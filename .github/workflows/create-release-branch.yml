@@ -30,11 +30,14 @@ jobs:
     steps:
       - name: Validate inputs
         shell: bash
+        env:
+          INPUT_MAJOR_VERSION: ${{ inputs.major_version }}
+          INPUT_MINOR_VERSION: ${{ inputs.minor_version }}
         run: |
           set -euo pipefail
 
-          MAJOR="${{ inputs.major_version }}"
-          MINOR="${{ inputs.minor_version }}"
+          MAJOR="$INPUT_MAJOR_VERSION"
+          MINOR="$INPUT_MINOR_VERSION"
 
           # Validate major version is a number
           if ! [[ "$MAJOR" =~ ^[0-9]+$ ]]; then
@@ -70,11 +73,14 @@ jobs:
       - name: Check if branch already exists
         id: check_branch
         shell: bash
+        env:
+          INPUT_MAJOR_VERSION: ${{ inputs.major_version }}
+          INPUT_MINOR_VERSION: ${{ inputs.minor_version }}
         run: |
           set -euo pipefail
 
-          MAJOR="${{ inputs.major_version }}"
-          MINOR="${{ inputs.minor_version }}"
+          MAJOR="$INPUT_MAJOR_VERSION"
+          MINOR="$INPUT_MINOR_VERSION"
           BRANCH_NAME="release/${MAJOR}.${MINOR}.x"
 
           # Check if branch exists on remote
@@ -88,11 +94,14 @@ jobs:
       - name: Calculate initial version
         id: version
         shell: bash
+        env:
+          INPUT_MAJOR_VERSION: ${{ inputs.major_version }}
+          INPUT_MINOR_VERSION: ${{ inputs.minor_version }}
         run: |
           set -euo pipefail
 
-          MAJOR="${{ inputs.major_version }}"
-          MINOR="${{ inputs.minor_version }}"
+          MAJOR="$INPUT_MAJOR_VERSION"
+          MINOR="$INPUT_MINOR_VERSION"
           INITIAL_VERSION="${MAJOR}.${MINOR}.0"
 
           echo "initial_version=$INITIAL_VERSION" >> "$GITHUB_OUTPUT"
@@ -101,11 +110,13 @@ jobs:
       - name: Create release branch
         id: branch
         shell: bash
+        env:
+          INPUT_BASE_BRANCH: ${{ inputs.base_branch }}
         run: |
           set -euo pipefail
 
           BRANCH_NAME="${{ steps.check_branch.outputs.branch_name }}"
-          BASE_BRANCH="${{ inputs.base_branch }}"
+          BASE_BRANCH="$INPUT_BASE_BRANCH"
 
           git fetch origin "$BASE_BRANCH" --tags
           git switch -c "$BRANCH_NAME" "origin/$BASE_BRANCH"
@@ -199,6 +210,8 @@ jobs:
           echo "Pushed $BRANCH_NAME to origin"
 
       - name: Summary
+        env:
+          INPUT_BASE_BRANCH: ${{ inputs.base_branch }}
         run: |
           echo "## Release Branch Created" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -206,7 +219,7 @@ jobs:
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| **Branch** | \`${{ steps.check_branch.outputs.branch_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Initial Version** | \`${{ steps.version.outputs.initial_version }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Base Branch** | \`${{ inputs.base_branch }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Base Branch** | \`${INPUT_BASE_BRANCH}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Packages** | All libs/* |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Next Steps" >> $GITHUB_STEP_SUMMARY

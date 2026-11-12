@@ -76,65 +76,69 @@ const standard = new JSAstValidator(Presets.standard());
 
 ### Rule Interface
 
+A rule has a name, a description, a default severity and a `validate` method. It reports what it finds through `context.report`; it does not return a list.
+
 ```ts
 interface ValidationRule {
-  name: string;
-  validate(context: ValidationContext): ValidationIssue[];
+  readonly name: string;                       // Unique identifier
+  readonly description: string;
+  readonly defaultSeverity: ValidationSeverity;
+  readonly enabledByDefault: boolean;
+  validate(context: ValidationContext): void | Promise<void>;
 }
 
 interface ValidationContext {
-  ast: Node;           // Parsed AST (acorn)
-  code: string;        // Original source code
-  options: object;     // Validation options
-}
-
-interface ValidationIssue {
-  rule: string;
-  message: string;
-  severity: 'error' | 'warning';
-  location?: { line: number; column: number };
+  ast: acorn.Node;           // Parsed AST (acorn)
+  source: string;            // Original source code
+  config: ValidationConfig;  // The options of this validation
+  report(issue: {
+    code: string;
+    message: string;
+    severity?: ValidationSeverity; // Default: the rule's (or the one configured for it)
+    location?: { line: number; column: number };
+    data?: Record<string, unknown>;
+  }): void;
 }
 ```
+
+A rule passed to the `JSAstValidator` constructor runs in every validation that does not switch it off by name (`rules: { 'rule-name': false }`). The validator collects at most `maxIssues` issues (100 by default), so a rule that reports once per node cannot make the result grow with the source.
 
 ### Example: Custom Rule
 
 ```ts
-import { ValidationRule, ValidationContext, ValidationIssue } from '@enclave-vm/ast';
-import { walk } from 'estree-walker';
+import { JSAstValidator, ValidationSeverity, createAgentScriptPreset } from '@enclave-vm/ast';
+import type { ValidationRule, ValidationContext } from '@enclave-vm/ast';
+import * as walk from 'acorn-walk';
 
 class NoMagicNumbersRule implements ValidationRule {
-  name = 'no-magic-numbers';
+  readonly name = 'no-magic-numbers';
+  readonly description = 'Numbers other than the allowed ones should be named constants';
+  readonly defaultSeverity = ValidationSeverity.WARNING;
+  readonly enabledByDefault = true;
   private allowedNumbers: number[];
 
   constructor(options: { allowed?: number[] } = {}) {
     this.allowedNumbers = options.allowed || [0, 1, -1];
   }
 
-  validate(context: ValidationContext): ValidationIssue[] {
-    const issues: ValidationIssue[] = [];
-
-    walk(context.ast, {
-      enter: (node) => {
-        if (node.type === 'Literal' && typeof node.value === 'number') {
-          if (!this.allowedNumbers.includes(node.value)) {
-            issues.push({
-              rule: this.name,
-              message: `Magic number ${node.value} should be a named constant`,
-              severity: 'warning',
-              location: node.loc?.start,
-            });
-          }
+  validate(context: ValidationContext): void {
+    walk.simple(context.ast as any, {
+      Literal: (node: any) => {
+        if (typeof node.value === 'number' && !this.allowedNumbers.includes(node.value)) {
+          context.report({
+            code: 'NO_MAGIC_NUMBERS',
+            message: `Magic number ${node.value} should be a named constant`,
+            location: node.loc ? { line: node.loc.start.line, column: node.loc.start.column } : undefined,
+          });
         }
       },
     });
-
-    return issues;
   }
 }
 
-// Usage
+// Usage: a preset is an array of rules
 const validator = new JSAstValidator([
-  ...createAgentScriptPreset().rules,
+  ...createAgentScriptPreset(),
   new NoMagicNumbersRule({ allowed: [0, 1, -1, 10, 100] }),
 ]);
 ```
@@ -143,62 +147,55 @@ const validator = new JSAstValidator([
 
 ```ts
 class BlockedApiCallsRule implements ValidationRule {
-  name = 'blocked-api-calls';
+  readonly name = 'blocked-api-calls';
+  readonly description = 'Blocks tool calls by name prefix';
+  readonly defaultSeverity = ValidationSeverity.ERROR;
+  readonly enabledByDefault = true;
   private blockedApis: string[];
 
   constructor(options: { blocked: string[] }) {
     this.blockedApis = options.blocked;
   }
 
-  validate(context: ValidationContext): ValidationIssue[] {
-    const issues: ValidationIssue[] = [];
-
-    walk(context.ast, {
-      enter: (node) => {
-        if (
-          node.type === 'CallExpression' &&
-          node.callee.type === 'Identifier' &&
-          node.callee.name === 'callTool'
-        ) {
-          const firstArg = node.arguments[0];
-          if (firstArg?.type === 'Literal' && typeof firstArg.value === 'string') {
-            if (this.blockedApis.some(api => firstArg.value.startsWith(api))) {
-              issues.push({
-                rule: this.name,
-                message: `API "${firstArg.value}" is blocked`,
-                severity: 'error',
-                location: node.loc?.start,
-              });
-            }
+  validate(context: ValidationContext): void {
+    walk.simple(context.ast as any, {
+      CallExpression: (node: any) => {
+        if (node.callee.type !== 'Identifier' || node.callee.name !== 'callTool') return;
+        const firstArg = node.arguments[0];
+        if (firstArg?.type === 'Literal' && typeof firstArg.value === 'string') {
+          if (this.blockedApis.some((api) => firstArg.value.startsWith(api))) {
+            context.report({
+              code: 'BLOCKED_API_CALL',
+              message: `API "${firstArg.value}" is blocked`,
+              location: node.loc ? { line: node.loc.start.line, column: node.loc.start.column } : undefined,
+            });
           }
         }
       },
     });
-
-    return issues;
   }
 }
 
 // Usage
 const validator = new JSAstValidator([
-  ...createAgentScriptPreset().rules,
+  ...createAgentScriptPreset(),
   new BlockedApiCallsRule({
     blocked: ['admin:', 'system:', 'internal:'],
   }),
 ]);
 ```
 
+This rule sees a tool name only where `callTool` is called directly with a string literal. The AgentScript preset already requires exactly that form (`staticCallTarget`), and its `allowedToolNames` option restricts the names; a rule like this one adds to it and does not stand alone.
+
 ## Extending Presets
 
-Add rules to an existing preset:
+A preset function returns an array of rules. Add rules to it:
 
 ```ts
 import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
-const preset = createAgentScriptPreset();
-
 const validator = new JSAstValidator([
-  ...preset.rules,
+  ...createAgentScriptPreset(),
   new CustomRule1(),
   new CustomRule2(),
 ]);
@@ -209,12 +206,14 @@ const validator = new JSAstValidator([
 Filter out rules you don't need:
 
 ```ts
-const preset = createAgentScriptPreset();
-
 const validator = new JSAstValidator(
-  preset.rules.filter(rule => rule.name !== 'no-regex-literal')
+  createAgentScriptPreset().filter((rule) => rule.name !== 'no-regex-literal'),
 );
 ```
+
+<Warning>
+  The rules of the AgentScript preset depend on each other: several of them are only sound because another one refuses a construct. Removing a rule can open more than that rule's name suggests. Do it only for a host that does not run untrusted code.
+</Warning>
 
 ## Rule Ordering
 
@@ -248,7 +247,7 @@ describe('CustomRule', () => {
   it('should block dangerous pattern', async () => {
     const result = await validator.validate('dangerous code');
     expect(result.valid).toBe(false);
-    expect(result.issues[0].rule).toBe('custom-rule');
+    expect(result.issues[0].code).toBe('CUSTOM_RULE');
   });
 
   it('should allow safe pattern', async () => {

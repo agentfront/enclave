@@ -269,6 +269,19 @@ export interface ConsoleMessage {
 }
 
 /**
+ * The worker has nothing left to run for an execution.
+ *
+ * Sent after the result, from a new turn of the worker's event loop: a turn the worker only
+ * reaches when the script, and everything the script scheduled, has stopped running. The pool
+ * waits for it before the worker is given to another execution.
+ */
+export interface WorkerIdleMessage {
+  type: 'idle';
+  /** The execution that has ended */
+  requestId: string;
+}
+
+/**
  * Union of all messages from worker to main thread
  */
 export type WorkerToMainMessage =
@@ -276,7 +289,8 @@ export type WorkerToMainMessage =
   | ToolCallMessage
   | ExecutionResultMessage
   | MemoryReportResultMessage
-  | ConsoleMessage;
+  | ConsoleMessage
+  | WorkerIdleMessage;
 
 // ============================================================================
 // Message Validation Schemas
@@ -384,6 +398,16 @@ export const workerReadyMessageSchema = z
   .strict();
 
 /**
+ * Zod schema for worker idle messages
+ */
+export const workerIdleMessageSchema = z
+  .object({
+    type: z.literal('idle'),
+    requestId: z.string().min(1).max(100).regex(ID_PATTERN),
+  })
+  .strict();
+
+/**
  * Union schema for all worker-to-main messages
  */
 export const workerToMainMessageSchema = z.discriminatedUnion('type', [
@@ -392,6 +416,7 @@ export const workerToMainMessageSchema = z.discriminatedUnion('type', [
   executionResultMessageSchema,
   memoryReportResultMessageSchema,
   consoleMessageSchema,
+  workerIdleMessageSchema,
 ]);
 
 /**
@@ -427,4 +452,11 @@ export function isConsoleMessage(msg: WorkerToMainMessage): msg is ConsoleMessag
  */
 export function isWorkerReadyMessage(msg: WorkerToMainMessage): msg is WorkerReadyMessage {
   return msg.type === 'ready';
+}
+
+/**
+ * Type guard for worker idle messages
+ */
+export function isWorkerIdleMessage(msg: WorkerToMainMessage): msg is WorkerIdleMessage {
+  return msg.type === 'idle';
 }

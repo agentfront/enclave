@@ -7,6 +7,7 @@
 
 import { JSAstValidator } from '../validator';
 import { createAgentScriptPreset } from '../presets/agentscript.preset';
+import { transformAgentScript } from '../agentscript-transformer';
 import { ValidationSeverity } from '../interfaces';
 
 describe('AgentScript Preset', () => {
@@ -559,6 +560,58 @@ describe('AgentScript Preset', () => {
       const result = await validator.validate(code);
       expect(result.valid).toBe(true);
     });
+
+    it('should allow the wrapper name for the wrapper only', async () => {
+      const validator = new JSAstValidator(createAgentScriptPreset());
+      const codes = async (code: string) => (await validator.validate(code)).issues.map((issue) => issue.code);
+
+      // A function of the script that carries the name is a user function like any other
+      expect(await codes('async function __ag_main() { function __ag_main(a) { return a; } return 1; }')).toContain(
+        'NO_USER_FUNCTION_DECLARATION',
+      );
+      // So is a top-level function of that name with another shape, and a second wrapper
+      expect(await codes('function __ag_main() { return 1; }')).toContain('NO_USER_FUNCTION_DECLARATION');
+      expect(await codes('async function __ag_main(a) { return a; }')).toContain('NO_USER_FUNCTION_DECLARATION');
+      expect(
+        await codes('async function __ag_main() { return 1; }\nasync function __ag_main() { return 2; }'),
+      ).toContain('NO_USER_FUNCTION_DECLARATION');
+    });
+  });
+
+  describe('Syntax allowlist: constructs that share a node type', () => {
+    const wrap = (body: string) => `async function __ag_main() { ${body} }`;
+
+    it.each([
+      ['a `using` declaration', 'using resource = null; return 1;', 'UsingDeclaration'],
+      ['an `await using` declaration', 'await using resource = null; return 1;', 'AwaitUsingDeclaration'],
+      ['a `for await` loop', 'for await (const item of []) { } return 1;', 'ForAwaitStatement'],
+    ])('should block %s and allow it when it is listed by name', async (_name, body, variant) => {
+      const result = await new JSAstValidator(createAgentScriptPreset()).validate(wrap(body));
+      expect(result.valid).toBe(false);
+      expect(result.issues.find((issue) => issue.code === 'DISALLOWED_SYNTAX')?.data).toMatchObject({ variant });
+
+      const relaxed = new JSAstValidator(createAgentScriptPreset({ additionalAllowedSyntax: [variant] }));
+      expect((await relaxed.validate(wrap(body))).valid).toBe(true);
+    });
+
+    it('should block generator functions as syntax', async () => {
+      const result = await new JSAstValidator(createAgentScriptPreset()).validate(
+        wrap('const g = function* () { }; return 1;'),
+      );
+
+      expect(result.issues.find((issue) => issue.code === 'DISALLOWED_SYNTAX')?.data).toEqual({
+        nodeType: 'FunctionExpression',
+        variant: 'GeneratorFunction',
+      });
+    });
+
+    it('should keep allowing var, let, const and for-of', async () => {
+      const result = await new JSAstValidator(createAgentScriptPreset()).validate(
+        wrap('var a = 1; let b = 2; const c = 3; for (const item of [a, b, c]) { } return 1;'),
+      );
+
+      expect(result.valid).toBe(true);
+    });
   });
 
   describe('Blocked: Dangerous Identifiers', () => {
@@ -950,7 +1003,53 @@ describe('AgentScript Preset', () => {
     });
   });
 
+  describe('Options that look at callTool', () => {
+    // A host validates a script as it was written or, like the enclave, after the transform that
+    // renames `callTool`. The options mean the same in both.
+    const asWritten = (body: string) => `async function __ag_main() { ${body} }`;
+    const transformed = (body: string) => transformAgentScript(body, { wrapInMain: true, transformCallTool: true });
+    const codesOf = async (options: Parameters<typeof createAgentScriptPreset>[0], code: string) =>
+      (await new JSAstValidator(createAgentScriptPreset(options)).validate(code)).issues
+        .filter((issue) => issue.severity === ValidationSeverity.ERROR)
+        .map((issue) => issue.code);
+
+    it.each([
+      ['as written', asWritten],
+      ['after the transform', transformed],
+    ])('requireCallTool accepts a script that calls a tool, %s', async (_name, form) => {
+      expect(await codesOf({ requireCallTool: true }, form("return await callTool('users:list', {});"))).toEqual([]);
+    });
+
+    it.each([
+      ['as written', asWritten],
+      ['after the transform', transformed],
+    ])('requireCallTool refuses a script that calls no tool, %s', async (_name, form) => {
+      expect(await codesOf({ requireCallTool: true }, form('return 1;'))).toEqual(['REQUIRED_FUNCTION_NOT_CALLED']);
+    });
+
+    it.each([
+      ['as written', asWritten],
+      ['after the transform', transformed],
+    ])('callToolValidation checks the arguments, %s', async (_name, form) => {
+      const options = { callToolValidation: { minArgs: 2, maxArgs: 2 } };
+
+      expect(await codesOf(options, form("return await callTool('users:list', {});"))).toEqual([]);
+      expect(await codesOf(options, form("return await callTool('users:list');"))).toEqual(['INVALID_ARGUMENT_COUNT']);
+    });
+  });
+
   describe('Custom Configuration', () => {
+    it('should add custom reserved prefixes to the built-in ones', async () => {
+      const validator = new JSAstValidator(createAgentScriptPreset({ reservedPrefixes: ['__custom_'] }));
+      const codesOf = async (body: string) =>
+        (await validator.validate(`async function __ag_main() { ${body} }`)).issues.map((issue) => issue.code);
+
+      expect(await codesOf('const __custom_value = 1; return __custom_value;')).toContain('RESERVED_PREFIX');
+      // The prefixes of the runtime stay reserved
+      expect(await codesOf('const __safe_value = 1; return __safe_value;')).toContain('RESERVED_PREFIX');
+      expect(await codesOf('const __ag_value = 1; return __ag_value;')).toContain('RESERVED_PREFIX');
+    });
+
     it('should allow custom allowed globals', async () => {
       const code = `
         

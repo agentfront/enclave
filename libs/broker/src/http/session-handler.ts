@@ -6,19 +6,50 @@
  * @packageDocumentation
  */
 
-import type { SessionId, StreamEvent } from '@enclave-vm/types';
+import type { EventFilterConfig, SessionId, SessionLimits, StreamEvent } from '@enclave-vm/types';
+import { DEFAULT_SESSION_LIMITS } from '@enclave-vm/types';
 import type { Broker } from '../broker';
 import type { BrokerSession } from '../broker-session';
 import type { SessionInfo } from '../session-manager';
-import type {
-  BrokerRequest,
-  BrokerResponse,
-  CreateSessionRequest,
-  SessionInfoResponse,
-  ListSessionsResponse,
-  ErrorResponse,
-} from './types';
+import type { BrokerRequest, BrokerResponse, SessionInfoResponse, ListSessionsResponse, ErrorResponse } from './types';
 import { EventFilter, createEventFilter } from '../event-filter';
+import { BrokerError, BrokerErrorCode } from '../errors';
+import { parseCreateSessionRequest, parseFilterParameter, REQUEST_FILTER_LIMITS } from './request-validation';
+import type { RequestedLimits } from './request-validation';
+
+/**
+ * The shortest and the longest heartbeat interval a request can get. A broker configured with
+ * a shorter interval keeps its own as the lower bound.
+ */
+/**
+ * The request headers every answer allows a cross-origin page to send: what the client sends by
+ * itself, and `Authorization`, which is how a browser client carries a credential (the client's
+ * `headers` option).
+ */
+const CORS_REQUEST_HEADERS = ['Content-Type', 'Accept', 'Last-Event-ID', 'Authorization'];
+
+/** A header name as HTTP writes one (RFC 9110 token): nothing that could end the header line. */
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/** The value of `Access-Control-Allow-Headers`: the fixed names and the configured ones, once each. */
+function corsRequestHeaders(configured: unknown): string {
+  if (configured !== undefined && !Array.isArray(configured)) {
+    throw new TypeError('SessionHandler: "allowedHeaders" must be an array of header names');
+  }
+  const names = [...CORS_REQUEST_HEADERS];
+  for (const name of (configured ?? []) as unknown[]) {
+    if (typeof name !== 'string' || !HEADER_NAME.test(name)) {
+      throw new TypeError('SessionHandler: "allowedHeaders" must be an array of header names');
+    }
+    if (!names.some((known) => known.toLowerCase() === name.toLowerCase())) {
+      names.push(name);
+    }
+  }
+  return names.join(', ');
+}
+
+const MIN_REQUEST_HEARTBEAT_MS = 1000;
+const MAX_REQUEST_HEARTBEAT_MS = 300_000;
 
 /**
  * Session handler configuration
@@ -40,7 +71,67 @@ export interface SessionHandlerConfig {
    * @default ['*']
    */
   allowedOrigins?: string[];
+
+  /**
+   * Request headers a cross-origin page may send, in addition to the ones the routes always
+   * allow: `Content-Type`, `Accept`, `Last-Event-ID` and `Authorization`. Name here what your
+   * clients send besides (an API-key header, a tenant header); a browser refuses to send a
+   * header the preflight answer does not list. Each entry is a header name.
+   * @default []
+   */
+  allowedHeaders?: string[];
+
+  /**
+   * Tells the routes who the caller of a request is.
+   *
+   * With this hook every session belongs to the caller that created it: the list holds the
+   * caller's own sessions, and reading, replaying and ending a session is answered only for its
+   * owner (another caller gets the answer of an id that does not exist). A request for which the
+   * hook returns no identity, or throws, is answered with 401.
+   *
+   * The hook receives the adapted request; `request.raw` is the request object of the HTTP
+   * framework, where an authentication middleware usually leaves its result. Return a stable,
+   * non-empty string per caller (a user id, a tenant id, an API key id).
+   *
+   * Without this hook the routes do not tell callers apart: whoever can reach them can list,
+   * read, replay and end every session. Mount them only where every caller is trusted alike.
+   */
+  identify?: CallerIdentifier;
+
+  /**
+   * Serve `GET /sessions` (the list of sessions).
+   * @default true
+   */
+  sessionList?: boolean;
+
+  /**
+   * Maximum number of streams one session has open at a time: the stream of the request that
+   * created it and the streams of `GET /sessions/:sessionId/stream`. A further stream is
+   * answered with 429.
+   * @default 8
+   */
+  maxStreamsPerSession?: number;
+
+  /**
+   * How far a reader may fall behind, in bytes written to it and not yet taken, before its
+   * stream is dropped. Dropping the stream of the request that created a session ends the
+   * session. Needs a response that reports `bufferedBytes()` (the Express adapter does).
+   * @default 8388608 (8MB)
+   */
+  maxBufferedBytes?: number;
 }
+
+/**
+ * Returns the identity of the caller of a request, or nothing when there is none.
+ */
+export type CallerIdentifier = (
+  request: BrokerRequest,
+) => string | null | undefined | Promise<string | null | undefined>;
+
+/**
+ * The longest caller identity the routes accept from the hook.
+ */
+const MAX_CALLER_LENGTH = 1024;
 
 /**
  * Route handler function type
@@ -56,11 +147,35 @@ export class SessionHandler {
   private readonly broker: Broker;
   private readonly cors: boolean;
   private readonly allowedOrigins: string[];
+  private readonly allowedRequestHeaders: string;
+  private readonly identify?: CallerIdentifier;
+  private readonly sessionList: boolean;
+  private readonly maxStreamsPerSession: number;
+  private readonly maxBufferedBytes: number;
+  private readonly streams = new WeakMap<BrokerSession, number>();
 
   constructor(config: SessionHandlerConfig) {
     this.broker = config.broker;
     this.cors = config.cors ?? true;
     this.allowedOrigins = config.allowedOrigins ?? ['*'];
+    this.allowedRequestHeaders = corsRequestHeaders(config.allowedHeaders);
+    if (config.identify !== undefined && typeof config.identify !== 'function') {
+      throw new TypeError('SessionHandler: "identify" must be a function');
+    }
+    this.identify = config.identify;
+    this.sessionList = config.sessionList ?? true;
+    this.maxStreamsPerSession = positiveNumber(config.maxStreamsPerSession, 'maxStreamsPerSession', 8);
+    this.maxBufferedBytes = positiveNumber(config.maxBufferedBytes, 'maxBufferedBytes', 8 * 1024 * 1024);
+    warnUnknownKeys('SessionHandler', config, [
+      'broker',
+      'cors',
+      'allowedOrigins',
+      'allowedHeaders',
+      'identify',
+      'sessionList',
+      'maxStreamsPerSession',
+      'maxBufferedBytes',
+    ]);
   }
 
   /**
@@ -77,9 +192,11 @@ export class SessionHandler {
       { method: 'GET', path: '/sessions/:sessionId', handler: this.getSession.bind(this) },
       { method: 'GET', path: '/sessions/:sessionId/stream', handler: this.streamSession.bind(this) },
       { method: 'DELETE', path: '/sessions/:sessionId', handler: this.terminateSession.bind(this) },
+      { method: 'POST', path: '/sessions/:sessionId/cancel', handler: this.terminateSession.bind(this) },
       { method: 'OPTIONS', path: '/sessions', handler: this.handleCors.bind(this) },
       { method: 'OPTIONS', path: '/sessions/:sessionId', handler: this.handleCors.bind(this) },
       { method: 'OPTIONS', path: '/sessions/:sessionId/stream', handler: this.handleCors.bind(this) },
+      { method: 'OPTIONS', path: '/sessions/:sessionId/cancel', handler: this.handleCors.bind(this) },
     ];
   }
 
@@ -102,7 +219,7 @@ export class SessionHandler {
     }
 
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Last-Event-ID');
+    res.setHeader('Access-Control-Allow-Headers', this.allowedRequestHeaders);
     res.setHeader('Access-Control-Max-Age', '86400');
   }
 
@@ -115,15 +232,80 @@ export class SessionHandler {
   }
 
   /**
-   * List all active sessions
+   * Who the caller of a request is.
+   *
+   * Without an `identify` hook there is no caller identity and every request passes. With one,
+   * a request without an identity is answered with 401 here and `undefined` is returned.
+   */
+  private async callerOf(req: BrokerRequest, res: BrokerResponse): Promise<{ caller: string | undefined } | undefined> {
+    if (!this.identify) {
+      return { caller: undefined };
+    }
+
+    let caller: unknown;
+    try {
+      caller = await this.identify(req);
+    } catch {
+      caller = undefined;
+    }
+
+    if (typeof caller !== 'string' || caller.length === 0 || caller.length > MAX_CALLER_LENGTH) {
+      this.sendError(res, 401, 'UNAUTHORIZED', 'The caller of this request could not be identified');
+      return undefined;
+    }
+    return { caller };
+  }
+
+  /**
+   * Whether a caller may reach a session: always without an `identify` hook, otherwise only the
+   * caller that owns it. A session without an owner belongs to no caller.
+   */
+  private mayReach(session: { owner?: string }, caller: string | undefined): boolean {
+    if (!this.identify) return true;
+    return caller !== undefined && session.owner === caller;
+  }
+
+  /**
+   * The session a request names, if it exists and its caller may reach it. Otherwise the answer
+   * has been sent (401, 400 or 404) and `undefined` is returned. A session of another caller is
+   * answered exactly like an id that does not exist.
+   */
+  private async sessionOf(req: BrokerRequest, res: BrokerResponse): Promise<BrokerSession | undefined> {
+    const identity = await this.callerOf(req, res);
+    if (!identity) return undefined;
+
+    const sessionId = req.params['sessionId'] as SessionId | undefined;
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      this.sendError(res, 400, 'INVALID_REQUEST', 'Missing sessionId');
+      return undefined;
+    }
+
+    const session = this.broker.getSession(sessionId);
+    if (!session || !this.mayReach(session, identity.caller)) {
+      this.sendError(res, 404, 'NOT_FOUND', 'Session not found');
+      return undefined;
+    }
+    return session;
+  }
+
+  /**
+   * List sessions: all of them, or the caller's own when callers are identified
    *
    * GET /sessions
    */
   async listSessions(req: BrokerRequest, res: BrokerResponse): Promise<void> {
     this.addCorsHeaders(req, res);
 
+    if (!this.sessionList) {
+      this.sendError(res, 404, 'NOT_FOUND', 'Not found');
+      return;
+    }
+
+    const identity = await this.callerOf(req, res);
+    if (!identity) return;
+
     try {
-      const sessions = this.broker.listSessions();
+      const sessions = this.broker.listSessions().filter((info) => this.mayReach(info, identity.caller));
       const response: ListSessionsResponse = {
         sessions: sessions.map((info) => this.sessionInfoToResponse(info)),
         total: sessions.length,
@@ -146,12 +328,16 @@ export class SessionHandler {
   async createSession(req: BrokerRequest, res: BrokerResponse): Promise<void> {
     this.addCorsHeaders(req, res);
 
-    // Validate request body
-    const body = req.body as CreateSessionRequest | undefined;
-    if (!body || typeof body.code !== 'string') {
-      this.sendError(res, 400, 'INVALID_REQUEST', 'Missing or invalid "code" field');
+    const identity = await this.callerOf(req, res);
+    if (!identity) return;
+
+    // Validate the request body as a whole before any part of it is used
+    const parsed = parseCreateSessionRequest(req.body);
+    if (!parsed.ok) {
+      this.sendError(res, 400, parsed.code, parsed.message);
       return;
     }
+    const { code, sessionId, config, filter } = parsed.value;
 
     // Check if broker is disposed
     if (this.broker.isDisposed) {
@@ -159,31 +345,44 @@ export class SessionHandler {
       return;
     }
 
+    let session: BrokerSession;
+    let eventFilter: EventFilter | undefined;
     try {
-      // Build limits config, only including defined values
-      const limits: Record<string, number> = {};
-      if (body.config?.maxExecutionMs !== undefined) {
-        limits['sessionTtlMs'] = body.config.maxExecutionMs;
-      }
-      if (body.config?.maxToolCalls !== undefined) {
-        limits['maxToolCalls'] = body.config.maxToolCalls;
-      }
-      if (body.config?.heartbeatIntervalMs !== undefined) {
-        limits['heartbeatIntervalMs'] = body.config.heartbeatIntervalMs;
-      }
+      // What the request asks for, bounded by the broker's own limits
+      const limits = this.boundLimits(config);
 
       // Create event filter if configured
-      let eventFilter: EventFilter | undefined;
-      if (body.filter) {
-        eventFilter = createEventFilter({ config: body.filter });
+      if (filter) {
+        eventFilter = this.requestFilter(filter);
       }
 
-      // Create session
-      const session = this.broker.createSession({
-        sessionId: body.sessionId,
-        limits: Object.keys(limits).length > 0 ? limits : undefined,
-      });
+      // Create session (an id that is in use is refused by the session manager)
+      session = this.broker.createSession({ sessionId, limits, owner: identity.caller });
+    } catch (error) {
+      this.sendCreateFailure(res, error);
+      return;
+    }
 
+    // The creator's stream is the first stream of the session
+    const release = this.acquireStream(session);
+
+    // Handle client disconnect - use flag to prevent double cleanup
+    let unsubscribe: () => void = () => undefined;
+    let cleanedUp = false;
+    let dropped = false;
+    const cleanup = (reason = 'Client disconnected') => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      unsubscribe();
+      release?.();
+      if (!session.isTerminal()) {
+        session.cancel(reason).catch(() => {
+          // Ignore cancellation errors
+        });
+      }
+    };
+
+    try {
       // Set up streaming response
       res.setHeader('Content-Type', 'application/x-ndjson');
       res.setHeader('Cache-Control', 'no-cache');
@@ -191,43 +390,63 @@ export class SessionHandler {
       res.setHeader('X-Session-ID', session.sessionId);
 
       // Subscribe to events and stream (with filtering)
-      const unsubscribe = session.onEvent((event: StreamEvent) => {
+      unsubscribe = session.onEvent((event: StreamEvent) => {
+        if (dropped) return;
         // Apply filter if configured
         if (eventFilter && !eventFilter.shouldSend(event)) {
           return; // Skip filtered events
         }
-        this.writeEvent(res, event);
+        if (!this.writeEvent(res, event)) {
+          // The creator does not take its stream: the session ends with it
+          dropped = true;
+          cleanup('Client is not reading its stream');
+          this.dropReader(res);
+        }
       });
 
-      // Handle client disconnect - use flag to prevent double cleanup
-      let cleanedUp = false;
-      const cleanup = () => {
-        if (cleanedUp) return;
-        cleanedUp = true;
-        unsubscribe();
-        if (!session.isTerminal()) {
-          session.cancel('Client disconnected').catch(() => {
-            // Ignore cancellation errors
-          });
-        }
-      };
-
       if (req.signal) {
-        req.signal.addEventListener('abort', cleanup, { once: true });
+        req.signal.addEventListener('abort', () => cleanup(), { once: true });
+        // The caller may be gone already
+        if (req.signal.aborted) cleanup();
       }
+    } catch {
+      // The stream could not be set up: the session does not stay registered without one
+      cleanup();
+      await this.broker.terminateSession(session.sessionId).catch(() => false);
+      this.sendError(res, 500, 'SESSION_CREATE_ERROR', 'Failed to create session');
+      return;
+    }
 
-      // Start execution
-      try {
-        await session.execute(body.code);
-      } catch {
-        // Error already emitted through events
-      } finally {
-        cleanup();
+    // Start execution
+    try {
+      await session.execute(code);
+    } catch {
+      // Error already emitted through events
+    } finally {
+      cleanup();
+      if (!dropped) {
         res.end();
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      this.sendError(res, 500, 'SESSION_CREATE_ERROR', message);
+    }
+  }
+
+  /**
+   * Answer a failed session creation with a code and a fixed text.
+   */
+  private sendCreateFailure(res: BrokerResponse, error: unknown): void {
+    const code = error instanceof BrokerError ? error.code : undefined;
+    switch (code) {
+      case BrokerErrorCode.SessionExists:
+        this.sendError(res, 409, 'SESSION_EXISTS', 'A session with this id already exists');
+        return;
+      case BrokerErrorCode.InvalidSessionId:
+        this.sendError(res, 400, 'INVALID_REQUEST', 'Invalid "sessionId" field');
+        return;
+      case BrokerErrorCode.MaxSessionsReached:
+        this.sendError(res, 503, 'MAX_SESSIONS_REACHED', 'The broker has reached its session limit');
+        return;
+      default:
+        this.sendError(res, 500, 'SESSION_CREATE_ERROR', 'Failed to create session');
     }
   }
 
@@ -239,17 +458,8 @@ export class SessionHandler {
   async getSession(req: BrokerRequest, res: BrokerResponse): Promise<void> {
     this.addCorsHeaders(req, res);
 
-    const sessionId = req.params['sessionId'] as SessionId | undefined;
-    if (!sessionId) {
-      this.sendError(res, 400, 'INVALID_REQUEST', 'Missing sessionId');
-      return;
-    }
-
-    const session = this.broker.getSession(sessionId);
-    if (!session) {
-      this.sendError(res, 404, 'NOT_FOUND', `Session ${sessionId} not found`);
-      return;
-    }
+    const session = await this.sessionOf(req, res);
+    if (!session) return;
 
     res.status(200).json(this.sessionToInfo(session));
   }
@@ -262,88 +472,112 @@ export class SessionHandler {
   async streamSession(req: BrokerRequest, res: BrokerResponse): Promise<void> {
     this.addCorsHeaders(req, res);
 
-    const sessionId = req.params['sessionId'] as SessionId | undefined;
-    if (!sessionId) {
-      this.sendError(res, 400, 'INVALID_REQUEST', 'Missing sessionId');
-      return;
-    }
-
-    const session = this.broker.getSession(sessionId);
-    if (!session) {
-      this.sendError(res, 404, 'NOT_FOUND', `Session ${sessionId} not found`);
-      return;
-    }
+    const session = await this.sessionOf(req, res);
+    if (!session) return;
 
     // Parse stream options - validate fromSeq to handle NaN
-    const parsedFromSeq = parseInt(req.query['fromSeq'] ?? '0', 10);
-    const fromSeq = Number.isFinite(parsedFromSeq) && parsedFromSeq >= 0 ? parsedFromSeq : 0;
+    const rawFromSeq: unknown = req.query['fromSeq'];
+    const parsedFromSeq = typeof rawFromSeq === 'string' ? parseInt(rawFromSeq, 10) : 0;
+    const fromSeq = Number.isSafeInteger(parsedFromSeq) && parsedFromSeq >= 0 ? parsedFromSeq : 0;
 
     // Parse filter config if provided (JSON-encoded query parameter)
     let eventFilter: EventFilter | undefined;
-    if (req.query['filter']) {
+    const rawFilter: unknown = req.query['filter'];
+    if (rawFilter !== undefined && rawFilter !== '') {
+      const parsedFilter = parseFilterParameter(rawFilter);
+      if (!parsedFilter.ok) {
+        this.sendError(res, 400, parsedFilter.code, parsedFilter.message);
+        return;
+      }
       try {
-        const filterConfig = JSON.parse(req.query['filter']);
-        eventFilter = createEventFilter({ config: filterConfig });
+        eventFilter = this.requestFilter(parsedFilter.value);
       } catch {
         this.sendError(res, 400, 'INVALID_FILTER', 'Invalid filter configuration');
         return;
       }
     }
 
-    // Set up streaming response
-    res.setHeader('Content-Type', 'application/x-ndjson');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Session-ID', session.sessionId);
-
-    // Replay missed events (with filtering)
-    const pastEvents = session.getEvents();
-    for (const event of pastEvents) {
-      if (event.seq >= fromSeq) {
-        if (eventFilter && !eventFilter.shouldSend(event)) {
-          continue; // Skip filtered events
-        }
-        this.writeEvent(res, event);
-      }
-    }
-
-    // If session is terminal, end the response
-    if (session.isTerminal()) {
-      res.end();
+    // The session keeps a bounded history. A replay that would have to start below it is
+    // refused as a whole: a client is never handed a sequence with a hole at its start.
+    const firstReplayable = session.firstReplayableSeq;
+    if (firstReplayable > 1 && fromSeq < firstReplayable) {
+      this.sendError(res, 410, 'EVENTS_GONE', 'The requested events are no longer kept for this session');
       return;
     }
 
-    // Subscribe to new events (with filtering)
-    const unsubscribe = session.onEvent((event: StreamEvent) => {
-      if (event.seq >= fromSeq) {
-        // Apply filter if configured
-        if (eventFilter && !eventFilter.shouldSend(event)) {
-          // Still check for final event to end stream
-          if (event.type === 'final') {
-            unsubscribe();
-            res.end();
-          }
-          return; // Skip filtered events
-        }
-        this.writeEvent(res, event);
-      }
+    // The streams of one session are bounded in number
+    const release = this.acquireStream(session);
+    if (!release) {
+      this.sendError(res, 429, 'TOO_MANY_STREAMS', 'This session has too many open streams');
+      return;
+    }
 
-      // End stream when session completes
-      if (event.type === 'final') {
-        unsubscribe();
+    let unsubscribe: () => void = () => undefined;
+    let closed = false;
+    const close = (drop = false) => {
+      if (closed) return;
+      closed = true;
+      unsubscribe();
+      release();
+      if (drop) {
+        this.dropReader(res);
+      } else {
         res.end();
       }
-    });
+    };
 
-    // Handle client disconnect
-    if (req.signal) {
-      req.signal.addEventListener(
-        'abort',
-        () => {
-          unsubscribe();
-        },
-        { once: true },
-      );
+    try {
+      // Set up streaming response
+      res.setHeader('Content-Type', 'application/x-ndjson');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Session-ID', session.sessionId);
+
+      // Replay missed events (with filtering)
+      const pastEvents = session.getEvents();
+      for (const event of pastEvents) {
+        if (event.seq >= fromSeq) {
+          if (eventFilter && !eventFilter.shouldSend(event)) {
+            continue; // Skip filtered events
+          }
+          if (!this.writeEvent(res, event)) {
+            close(true);
+            return;
+          }
+        }
+      }
+
+      // If session is terminal, end the response
+      if (session.isTerminal()) {
+        close();
+        return;
+      }
+
+      // Subscribe to new events (with filtering)
+      unsubscribe = session.onEvent((event: StreamEvent) => {
+        if (closed) return;
+        if (event.seq >= fromSeq && (!eventFilter || eventFilter.shouldSend(event))) {
+          if (!this.writeEvent(res, event)) {
+            close(true);
+            return;
+          }
+        }
+
+        // End stream when session completes
+        if (event.type === 'final') {
+          close();
+        }
+      });
+
+      // Handle client disconnect
+      if (req.signal) {
+        req.signal.addEventListener('abort', () => close(), { once: true });
+        // The caller may be gone already
+        if (req.signal.aborted) close();
+      }
+    } catch (error) {
+      close(true);
+      throw error;
     }
   }
 
@@ -351,23 +585,55 @@ export class SessionHandler {
    * Terminate a session
    *
    * DELETE /sessions/:sessionId
+   * POST /sessions/:sessionId/cancel (the URL a session announces in its first event)
    */
   async terminateSession(req: BrokerRequest, res: BrokerResponse): Promise<void> {
     this.addCorsHeaders(req, res);
 
-    const sessionId = req.params['sessionId'] as SessionId | undefined;
-    if (!sessionId) {
-      this.sendError(res, 400, 'INVALID_REQUEST', 'Missing sessionId');
-      return;
-    }
+    const session = await this.sessionOf(req, res);
+    if (!session) return;
 
+    const sessionId = session.sessionId;
     const success = await this.broker.terminateSession(sessionId);
     if (!success) {
-      this.sendError(res, 404, 'NOT_FOUND', `Session ${sessionId} not found`);
+      this.sendError(res, 404, 'NOT_FOUND', 'Session not found');
       return;
     }
 
     res.status(200).json({ success: true, sessionId });
+  }
+
+  /**
+   * The filter for a configuration that arrived in a request and passed validation. It gets a
+   * budget for the whole stream, and its globs are matched without expansion.
+   */
+  private requestFilter(config: EventFilterConfig): EventFilter {
+    return createEventFilter({ config, budgetMs: REQUEST_FILTER_LIMITS.budgetMs, expandGlobs: false });
+  }
+
+  /**
+   * The limits a request gets: what it asks for, never above what the broker is configured
+   * with. A request may lower a limit; it cannot raise one.
+   */
+  private boundLimits(requested: RequestedLimits): Partial<SessionLimits> {
+    const ceiling: Required<SessionLimits> = this.broker.sessionLimits ?? DEFAULT_SESSION_LIMITS;
+    const limits: Partial<SessionLimits> = {};
+
+    if (requested.maxExecutionMs !== undefined) {
+      limits.sessionTtlMs = Math.min(requested.maxExecutionMs, ceiling.sessionTtlMs);
+    }
+    if (requested.maxToolCalls !== undefined) {
+      limits.maxToolCalls = Math.min(requested.maxToolCalls, ceiling.maxToolCalls);
+    }
+    // A heartbeat interval is not a limit that is safe to lower without a bound: it is kept
+    // within a range, and a broker that sends no heartbeats does not start to on request.
+    if (requested.heartbeatIntervalMs !== undefined && ceiling.heartbeatIntervalMs > 0) {
+      const shortest = Math.min(MIN_REQUEST_HEARTBEAT_MS, ceiling.heartbeatIntervalMs);
+      const longest = Math.max(MAX_REQUEST_HEARTBEAT_MS, ceiling.heartbeatIntervalMs);
+      limits.heartbeatIntervalMs = Math.min(Math.max(requested.heartbeatIntervalMs, shortest), longest);
+    }
+
+    return limits;
   }
 
   /**
@@ -404,12 +670,54 @@ export class SessionHandler {
   }
 
   /**
-   * Write a stream event as NDJSON
+   * Count one more stream of a session. Returns the function that gives the place back, or
+   * undefined when the session has as many streams as `maxStreamsPerSession` allows.
    */
-  private writeEvent(res: BrokerResponse, event: StreamEvent): void {
-    res.write(JSON.stringify(event) + '\n');
+  private acquireStream(session: BrokerSession): (() => void) | undefined {
+    const open = this.streams.get(session) ?? 0;
+    if (open >= this.maxStreamsPerSession) {
+      return undefined;
+    }
+    this.streams.set(session, open + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.streams.set(session, Math.max(0, (this.streams.get(session) ?? 1) - 1));
+    };
+  }
+
+  /**
+   * Write a stream event as NDJSON. Returns false when the reader of this response has fallen
+   * behind by more than `maxBufferedBytes`: it must be dropped, nothing more is written to it.
+   */
+  private writeEvent(res: BrokerResponse, event: StreamEvent): boolean {
+    let line: string;
+    try {
+      line = JSON.stringify(event);
+    } catch {
+      // An event that cannot be serialized is not sent
+      return true;
+    }
+    res.write(line + '\n');
     if (res.flush) {
       res.flush();
+    }
+    return !res.bufferedBytes || res.bufferedBytes() <= this.maxBufferedBytes;
+  }
+
+  /**
+   * Close the connection of a reader that does not take what it is sent.
+   */
+  private dropReader(res: BrokerResponse): void {
+    try {
+      if (res.destroy) {
+        res.destroy();
+      } else {
+        res.end();
+      }
+    } catch {
+      // The connection is gone already
     }
   }
 
@@ -419,6 +727,31 @@ export class SessionHandler {
   private sendError(res: BrokerResponse, status: number, code: string, message: string): void {
     const error: ErrorResponse = { code, message };
     res.status(status).json(error);
+  }
+}
+
+/**
+ * A configuration value that must be a number above zero, or its default.
+ */
+function positiveNumber(value: unknown, name: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'number' || Number.isNaN(value) || value <= 0) {
+    throw new TypeError(`SessionHandler: "${name}" must be a number above zero`);
+  }
+  return value;
+}
+
+/**
+ * Report configuration keys that nothing reads, so that an option written in the wrong place
+ * is not taken for an option that is in force.
+ */
+function warnUnknownKeys(owner: string, config: object, known: string[]): void {
+  for (const key of Object.keys(config)) {
+    if (!known.includes(key)) {
+      console.warn(
+        `[@enclave-vm/broker] ${owner}: unknown configuration key ${JSON.stringify(key.slice(0, 64))} is ignored`,
+      );
+    }
   }
 }
 

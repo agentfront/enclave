@@ -3,7 +3,7 @@ title: 'Streaming Protocol'
 description: 'NDJSON streaming protocol for real-time code execution'
 ---
 
-The EnclaveJS streaming protocol enables real-time communication between clients and the execution runtime. It uses NDJSON (Newline Delimited JSON) for efficient streaming with optional end-to-end encryption.
+The EnclaveJS streaming protocol enables real-time communication between clients and the execution runtime. It uses NDJSON (Newline Delimited JSON) for efficient streaming. Events travel as plain JSON, protected by the transport.
 
 ## Protocol Overview
 
@@ -12,85 +12,70 @@ The EnclaveJS streaming protocol enables real-time communication between clients
 sequenceDiagram
     participant C as Client
     participant B as Broker
-    participant R as Runtime
+    participant S as Sandbox (in the broker)
 
-    C->>B: HTTP POST (execute code)
-    B->>R: WebSocket (start session)
-    R-->>B: Events
-    B-->>C: NDJSON Stream (events)
-    Note over C,R: On tool_call
-    C->>B: Tool Result
-    B->>R: Tool Result
-    R-->>B: Continue
-    B-->>C: More Events
-    R-->>B: Complete
-    B-->>C: Final Event
+    C->>B: HTTP POST /sessions (code)
+    B->>S: Run the script
+    B-->>C: NDJSON stream: session_init
+    Note over B,S: On callTool()
+    S->>B: Tool call
+    B-->>C: tool_call
+    B->>B: Run the tool handler
+    B->>S: Tool result
+    B-->>C: tool_result_applied
+    S-->>B: Script returns
+    B-->>C: final
 ```
+
+The broker runs the script in an `@enclave-vm/core` sandbox in its own process, and it runs the tools itself. The client is told about tool calls; it does not execute them and submits no results.
+
+## Event Structure
+
+Every event has the same envelope:
+
+| Field | Description |
+|-------|-------------|
+| `protocolVersion` | `2` (events of version `1` are still accepted by the schemas) |
+| `sessionId` | The session id, `s_` followed by the id |
+| `seq` | Sequence number of the event within its session, starting at 1 |
+| `type` | The event type |
+| `payload` | Type-specific data |
+
+There is no timestamp field.
 
 ## Event Types
 
 ### session_init
 
-Sent when a session starts:
+The first event of a session:
 
 ```json
 {
+  "protocolVersion": 2,
+  "sessionId": "s_abc123",
+  "seq": 1,
   "type": "session_init",
-  "sessionId": "sess_abc123",
-  "timestamp": 1704067200000,
   "payload": {
-    "limits": {
-      "maxDurationMs": 30000,
-      "maxToolCalls": 100
-    }
-  }
-}
-```
-
-### stdout
-
-Captured console output:
-
-```json
-{
-  "type": "stdout",
-  "sessionId": "sess_abc123",
-  "timestamp": 1704067200100,
-  "payload": {
-    "data": "Processing user: Alice\n"
-  }
-}
-```
-
-### log
-
-Structured log messages:
-
-```json
-{
-  "type": "log",
-  "sessionId": "sess_abc123",
-  "timestamp": 1704067200150,
-  "payload": {
-    "level": "info",
-    "message": "Tool call completed",
-    "data": { "tool": "users:list", "duration": 42 }
+    "cancelUrl": "/sessions/s_abc123/cancel",
+    "expiresAt": "2026-01-01T00:01:00.000Z",
+    "encryption": { "enabled": false }
   }
 }
 ```
 
 ### tool_call
 
-Request for tool execution:
+The script called a tool. The broker runs it:
 
 ```json
 {
+  "protocolVersion": 2,
+  "sessionId": "s_abc123",
+  "seq": 2,
   "type": "tool_call",
-  "sessionId": "sess_abc123",
-  "timestamp": 1704067200200,
   "payload": {
-    "callId": "call_xyz789",
-    "tool": "users:list",
+    "callId": "c_xyz789",
+    "toolName": "users:list",
     "args": { "limit": 10 }
   }
 }
@@ -98,77 +83,98 @@ Request for tool execution:
 
 ### tool_result_applied
 
-Confirmation that tool result was applied:
+The result of a tool call was handed to the script. The result itself is not part of the event:
 
 ```json
 {
+  "protocolVersion": 2,
+  "sessionId": "s_abc123",
+  "seq": 3,
   "type": "tool_result_applied",
-  "sessionId": "sess_abc123",
-  "timestamp": 1704067200300,
   "payload": {
-    "callId": "call_xyz789"
+    "callId": "c_xyz789"
   }
 }
 ```
 
 ### heartbeat
 
-Keep-alive message:
+Keep-alive message, sent every `heartbeatIntervalMs` (15 seconds by default):
 
 ```json
 {
+  "protocolVersion": 2,
+  "sessionId": "s_abc123",
+  "seq": 4,
   "type": "heartbeat",
-  "sessionId": "sess_abc123",
-  "timestamp": 1704067205000,
-  "payload": {}
+  "payload": { "ts": "2026-01-01T00:00:15.000Z" }
 }
 ```
 
 ### final
 
-Session completed:
+The last event of a session. A session that succeeded:
 
 ```json
 {
+  "protocolVersion": 2,
+  "sessionId": "s_abc123",
+  "seq": 5,
   "type": "final",
-  "sessionId": "sess_abc123",
-  "timestamp": 1704067210000,
   "payload": {
-    "result": { "count": 5, "items": [...] },
+    "ok": true,
+    "result": { "count": 5 },
     "stats": {
-      "duration": 10000,
+      "durationMs": 10000,
       "toolCallCount": 3,
-      "iterationCount": 15
+      "stdoutBytes": 0
     }
   }
 }
 ```
 
+A session that failed or was cancelled has `"ok": false` and an `error` with a `message` and a `code` in place of `result`.
+
 ### error
 
-Execution error:
+An error that is reported besides the `final` event. The broker emits one when a session is cancelled while no script is executing:
 
 ```json
 {
+  "protocolVersion": 2,
+  "sessionId": "s_abc123",
+  "seq": 5,
   "type": "error",
-  "sessionId": "sess_abc123",
-  "timestamp": 1704067210000,
   "payload": {
-    "code": "TIMEOUT",
-    "message": "Execution exceeded 30s timeout"
+    "code": "SESSION_CANCELLED",
+    "message": "Session was cancelled",
+    "recoverable": false
   }
 }
 ```
+
+### stdout and log
+
+The protocol defines `stdout` (`payload: { chunk }`) and `log` (`payload: { level, message, data? }`) events, and the client has handlers for them. The broker does not emit them.
+
+### Events of protocol version 2
+
+| Type | Payload | Description |
+|------|---------|-------------|
+| `tool_progress` | `callId`, `phase`, `elapsedMs`, `bytesReceived?`, `totalBytes?` | Progress of a tool call |
+| `partial_result` | `path`, `data?`, `error?`, `hasNext` | Part of a result |
+| `deadline_exceeded` | `elapsedMs`, `budgetMs` | The deadline of the session passed |
+| `catalog_changed` | `version`, `addedActions`, `removedActions` | The tool catalog changed |
 
 ## NDJSON Format
 
 Events are sent as newline-delimited JSON:
 
 ```
-{"type":"session_init","sessionId":"sess_abc123",...}\n
-{"type":"stdout","sessionId":"sess_abc123",...}\n
-{"type":"tool_call","sessionId":"sess_abc123",...}\n
-{"type":"final","sessionId":"sess_abc123",...}\n
+{"protocolVersion":2,"sessionId":"s_abc123","seq":1,"type":"session_init",...}\n
+{"protocolVersion":2,"sessionId":"s_abc123","seq":2,"type":"tool_call",...}\n
+{"protocolVersion":2,"sessionId":"s_abc123","seq":3,"type":"tool_result_applied",...}\n
+{"protocolVersion":2,"sessionId":"s_abc123","seq":4,"type":"final",...}\n
 ```
 
 Benefits:
@@ -176,16 +182,18 @@ Benefits:
 - **Memory efficient** - No buffering entire response
 - **Simple parsing** - Split by newline, parse each line
 
+A parser should bound the length of a line: the parsers of `@enclave-vm/stream` and the client refuse an event of more than 8 MiB by default.
+
 ## Tool Call Flow
 
-When the runtime needs to call a tool:
+When a script calls a tool:
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
 flowchart TD
-    TC1["1. Runtime emits tool_call event"] --> TC2["2. Client/Broker receives and executes tool"]
-    TC2 --> TC3["3. Client/Broker sends tool result"]
-    TC3 --> TC4["4. Runtime applies result, emits tool_result_applied"]
+    TC1["1. The script calls callTool(); the broker emits tool_call"] --> TC2["2. The broker validates the arguments and runs the tool handler"]
+    TC2 --> TC3["3. The broker hands the result to the script"]
+    TC3 --> TC4["4. The broker emits tool_result_applied"]
     TC4 --> TC5["5. Execution continues"]
     style TC1 fill:#e8a045,stroke:#c78935,color:#fff
     style TC2 fill:#f0b865,stroke:#c78935,color:#333
@@ -194,75 +202,72 @@ flowchart TD
     style TC5 fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
-### Submitting Tool Results
+There is no route or message with which a client submits a tool result: tools are registered on the broker (`broker.tool(...)`) and run there.
 
-```ts
-// Via HTTP (when using broker)
-POST /sessions/:sessionId/tool-result
-{
-  "callId": "call_xyz789",
-  "result": { "users": [...] }
-}
+## Encryption
 
-// Via WebSocket (direct to runtime)
-{
-  "type": "tool_result",
-  "callId": "call_xyz789",
-  "result": { "users": [...] }
-}
-```
+The first-party client and broker do not encrypt. `@enclave-vm/client`, `@enclave-vm/react`, `@enclave-vm/broker` and `@enclave-vm/runtime` perform no handshake and have no encryption option: a session is plain NDJSON protected only by the transport, so use HTTPS.
 
-## End-to-End Encryption
+The protocol types in `@enclave-vm/types` define hello messages and an encrypted envelope, and `@enclave-vm/stream` exports matching primitives (ECDH P-256, HKDF-SHA-256, AES-256-GCM). They are defined, but the first-party client and broker do not use them. An application that wants payload encryption on top of TLS has to implement both ends itself; see [Encrypted Sessions](/examples/encrypted-sessions).
 
-Optional encryption using ECDH key exchange + AES-256-GCM:
+### Hello Messages
 
-### Key Exchange
-
-```
-1. Client generates ECDH key pair (P-256)
-2. Client sends ClientHello with public key
-3. Server generates ECDH key pair
-4. Server sends ServerHello with public key
-5. Both derive shared secret
-6. Session keys derived via HKDF
-```
-
-### Encrypted Events
+`ClientHello` and `ServerHello` carry the ephemeral public keys of an ECDH key exchange:
 
 ```json
 {
-  "encrypted": true,
-  "iv": "base64-nonce",
-  "ciphertext": "base64-encrypted-event",
-  "tag": "base64-auth-tag"
+  "protocolVersion": 2,
+  "clientEphemeralPubKeyB64": "base64-public-key",
+  "curve": "P-256",
+  "supportedAlgorithms": ["AES-GCM-256"]
 }
 ```
 
-### Configuration
-
-```ts
-const client = new EnclaveClient({
-  serverUrl: 'https://broker.example.com',
-  encryption: {
-    enabled: true,
-    curve: 'P-256',
-  },
-});
+```json
+{
+  "protocolVersion": 2,
+  "serverEphemeralPubKeyB64": "base64-public-key",
+  "curve": "P-256",
+  "selectedAlgorithm": "AES-GCM-256",
+  "kdf": "HKDF-SHA-256",
+  "keyId": "k_..."
+}
 ```
+
+The exchange is not authenticated. `ServerHello` has a reserved `signatureB64` field, but nothing creates or verifies it. The exchange protects against a party that can only read the connection, not against one that can change messages.
+
+### Encrypted Envelope
+
+An event of type `enc` wraps another event:
+
+```json
+{
+  "protocolVersion": 2,
+  "sessionId": "s_abc123",
+  "seq": 42,
+  "type": "enc",
+  "payload": {
+    "kid": "k_...",
+    "nonceB64": "base64-nonce",
+    "ciphertextB64": "base64-ciphertext-with-auth-tag"
+  }
+}
+```
+
+The stream primitives authenticate the header of the envelope (protocol version, session id, sequence number, key id) together with the event inside it. `@enclave-vm/client` does not decrypt `enc` events: a session that receives one fails with `PARSE_ERROR`.
 
 ## Reconnection
 
-The protocol supports reconnection with event replay:
+The client reconnects to a session when its connection is lost, and the broker replays the events the client has not seen:
 
 ```ts
+import { EnclaveClient } from '@enclave-vm/client';
+
 const client = new EnclaveClient({
-  reconnection: {
-    enabled: true,
-    maxAttempts: 5,
-    initialDelayMs: 1000,
-    maxDelayMs: 30000,
-    backoffMultiplier: 2,
-  },
+  baseUrl: 'https://broker.example.com',
+  autoReconnect: true, // default
+  maxReconnectAttempts: 3, // default
+  reconnectDelay: 1000, // milliseconds, default
 });
 ```
 
@@ -278,35 +283,37 @@ Events include sequence numbers for ordering:
 }
 ```
 
-On reconnection, the client sends the last received sequence number to resume from that point.
+On reconnection, the client asks the broker for the events after the last one it received: `GET /sessions/:sessionId/stream?fromSeq=N`, where `N` is the next sequence number the client expects.
 
 ## Event Filtering
 
-Filter events to reduce bandwidth:
+A filter decides which events a client is sent. The body of `POST /sessions` may carry one (`EnclaveClient` has no option for it: send the request yourself, or filter on the server with `createEventFilter`):
 
-```ts
-// Only receive specific event types
-const stream = broker.execute(code, {
-  filter: {
-    types: ['stdout', 'final', 'error'],
-  },
-});
-
-// Block noisy events
-const stream = broker.execute(code, {
-  filter: {
-    blockedTypes: ['heartbeat', 'log'],
-  },
-});
+```json
+{
+  "code": "return 1;",
+  "filter": {
+    "mode": "exclude",
+    "rules": [{ "types": { "types": ["heartbeat", "tool_progress"] } }]
+  }
+}
 ```
+
+`mode` is `include` (send only matching events) or `exclude` (do not send matching events). A rule can match by event type and by content. By default `session_init` and `final` are sent whatever the rules say. A filter that sets its own `alwaysAllow` list replaces that default: `session_init` and `final` are then filtered like any other event unless the list names them, so a reader that waits for `final` keeps it in the list. See [Event Filtering](/enclavejs/broker#event-filtering) for the patterns and the bounds on a filter.
+
+A filter is a convenience for the client, not a confidentiality control.
 
 ## Protocol Constants
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `PROTOCOL_VERSION` | `"1.0"` | Protocol version |
-| `HEARTBEAT_INTERVAL` | 5000ms | Time between heartbeats |
-| `DEFAULT_TIMEOUT` | 30000ms | Default session timeout |
+| `PROTOCOL_VERSION` | `2` | Protocol version |
+| `PROTOCOL_VERSION_V1` | `1` | Previous version |
+| `SESSION_ID_PREFIX` | `'s_'` | Prefix of session ids |
+| `CALL_ID_PREFIX` | `'c_'` | Prefix of tool call ids |
+| `DEFAULT_SESSION_LIMITS.heartbeatIntervalMs` | 15000 | Time between heartbeats |
+| `DEFAULT_SESSION_LIMITS.sessionTtlMs` | 60000 | Default lifetime of a session |
+| `DEFAULT_SESSION_LIMITS.toolTimeoutMs` | 30000 | Default run time of a script in the broker |
 
 ## Related
 

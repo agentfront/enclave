@@ -56,8 +56,8 @@ function createMockFetch(events: StreamEvent[], status = 200): typeof fetch {
       );
     }
 
-    if (url.includes('/cancel')) {
-      return new Response('{}', { status: 200 });
+    if (url.includes('/sessions/') && init?.method === 'DELETE') {
+      return new Response('{"success":true}', { status: 200 });
     }
 
     return new Response('Not found', { status: 404 });
@@ -186,6 +186,7 @@ describe('EnclaveClient', () => {
       const client = new EnclaveClient({
         baseUrl: 'https://api.example.com/',
         fetch: mockFetch,
+        autoReconnect: false,
       });
 
       client.execute('return 1');
@@ -324,6 +325,7 @@ describe('EnclaveClient', () => {
       const client = new EnclaveClient({
         baseUrl: 'https://api.example.com',
         fetch: createMockFetch([]),
+        autoReconnect: false,
       });
 
       const handle = client.executeStream('return 1');
@@ -339,6 +341,7 @@ describe('EnclaveClient', () => {
       const client = new EnclaveClient({
         baseUrl: 'https://api.example.com',
         fetch: createMockFetch([]),
+        autoReconnect: false,
       });
 
       const handle = client.executeStream('return 1', {
@@ -539,8 +542,8 @@ describe('EnclaveClient', () => {
         },
       });
 
-      const mockFetch = jest.fn().mockImplementation(async (url: string) => {
-        if (url.includes('/sessions') && !url.includes('/cancel')) {
+      const mockFetch = jest.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
           return new Response(stream, { status: 200 });
         }
         return new Response('{}', { status: 200 });
@@ -885,8 +888,8 @@ describe('EnclaveClient', () => {
         },
       });
 
-      const mockFetch = jest.fn().mockImplementation(async (url: string) => {
-        if (url.includes('/sessions') && !url.includes('/cancel')) {
+      const mockFetch = jest.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
           return new Response(stream, { status: 200 });
         }
         return new Response('{}', { status: 200 });
@@ -1083,26 +1086,95 @@ describe('EnclaveClient', () => {
   });
 
   describe('configuration options', () => {
-    it('should use custom timeout', async () => {
-      const mockFetch = jest
-        .fn()
-        .mockResolvedValue(
-          new Response(
-            createMockStream([createSessionInitEvent(TEST_SESSION_ID), createFinalSuccessEvent(TEST_SESSION_ID, 1)]),
-            { status: 200 },
-          ),
-        );
+    it('should fail with TIMEOUT when the server does not answer within the timeout', async () => {
+      const mockFetch = jest.fn().mockImplementation(() => new Promise<Response>(() => undefined));
 
       const client = new EnclaveClient({
         baseUrl: 'https://api.example.com',
-        timeout: 5000,
+        timeout: 50,
+        autoReconnect: false,
         fetch: mockFetch,
       });
 
-      await client.execute('return 1');
+      const result = await client.execute('return 1');
 
-      // Client was created with timeout option
-      expect(client).toBeInstanceOf(EnclaveClient);
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('TIMEOUT');
+      expect(result.error?.message).toContain('50 ms');
+    });
+
+    it('should fail when the stream ends without a final event', async () => {
+      const mockFetch = jest
+        .fn()
+        .mockResolvedValue(new Response(createMockStream([createSessionInitEvent(TEST_SESSION_ID)]), { status: 200 }));
+
+      const client = new EnclaveClient({
+        baseUrl: 'https://api.example.com',
+        autoReconnect: false,
+        fetch: mockFetch,
+      });
+
+      const result = await client.execute('return 1');
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('NETWORK_ERROR');
+      expect(result.events).toHaveLength(1);
+    });
+
+    it('should ask for the events after the last one delivered when it reconnects', async () => {
+      const mockFetch = jest.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          return new Response(
+            createMockStream([createSessionInitEvent(TEST_SESSION_ID, 1), createStdoutEvent(TEST_SESSION_ID, 'a', 2)]),
+            { status: 200 },
+          );
+        }
+        return new Response(createMockStream([createFinalSuccessEvent(TEST_SESSION_ID, 'done', 3)]), { status: 200 });
+      });
+
+      const client = new EnclaveClient({
+        baseUrl: 'https://api.example.com',
+        reconnectDelay: 1,
+        fetch: mockFetch,
+      });
+
+      const handle = client.executeStream('return 1');
+      const result = await handle.wait();
+
+      expect(result.success).toBe(true);
+      expect(result.events.map((event) => event.seq)).toEqual([1, 2, 3]);
+      expect(mockFetch).toHaveBeenLastCalledWith(
+        `https://api.example.com/sessions/${handle.sessionId}/stream?fromSeq=3`,
+        expect.objectContaining({ method: 'GET' }),
+      );
+    });
+
+    it('should refuse an option it does not implement', () => {
+      const config = { baseUrl: 'https://api.example.com', encryption: { enabled: true } };
+
+      expect(() => new EnclaveClient(config as ConstructorParameters<typeof EnclaveClient>[0])).toThrow(
+        /unknown option "encryption"/,
+      );
+    });
+
+    it('should refuse a session id that is not one', async () => {
+      const mockFetch = jest.fn();
+      const client = new EnclaveClient({ baseUrl: 'https://api.example.com', fetch: mockFetch });
+
+      const result = await client.execute('return 1', { sessionId: 'not-an-id' as SessionId });
+
+      expect(result.error?.code).toBe('SESSION_ERROR');
+      await expect(client.getSession('not-an-id' as SessionId)).rejects.toThrow(EnclaveClientError);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should encode the session id in request paths', async () => {
+      const mockFetch = jest.fn().mockResolvedValue(new Response('Not found', { status: 404 }));
+      const client = new EnclaveClient({ baseUrl: 'https://api.example.com', fetch: mockFetch });
+
+      await client.getSession('s_a/b?c' as SessionId);
+
+      expect(mockFetch).toHaveBeenCalledWith('https://api.example.com/sessions/s_a%2Fb%3Fc', expect.any(Object));
     });
 
     it('should use custom reconnect settings', async () => {
@@ -1236,28 +1308,28 @@ describe('EnclaveClient', () => {
   });
 
   describe('cancel endpoint', () => {
-    it('should call cancel endpoint with reason', async () => {
+    const openStream = () => {
       const encoder = new TextEncoder();
-      const stream = new ReadableStream({
+      return new ReadableStream({
         start(controller) {
           controller.enqueue(encoder.encode(JSON.stringify(createSessionInitEvent(TEST_SESSION_ID)) + '\n'));
         },
       });
+    };
 
-      const cancelCalls: Array<{ url: string; body: string }> = [];
+    it('should ask the server to end the session with DELETE /sessions/:sessionId', async () => {
+      const stopCalls: Array<{ url: string; method?: string; headers?: HeadersInit }> = [];
       const mockFetch = jest.fn().mockImplementation(async (url: string, init?: RequestInit) => {
-        if (url.includes('/cancel')) {
-          cancelCalls.push({ url, body: init?.body as string });
-          return new Response('{}', { status: 200 });
+        if (init?.method === 'POST') {
+          return new Response(openStream(), { status: 200 });
         }
-        if (url.includes('/sessions')) {
-          return new Response(stream, { status: 200 });
-        }
-        return new Response('{}', { status: 200 });
+        stopCalls.push({ url, method: init?.method, headers: init?.headers });
+        return new Response('{"success":true}', { status: 200 });
       });
 
       const client = new EnclaveClient({
         baseUrl: 'https://api.example.com',
+        headers: { Authorization: 'Bearer token123' },
         fetch: mockFetch,
       });
 
@@ -1266,11 +1338,54 @@ describe('EnclaveClient', () => {
 
       await handle.cancel('User requested cancellation');
 
-      expect(cancelCalls).toHaveLength(1);
-      expect(cancelCalls[0].url).toContain('/cancel');
-      expect(JSON.parse(cancelCalls[0].body)).toEqual({
-        reason: 'User requested cancellation',
+      expect(stopCalls).toHaveLength(1);
+      expect(stopCalls[0].url).toBe(`https://api.example.com/sessions/${handle.sessionId}`);
+      expect(stopCalls[0].method).toBe('DELETE');
+      expect(stopCalls[0].headers).toEqual({ Authorization: 'Bearer token123' });
+    });
+
+    it('should report a stop the server did not confirm through onError', async () => {
+      const mockFetch = jest.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          return new Response(openStream(), { status: 200 });
+        }
+        return new Response('{}', { status: 500 });
       });
+      const onError = jest.fn();
+
+      const client = new EnclaveClient({ baseUrl: 'https://api.example.com', fetch: mockFetch });
+      const handle = client.executeStream('while(true) {}', { onError });
+      await new Promise((r) => setTimeout(r, 10));
+
+      await expect(handle.cancel()).resolves.toBeUndefined();
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith('CANCEL_FAILED', expect.stringContaining('500'));
+      expect((await handle.wait()).error?.code).toBe('CANCELLED');
+    });
+
+    it('should end the session as CANCELLED when the signal is aborted', async () => {
+      const mockFetch = jest.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          return new Response(openStream(), { status: 200 });
+        }
+        return new Response('{"success":true}', { status: 200 });
+      });
+      const controller = new AbortController();
+
+      const client = new EnclaveClient({ baseUrl: 'https://api.example.com', fetch: mockFetch });
+      const handle = client.executeStream('while(true) {}', { signal: controller.signal });
+      await new Promise((r) => setTimeout(r, 10));
+
+      controller.abort();
+      const result = await handle.wait();
+
+      expect(result.error?.code).toBe('CANCELLED');
+      expect(handle.isActive()).toBe(false);
+      expect(mockFetch).toHaveBeenLastCalledWith(
+        `https://api.example.com/sessions/${handle.sessionId}`,
+        expect.objectContaining({ method: 'DELETE' }),
+      );
     });
 
     it('should handle cancel when session not active', async () => {

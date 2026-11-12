@@ -1,8 +1,11 @@
 /**
  * @enclave-vm/stream
  *
- * Streaming protocol implementation for EnclaveJS runtime.
- * Includes NDJSON parsing, encryption, and reconnection handling.
+ * Streaming protocol building blocks for the EnclaveJS runtime:
+ * NDJSON parsing, reconnection helpers and encryption primitives.
+ *
+ * The encryption primitives are not used by the client or the broker of this repository;
+ * an application that wants encrypted events wires them into both of its ends itself.
  *
  * @packageDocumentation
  */
@@ -20,9 +23,11 @@ export {
   createNdjsonParseStream,
   createNdjsonSerializeStream,
   parseNdjsonStream,
+  DEFAULT_MAX_LINE_LENGTH,
+  NdjsonLineTooLongError,
 } from './ndjson.js';
 
-export type { ParseResult } from './ndjson.js';
+export type { ParseResult, NdjsonParseOptions } from './ndjson.js';
 
 // Crypto exports
 export {
@@ -52,11 +57,13 @@ export {
   encryptJson,
   decryptJson,
   createEncryptedEnvelope,
+  openEncryptedEnvelope,
+  encodeEnvelopeHeader,
   SessionEncryptionContext,
   AesGcmError,
 } from './crypto/index.js';
 
-export type { EcdhKeyPair, SerializedPublicKey } from './crypto/index.js';
+export type { EcdhKeyPair, SerializedPublicKey, EnvelopeHeader, EnvelopeLike } from './crypto/index.js';
 
 // Reconnection exports
 export {

@@ -18,7 +18,9 @@
  *   its reason; Node.js prints no warning when the script handles the rejection late;
  * - everything else, the application's own rejections included, goes to the `emit` that was
  *   there before, untouched. What Node.js or the application does with those is what it did
- *   without this module, in every `--unhandled-rejections` mode.
+ *   without this module, in every `--unhandled-rejections` mode. That includes an event whose
+ *   promise is not a promise of the engine at all: a promise library reports the rejections of
+ *   its own promise type by emitting the event itself, and Node.js never does that for a script.
  *
  * A reason is never read, formatted or passed on here. Formatting one with `util.inspect`, as a
  * log line or Node's printer for an uncaught error would, calls a method the value can supply
@@ -40,11 +42,14 @@
  * @packageDocumentation
  */
 
+import { types } from 'util';
+
 // Captured at load: the wrapper runs long after scripts have run, and must not depend on
 // anything that could have been replaced in the meantime.
 const HostPromisePrototype: object = Promise.prototype;
 const ObjectGetPrototypeOf = Object.getPrototypeOf;
 const ReflectApply = Reflect.apply;
+const isEnginePromise: (value: unknown) => boolean = types.isPromise;
 
 /** How far up a prototype chain a promise is followed before it is taken for a foreign one */
 const MAX_PROTOTYPE_CHAIN = 32;
@@ -78,6 +83,16 @@ export function isHostPromise(promise: unknown): boolean {
   return false;
 }
 
+/**
+ * Whether a value is a promise that is not the host's: a promise of the engine (which is the
+ * only thing Node.js reports a rejection for, and so the only way a script's promise arrives
+ * here) of another realm. The engine's own test is used because a script can give its promise
+ * any prototype, but cannot make it stop being a promise.
+ */
+function isSandboxPromise(value: unknown): boolean {
+  return isEnginePromise(value) && !isHostPromise(value);
+}
+
 type Emit = (this: unknown, event: string | symbol, ...args: unknown[]) => boolean;
 
 /** Emitted by guardSandboxRejections to find out whether the wrapper is still part of `emit` */
@@ -89,7 +104,8 @@ let installs = 0;
 let probeAnswered = false;
 
 /**
- * `process.emit` with the two rejection events answered for promises that are not the host's.
+ * `process.emit` with the two rejection events answered for promises that are not the host's
+ * (see {@link isSandboxPromise}).
  *
  * @param previous The `emit` that was installed before this one: everything else goes to it
  */
@@ -101,10 +117,10 @@ function wrapEmit(previous: Emit): Emit {
     }
     if (active) {
       // unhandledRejection(reason, promise); rejectionHandled(promise)
-      if (event === 'unhandledRejection' && !isHostPromise(args[1])) {
+      if (event === 'unhandledRejection' && isSandboxPromise(args[1])) {
         return true;
       }
-      if (event === 'rejectionHandled' && !isHostPromise(args[0])) {
+      if (event === 'rejectionHandled' && isSandboxPromise(args[0])) {
         return true;
       }
     }
