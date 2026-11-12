@@ -28,7 +28,7 @@
 export { ScoringGate, ScoringGateError, createScoringGate } from './scoring-gate';
 
 // Feature extraction
-export { FeatureExtractor } from './feature-extractor';
+export { FeatureExtractor, FeatureExtractionError } from './feature-extractor';
 
 // Cache
 export { ScoringCache } from './cache';

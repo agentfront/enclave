@@ -89,7 +89,9 @@ export class ScoringGate {
         if (!this.config.progressiveConfig) {
           throw new ScoringGateError('progressive scorer requires scoring configuration');
         }
-        return new ProgressiveScorer(this.config.progressiveConfig);
+        // Fail-closed covers the detailed stage: once the fast score calls for it, it is
+        // part of the answer, and a script is not let through on the fast score alone
+        return new ProgressiveScorer(this.config.progressiveConfig, { requireDetailed: !this.config.failOpen });
 
       default:
         throw new ScoringGateError(`Unknown scorer type: ${this.config.scorerType}`);

@@ -52,6 +52,17 @@ const FETCH_PATTERNS = /list|get|query|search|find|fetch|read|select/i;
 const LIMIT_FIELD_NAMES = ['limit', 'pagesize', 'count', 'max', 'top', 'size', 'take'];
 
 /**
+ * Error thrown when code cannot be analysed. The scoring gate treats it like any other scoring
+ * error: `failOpen` decides whether the script runs.
+ */
+export class FeatureExtractionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FeatureExtractionError';
+  }
+}
+
+/**
  * Feature Extractor - extracts security-relevant features from code
  */
 export class FeatureExtractor {
@@ -60,6 +71,8 @@ export class FeatureExtractor {
    *
    * @param code - Source code to analyze
    * @returns Extracted features for scoring
+   * @throws FeatureExtractionError if the code cannot be parsed: text that cannot be read has
+   * no features, which is not the same as having none that count
    */
   extract(code: string): ExtractedFeatures {
     const startTime = performance.now();
@@ -226,16 +239,24 @@ export class FeatureExtractor {
 
   /**
    * Parse code into AST
+   *
+   * The code is read as a module, in which a top-level `await` is allowed, and a top-level
+   * `return` is accepted as well: both forms of AgentScript can be analysed, the script as its
+   * author wrote it and the script wrapped in its main function.
+   *
+   * @throws FeatureExtractionError if the code does not parse
    */
   private parseCode(code: string): acorn.Node {
     try {
       return acorn.parse(code, {
         ecmaVersion: 'latest',
         sourceType: 'module',
+        allowReturnOutsideFunction: true,
       });
-    } catch {
-      // If parsing fails, return an empty program
-      return acorn.parse('', { ecmaVersion: 'latest' });
+    } catch (error) {
+      throw new FeatureExtractionError(
+        `Code could not be parsed for scoring: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
@@ -310,9 +331,14 @@ export class FeatureExtractor {
       toolSequence.push(toolName);
     }
 
-    // Add to overall literals
-    allNumericLiterals.push(...numericLiterals);
-    allStringLiterals.push(...stringLiterals);
+    // Add to overall literals. One at a time: an argument object can hold as many literals as
+    // the script has room for, and a list of that length cannot be spread into a call.
+    for (const value of numericLiterals) {
+      allNumericLiterals.push(value);
+    }
+    for (const value of stringLiterals) {
+      allStringLiterals.push(value);
+    }
   }
 
   /**

@@ -3,7 +3,7 @@
  */
 
 import { createHash } from 'crypto';
-import { FeatureExtractor } from '../feature-extractor';
+import { FeatureExtractor, FeatureExtractionError } from '../feature-extractor';
 
 describe('FeatureExtractor', () => {
   let extractor: FeatureExtractor;
@@ -344,13 +344,32 @@ describe('FeatureExtractor', () => {
         expect(features.toolCalls.length).toBe(0);
       });
 
-      it('should handle invalid syntax gracefully', () => {
+      it('should throw for code that does not parse', () => {
         const code = `this is not valid javascript {{{`;
+
+        // Text that cannot be read has no features: that is not the same as having none that count
+        expect(() => extractor.extract(code)).toThrow(FeatureExtractionError);
+        expect(() => extractor.extract(code)).toThrow(/Code could not be parsed for scoring/);
+      });
+
+      it('should read a script with a top-level return and a top-level await', () => {
+        const code = `
+          const users = await callTool('users:list', { limit: 10 });
+          return users.length;
+        `;
 
         const features = extractor.extract(code);
 
-        // Should not throw, should return empty features
-        expect(features.toolCalls.length).toBe(0);
+        expect(features.toolCalls.map((tc) => tc.toolName)).toEqual(['users:list']);
+      });
+
+      it('should extract a tool call with a very large argument object', () => {
+        const properties = Array.from({ length: 150_000 }, (_, i) => `k${i}: ${i}`).join(', ');
+        const code = `const result = await callTool('data:import', { ${properties} });`;
+
+        const features = extractor.extract(code);
+
+        expect(features.toolCalls[0].numericLiterals).toHaveLength(150_000);
       });
     });
   });

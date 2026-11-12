@@ -694,6 +694,12 @@ export interface ScoringGateConfig {
    * - true (fail-open): Allow execution if scoring fails
    * - false (fail-closed): Block execution if scoring fails
    *
+   * A scoring error is anything that keeps the configured scorer from giving its answer: code
+   * the feature extractor cannot parse, a scorer that throws, and in progressive mode a detailed
+   * stage that fails or is missing once the fast score called for it. With `failOpen: false`
+   * each of these blocks the script; with `failOpen: true` the script runs (in progressive
+   * mode, on the fast score alone), and `reason` of the result says why.
+   *
    * @default true
    */
   failOpen?: boolean;
