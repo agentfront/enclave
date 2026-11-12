@@ -20,6 +20,7 @@ import { CONSOLE_FACTORY_SOURCE } from '../console-handler';
 import { realmTickSource } from '../deadline-guard';
 import { booleanLiteral, numericLiteral } from '../enclave-options';
 import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
+import { realmArrayAccountingSource } from '../realm-memory';
 
 /**
  * Recursion backstop for the in-VM secure-proxy membranes.
@@ -3095,6 +3096,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         // Strict mode: an unbound call (const f = [].fill; f(0)) must fail on its undefined "this".
         // In sloppy mode "this" was coerced to the realm's global object, and fill RETURNED it.
         '"use strict";' +
+        // The functions of Math, not the object: a script can assign to its members, and a
+        // replaced Math.max would decide what a fill is charged.
+        'Math = { max: Math.max, min: Math.min, round: Math.round };' +
         'var memoryLimit = ' + memoryLimit + ';' +
         'var trackMemory = __host_memory_track__;' +
         // A size is only usable when it is a positive number. NaN (a missing or non-numeric count,
@@ -3190,6 +3194,13 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       patchScript.runInContext(innerContext);
     }
   })();
+
+  // Arrays that grow are accounted for like strings that grow (see ../realm-memory), and the
+  // helpers the transformed code calls around an array literal with spreads are defined. Always:
+  // without a memory limit the helpers count nothing.
+  new vm.Script(${JSON.stringify(realmArrayAccountingSource(memoryLimit))}, {
+    filename: 'inner-array-accounting.js'
+  }).runInContext(innerContext);
 
   // ============================================================
   // PHASE 2 HARDENING: CVE-2023-29017 Stack Overflow Escape Defense

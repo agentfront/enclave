@@ -76,6 +76,24 @@ import { refuseDynamicImport } from './dynamic-import';
 import { separateAsyncContexts } from './async-context';
 
 /**
+ * Parse code for one of the transforms that run after validation.
+ *
+ * With the goal the validator parsed it with and the engine will compile it with: a script. The
+ * two goals read the same text differently in one place that changes its meaning without a
+ * syntax error (an HTML-like comment is a comment in a script and an expression in a module), so
+ * a transform that parsed as a module could print, and the engine then run, code the validator
+ * never saw.
+ */
+function parseValidatedCode(source: string): acorn.Node {
+  return acorn.parse(source, {
+    ecmaVersion: 'latest',
+    sourceType: 'script',
+    allowReturnOutsideFunction: true,
+    allowAwaitOutsideFunction: true,
+  }) as unknown as acorn.Node;
+}
+
+/**
  * Default security level
  */
 const DEFAULT_SECURITY_LEVEL: SecurityLevel = 'STANDARD';
@@ -826,8 +844,7 @@ export class Enclave {
     }
     const throwOnBlocked = proxyConfig.throwOnBlocked ?? true;
 
-    const parseModule = (source: string): acorn.Node =>
-      acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'module' }) as unknown as acorn.Node;
+    const parseModule = parseValidatedCode;
 
     const ast = parseModule(code);
     const { guardedCount } = guardComputedMemberKeys(ast, parseModule, { blockedKeys, throwOnBlocked });
@@ -844,8 +861,7 @@ export class Enclave {
    * @returns The code with a deadline check at the start of every function and loop body
    */
   private applyDeadlineGuard(code: string): string {
-    const parseModule = (source: string): acorn.Node =>
-      acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'module' }) as unknown as acorn.Node;
+    const parseModule = parseValidatedCode;
 
     const ast = parseModule(code);
     const { guardedCount } = injectDeadlineChecks(ast, parseModule);
@@ -855,16 +871,22 @@ export class Enclave {
     return generate(ast);
   }
 
+  /**
+   * Whether the runtime the script will run in defines the array accounting helpers (see
+   * ./realm-memory): the built-in VM adapters do, in process and in a worker. A host-supplied
+   * adapter gets the code without the calls to them.
+   */
+  private accountsForArrays(): boolean {
+    return this.sandboxAdapter === undefined;
+  }
+
   private applyMemoryTrackingTransforms(code: string): string {
     // Parse the code into an AST
-    const ast = acorn.parse(code, {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-    });
+    const ast = parseValidatedCode(code);
 
     // Transform concatenation operations (a + b -> __safe_concat(a, b))
     // This allows the runtime to track memory allocations for string concatenation
-    transformConcatenation(ast);
+    transformConcatenation(ast, { arraySpread: this.accountsForArrays() });
 
     // Transform template literals (`Hello ${name}` -> __safe_template(['Hello ', ''], name))
     // This also enables memory tracking for template string creation
@@ -885,10 +907,7 @@ export class Enclave {
    */
   private applySidecarTransforms(code: string, sidecar: ReferenceSidecar): string {
     // Parse the code into an AST
-    const ast = acorn.parse(code, {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-    });
+    const ast = parseValidatedCode(code);
 
     // Extract large strings (if extraction threshold is set)
     if (this.referenceConfig?.extractionThreshold) {
@@ -901,7 +920,7 @@ export class Enclave {
     }
 
     // Transform concatenation operations (a + b -> __safe_concat(a, b))
-    transformConcatenation(ast);
+    transformConcatenation(ast, { arraySpread: this.accountsForArrays() });
 
     // Transform template literals (`Hello ${name}` -> __safe_template(['Hello ', ''], name))
     transformTemplateLiterals(ast);

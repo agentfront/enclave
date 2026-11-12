@@ -27,6 +27,24 @@ export interface ConcatTransformConfig {
    * Full name will be: prefix + functionName (e.g., '__safe_concat')
    */
   functionName?: string;
+
+  /**
+   * Also rewrite `target += value` into `target = __safe_concat(target, value)`, so that what
+   * `+=` builds is accounted for like what `+` builds. The target is rewritten when reading it
+   * twice has no effect of its own (a name, or a member chain of names and literal keys); any
+   * other target is left as it is.
+   * Default: true
+   */
+  compoundAssignment?: boolean;
+
+  /**
+   * Also wrap an array literal that contains a spread, `[a, ...b]`, as
+   * `__safe_array(__safe_arrayStart(), [a, ...__safe_spread(b)])`, so that the runtime sees each
+   * source before it is spread and the result when it exists. Only for a runtime that defines
+   * those three functions.
+   * Default: false
+   */
+  arraySpread?: boolean;
 }
 
 /**
@@ -37,6 +55,31 @@ export interface ConcatTransformResult {
    * Number of binary expressions transformed
    */
   transformedCount: number;
+}
+
+/**
+ * Whether an assignment target can be read a second time without an effect of its own: a name,
+ * or a member of such a target under a fixed name, a literal key or a name. Anything that calls
+ * or computes (`f().x`, `a[g()]`, `a[i + 1]`) is not.
+ */
+function isRepeatableTarget(node: any): boolean {
+  if (!node || typeof node !== 'object') return false;
+  if (node.type === 'Identifier') return true;
+  if (node.type !== 'MemberExpression' || node.optional) return false;
+  if (!isRepeatableTarget(node.object)) return false;
+  if (!node.computed) return node.property?.type === 'Identifier';
+  return node.property?.type === 'Literal' || node.property?.type === 'Identifier';
+}
+
+/** A copy of a node made of plain data (identifiers, members, literals). */
+function cloneNode(node: any): any {
+  if (node === null || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map(cloneNode);
+  const copy: Record<string, unknown> = {};
+  for (const key of Object.keys(node)) {
+    copy[key] = cloneNode(node[key]);
+  }
+  return copy;
 }
 
 /**
@@ -68,6 +111,64 @@ export function transformConcatenation(ast: acorn.Node, config: ConcatTransformC
   const safeConcatName = `${prefix}${functionName}`;
 
   let transformedCount = 0;
+
+  // `target += value`, before the `+` pass below: the call it becomes is not a BinaryExpression,
+  // and the value keeps being visited where it now sits.
+  if (config.compoundAssignment !== false) {
+    walk.simple(ast as any, {
+      AssignmentExpression: (node: any) => {
+        if (node.operator !== '+=' || !isRepeatableTarget(node.left)) {
+          return;
+        }
+        node.operator = '=';
+        node.right = {
+          type: 'CallExpression',
+          callee: { type: 'Identifier', name: safeConcatName },
+          arguments: [cloneNode(node.left), node.right],
+          optional: false,
+        };
+        transformedCount++;
+      },
+    });
+  }
+
+  // `[a, ...b]`: each spread source goes through __safe_spread, and the literal as a whole is
+  // handed to __safe_array together with what __safe_arrayStart returned before it was built.
+  if (config.arraySpread === true) {
+    walk.simple(ast as any, {
+      ArrayExpression: (node: any) => {
+        const elements: any[] = node.elements ?? [];
+        if (!elements.some((element) => element && element.type === 'SpreadElement')) {
+          return;
+        }
+        for (const element of elements) {
+          if (element && element.type === 'SpreadElement') {
+            element.argument = {
+              type: 'CallExpression',
+              callee: { type: 'Identifier', name: `${prefix}spread` },
+              arguments: [element.argument],
+              optional: false,
+            };
+          }
+        }
+        const literal = { type: 'ArrayExpression', elements };
+        node.type = 'CallExpression';
+        node.callee = { type: 'Identifier', name: `${prefix}array` };
+        node.arguments = [
+          {
+            type: 'CallExpression',
+            callee: { type: 'Identifier', name: `${prefix}arrayStart` },
+            arguments: [],
+            optional: false,
+          },
+          literal,
+        ];
+        node.optional = false;
+        delete node.elements;
+        transformedCount++;
+      },
+    });
+  }
 
   // Use simple walker. Because we mutate the node type to 'CallExpression'
   // and move children to 'arguments', the walker will naturally

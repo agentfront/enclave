@@ -28,6 +28,7 @@ import { guardSandboxRejections } from '../sandbox-rejections';
 import { createRealmAirlock, type RealmMembrane } from '../realm-airlock';
 import { numericLiteral } from '../enclave-options';
 import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
+import { realmArrayAccountingSource } from '../realm-memory';
 import { describeThrown, isMemoryLimitPayload, THROWN_WITHOUT_MESSAGE } from '../thrown-value';
 import {
   INNER_REALM_GUARD_SOURCE,
@@ -983,6 +984,9 @@ export class VmAdapter implements SandboxAdapter {
             // "this". In sloppy mode "this" was coerced to the realm's global object, and fill
             // RETURNED it.
             'use strict';
+            // The functions of Math, not the object: a script can assign to its members, and a
+            // replaced Math.max would decide what a fill is charged.
+            var Math = (function (M) { return { max: M.max, min: M.min, round: M.round }; })(globalThis.Math);
             var memoryLimit = ${numericLiteral('memoryLimit', config.memoryLimit)};
             var trackMemory = __host_memory_track__;
 
@@ -1112,6 +1116,16 @@ export class VmAdapter implements SandboxAdapter {
         `);
         patchScript.runInContext(baseSandbox);
       }
+
+      // Arrays that grow are accounted for like strings that grow (see ../realm-memory), and the
+      // helpers the transformed code calls around an array literal with spreads are defined.
+      // Always: without a memory limit the helpers count nothing.
+      compileSandboxScript(
+        realmArrayAccountingSource(
+          memoryTracker && config.memoryLimit && config.memoryLimit > 0 ? config.memoryLimit : 0,
+        ),
+        { filename: 'array-accounting.js' },
+      ).runInContext(baseSandbox);
 
       // __safe_concat and __safe_template, defined inside the realm by the same code as in the
       // double VM (they read __host_memory_track__, which is why it is still there).
