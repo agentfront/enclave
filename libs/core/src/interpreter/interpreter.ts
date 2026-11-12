@@ -213,6 +213,31 @@ function bigIntTooLarge(): InterpreterError {
   return new InterpreterError(`A BigInt cannot be larger than ${MAX_BIGINT_BITS} bits`);
 }
 
+/**
+ * String methods that do not go through their receiver: they read a char or its start or end,
+ * cut it without copying, or build on it. What they make is counted as what they write.
+ */
+const CONSTANT_STRING_METHODS = new Set([
+  'at',
+  'charAt',
+  'charCodeAt',
+  'codePointAt',
+  'valueOf',
+  'toString',
+  'slice',
+  'substring',
+  'substr',
+  'concat',
+  'startsWith',
+  'endsWith',
+  'padStart',
+  'padEnd',
+  'repeat',
+]);
+
+/** Array methods that work at the end of their receiver, copy a part of it or hand out an iterator */
+const CONSTANT_ARRAY_METHODS = new Set(['at', 'push', 'pop', 'slice', 'keys', 'values', 'entries']);
+
 /** String methods that look for a text in a text */
 const TEXT_SEARCHES = new Set(['indexOf', 'lastIndexOf', 'includes', 'split', 'replace', 'replaceAll']);
 
@@ -1521,13 +1546,23 @@ export class Interpreter {
   }
 
   private operate(operator: string, left: unknown, right: unknown, partOfSum: boolean): unknown {
-    // Every operator but the two strict comparisons converts an array operand to text.
-    if (operator !== '===' && operator !== '!==') this.arrayOperands(left, right);
+    // Whether the engine converts an operand next to `other`. A strict comparison converts
+    // nothing, and a loose one only an operand that is compared with a primitive value: next
+    // to `null`, `undefined` or another object it is compared as it is. Every other operator
+    // converts both operands.
+    const strict = operator === '===' || operator === '!==';
+    const loose = operator === '==' || operator === '!=';
+    const convertsNextTo = (other: unknown): boolean =>
+      !strict &&
+      (!loose || (other !== null && other !== undefined && typeof other !== 'object' && typeof other !== 'function'));
+    // An array that is converted is written as text
+    this.arrayOperands(convertsNextTo(right) ? left : undefined, convertsNextTo(left) ? right : undefined);
     // Two texts are compared char by char, and a number is read out of a text char by char.
     // `+` only links two texts.
     if (operator !== '+') {
       if (typeof left === 'string' && typeof right === 'string') this.work(Math.min(left.length, right.length));
-      else if (operator !== '===' && operator !== '!==') this.work(operandSize(left) + operandSize(right));
+      else if (typeof left === 'string' && convertsNextTo(right)) this.work(left.length);
+      else if (typeof right === 'string' && convertsNextTo(left)) this.work(right.length);
     }
     const l = left as never;
     const r = right as never;
@@ -1682,7 +1717,11 @@ export class Interpreter {
     const construct = this.options.constructors?.get(callee);
     if (!construct) throw new InterpreterError('new works with the built-in types the sandbox provides only');
     const args = await this.evalArguments(node.arguments, scope);
-    if (!ARRAY_DATA_FUNCTIONS.has(callee as object)) assertArrayTextWithinLimit(...args);
+    if (!ARRAY_DATA_FUNCTIONS.has(callee as object)) {
+      this.arrayOperands(...args);
+      // A date or an error is made from a text by reading it
+      for (const arg of args) this.work(typeof arg === 'string' ? arg.length : 0);
+    }
     const value = construct(args);
     this.chargeValue(value);
     return value;
@@ -1768,25 +1807,7 @@ export class Interpreter {
         return text;
       }
       const stringMethod = arrayMethod === undefined ? STRING_METHODS.get(fn) : undefined;
-      // What the call reads: its receiver, a text or an array, and the texts among its
-      // arguments. An array among the arguments is data to most functions (an item to push, the
-      // array a callback is handed with every item); where it is read, as text or into what the
-      // call returns, it is counted there.
-      let read = operandSize(thisArg);
-      for (let i = 0; i < args.length; i++) {
-        const arg: unknown = args[i];
-        if (typeof arg === 'string') read += arg.length;
-      }
-      this.work(stringMethod === 'localeCompare' ? read * LOCALE_COMPARE_WORK : read);
-      // A BigInt is written as text by whatever converts its arguments, and by its own methods
-      if (typeof thisArg === 'bigint') this.bigIntAsText(thisArg);
-      if (!ARRAY_DATA_FUNCTIONS.has(fn)) {
-        const isData = arrayMethod === undefined ? undefined : ARRAY_DATA_ARGUMENTS.get(arrayMethod);
-        const converted = CONVERTED_ARGUMENTS.get(fn) ?? args.length;
-        for (let i = 0; i < args.length && i < converted; i++) {
-          if (!isData?.(i)) this.bigIntAsText(args[i]);
-        }
-      }
+      this.countRead(fn, arrayMethod, stringMethod, thisArg, args);
 
       let result = this.searchInPieces(arrayMethod, stringMethod, thisArg, args);
       if (result === NOT_SEARCHED) {
@@ -1807,6 +1828,49 @@ export class Interpreter {
     } finally {
       this.pendingCalls--;
     }
+  }
+
+  /**
+   * Count what a built-in or host function reads before it is called: its receiver, where the
+   * method goes through it (a search, a conversion, a copy; not a method that reads one char or
+   * works at the end of an array), and the texts among the arguments it converts or searches
+   * for. A value a function only keeps is not read: an item to push, the array a callback is
+   * handed with every item. An array that is read as text was counted where it was measured,
+   * and what the call makes is counted when it returns.
+   */
+  private countRead(
+    fn: object,
+    arrayMethod: string | undefined,
+    stringMethod: string | undefined,
+    receiver: unknown,
+    args: unknown[],
+  ): void {
+    let read = 0;
+    if (typeof receiver === 'string') {
+      if (stringMethod === undefined || !CONSTANT_STRING_METHODS.has(stringMethod)) read += receiver.length;
+    } else if (Array.isArray(receiver)) {
+      if (arrayMethod === undefined || !CONSTANT_ARRAY_METHODS.has(arrayMethod)) read += receiver.length;
+    } else if (typeof receiver === 'bigint') {
+      // Its own methods write it out
+      this.bigIntAsText(receiver);
+    }
+    if (!ARRAY_DATA_FUNCTIONS.has(fn)) {
+      const isData = arrayMethod === undefined ? undefined : ARRAY_DATA_ARGUMENTS.get(arrayMethod);
+      const converted = CONVERTED_ARGUMENTS.get(fn) ?? args.length;
+      for (let i = 0; i < args.length && i < converted; i++) {
+        if (isData?.(i)) continue;
+        const arg: unknown = args[i];
+        if (typeof arg === 'string') read += arg.length;
+        else this.bigIntAsText(arg);
+      }
+    }
+    if (stringMethod === 'localeCompare' && typeof receiver === 'string') {
+      // Compared by the rules of a locale, as far as the shorter of the two goes
+      const other: unknown = args[0];
+      read =
+        Math.min(receiver.length, typeof other === 'string' ? other.length : receiver.length) * LOCALE_COMPARE_WORK;
+    }
+    this.work(read);
   }
 
   /**

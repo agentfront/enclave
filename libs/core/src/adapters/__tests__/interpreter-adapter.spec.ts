@@ -180,6 +180,23 @@ describe('InterpreterAdapter (SandboxAdapter)', () => {
     expect(res.error?.code).toBe('EXECUTION_TIMEOUT');
   });
 
+  it('counts the work of a built-in by what it reads, not by the size of the value it is called on', async () => {
+    // A million chars: a search goes through them, reading one char does not
+    const steps = async (body: string): Promise<number> => {
+      const res = await adapter.execute(main(`const text = 'x'.repeat(1000000); ${body}`), makeContext());
+      expect(res.error).toBeUndefined();
+      return res.stats.iterationCount;
+    };
+    const loop = (call: string): string =>
+      `let n = 0; for (let i = 0; i < 1000; i++) { if (${call}) { n = n + 1; } } return n;`;
+
+    const reading = await steps(loop('text.charCodeAt(i) === 120'));
+    const searching = await steps(loop("text.includes('y')"));
+
+    expect(searching - reading).toBeGreaterThan(50_000);
+    expect(reading).toBeLessThan(20_000);
+  });
+
   it('goes through iterators in loops, spreads and destructuring, and steps one with next', async () => {
     const res = await adapter.execute(
       main(`
