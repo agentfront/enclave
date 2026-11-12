@@ -16,6 +16,39 @@ A follow-up to 2.19.0: two more layers behind the validator, and the dependency 
 - `@enclave-vm/broker` depends on `minimatch` 11 (`^11.0.1`, was `^10.2.5`) for the glob patterns of its event filter. `minimatch` 11.0.4 and later need Node.js 20 or 22+; its changelog lists the matching edge cases that changed. The glob patterns of the event filter have a test now.
 - Tooling: the root `resolutions` move `glob` to 14 (Jest) and the `minimatch` of `@typescript-eslint/typescript-estree` to 11. Nx pins `minimatch` 10.2.5 and uses an API that 11 removed, so that copy stays until Nx moves.
 
+### After 2.19.1: a review of every package
+
+Draft for the maintainer. A security review of 2.19.1 across all nine packages, with a fix and a test for what it found. The invariants are listed by category in `SECURITY-TESTS.md`, which also lists what is still open; `libs/core/CHANGELOG.md` and `libs/ast/CHANGELOG.md` have the changes a host of those packages will notice. The packages without a changelog of their own:
+
+- `@enclave-vm/broker`
+  - The limits the embedder gives the broker bound every session, however it is created. The body of `POST /sessions` is validated as a whole; a request may lower `maxToolCalls` and `maxExecutionMs` and cannot raise them; a limit that is not a number is refused when the broker or a session is created; `limits.maxToolResultBytes` and `ToolConfig.timeout` are enforced.
+  - A session id names one session (`409 SESSION_EXISTS` for an id in use), is `s_` followed by 1 to 128 characters of `[A-Za-z0-9._:~-]`, and `maxSessions` holds (`503 MAX_SESSIONS_REACHED`).
+  - New optional `identify(request)` hook of the session routes: with it a session belongs to the caller that created it, another caller gets the answer of an id that does not exist, and a request without an identity is answered with 401. Without the hook the routes do not tell callers apart, as before. The package does not authenticate; the README says so.
+  - `POST /sessions/:sessionId/cancel`, the URL a session announces, ends the session like `DELETE`. A session ends when the caller that holds its stream goes away.
+  - Event filters: an evaluation is bounded in time (`regexTimeoutMs` is enforced; new `budgetMs`), a filter in a request is validated against a schema with bounds (`400 INVALID_FILTER`), an event a filter could not evaluate is not sent, and the text of a pattern is not logged.
+  - What a session keeps for a replay is bounded (`history: { maxEvents, maxBytes }`, 10,000 events and 4 MB by default; `410 EVENTS_GONE` for a replay below what is kept), as are the streams of a session (`maxStreamsPerSession`, 8; `429 TOO_MANY_STREAMS`) and what a slow reader may leave unread (`maxBufferedBytes`, 8 MB).
+  - OpenAPI tools: a path parameter fills its own segment (`INVALID_PATH_PARAMETER` otherwise); the upstream credential and pinned headers go to the upstream's origin only, also across redirects; responses and specifications are bounded in size and time (`maxResponseBytes`, `maxSpecBytes`, `specTimeoutMs`); a source that fails while polling does not end the process and never leaves the registry half changed.
+  - Error answers hold a code and a fixed text. `createExpressRouter` is deprecated (it never registered a route): use `registerExpressRoutes`.
+- `@enclave-vm/client`
+  - The constructor throws a `TypeError` for an option it does not implement (`encryption`, `auth`, `serverUrl`, `reconnect`, any unknown key) and for a value it cannot use.
+  - `timeout` is enforced (60 s by default) for every request and for silence on a stream; a stream that ends without `final` is a lost connection.
+  - `cancel()`, `cancelSession()` and an aborted `signal` end the session on the server (`DELETE /sessions/:id`); a stop the server did not confirm calls `onError('CANCEL_FAILED', …)`.
+  - A reconnect continues after the last delivered event (`fromSeq`): each event is delivered once, nothing after `final`, one stream per session. New option `maxEventLength` (8 MiB).
+  - A session id must start with `s_` and is encoded in every path. An encrypted event ends the session with `PARSE_ERROR`: the client does not implement encryption.
+- `@enclave-vm/stream`
+  - The NDJSON parsers have `maxLineLength` (8 MiB by default) and cost time in proportion to the length of a line, not to the number of chunks it arrives in.
+  - An encrypted envelope authenticates its header (protocol version, session id, sequence number, key id): read one with the new `openEncryptedEnvelope` / `openEnvelope`. `decryptJson(payload)` no longer opens an envelope made by `createEncryptedEnvelope` / `createEnvelope`, so peers on mixed versions fail closed. Events of any size can be encrypted; `generateKeyPair` gives a private key that cannot be exported; a nonce counter beyond 32 bits and handshake parameters that are not implemented are refused. The key exchange is not authenticated, and no client or broker of this repository uses these primitives; the README says so.
+- `@enclave-vm/react`: `EnclaveProvider` builds a new client when the values of its configuration change, so requests never go to a server or with credentials the current configuration does not name.
+- `@enclave-vm/runtime`: the package does not execute scripts yet and now says so: `execute` rejects with `RuntimeNotImplementedError`, the channel gets a `final` event with `NOT_IMPLEMENTED`, no session is left behind, and the CLI exits with 1. `maxSessions` must be a positive integer, the default `host` is `127.0.0.1`, and a disconnected `WebSocketChannel` keeps at most 1,000 events.
+- `@enclave-vm/browser`
+  - Numeric limits must be finite numbers of 0 or more (`timeout` and `parentTimeoutBuffer` at most 2,147,483,647); `Infinity`, `NaN`, text and negative numbers throw a `TypeError` at construction. For "no limit" use `Number.MAX_SAFE_INTEGER`.
+  - A custom global or tool namespace is the host's value under any name, also one that means something in the frame (`location`, `top`, `window`, …); names of the runtime (`__safe_*`, `__ag_*`, `__iter_*`, `__maxIterations`) throw a `TypeError`.
+  - The frame documents run the two scripts this package wrote and no other, and open no connection, also with the validator off; with `validate: false` the document of the inner frame cannot be changed.
+  - `doubleIframe.parentValidation.suspiciousPatterns` now take effect, evaluated on the host; an entry without `detect` throws. The built-in detectors cost time in proportion to the arguments.
+  - The cumulative memory accounting cannot be switched off, and `padStart` / `padEnd` count toward `memoryLimit`.
+  - The host prints and hands to tools only plain data it copied and measured. A script's own mistake in a tool call (a name over 256 characters, arguments nested over 100 levels) is an ordinary error, not a `PROTOCOL_VIOLATION`. New error code `SANDBOX_SETUP_FAILED`.
+- Repository: `yarn test:security`, its CI job and `npx nx test <library>` cover the security specs of `broker`, `client`, `stream`, `react` and `runtime`.
+
 ## [2.19.0] - 2026-11-12
 
 Draft for the maintainer. A security release of `@enclave-vm/core`, `@enclave-vm/ast` and `@enclave-vm/browser`: the sandbox boundary, the limits and the host process, each change with the test that pins it. See `SECURITY-TESTS.md` for the catalog and `libs/core/CHANGELOG.md` for the list of behaviour changes a host will notice.

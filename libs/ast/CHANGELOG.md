@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### After 2.19.1: a review of every package
+
+Draft for the maintainer. The invariants are listed under "Layer 1: static" in `SECURITY-TESTS.md`.
+
+#### Changed: what a host will notice
+
+- **A validation result is bounded.** Without `maxIssues` a validation collects at most `DEFAULT_MAX_ISSUES` (100) issues (`0` still collects all), an unknown-global issue states the list of allowed globals once per validation, and a validation that stopped early is never `valid`: such a result has `incomplete: true` (ATK-VBOUND).
+- **`Object` is used directly** under the AgentScript preset (`requireDirectObjectUse`): `Object.name` with a name written in the source, a call, a construction, `typeof`, `instanceof`. An alias, passing or storing it, destructuring from it and a member name computed at run time are refused with `OBJECT_INDIRECT_USE`. A reflection static of `Object` is refused wherever it is read.
+- **Syntax allowlist.** `using` and `await using` declarations, `for await` loops and generator functions are constructs of their own (`UsingDeclaration`, `AwaitUsingDeclaration`, `ForAwaitStatement`, `GeneratorFunction`): refused by AgentScript, allowed only when listed under that name. `allowedFunctionNames` allows one declaration with the wrapper's shape.
+- **STRICT and SECURE presets** refuse `this` as a value in every position (ATK-GTHIS).
+- **Regular-expression methods** (`match`, `matchAll`, `search`) are seen through `call` / `apply` / `bind`, in every static spelling of the name and without an argument. New option `requireDirectCall` (AgentScript preset: `requireDirectRegexMethodCalls`), off by default.
+- **Tool namespaces.** `normalizeToolNamespaces` refuses `then`, `toString`, `valueOf`, `toLocaleString` and `toJSON` as method names and as namespace names (ATK-NSHOOK).
+- **Reserved names.** `reservedPrefixes` adds to the prefixes of the runtime (`__ag_`, `__safe_`) instead of replacing them; `__maxIterations`, the runtime's name for the iteration limit, is reserved as well.
+- **`transformAgentScript`** takes `maxIterations` and writes it as a number into each loop check; without it, a script that uses the runtime's name for the limit is refused. `transformConcatenation` has the options `compoundAssignment` (default true: `x += y` is charged like `x + y`) and `arraySpread`.
+- **`rewriteImports`.** A dynamic import of a listed package is rewritten and one of another package refused; a computed specifier is refused; versions with path or URL characters and a base URL with credentials, a query or a fragment are refused (ATK-IMPRW).
+- **`UnicodeSecurityRule`** reports the tag characters (U+E0000 to U+E007F) as invisible characters, and locates its matches in linear time.
+
+#### Security
+
+- **`transformComputed`.** A computed key that is rewritten is printed as the string literal of its new value whatever characters it holds (ATK-XFORM).
+- **JSON callbacks.** Only the global `undefined` counts as "no replacer or reviver", not a variable of the script with that name.
+- **Call targets.** `NoCallTargetAssignmentRule` sees every write and every declaration of a protected name: destructuring, loop heads, `++` / `--`, catch-clause patterns, default values and class names.
+- **Preset options hold for transformed code.** `requireCallTool` and `callToolValidation` know the call as `callTool` and as `__safe_callTool`.
+
 ## [2.19.0] - 2026-11-12
 
 A security release of the static layer. The invariants behind each item, and the categories of the tests that pin them, are listed under "Layer 1: static" in `SECURITY-TESTS.md`; nothing here says more than that file does.

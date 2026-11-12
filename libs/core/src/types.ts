@@ -496,10 +496,11 @@ export interface EnclaveConfig {
    * When set, the VM adapter tracks String and Array allocations and throws
    * a MemoryLimitError if the limit is exceeded. Tracking adds ~5-10% overhead.
    *
-   * Note: This is enforced via allocation tracking, not V8 heap limits.
-   * For precise memory isolation, use the worker_threads adapter.
+   * Note: This is enforced via allocation tracking, not V8 heap limits. It counts the
+   * operations that make text and arrays grow; a copy is not charged, and objects, Maps and
+   * Sets are not counted. For the engine's own limit, use the worker_threads adapter.
    *
-   * Default: 128 * 1024 * 1024 (128MB)
+   * Default: 1 * 1024 * 1024 (1 MB); 0 switches the tracking off
    */
   memoryLimit?: number;
 

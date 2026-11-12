@@ -16,6 +16,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Interpreter adapter, property keys.** A property is read under a key of the script through one function that checks the key where the read happens, a write and a delete check it again, and `Object.prototype` and `Array.prototype` are never data a script may change (ATK-INTERP). These keys were refused before; nothing changes for a script. It closes the two code-scanning alerts on the interpreter.
 
+### After 2.19.1: a review of every package
+
+Draft for the maintainer. The invariants each item restores, and the tests that pin them, are listed by category in `SECURITY-TESTS.md`, which also lists what is still open.
+
+#### Changed: what a host will notice
+
+- **Options are checked.** A limit that is not a finite integer in its range (`Infinity` and `NaN` included), a switch that is not a boolean and an unknown security level throw a `TypeError` at construction. An option passed as `undefined` has the security level's value (ATK-CONFIG).
+- **Errors made inside the sandbox have no `stack`.** No sandbox realm captures a stack trace, for the script and in `result.error` (ATK-MERR, ATK-STACK).
+- **`result.error` is plain, bounded text.** `name` and `message` are strings whatever a script threw; a thrown `null`, `undefined` or primitive is reported as such; an object a script makes to look like the memory-limit error is not reported as one (ATK-THROWN).
+- **A script has a maximum size** (5,242,880 characters; `VALIDATION_ERROR`, "too large"), checked before anything parses it, and the message of a validation failure is cut per issue and in total (ATK-RSRC).
+- **`memoryLimit` counts arrays that grow.** No single array is larger than the limit holds (8 bytes per element), and what `push`, `unshift`, `splice`, `concat`, `flat`, `flatMap`, a spread literal and `Array.from` add is charged; `x += y` is charged like `x + y`. A copy is not charged, and objects, Maps and Sets are not counted: the limit is an estimate, see "Open invariants" (ATK-MEMACC).
+- **Iteration limit.** A script that declares `__maxIterations` is refused; with validation off the limit still holds, because each loop is compared with a number in its own code (ATK-LCTR).
+- **Timeout.** The deadline is also checked in front of a parameter default. What a script left behind when `run()` returned ends within a bounded number of steps; its rejection text is "Script execution has ended" (ATK-TIME).
+- **Dynamic import.** With `validate: false` a script that contains `import()` or `import.meta` fails with `SECURITY_VIOLATION` before it runs (ATK-IMPORT).
+- **A value that is referenced twice is returned twice.** The sanitizer of returned values, tool arguments and tool results took the second reference to any object for a circle and replaced it by the text `[Circular]`. Only an object that contains itself is one. Every copy counts against `maxSanitizeProperties` (ATK-SIZE).
+- **Tool-call sequence detectors** see the calls of the window they ask for (up to 60 seconds), so a sequence whose calls are a few seconds apart is refused as documented (ATK-SEQ).
+- **Tool namespaces.** A method or namespace named `then`, `toString`, `valueOf`, `toLocaleString` or `toJSON` is refused where the namespaces are declared (ATK-NSHOOK).
+- **Worker pool.** A worker goes back into the pool only when it has confirmed that nothing of the last script is left in it; an execution the pool ends, ends its worker; the message rate is counted per execution; `maxMessageSizeBytes` is applied (`MessageSizeError`); memory a worker holds outside its heap counts against its budget while it executes (`WorkerMemoryError`; Node.js 22.16 or later); `dispose()` ends the executions in flight with `ExecutionAbortedError` (ATK-WORKER).
+- **Interpreter adapter.** A script that computes past its timeout ends with `EXECUTION_TIMEOUT`; the work of a built-in counts as steps (`stats.iterationCount`, `maxSteps`); a function stored under a name the engine calls by itself (`then`, `toString`, `valueOf`, `toJSON`, `toLocaleString`, `toISOString`, and `join` on an array) is refused at the write; of an iterator only `next` can be called; a BigInt is limited to 1,048,576 bits and charged to the allocation budget; a text made by `+` is charged in full; the allocation limit cannot be caught. New: `InterpreterOptions.deadline`, `Interpreter.chargeAllocation`, `Interpreter.countBigInt` (ATK-INTERP-37 to 47).
+- **Babel preset.** The message of a failed transform is at most 2,000 characters; `transformMultiple` refuses file names over 255 characters and lists each dependency once; a transform whose output is over the limit is refused before it is rewritten (ATK-BABEL).
+- **Sidecar.** New `sidecar.maxTotalResolvedSize` (default twice `maxTotalSize`): what one execution resolves in total; over it a concatenation fails with `REFERENCE_RESOLUTION_LIMIT` (ATK-SIDECAR).
+- **Scoring gate.** `FeatureExtractor.extract` throws `FeatureExtractionError` for text it cannot parse, and `failOpen` decides: with `failOpen: false` the gate blocks on every path where the scorer cannot answer. The gate of an enclave knows the enclave's tool namespaces (`toolNamespaces`), `customRules` takes effect, and `codeHash` is the whole SHA-256 digest (ATK-SCORE).
+- **Sessions.** A tool result reaches the call it was submitted for; `wait()` returns one shared promise; the object from `pendingToolCall` no longer carries `resolve` / `reject`.
+
+#### Security
+
+- **Membrane, double VM.** An object a script passes to a built-in of host data is seen by that built-in through a guard, so a method of it never receives a host value raw (ATK-HVAL). A function of the script that is called through a value the runtime handed out receives the value the script holds; freezing such a value keeps its nested values behind the membrane; its prototype cannot be replaced (ATK-REACH).
+- **Async context.** Nothing a script can reach on its own promises is an object of the host's `AsyncLocalStorage` context (Node.js 22); tool handlers, console handlers and functions from `globals` still run in the caller's context (ATK-ALS).
+- **One reading of the script.** The transforms that run after validation parse the script with the goal the validator and the engine use (ATK-GOAL).
+- **Computed keys.** The run-time key guard refuses the property names the validator refuses when they are written out (ATK-KGUARD).
+- **Rejection guard.** It answers for promises of a sandbox only: a rejection that a promise library of the application reports for a promise type of its own reaches the application's listeners (ATK-REJECT).
+- **Host work on script text is linear.** The tool-call detectors and the import scans of the Babel path cost time in proportion to their input (ATK-REDOS, ATK-BABEL).
+
 ## [2.19.0] - 2026-11-12
 
 Draft for the maintainer: a security release. The invariants each item restores, and the tests that pin them, are listed by category in `SECURITY-TESTS.md`; nothing here says more than that file does.
