@@ -33,6 +33,10 @@ export {
   encryptJson,
   decryptJson,
   createEncryptedEnvelope,
+  openEncryptedEnvelope,
+  encodeEnvelopeHeader,
   SessionEncryptionContext,
   AesGcmError,
 } from './aes-gcm.js';
+
+export type { EnvelopeHeader, EnvelopeLike } from './aes-gcm.js';

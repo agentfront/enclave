@@ -54,11 +54,13 @@ export {
   encryptJson,
   decryptJson,
   createEncryptedEnvelope,
+  openEncryptedEnvelope,
+  encodeEnvelopeHeader,
   SessionEncryptionContext,
   AesGcmError,
 } from './crypto/index.js';
 
-export type { EcdhKeyPair, SerializedPublicKey } from './crypto/index.js';
+export type { EcdhKeyPair, SerializedPublicKey, EnvelopeHeader, EnvelopeLike } from './crypto/index.js';
 
 // Reconnection exports
 export {
