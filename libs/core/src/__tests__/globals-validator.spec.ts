@@ -10,6 +10,7 @@ import {
   canValidateGlobals,
   getGlobalsValidationErrors,
 } from '../globals-validator';
+import { Enclave } from '../enclave';
 
 describe('globals-validator', () => {
   describe('validateGlobalValue', () => {
@@ -760,6 +761,197 @@ describe('globals-validator', () => {
 
     it('should return empty array for empty globals', () => {
       expect(getGlobalsValidationErrors({})).toEqual([]);
+    });
+  });
+
+  describe('host code that is not on the value itself', () => {
+    // A script reaches the methods and getters of a class through an instance, a function in a
+    // property that is not enumerable or is keyed by a symbol, and the handler of a Proxy. The
+    // rules for functions and getters apply to all of them.
+    class Point {
+      constructor(
+        public x: number,
+        public y: number,
+      ) {}
+    }
+    class Account {
+      owner = 'o';
+      describe(): string {
+        return 'account of ' + this.owner;
+      }
+    }
+    class Invoice {
+      net = 100;
+      get total(): number {
+        return this.net * 1.2;
+      }
+    }
+    class Premium extends Account {}
+
+    describe('class instances', () => {
+      it('refuses an instance whose class has a method, unless functions are allowed', () => {
+        expect(() => validateGlobalValue('account', new Account(), { classConstructorsReachable: false })).toThrow(
+          /contains a function at describe/,
+        );
+        expect(() =>
+          validateGlobalValue('account', new Account(), { classConstructorsReachable: false, allowFunctions: true }),
+        ).not.toThrow();
+      });
+
+      it('finds a method however far up the class hierarchy it is defined', () => {
+        expect(() => validateGlobalValue('account', new Premium(), { classConstructorsReachable: false })).toThrow(
+          /contains a function at describe/,
+        );
+      });
+
+      it('refuses an instance whose class has a getter, also when functions are allowed', () => {
+        expect(() => validateGlobalValue('invoice', new Invoice(), { allowFunctions: true })).toThrow(
+          /has a getter\/setter at total \(defined by its class\)/,
+        );
+        expect(() =>
+          validateGlobalValue('invoice', new Invoice(), { allowFunctions: true, allowGettersSetters: true }),
+        ).not.toThrow();
+      });
+
+      it('does not run a getter to look at its value', () => {
+        let reads = 0;
+        const value = {};
+        Object.defineProperty(value, 'counted', { get: () => ++reads, enumerable: true });
+
+        validateGlobalValue('value', value, { allowGettersSetters: true });
+
+        expect(reads).toBe(0);
+      });
+
+      it('accepts an instance of a class without methods where its constructor cannot be read', () => {
+        expect(() =>
+          validateGlobalValue('point', new Point(1, 2), { classConstructorsReachable: false }),
+        ).not.toThrow();
+      });
+
+      it('refuses the same instance where a script can read `constructor`: the class is a function', () => {
+        expect(() => validateGlobalValue('point', new Point(1, 2))).toThrow(
+          /a Point instance at root, whose constructor/,
+        );
+        expect(() => validateGlobalValue('point', new Point(1, 2), { allowFunctions: true })).not.toThrow();
+      });
+
+      it('finds an instance nested in plain data', () => {
+        expect(() =>
+          validateGlobalValue('config', { nested: { account: new Account() } }, { classConstructorsReachable: false }),
+        ).toThrow(/contains a function at nested\.account\.describe/);
+      });
+
+      it('leaves plain objects, arrays, Maps, Sets, Dates and typed arrays alone', () => {
+        const data = {
+          plain: { a: 1 },
+          bare: Object.create(null),
+          list: [1, 2, 3],
+          map: new Map([['k', 1]]),
+          set: new Set([1]),
+          when: new Date(0),
+          bytes: new Uint8Array([1, 2, 3]),
+        };
+
+        expect(() => validateGlobalValue('data', data)).not.toThrow();
+      });
+
+      it('refuses a Buffer, whose class has accessors and methods: a Uint8Array is the data', () => {
+        const bytes = Buffer.from('abc');
+
+        expect(() => validateGlobalValue('bytes', bytes, { allowFunctions: true })).toThrow(/has a getter\/setter/);
+        expect(() => validateGlobalValue('bytes', new Uint8Array(bytes))).not.toThrow();
+      });
+
+      it('refuses a prototype chain it cannot follow to its end', () => {
+        let value: object = {};
+        for (let depth = 0; depth < 40; depth++) {
+          value = Object.create(value);
+        }
+
+        expect(() => validateGlobalValue('deep', value, { allowFunctions: true })).toThrow(/more than 32 prototypes/);
+      });
+    });
+
+    describe('functions a listing of the keys does not show', () => {
+      it('refuses a function in a property that is not enumerable', () => {
+        const value = { visible: 1 };
+        Object.defineProperty(value, 'hidden', { value: () => 1, enumerable: false });
+
+        expect(() => validateGlobalValue('value', value)).toThrow(/contains a function at hidden/);
+        expect(() => validateGlobalValue('value', value, { allowFunctions: true })).not.toThrow();
+      });
+
+      it('refuses a function in a property keyed by a symbol', () => {
+        const value = { [Symbol.toPrimitive]: () => 'x' };
+
+        expect(() => validateGlobalValue('value', value)).toThrow(
+          /contains a function at \[Symbol\(Symbol\.toPrimitive\)\]/,
+        );
+      });
+
+      it('looks into an object behind a property that is not enumerable', () => {
+        const value = {};
+        Object.defineProperty(value, 'hidden', { value: { run: () => 1 }, enumerable: false });
+
+        expect(() => validateGlobalValue('value', value)).toThrow(/contains a function at hidden\.run/);
+      });
+    });
+
+    describe('proxies', () => {
+      it('refuses a Proxy of an object: its handler runs on every access', () => {
+        const value = new Proxy({ a: 1 }, {});
+
+        expect(() => validateGlobalValue('value', value)).toThrow(/contains a Proxy at root/);
+        expect(() => validateGlobalValue('value', { nested: value })).toThrow(/contains a Proxy at nested/);
+      });
+
+      it('does not run the handler to find that out', () => {
+        let calls = 0;
+        const count = (): never => {
+          calls++;
+          throw new Error('the handler ran');
+        };
+        const value = new Proxy(
+          {},
+          { get: count, ownKeys: count, getPrototypeOf: count, getOwnPropertyDescriptor: count },
+        );
+
+        expect(() => validateGlobalValue('value', value)).toThrow(/contains a Proxy/);
+        expect(calls).toBe(0);
+      });
+    });
+
+    describe('through the Enclave', () => {
+      const run = (options: Record<string, unknown>): void => {
+        new Enclave({ toolHandler: async () => ({ ok: true }), ...options }).dispose();
+      };
+
+      it('STANDARD refuses a class instance with methods and accepts one without', () => {
+        expect(() => run({ globals: { account: new Account() } })).toThrow(/contains a function at describe/);
+        expect(() => run({ globals: { point: new Point(1, 2) } })).not.toThrow();
+      });
+
+      it('accepts the instance with methods once functions are allowed', () => {
+        expect(() => run({ globals: { account: new Account() }, allowFunctionsInGlobals: true })).not.toThrow();
+      });
+
+      it('refuses a class instance with a getter whatever is allowed', () => {
+        expect(() => run({ globals: { invoice: new Invoice() }, allowFunctionsInGlobals: true })).toThrow(
+          /has a getter\/setter at total/,
+        );
+      });
+
+      it('where `constructor` is readable, an instance needs functions to be allowed', () => {
+        const readable = { secureProxyConfig: { blockConstructor: false } };
+
+        expect(() => run({ ...readable, globals: { point: new Point(1, 2) } })).toThrow(
+          /whose constructor a script can reach/,
+        );
+        expect(() =>
+          run({ ...readable, globals: { point: new Point(1, 2) }, allowFunctionsInGlobals: true }),
+        ).not.toThrow();
+      });
     });
   });
 });

@@ -149,10 +149,108 @@ function parseToolBridgeRequest(
   return { ok: true, request: { v: TOOL_BRIDGE_PROTOCOL_VERSION, tool, args: args as Record<string, unknown> } };
 }
 
+/**
+ * Encode a tool call as a tool-bridge request.
+ */
+export function encodeToolBridgeRequest(tool: string, args: Record<string, unknown>): string {
+  return safeJsonStringify({ v: TOOL_BRIDGE_PROTOCOL_VERSION, tool, args } satisfies ToolBridgeRequest);
+}
+
+/**
+ * Decode a tool-bridge request into the tool name and arguments it carries.
+ *
+ * @returns The tool call, or the reason the request is malformed
+ */
+export function decodeToolBridgeRequest(
+  requestJson: string,
+): { ok: true; tool: string; args: Record<string, unknown> } | { ok: false; error: string } {
+  const parsed = parseToolBridgeRequest(requestJson);
+  return parsed.ok ? { ok: true, tool: parsed.request.tool, args: parsed.request.args } : parsed;
+}
+
+/**
+ * Encode a failure as a tool-bridge response (a refusal by the enclave, not a failure of the tool).
+ */
+export function encodeToolBridgeFailure(name: string, message: string, code: string, maxPayloadBytes: number): string {
+  return serializeResponse(
+    { v: TOOL_BRIDGE_PROTOCOL_VERSION, ok: false, error: { name, message, code } },
+    maxPayloadBytes,
+  );
+}
+
+/**
+ * The tool bridge of an execution whose host is on another thread (see
+ * `ExecutionContext.hostToolBridge`). The checks that depend on this thread's state run here: the
+ * request size, the abort flag and the tool-call count. The request then goes to the host thread,
+ * where the ordinary bridge runs the handler, resolves sidecar references and sanitizes the
+ * result. A tool call is therefore treated the same wherever the sandbox runs.
+ */
+function createRelayedToolBridge(
+  executionContext: ExecutionContext,
+  options: { updateStats: boolean },
+  relay: (requestJson: string) => Promise<string>,
+): (requestJson: string) => Promise<string> {
+  const { config, stats } = executionContext;
+  const maxPayloadBytes = config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
+
+  return async (requestJson: string): Promise<string> => {
+    try {
+      if (typeof requestJson !== 'string') {
+        return encodeToolBridgeFailure(
+          'ToolBridgeError',
+          'Tool request must be a string',
+          'TOOL_BRIDGE_BAD_REQUEST',
+          maxPayloadBytes,
+        );
+      }
+      if (utf8ByteLength(requestJson) > maxPayloadBytes) {
+        return encodeToolBridgeFailure(
+          'ToolBridgeError',
+          `Tool request exceeds maximum size (${maxPayloadBytes} bytes)`,
+          'TOOL_BRIDGE_REQUEST_TOO_LARGE',
+          maxPayloadBytes,
+        );
+      }
+      if (executionContext.aborted) {
+        return encodeToolBridgeFailure('AbortError', 'Execution aborted', 'EXECUTION_ABORTED', maxPayloadBytes);
+      }
+      if (options.updateStats) {
+        stats.toolCallCount++;
+      }
+      if (stats.toolCallCount > config.maxToolCalls) {
+        return encodeToolBridgeFailure(
+          'ToolLimitError',
+          `Maximum tool call limit exceeded (${config.maxToolCalls}). This limit prevents runaway script execution.`,
+          'MAX_TOOL_CALLS_EXCEEDED',
+          maxPayloadBytes,
+        );
+      }
+
+      const responseJson = await relay(requestJson);
+      if (typeof responseJson !== 'string' || utf8ByteLength(responseJson) > maxPayloadBytes) {
+        return encodeToolBridgeFailure(
+          'ToolBridgeError',
+          `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
+          'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+          maxPayloadBytes,
+        );
+      }
+      return responseJson;
+    } catch (error: unknown) {
+      const safeError = toErrorPayload(error, 'ToolBridgeError', 'Tool bridge failure', 'TOOL_BRIDGE_FAILURE');
+      return serializeResponse({ v: TOOL_BRIDGE_PROTOCOL_VERSION, ok: false, error: safeError }, maxPayloadBytes);
+    }
+  };
+}
+
 export function createHostToolBridge(
   executionContext: ExecutionContext,
   options: { updateStats: boolean },
 ): (requestJson: string) => Promise<string> {
+  if (typeof executionContext.hostToolBridge === 'function') {
+    return createRelayedToolBridge(executionContext, options, executionContext.hostToolBridge);
+  }
+
   const { config, stats, toolHandler, sidecar, referenceConfig } = executionContext;
   const maxPayloadBytes = config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
 

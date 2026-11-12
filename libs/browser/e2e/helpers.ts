@@ -16,6 +16,7 @@ export async function loadHarness(page: Page) {
 export interface RunOptions {
   securityLevel?: string;
   timeout?: number;
+  toolCallGraceMs?: number;
   maxIterations?: number;
   maxToolCalls?: number;
   maxConsoleCalls?: number;

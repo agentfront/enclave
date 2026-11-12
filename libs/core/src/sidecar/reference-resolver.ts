@@ -252,6 +252,16 @@ export class ReferenceResolver {
 
     // Handle composite handles
     if (isCompositeHandle(value)) {
+      // A composite is recognised by its shape, and a script can write that shape as an object
+      // literal. Where composites are disabled the runtime never produces one (concatenating a
+      // reference is refused), so one that arrives here was written by the script: refusing it
+      // keeps "references cannot be concatenated" true whichever way the concatenation is spelled.
+      if (!this.config.allowComposites) {
+        throw new Error(
+          'Cannot concatenate reference IDs. Pass references directly to callTool arguments. ' +
+            'Composite handles are disabled in the current security configuration.',
+        );
+      }
       return this.resolveComposite(value, depth);
     }
 

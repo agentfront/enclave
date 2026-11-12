@@ -371,7 +371,7 @@ describe('WorkerPoolAdapter', () => {
       `);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Console output limit');
+      expect(result.error?.message).toContain('Console output size limit');
     });
   });
 

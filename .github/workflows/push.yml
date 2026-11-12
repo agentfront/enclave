@@ -114,6 +114,110 @@ jobs:
         if: steps.test.outcome == 'failure'
         run: exit 1
 
+  security-tests:
+    name: Security tests
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 45
+    # The security tests are in a private repository (agentfront/enclave-security-tests) and are
+    # fetched with a read-only token (secret SECURITY_TESTS_TOKEN). A fork of this repository and
+    # Dependabot have no access to that secret, so the job only runs for pushes to this repository,
+    # which includes the branches of its own pull requests.
+    #
+    # The log of this job is public. Every test step runs scripts/security-tests.mjs with --summary:
+    # the tests run as child processes whose output is discarded, and what is printed is a count per
+    # part. No test name, no script, no value, no path. For the same reason this job uploads no
+    # report and no trace. A failure is reproduced locally with the submodule checked out
+    # (`yarn test:security`).
+    if: github.repository == 'agentfront/enclave' && github.actor != 'dependabot[bot]'
+    env:
+      NX_DAEMON: "false"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # The submodule entry `security-tests` of this repository pins the commit of the tests.
+      - name: Read the pinned commit of the security tests
+        id: suite
+        run: echo "sha=$(git rev-parse HEAD:security-tests)" >> "$GITHUB_OUTPUT"
+
+      # Without the token the tests cannot be fetched. That is a failure, not a skip: security
+      # tests that silently do not run look like tests that passed.
+      - name: Check access to the security tests
+        env:
+          SECURITY_TESTS_TOKEN: ${{ secrets.SECURITY_TESTS_TOKEN }}
+        run: |
+          if [ -z "$SECURITY_TESTS_TOKEN" ]; then
+            echo "::error::The secret SECURITY_TESTS_TOKEN is not set, so the security tests cannot be fetched (see SECURITY-TESTS.md)."
+            exit 1
+          fi
+
+      - name: Checkout the security tests
+        uses: actions/checkout@v4
+        with:
+          repository: agentfront/enclave-security-tests
+          ref: ${{ steps.suite.outputs.sha }}
+          token: ${{ secrets.SECURITY_TESTS_TOKEN }}
+          path: security-tests
+          persist-credentials: false
+
+      - name: Setup Node + Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version-file: ".nvmrc"
+          # node_modules is restored from the build job's cache below; the
+          # install after the restore reconciles it immutably.
+          install: "false"
+
+      - name: Restore build artifacts
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            node_modules
+            libs/*/dist
+          key: build-${{ github.sha }}
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      # The build job builds what a push affects; these tests always run, and the worker specs load
+      # the built package.
+      - name: Build the libraries under test
+        run: npx nx run-many -t build --projects=ast,core
+
+      - name: Run the security case suite
+        run: node scripts/security-tests.mjs --suite --summary
+
+      - name: Run the security specs (ast, core)
+        if: success() || failure()
+        run: node scripts/security-tests.mjs --specs --summary
+
+      - name: Read Playwright version
+        if: success() || failure()
+        id: playwright
+        run: echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        if: success() || failure()
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium
+
+      - name: Install Chromium
+        if: (success() || failure()) && steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Chromium system dependencies
+        if: (success() || failure()) && steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Run the security browser specs
+        if: success() || failure()
+        run: node scripts/security-tests.mjs --e2e --summary
+
   browser-e2e:
     name: Browser E2E
     runs-on: ubuntu-latest

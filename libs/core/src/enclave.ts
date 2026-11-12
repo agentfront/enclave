@@ -66,6 +66,9 @@ import { REFERENCE_CONFIGS, ReferenceConfig } from './sidecar';
 import { ScoringGate, ScoringGateResult } from './scoring';
 import { resolveMaxGlobalFunctionCalls } from './global-function-gate';
 import { sanitizeStackTrace } from './stack-trace';
+import { injectDeadlineChecks } from './deadline-guard';
+import { guardSandboxRejections } from './sandbox-rejections';
+import { createHostActivity, trackToolCalls } from './execution-deadline';
 import { assertNodeVmAvailable } from './node-vm';
 
 /**
@@ -204,7 +207,13 @@ export class Enclave {
   private readonly toolNamespaces: readonly NormalizedToolNamespace[];
   private readonly sandboxAdapter?: SandboxAdapter;
   private readonly consoleHandler?: ConsoleHandler;
+  /** How long after the deadline a host call still in flight may take to deliver (see ./execution-deadline) */
+  private readonly toolCallGraceMs: number;
+  /** Global names the script's realm may hold (`realmGlobals: 'allowlist'`); absent otherwise. */
+  private readonly realmGlobalAllowlist?: readonly string[];
   private adapter?: SandboxAdapter;
+  /** The adapter while it is being created: executions that start at once share it */
+  private adapterCreation?: Promise<SandboxAdapter>;
 
   constructor(options: CreateEnclaveOptions = {}) {
     // Determine security level (default: STANDARD)
@@ -220,6 +229,9 @@ export class Enclave {
         maxDepth: 10,
         allowFunctions: securityConfig.allowFunctionsInGlobals,
         allowGettersSetters: false,
+        // Where the membrane lets a script read `constructor`, the class of an instance is a
+        // function in globals
+        classConstructorsReachable: !securityConfig.secureProxyConfig.blockConstructor,
       });
     }
 
@@ -309,6 +321,15 @@ export class Enclave {
       throw new TypeError('maxGlobalFunctionCalls must be a non-negative integer');
     }
 
+    if (
+      options.toolCallGraceMs !== undefined &&
+      !(typeof options.toolCallGraceMs === 'number' && options.toolCallGraceMs >= 0)
+    ) {
+      throw new TypeError('toolCallGraceMs must be a non-negative number (Infinity to wait without limit)');
+    }
+    // As long again as the timeout unless the host says otherwise: run() takes at most twice `timeout`
+    this.toolCallGraceMs = options.toolCallGraceMs ?? securityConfig.timeout;
+
     // Merge with defaults, applying security level configuration
     // Note: We explicitly set secureProxyConfig AFTER spreading options to ensure
     // the merged config from securityConfig takes precedence over partial options
@@ -351,6 +372,18 @@ export class Enclave {
     // Configuration flags
     this.validateCode = options.validate !== false; // Default: true
     this.transformCode = options.transform !== false; // Default: true
+
+    // Realm globals: by default the script's realm holds exactly the names its validator accepts.
+    // That only holds when this validator is the one checking the script (an allowlist preset,
+    // validation on); otherwise a script may legitimately name other standard globals.
+    const realmGlobals =
+      options.realmGlobals ??
+      ((presetName === 'agentscript' || presetName === 'babel') && this.validateCode ? 'allowlist' : 'security-level');
+    if (realmGlobals !== 'allowlist' && realmGlobals !== 'security-level') {
+      throw new TypeError(`Invalid realmGlobals: ${String(realmGlobals)}`);
+    }
+    this.realmGlobalAllowlist =
+      realmGlobals === 'allowlist' ? this.buildAllowedGlobals(customAllowedGlobals) : undefined;
 
     // Build reference config if sidecar is enabled
     this.referenceConfig = buildReferenceConfig(this.securityLevel, options.sidecar);
@@ -448,6 +481,9 @@ export class Enclave {
     // Create sidecar for this execution if enabled
     const sidecar = this.referenceConfig ? new ReferenceSidecar(this.referenceConfig) : undefined;
 
+    // Set once the execution context exists: ends what the script can still do through the host
+    let endExecution: (() => void) | undefined;
+
     try {
       // Step 1: Transform (if enabled) - MUST happen before validation
       // because AgentScript allows top-level return, await, etc. which are only
@@ -502,6 +538,15 @@ export class Enclave {
         transformedCode = this.applyMemoryTrackingTransforms(transformedCode);
       }
 
+      // Step 2.15: Cooperative deadline checks. vm's timeout stops watching at the script's first
+      // `await`; these make the script itself check the clock at every function entry and loop
+      // iteration, so synchronous work is stopped at the deadline whatever it awaited before.
+      // Runs AFTER validation (the injected helper uses the reserved `__ag_` prefix) and before the
+      // computed-key guard, so that guard's own helper is not instrumented.
+      if (this.transformCode) {
+        transformedCode = this.applyDeadlineGuard(transformedCode);
+      }
+
       // Step 2.2: Runtime computed-key guard (defense-in-depth for weakness 1).
       // Runs AFTER validation so it neither masks the static rules nor trips them on its injected
       // helper. Wraps dynamic computed member keys so `obj[expr]` checks the RESOLVED key at
@@ -544,32 +589,106 @@ export class Enclave {
       }
 
       // Step 3: Create execution context
+      //
+      // `aborted` is what every abort check reads (tool calls, guarded loops, calls into host
+      // functions). The timer below sets it, but a timer only fires between jobs: a script doing
+      // synchronous work after an `await` never lets it fire, so the flag alone would stay false
+      // for as long as the script kept the thread. Reading the clock makes the checks hold from
+      // the deadline on, timer or not.
+      const deadline = Date.now() + this.config.timeout;
+      let abortRequested = false;
+      // What the host has in flight for the script (tool calls, async host functions). A script
+      // that is still waiting at the deadline, with nothing of the host's in flight, can only be
+      // waiting for something of its own that will never happen; one that is waiting for the host
+      // gets `toolCallGraceMs` more: see ./execution-deadline.
+      const hostActivity = createHostActivity(this.toolCallGraceMs);
+      const hostToolHandler = toolHandler || this.config.toolHandler;
+      // Once run() has returned, the script's execution is over for the host as well. A script
+      // can leave work behind (a tool call it did not await, a `then` on one): when that wakes up
+      // it finds every tool call and host function refused, and its console lines are dropped.
+      let returned = false;
+      const hostConsoleHandler = this.consoleHandler;
       const context: ExecutionContext = {
         config: this.config,
         stats,
         abortController: new AbortController(),
-        aborted: false,
-        toolHandler: toolHandler || this.config.toolHandler,
-        consoleHandler: this.consoleHandler,
+        get aborted(): boolean {
+          return abortRequested || Date.now() >= deadline;
+        },
+        set aborted(value: boolean) {
+          abortRequested = value;
+        },
+        toolHandler: hostToolHandler ? trackToolCalls(hostToolHandler, hostActivity) : undefined,
+        hostActivity,
+        consoleHandler: hostConsoleHandler
+          ? (level, message) => (returned ? undefined : hostConsoleHandler(level, message))
+          : undefined,
         sidecar,
         referenceConfig: this.referenceConfig,
         secureProxyConfig: this.config.secureProxyConfig,
         toolNamespaces: this.toolNamespaces,
+        realmGlobalAllowlist: this.realmGlobalAllowlist,
+      };
+
+      endExecution = () => {
+        returned = true;
+        abortRequested = true;
+        context.abortController.abort();
       };
 
       // Set up timeout
       const timeoutId = setTimeout(() => {
         context.aborted = true;
         context.abortController.abort();
+        hostActivity.deadlinePassed();
       }, this.config.timeout);
+      const ONLY_WAITING = Symbol('only waiting');
 
       try {
         // Step 4: Execute in sandbox
         const adapter = await this.getAdapter();
-        const result = await adapter.execute<T>(transformedCode, context);
+        // A promise rejection the script leaves unhandled must not end the host process (the
+        // built-in adapters do this themselves; a host-supplied adapter may not)
+        guardSandboxRejections();
+        // Not with the worker pool: from this thread a script that waits in a worker looks the
+        // same as one that keeps its worker busy, and the pool ends both itself, five seconds
+        // after the deadline, by terminating the worker.
+        const execution = adapter.execute<T>(transformedCode, context);
+        const outcome =
+          this.config.adapter === 'worker_threads'
+            ? await execution
+            : await Promise.race([execution, hostActivity.over.then(() => ONLY_WAITING)]);
 
         // Clear timeout
         clearTimeout(timeoutId);
+        // Tool calls and host functions that had not settled when the execution was ended
+        const pendingHostCalls = hostActivity.inFlight;
+        hostActivity.close();
+
+        if (outcome === ONLY_WAITING) {
+          // Past the deadline, and the script is waiting: for something that is not the host's to
+          // deliver, or for the host longer than `toolCallGraceMs`. The adapter's own promise
+          // stays pending and is left behind; the script can do nothing more through this context
+          // (every abort check refuses from the deadline on). When host calls were abandoned the
+          // error says how many: they are still running, and the host may want to know before it
+          // lets anybody repeat them.
+          return {
+            success: false,
+            error: {
+              name: 'VMExecutionError',
+              message: `Script execution timed out after ${this.config.timeout}ms`,
+              code: 'VM_EXECUTION_ERROR',
+              ...(pendingHostCalls > 0 ? { data: { pendingHostCalls } } : {}),
+            },
+            stats: {
+              ...stats,
+              duration: Date.now() - startTime,
+              endTime: Date.now(),
+            },
+            ...(scoringResult ? { scoringResult } : {}),
+          };
+        }
+        const result = outcome as ExecutionResult<T>;
 
         // Include scoring result in successful execution
         if (scoringResult) {
@@ -580,6 +699,7 @@ export class Enclave {
       } catch (error: unknown) {
         // Clear timeout
         clearTimeout(timeoutId);
+        hostActivity.close();
 
         const err = error as Error;
         return {
@@ -614,6 +734,8 @@ export class Enclave {
         },
       };
     } finally {
+      // Whatever the script left behind can no longer reach the host (see `returned` above)
+      endExecution?.();
       // Always dispose the sidecar to prevent memory leaks
       if (sidecar) {
         sidecar.dispose();
@@ -645,6 +767,24 @@ export class Enclave {
 
     const ast = parseModule(code);
     const { guardedCount } = guardComputedMemberKeys(ast, parseModule, { blockedKeys, throwOnBlocked });
+    if (guardedCount === 0) {
+      return code;
+    }
+    return generate(ast);
+  }
+
+  /**
+   * Insert cooperative deadline checks (see ./deadline-guard).
+   *
+   * @param code The validated, transformed code
+   * @returns The code with a deadline check at the start of every function and loop body
+   */
+  private applyDeadlineGuard(code: string): string {
+    const parseModule = (source: string): acorn.Node =>
+      acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'module' }) as unknown as acorn.Node;
+
+    const ast = parseModule(code);
+    const { guardedCount } = injectDeadlineChecks(ast, parseModule);
     if (guardedCount === 0) {
       return code;
     }
@@ -717,15 +857,64 @@ export class Enclave {
    * - Suspicious pattern detection
    * - Defense-in-depth against VM escape attacks
    */
-  private async getAdapter(): Promise<SandboxAdapter> {
+  private getAdapter(): Promise<SandboxAdapter> {
     if (this.sandboxAdapter) {
-      return this.sandboxAdapter;
+      return Promise.resolve(this.sandboxAdapter);
     }
     if (this.adapter) {
-      return this.adapter;
+      return Promise.resolve(this.adapter);
     }
+
+    // Executions that start before the adapter exists share one creation. Each of them used to
+    // create its own: with worker threads that was one pool per execution, each with its warm
+    // workers, and dispose() knew only the last one.
+    if (!this.adapterCreation) {
+      const creation: Promise<SandboxAdapter> = this.createAdapter().then(
+        (adapter) => {
+          if (this.adapterCreation === creation) {
+            this.adapterCreation = undefined;
+            this.adapter = adapter;
+          } else {
+            // dispose() was called while the adapter was being created
+            adapter.dispose();
+          }
+          return adapter;
+        },
+        (error: unknown) => {
+          if (this.adapterCreation === creation) {
+            this.adapterCreation = undefined;
+          }
+          throw error;
+        },
+      );
+      this.adapterCreation = creation;
+    }
+    return this.adapterCreation;
+  }
+
+  /**
+   * Create the sandbox adapter this enclave is configured for (see {@link getAdapter}, which
+   * keeps it)
+   */
+  private async createAdapter(): Promise<SandboxAdapter> {
     if (this.doubleVmConfig.enabled || this.config.adapter === 'vm') {
       assertNodeVmAvailable();
+    }
+
+    // Worker threads compose with the double VM: the pool runs each script in a worker, and
+    // inside the worker in the sandbox this enclave is configured for (the double VM by default,
+    // a single VM when it is disabled). The worker adds a heap limit and a hard stop; it is not a
+    // sandbox by itself.
+    if (this.config.adapter === 'worker_threads') {
+      const [{ WorkerPoolAdapter }, { wrapWithDoubleVm }] = await Promise.all([
+        import('./adapters/worker-pool/index.js'),
+        import('./double-vm/index.js'),
+      ]);
+      const pool = new WorkerPoolAdapter(this.config.workerPoolConfig, this.securityLevel, this.doubleVmConfig);
+      await pool.initialize();
+      // With the double VM disabled this logs the same security warning as for the in-process
+      // single VM, and returns the pool unchanged.
+      return this.doubleVmConfig.enabled ? pool : wrapWithDoubleVm(pool, this.doubleVmConfig, this.securityLevel);
     }
 
     // If double VM is enabled, use the double VM wrapper directly
@@ -733,8 +922,7 @@ export class Enclave {
     if (this.doubleVmConfig.enabled) {
       const { wrapWithDoubleVm } = await import('./double-vm/index.js');
       // Pass undefined as base adapter since DoubleVmWrapper creates its own VMs
-      this.adapter = wrapWithDoubleVm(undefined, this.doubleVmConfig, this.securityLevel);
-      return this.adapter;
+      return wrapWithDoubleVm(undefined, this.doubleVmConfig, this.securityLevel);
     }
 
     // Double VM disabled - use base adapter with security warning
@@ -754,20 +942,12 @@ export class Enclave {
       case 'isolated-vm':
         throw new Error('isolated-vm adapter not yet implemented');
 
-      case 'worker_threads': {
-        const { WorkerPoolAdapter } = await import('./adapters/worker-pool/index.js');
-        baseAdapter = new WorkerPoolAdapter(this.config.workerPoolConfig, this.securityLevel);
-        await (baseAdapter as { initialize?: () => Promise<void> }).initialize?.();
-        break;
-      }
-
       default:
         throw new Error(`Unknown adapter: ${this.config.adapter}`);
     }
 
     // This will log a security warning and return the base adapter unchanged
-    this.adapter = wrapWithDoubleVm(baseAdapter, this.doubleVmConfig, this.securityLevel);
-    return this.adapter;
+    return wrapWithDoubleVm(baseAdapter, this.doubleVmConfig, this.securityLevel);
   }
 
   /**
@@ -795,8 +975,10 @@ export class Enclave {
     maxSanitizeDepth: number;
     maxSanitizeProperties: number;
     memoryLimit: number;
+    realmGlobals: 'allowlist' | 'security-level';
   } {
     return {
+      realmGlobals: this.realmGlobalAllowlist ? 'allowlist' : 'security-level',
       securityLevel: this.securityLevel,
       timeout: this.config.timeout,
       maxIterations: this.config.maxIterations,
@@ -809,13 +991,16 @@ export class Enclave {
   }
 
   /**
-   * Create a validator based on the selected preset
+   * The global names a script of this enclave may use: the AgentScript globals of the security
+   * level, the enclave's runtime helpers, `console` when it is available, and the custom globals
+   * and tool namespaces (each under its own name and its `__safe_` name).
    *
-   * @param presetName The preset to use
-   * @param customAllowedGlobals Custom globals to whitelist
-   * @returns A configured JSAstValidator
+   * One list serves two purposes: the validator refuses every other free identifier, and with
+   * `realmGlobals: 'allowlist'` the sandbox removes every other global from the script's realm.
+   *
+   * @param customAllowedGlobals Names of custom globals and tool namespaces, with their `__safe_` forms
    */
-  private createValidator(presetName: AstPreset, customAllowedGlobals: string[]): JSAstValidator {
+  private buildAllowedGlobals(customAllowedGlobals: string[]): string[] {
     // Get base globals from ast-guard based on security level
     // This ensures AST validation matches worker sandbox restrictions
     const securityLevelGlobals = getAgentScriptGlobals(this.securityLevel);
@@ -832,12 +1017,18 @@ export class Enclave {
     const consoleGlobals = this.consoleHandler ? ['console', '__safe_console'] : [];
 
     // Combine: security-level globals + enclave-specific + custom
-    const allAllowedGlobals = [
-      ...securityLevelGlobals,
-      ...enclaveSpecificGlobals,
-      ...consoleGlobals,
-      ...customAllowedGlobals,
-    ];
+    return [...securityLevelGlobals, ...enclaveSpecificGlobals, ...consoleGlobals, ...customAllowedGlobals];
+  }
+
+  /**
+   * Create a validator based on the selected preset
+   *
+   * @param presetName The preset to use
+   * @param customAllowedGlobals Custom globals to whitelist
+   * @returns A configured JSAstValidator
+   */
+  private createValidator(presetName: AstPreset, customAllowedGlobals: string[]): JSAstValidator {
+    const allAllowedGlobals = this.buildAllowedGlobals(customAllowedGlobals);
 
     switch (presetName) {
       case 'agentscript':
@@ -889,6 +1080,8 @@ export class Enclave {
    * Dispose the enclave and cleanup resources
    */
   dispose(): void {
+    // An adapter that is still being created is disposed as soon as it exists (see getAdapter)
+    this.adapterCreation = undefined;
     if (this.adapter) {
       this.adapter.dispose();
       this.adapter = undefined;

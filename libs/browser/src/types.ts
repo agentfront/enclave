@@ -280,11 +280,21 @@ export interface BrowserEnclaveOptions {
   /**
    * Maximum execution time in milliseconds, with the same rules as @enclave-vm/core: time spent
    * waiting for `toolHandler` does not count toward the hard stop, so a tool call in progress is
-   * never cut off; once `timeout` has passed since the start, the script's next tool call fails
-   * with "Execution aborted". A handler that never settles keeps `run()` waiting, so bound slow
-   * tools in the handler.
+   * not cut off at the deadline; once `timeout` has passed since the start, the script's next
+   * tool call fails with "Execution aborted". How long a call in progress may still take is
+   * `toolCallGraceMs`.
    */
   timeout?: number;
+
+  /**
+   * How long a tool call that is still in progress when `timeout` has passed may take to deliver,
+   * in milliseconds, with the same meaning as in @enclave-vm/core. When that time is over as
+   * well, `run()` returns the timeout error; the handler's promise is left to settle and what it
+   * returns is dropped. `0` ends the run at the deadline; `Infinity` waits for the handler
+   * however long it takes, so a handler that never settles keeps `run()` waiting.
+   * @default the value of `timeout`: `run()` takes at most about twice `timeout`
+   */
+  toolCallGraceMs?: number;
 
   /**
    * Maximum number of tool calls allowed

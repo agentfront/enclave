@@ -40,18 +40,6 @@ const ADAPTERS: Array<[string, CreateEnclaveOptions]> = [
   ],
 ];
 
-/** Script helper: whether a value leads to a Function constructor that can run code. */
-const REACH_HELPER = `
-  const reach = (value) => {
-    try {
-      const evaluated = value.constructor.constructor('return typeof process')();
-      return evaluated === 'object' ? 'ESCAPED' : 'evaluated';
-    } catch (e) {
-      return 'blocked';
-    }
-  };
-`;
-
 describe.each(ADAPTERS)('consoleHandler (%s)', (_name, adapterOptions) => {
   jest.setTimeout(30000);
 
@@ -215,101 +203,6 @@ describe.each(ADAPTERS)('consoleHandler (%s)', (_name, adapterOptions) => {
       ['log', 'run-2'],
     ]);
   });
-
-  describe('isolation (runtime, validation off)', () => {
-    function runUnvalidated(code: string, options: CreateEnclaveOptions = {}): Promise<ExecutionResult> {
-      const { handler } = recordingHandler();
-      return createEnclave({ consoleHandler: handler, validate: false, ...options }).run(REACH_HELPER + code);
-    }
-
-    it('does not reach a working Function constructor through a console method', async () => {
-      const result = await runUnvalidated(`
-        return [reach(console.log), reach(console), reach(console.log.call), reach(console.log.bind(null))];
-      `);
-
-      expect(result.value).toEqual(['blocked', 'blocked', 'blocked', 'blocked']);
-    });
-
-    it('exposes a frozen, null-prototype console', async () => {
-      const result = await runUnvalidated(`
-        try { console.log = () => 'hijacked'; } catch (e) {}
-        try { console.extra = 1; } catch (e) {}
-        return {
-          proto: Object.getPrototypeOf(console) === null,
-          dunderProto: typeof console.__proto__,
-          frozen: Object.isFrozen(console),
-          keys: Object.keys(console),
-          logStillWorks: console.log('after') === undefined,
-          extra: typeof console.extra,
-        };
-      `);
-
-      expect(result.value).toEqual({
-        proto: true,
-        dunderProto: 'undefined',
-        frozen: true,
-        keys: ['log', 'info', 'warn', 'error', 'debug'],
-        logStillWorks: true,
-        extra: 'undefined',
-      });
-    });
-
-    it('supports call/apply/bind on console methods and still routes to the handler', async () => {
-      const { calls, handler } = recordingHandler();
-      const result = await createEnclave({ consoleHandler: handler, validate: false }).run(`
-        console.log.call(null, 'via-call');
-        console.warn.apply(undefined, ['via-apply', 2]);
-        console.error.bind(null, 'via-bind')();
-        return 'ok';
-      `);
-
-      expect(result.value).toBe('ok');
-      expect(calls).toEqual([
-        ['log', 'via-call'],
-        ['warn', 'via-apply 2'],
-        ['error', 'via-bind'],
-      ]);
-    });
-
-    it('runs argument getters in the sandbox and passes only the resulting string', async () => {
-      const { calls, handler } = recordingHandler();
-      const result = await createEnclave({ consoleHandler: handler, validate: false }).run(`
-        const withGetter = { get secret() { return 'from-getter'; } };
-        console.log(withGetter);
-        return 'ok';
-      `);
-
-      expect(result.value).toBe('ok');
-      expect(calls).toEqual([['log', '{"secret":"from-getter"}']]);
-    });
-
-    it('surfaces formatting errors as sandbox errors, never host errors', async () => {
-      const { calls, handler } = recordingHandler();
-      const result = await createEnclave({ consoleHandler: handler, validate: false }).run(
-        REACH_HELPER +
-          `
-        const outcomes = [];
-        const unprintable = { toJSON() { throw 1; }, toString() { return {}; }, valueOf() { return {}; } };
-        try { console.log(unprintable); outcomes.push('printed'); } catch (e) { outcomes.push(reach(e)); }
-        const throwingToString = { toJSON() { throw 1; }, toString() { throw 'own error'; } };
-        try { console.log(throwingToString); } catch (e) { outcomes.push(e); }
-        return outcomes;
-      `,
-      );
-
-      expect(result.value).toEqual(['blocked', 'own error']);
-      expect(calls).toEqual([]);
-    });
-
-    it('does not expose host bridges on the sandbox global', async () => {
-      const result = await runUnvalidated(`
-        const sandboxGlobal = this;
-        return Object.getOwnPropertyNames(sandboxGlobal).filter((name) => /host|sink|handler/i.test(name));
-      `);
-
-      expect(result.value).toEqual([]);
-    });
-  });
 });
 
 describe('consoleHandler validation', () => {
@@ -374,31 +267,104 @@ describe('without consoleHandler (unchanged)', () => {
 
 describe('consoleHandler with a sandboxAdapter', () => {
   it('hands the handler to a custom adapter through the execution context', async () => {
-    const handler: ConsoleHandler = () => undefined;
+    const lines: string[] = [];
+    const handler: ConsoleHandler = (level, message) => {
+      lines.push(`${level}: ${message}`);
+    };
     let received: ExecutionContext | undefined;
     const adapter: SandboxAdapter = {
       async execute<T>(_code: string, context: ExecutionContext): Promise<ExecutionResult<T>> {
         received = context;
+        context.consoleHandler?.('log', 'during the execution');
         return { success: true, value: undefined as T, stats: context.stats };
       },
       dispose: () => undefined,
     };
     const enclave = new Enclave({ sandboxAdapter: adapter, consoleHandler: handler });
     await enclave.run(`console.log('x'); return 1;`);
+    // What the adapter is given calls the host's handler for as long as the execution lasts:
+    // a line that arrives after run() has returned is dropped
+    received?.consoleHandler?.('log', 'after run() has returned');
     enclave.dispose();
 
-    expect(received?.consoleHandler).toBe(handler);
+    expect(lines).toEqual(['log: during the execution']);
   });
 
-  it('InterpreterAdapter has no console: a script that logs fails without calling the handler', async () => {
+  it('InterpreterAdapter gives the script a console that writes to the handler', async () => {
     const { calls, handler } = recordingHandler();
     const enclave = new Enclave({ sandboxAdapter: new InterpreterAdapter(), consoleHandler: handler });
+    const result = await enclave.run(`console.log('x', 1); console.warn('y'); return 1;`);
+    enclave.dispose();
+
+    expect(result.success).toBe(true);
+    expect(result.value).toBe(1);
+    expect(calls).toEqual([
+      ['log', 'x 1'],
+      ['warn', 'y'],
+    ]);
+  });
+
+  it('InterpreterAdapter applies maxConsoleCalls before the handler runs', async () => {
+    const { calls, handler } = recordingHandler();
+    const enclave = new Enclave({
+      sandboxAdapter: new InterpreterAdapter(),
+      consoleHandler: handler,
+      maxConsoleCalls: 1,
+    });
+    const result = await enclave.run(`console.log('first'); console.log('second'); return 1;`);
+    enclave.dispose();
+
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain('Console call limit exceeded');
+    expect(calls).toEqual([['log', 'first']]);
+  });
+
+  it('InterpreterAdapter applies maxConsoleOutputBytes before the handler runs', async () => {
+    const { calls, handler } = recordingHandler();
+    const enclave = new Enclave({
+      sandboxAdapter: new InterpreterAdapter(),
+      consoleHandler: handler,
+      maxConsoleOutputBytes: 8,
+    });
+    const result = await enclave.run(`console.log('12345'); console.log('67890'); return 1;`);
+    enclave.dispose();
+
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain('Console output size limit exceeded');
+    expect(calls).toEqual([['log', '12345']]);
+  });
+
+  it('InterpreterAdapter keeps the limit when the script catches the error', async () => {
+    const { calls, handler } = recordingHandler();
+    const enclave = new Enclave({
+      sandboxAdapter: new InterpreterAdapter(),
+      consoleHandler: handler,
+      maxConsoleCalls: 1,
+    });
+    const result = await enclave.run(`
+      let refused = 0;
+      for (let i = 0; i < 5; i++) {
+        try {
+          console.log('line ' + i);
+        } catch (e) {
+          refused++;
+        }
+      }
+      return refused;
+    `);
+    enclave.dispose();
+
+    expect(result.success).toBe(true);
+    expect(result.value).toBe(4);
+    expect(calls).toEqual([['log', 'line 0']]);
+  });
+
+  it('InterpreterAdapter has no console without a handler: a script that logs fails', async () => {
+    const enclave = new Enclave({ sandboxAdapter: new InterpreterAdapter(), validate: false });
     const result = await enclave.run(`console.log('x'); return 1;`);
     enclave.dispose();
 
     expect(result.success).toBe(false);
-    expect(result.error?.message).toContain("'__safe_console' is not defined");
-    expect(calls).toEqual([]);
   });
 });
 

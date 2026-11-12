@@ -19,6 +19,7 @@ import {
   ComplexityLevel,
 } from '../babel-examples';
 import { benchmark, benchmarkSync } from './utils/perf-utils';
+import { collectGarbage } from './utils/memory-utils';
 import { calculateLatencyStats, calculateReport, formatReport } from './utils/statistics';
 import { recordMetric, recordMetrics } from './utils/benchmark-reporter';
 
@@ -357,11 +358,14 @@ describe('Babel Transform Performance', () => {
   });
 
   describe('Memory Efficiency', () => {
-    it('measures memory usage during repeated transforms', () => {
+    it('measures memory usage during repeated transforms', async () => {
       const examples = BABEL_EXAMPLES.slice(0, 10);
       const iterations = 50;
 
-      // Capture memory before
+      // Capture memory before. Both readings follow a full collection: without one, the difference
+      // between them is whatever garbage the engine has not got round to yet (86 MB in one run
+      // and less than half of that in the next, for the same 500 transforms).
+      await collectGarbage();
       const memBefore = process.memoryUsage();
 
       // Perform many transforms
@@ -372,6 +376,7 @@ describe('Babel Transform Performance', () => {
       }
 
       // Capture memory after
+      await collectGarbage();
       const memAfter = process.memoryUsage();
 
       const heapDelta = memAfter.heapUsed - memBefore.heapUsed;

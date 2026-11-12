@@ -8,15 +8,29 @@
  */
 
 import * as vm from 'vm';
+import { compileSandboxScript, ReusableSandboxScript } from '../sandbox-script';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { createSafeRuntime } from '../safe-runtime';
-import { createSafeReflect, createSecureProxy, unwrapSecureProxy } from '../secure-proxy';
+import {
+  createSecureProxy,
+  unwrapSecureProxy,
+  buildBlockedPropertiesFromConfig,
+  getBlockedPropertiesForLevel,
+} from '../secure-proxy';
 import { createSafeError } from '../safe-error';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 import { createHostToolBridge } from '../tool-bridge';
 import { checkSerializedSize, sanitizeValue } from '../value-sanitizer';
 import { sanitizeStackTrace } from '../stack-trace';
 import { createGlobalFunctionGate, type SandboxRealmBridge } from '../global-function-gate';
+import { realmTickSource } from '../deadline-guard';
+import { guardSandboxRejections } from '../sandbox-rejections';
+import { createRealmAirlock, type RealmMembrane } from '../realm-airlock';
+import {
+  INNER_REALM_GUARD_SOURCE,
+  INNER_REALM_SYMBOL_REGISTRY_SOURCE,
+  innerRealmRuntimeSource,
+} from '../double-vm/parent-vm-bootstrap';
 import { TOOL_NAMESPACE_FACTORY_SOURCE, buildToolNamespaceBindings } from '../tool-namespaces';
 import { CONSOLE_FACTORY_SOURCE, createConsoleSink, type ConsoleHandler, type ConsoleLimits } from '../console-handler';
 import {
@@ -131,7 +145,7 @@ const STACK_TRACE_HARDENING_CODE = `
 })();
 `.trim();
 
-const STACK_TRACE_HARDENING_SCRIPT = new vm.Script(STACK_TRACE_HARDENING_CODE);
+const STACK_TRACE_HARDENING_SCRIPT = new ReusableSandboxScript(STACK_TRACE_HARDENING_CODE);
 
 /**
  * Detect and report code-generation attempts (Function/eval) even if user code catches the thrown error.
@@ -187,7 +201,7 @@ const CODE_GENERATION_VIOLATION_DETECTOR_CODE = `
 })();
 `.trim();
 
-const CODE_GENERATION_VIOLATION_DETECTOR_SCRIPT = new vm.Script(CODE_GENERATION_VIOLATION_DETECTOR_CODE);
+const CODE_GENERATION_VIOLATION_DETECTOR_SCRIPT = new ReusableSandboxScript(CODE_GENERATION_VIOLATION_DETECTOR_CODE);
 
 /**
  * Neutralize dangerous static methods on the intrinsic Object constructor.
@@ -209,43 +223,294 @@ const INTRINSIC_OBJECT_NEUTRALIZATION_CODE = `
   }
 })();
 `;
-const INTRINSIC_OBJECT_NEUTRALIZATION_SCRIPT = new vm.Script(INTRINSIC_OBJECT_NEUTRALIZATION_CODE);
+const INTRINSIC_OBJECT_NEUTRALIZATION_SCRIPT = new ReusableSandboxScript(INTRINSIC_OBJECT_NEUTRALIZATION_CODE);
+
+/**
+ * Evaluated in a pristine sandbox realm, returns a function that gives the realm's global object a
+ * null prototype. It captures the realm's own Object.setPrototypeOf up front: by the time the
+ * function is called, that method has been removed from the realm's Object.
+ */
+const DETACH_GLOBAL_PROTOTYPE_SCRIPT = new ReusableSandboxScript(
+  `(function (global) {
+    'use strict';
+    var setPrototypeOf = Object.setPrototypeOf;
+    return function () { setPrototypeOf(global, null); };
+  })(this)`,
+  { filename: 'detach-global-prototype.js' },
+);
 
 /**
  * Sandbox-realm helpers for the host-function gate: the realm's own `JSON.parse` (so a sanitized
  * host result is re-created as sandbox-realm data) and a way to settle a sandbox-realm promise
  * from a host promise (so no host promise reaches the script).
  */
-const SANDBOX_REALM_BRIDGE_SCRIPT = new vm.Script(`
-(function () {
+const SANDBOX_REALM_BRIDGE_SCRIPT = new ReusableSandboxScript(`
+(function (own) {
   'use strict';
   var parse = JSON.parse;
   var SandboxPromise = Promise;
   return Object.freeze({
     parseJson: function (json) { return parse(json); },
     adoptPromise: function (hostPromise) {
-      return new SandboxPromise(function (resolve, reject) { hostPromise.then(resolve, reject); });
+      return new SandboxPromise(function (resolve, reject) {
+        // A rejection reason is a host value like any other: 'own' replaces a host error
+        hostPromise.then(resolve, function (reason) { reject(own(reason)); });
+      });
     }
   });
-})()
+})
 `);
 
+/** The sandbox realm's half of the membrane (see INNER_REALM_GUARD_SOURCE). */
+const REALM_GUARD_SCRIPT = new ReusableSandboxScript(INNER_REALM_GUARD_SOURCE, { filename: 'realm-membrane.js' });
+
+/** `Symbol.for` refuses the host's own namespace (see INNER_REALM_SYMBOL_REGISTRY_SOURCE). */
+const REALM_SYMBOL_REGISTRY_SCRIPT = new ReusableSandboxScript(INNER_REALM_SYMBOL_REGISTRY_SOURCE, {
+  filename: 'realm-symbol-registry.js',
+});
+
+/**
+ * Evaluated in a pristine sandbox realm, returns factories for the runtime pieces that have to be
+ * functions OF that realm. A host function placed on the sandbox global is a raw host function in
+ * the script's hands: its prototype chain is the host's, whatever the function does.
+ *
+ * - `createForOf(startLoop)`: the `__safe_forOf` generator. `startLoop()` is the host's
+ *   per-loop counter; it returns a function that counts one iteration and throws at the limit.
+ * - `createLoops(startLoop)`: `__safe_for`, `__safe_while` and `__safe_doWhile`, counted the same way.
+ * - `createParallel(isAborted)`: `__safe_parallel`.
+ * - `createReporter(report)`: the policy-violation reporter of STRICT and SECURE.
+ * - `createSafeObject()`: the `Object` global, without the methods that redefine properties.
+ * - `createSafeReflect(blocked)`: the `Reflect` global of a level that has one.
+ *
+ * The host functions these close over are never visible to the script, and each of them is
+ * wrapped by the realm's half of the membrane before it is passed in (see REALM_GUARD_SCRIPT).
+ */
+const REALM_RUNTIME_FACTORY_SCRIPT = new ReusableSandboxScript(
+  `(function () {
+    'use strict';
+    var freeze = Object.freeze;
+    var RealObject = Object;
+    var objectCreate = Object.create;
+    var getOwnPropertyNames = Object.getOwnPropertyNames;
+    var defineProperty = Object.defineProperty;
+    var objectToString = Object.prototype.toString;
+    var RealmReflect = Reflect;
+    var realmConstruct = Reflect.construct;
+    var apply = Reflect.apply;
+    var RealmError = Error;
+    var RealmTypeError = TypeError;
+    var RealmString = String;
+    var RealmPromise = Promise;
+    var promiseAll = Promise.all;
+    var isArray = Array.isArray;
+    var mathMin = Math.min;
+    var mathMax = Math.max;
+    var FunctionCtor = Function;
+    var AsyncFunctionCtor = (async function () {}).constructor;
+    var GeneratorFunctionCtor = (function* () {}).constructor;
+    var AsyncGeneratorFunctionCtor = (async function* () {}).constructor;
+
+    function securityError(message) {
+      var error = new RealmError(message);
+      defineProperty(error, 'name', { value: 'SecurityError', writable: true, configurable: true });
+      return error;
+    }
+
+    return freeze({
+      createForOf: function (startLoop) {
+        return freeze(function* __safe_forOf(iterable) {
+          var countIteration = startLoop();
+          for (var item of iterable) {
+            countIteration();
+            yield item;
+          }
+        });
+      },
+      createLoops: function (startLoop) {
+        return freeze({
+          __safe_for: freeze(function __safe_for(init, test, update, body) {
+            var countIteration = startLoop();
+            init();
+            while (test()) {
+              countIteration();
+              body();
+              update();
+            }
+          }),
+          __safe_while: freeze(function __safe_while(test, body) {
+            var countIteration = startLoop();
+            while (test()) {
+              countIteration();
+              body();
+            }
+          }),
+          __safe_doWhile: freeze(function __safe_doWhile(body, test) {
+            var countIteration = startLoop();
+            do {
+              countIteration();
+              body();
+            } while (test());
+          })
+        });
+      },
+      createParallel: function (isAborted) {
+        var MAX_ITEMS = 100;
+        var MAX_CONCURRENCY = 20;
+        function messageOf(error) {
+          if (error && typeof error === 'object') {
+            return typeof error.message === 'string' ? error.message : apply(objectToString, error, []);
+          }
+          return RealmString(error);
+        }
+        return freeze(async function __safe_parallel(fns, options) {
+          if (isAborted()) throw new RealmError('Execution aborted');
+          if (!isArray(fns)) throw new RealmTypeError('__safe_parallel requires an array of functions');
+          var count = fns.length;
+          if (count === 0) return [];
+          if (count > MAX_ITEMS) {
+            throw new RealmError(
+              'Cannot execute more than ' + MAX_ITEMS + ' operations in parallel. Split into smaller batches.'
+            );
+          }
+          var tasks = [];
+          for (var i = 0; i < count; i++) {
+            if (typeof fns[i] !== 'function') throw new RealmTypeError('Item at index ' + i + ' is not a function');
+            tasks[i] = fns[i];
+          }
+          var requested = options === null || options === undefined ? undefined : options.maxConcurrency;
+          if (typeof requested !== 'number' || requested !== requested) requested = 10;
+          var concurrency = mathMin(mathMax(1, requested), MAX_CONCURRENCY);
+          var results = [];
+          results.length = count;
+          var failures = [];
+          var next = 0;
+          async function runNext() {
+            while (next < count) {
+              if (isAborted()) throw new RealmError('Execution aborted');
+              var index = next++;
+              try {
+                results[index] = await tasks[index]();
+              } catch (error) {
+                failures[failures.length] = '[' + index + ']: ' + messageOf(error);
+              }
+            }
+          }
+          var workers = [];
+          for (var w = 0; w < mathMin(concurrency, count); w++) workers[w] = runNext();
+          await apply(promiseAll, RealmPromise, [workers]);
+          if (failures.length > 0) {
+            var text = failures[0];
+            for (var f = 1; f < failures.length; f++) text += '\\n' + failures[f];
+            throw new RealmError(failures.length + ' of ' + count + ' parallel operations failed:\\n' + text);
+          }
+          return results;
+        });
+      },
+      createReporter: function (report) {
+        return freeze(function (kind) {
+          report(typeof kind === 'string' ? kind : '');
+        });
+      },
+      createSafeObject: function () {
+        var SafeObject = function (value) {
+          if (value === null || value === undefined) return {};
+          return RealObject(value);
+        };
+        var safe = [
+          'keys', 'values', 'entries', 'fromEntries', 'assign', 'is', 'hasOwn', 'freeze', 'isFrozen', 'seal',
+          'isSealed', 'preventExtensions', 'isExtensible', 'getOwnPropertyNames', 'getOwnPropertySymbols',
+          'getPrototypeOf'
+        ];
+        for (var i = 0; i < safe.length; i++) {
+          if (safe[i] in RealObject) SafeObject[safe[i]] = RealObject[safe[i]];
+        }
+        SafeObject.create = function (proto, properties) {
+          if (properties !== undefined) {
+            throw securityError('Object.create with property descriptors is not allowed (security restriction)');
+          }
+          return objectCreate(proto);
+        };
+        SafeObject.prototype = RealObject.prototype;
+        var dangerous = [
+          'defineProperty', 'defineProperties', 'setPrototypeOf', 'getOwnPropertyDescriptor',
+          'getOwnPropertyDescriptors'
+        ];
+        for (var d = 0; d < dangerous.length; d++) {
+          (function (method) {
+            SafeObject[method] = function () {
+              throw securityError(
+                'Object.' + method + ' is not allowed (security restriction: prevents property manipulation attacks)'
+              );
+            };
+          })(dangerous[d]);
+        }
+        return SafeObject;
+      },
+      createSafeReflect: function (blocked) {
+        var safe = {};
+        var names = getOwnPropertyNames(RealmReflect);
+        for (var i = 0; i < names.length; i++) {
+          if ((',' + blocked + ',').indexOf(',' + names[i] + ',') < 0) safe[names[i]] = RealmReflect[names[i]];
+        }
+        safe.construct = function construct(target, args) {
+          if (
+            target === FunctionCtor ||
+            target === AsyncFunctionCtor ||
+            target === GeneratorFunctionCtor ||
+            target === AsyncGeneratorFunctionCtor
+          ) {
+            throw securityError('Reflect.construct with function constructors is blocked');
+          }
+          return arguments.length > 2 ? realmConstruct(target, args, arguments[2]) : realmConstruct(target, args);
+        };
+        return freeze(safe);
+      }
+    });
+  })()`,
+  { filename: 'realm-runtime.js' },
+);
+
+/** What {@link REALM_RUNTIME_FACTORY_SCRIPT} evaluates to. */
+interface RealmRuntimeFactories {
+  createForOf(startLoop: () => () => void): unknown;
+  createLoops(startLoop: () => () => void): Record<string, unknown>;
+  createParallel(isAborted: () => boolean): unknown;
+  createReporter(report: (kind: string) => void): unknown;
+  createSafeObject(): unknown;
+  /** @param blocked Comma-separated names of the Reflect methods the level does not get */
+  createSafeReflect(blocked: string): unknown;
+}
+
 /** Builds `toolNamespaces` objects inside the sandbox realm (see ../tool-namespaces). */
-const TOOL_NAMESPACE_FACTORY_SCRIPT = new vm.Script(TOOL_NAMESPACE_FACTORY_SOURCE, { filename: 'tool-namespaces.js' });
+const TOOL_NAMESPACE_FACTORY_SCRIPT = new ReusableSandboxScript(TOOL_NAMESPACE_FACTORY_SOURCE, {
+  filename: 'tool-namespaces.js',
+});
 
 /** Builds the script's console inside the sandbox realm (see ../sandbox-console). */
-const SANDBOX_CONSOLE_FACTORY_SCRIPT = new vm.Script(SANDBOX_CONSOLE_FACTORY_SOURCE, { filename: 'console.js' });
+const SANDBOX_CONSOLE_FACTORY_SCRIPT = new ReusableSandboxScript(SANDBOX_CONSOLE_FACTORY_SOURCE, {
+  filename: 'console.js',
+});
 
-const CONSOLE_FACTORY_SCRIPT = new vm.Script(CONSOLE_FACTORY_SOURCE, { filename: 'handler-console.js' });
+const CONSOLE_FACTORY_SCRIPT = new ReusableSandboxScript(CONSOLE_FACTORY_SOURCE, { filename: 'handler-console.js' });
 
 /** The script's console when a consoleHandler is set, built inside the sandbox realm (see ../console-handler). */
-function createHandlerConsole(sandbox: vm.Context, handler: ConsoleHandler, limits: ConsoleLimits): object {
+function createHandlerConsole(
+  sandbox: vm.Context,
+  realmMembrane: RealmMembrane,
+  handler: ConsoleHandler,
+  limits: ConsoleLimits,
+): object {
   const install = CONSOLE_FACTORY_SCRIPT.runInContext(sandbox) as (
     write: ReturnType<typeof createConsoleSink>,
     maxCalls: number,
     maxBytes: number,
   ) => object;
-  return install(createConsoleSink(handler, limits), limits.maxConsoleCalls, limits.maxConsoleOutputBytes);
+  // The console of the realm calls the host's sink through a function of the realm
+  return install(
+    realmMembrane.wrap(createConsoleSink(handler, limits), true),
+    limits.maxConsoleCalls,
+    limits.maxConsoleOutputBytes,
+  );
 }
 
 /**
@@ -382,101 +647,6 @@ function createProtectedSandbox(sandbox: vm.Context): vm.Context {
 }
 
 /**
- * Dangerous Object STATIC methods that allow property manipulation attacks
- * These methods can be used for:
- * - Serialization hijacking (defineProperty with toJSON)
- * - Prototype pollution (setPrototypeOf)
- * - Getter/setter injection (defineProperty, defineProperties)
- *
- * Note: __defineGetter__ etc. are on Object.prototype (instance methods),
- * not static methods on Object constructor. Those are blocked separately
- * on Object.prototype if needed.
- */
-const DANGEROUS_OBJECT_STATIC_METHODS = [
-  'defineProperty',
-  'defineProperties',
-  'setPrototypeOf',
-  'getOwnPropertyDescriptor', // Can retrieve defineProperty reference
-  'getOwnPropertyDescriptors', // Same
-] as const;
-
-/**
- * Create a safe Object global that removes dangerous methods
- * Prevents attacks like:
- * - ATK-DATA-02: Serialization Hijack via defineProperty('toJSON')
- * - Prototype pollution via setPrototypeOf
- * - Getter/setter injection
- *
- * @param originalObject The original Object constructor from VM context
- * @returns Safe Object with dangerous methods removed
- */
-function createSafeObject(originalObject: ObjectConstructor): ObjectConstructor {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const SafeObject: any = function (this: unknown, value?: unknown) {
-    // Support both Object() and new Object() calls
-    if (value === null || value === undefined) {
-      return {};
-    }
-    return Object(value);
-  };
-
-  // Copy all safe static methods from original Object
-  const safeStaticMethods = [
-    'keys',
-    'values',
-    'entries',
-    'fromEntries',
-    'assign',
-    'is',
-    'hasOwn',
-    'freeze',
-    'isFrozen',
-    'seal',
-    'isSealed',
-    'preventExtensions',
-    'isExtensible',
-    'getOwnPropertyNames',
-    'getOwnPropertySymbols',
-    'getPrototypeOf', // Read-only, safe
-  ];
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const origObj = originalObject as any;
-  for (const method of safeStaticMethods) {
-    if (method in origObj) {
-      SafeObject[method] = origObj[method];
-    }
-  }
-
-  // Provide a safe Object.create that only allows null or object as prototype
-  // and does NOT allow property descriptors (second argument)
-  SafeObject.create = function (proto: object | null, propertiesObject?: PropertyDescriptorMap) {
-    if (propertiesObject !== undefined) {
-      throw createSafeError(
-        'Object.create with property descriptors is not allowed (security restriction)',
-        'SecurityError',
-      );
-    }
-    return Object.create(proto);
-  };
-
-  // Copy prototype reference
-  SafeObject.prototype = origObj.prototype;
-
-  // Add blocked methods that throw helpful errors
-  for (const method of DANGEROUS_OBJECT_STATIC_METHODS) {
-    SafeObject[method] = function () {
-      throw createSafeError(
-        `Object.${method} is not allowed (security restriction: prevents property manipulation attacks)`,
-        'SecurityError',
-      );
-    };
-  }
-
-  return SafeObject as ObjectConstructor;
-}
-
-/**
  * Node.js 24 dangerous globals that should be removed per security level
  * These globals can be used for various escape/attack vectors
  *
@@ -559,55 +729,59 @@ const NODEJS_24_DANGEROUS_GLOBALS: Record<SecurityLevel, string[]> = {
 };
 
 /**
- * Sanitize VM context by removing dangerous Node.js 24 globals
- * Security: Prevents escape via new APIs like Iterator helpers, ShadowRealm, etc.
+ * Remove the dangerous globals of a security level from the sandbox realm.
+ *
+ * The intrinsics live on the realm's global object, not on the sandbox object passed to
+ * `vm.createContext`: `'Function' in context` is false and `delete context.Function` does nothing, so
+ * removing them through the sandbox object left every one of them in place. They are deleted by a
+ * script evaluated INSIDE the realm. A name that cannot be deleted there is shadowed with an
+ * `undefined`, read-only property on the sandbox object, which the realm's global lookup consults
+ * first.
+ *
+ * `Proxy` is removed at every level, unlike in the double VM. This adapter's membrane proxies host
+ * functions directly, and the engine attributes a Proxy to the realm of its innermost target: a
+ * script that wrapped any sandbox function in a Proxy of its own and awaited `{ then: thatProxy }`
+ * would be handed resolving functions of the HOST realm (see ATK-REALM). Without `Proxy` a script
+ * has no way to observe what the engine passes to a callable it did not write.
+ *
+ * Call this LAST, after every trusted setup script has captured the intrinsics it needs.
  *
  * @param context The VM context to sanitize
  * @param securityLevel The security level to determine which globals to remove
  */
-function sanitizeVmContext(context: vm.Context, securityLevel: SecurityLevel): void {
-  const globalsToRemove = NODEJS_24_DANGEROUS_GLOBALS[securityLevel];
-
-  for (const global of globalsToRemove) {
-    // Delete the global if it exists in the context
-    if (global in context) {
-      try {
-        delete context[global];
-      } catch {
-        // Some globals may be non-configurable, set to undefined instead
-        try {
-          context[global] = undefined;
-        } catch {
-          // Ignore if we can't modify it
+function removeDangerousGlobals(context: vm.Context, securityLevel: SecurityLevel): void {
+  const names = [...new Set([...NODEJS_24_DANGEROUS_GLOBALS[securityLevel], 'Proxy'])];
+  let notDeleted = names;
+  try {
+    // Returns the names still present, comma-separated (a string, so no realm object crosses).
+    const remaining = compileSandboxScript(
+      `(function (g, names) {
+        var left = [];
+        for (var i = 0; i < names.length; i++) {
+          try { delete g[names[i]]; } catch (e) {}
+          if (names[i] in g) left.push(names[i]);
         }
-      }
-    }
+        return left.join(',');
+      })(this, ${JSON.stringify(names)})`,
+      { filename: 'sanitize.js' },
+    ).runInContext(context) as unknown;
+    notDeleted = typeof remaining === 'string' && remaining ? remaining.split(',') : [];
+  } catch {
+    // Fall back to shadowing every name below.
   }
 
-  // For security levels that allow Reflect, provide a safe version
-  if (securityLevel !== 'STRICT') {
-    const safeReflect = createSafeReflect(securityLevel);
-    if (safeReflect) {
-      Object.defineProperty(context, 'Reflect', {
-        value: safeReflect,
+  for (const name of notDeleted) {
+    try {
+      Object.defineProperty(context, name, {
+        value: undefined,
         writable: false,
         configurable: false,
-        enumerable: true,
+        enumerable: false,
       });
+    } catch {
+      // Already defined by the runtime under this name (for example the safe Reflect).
     }
   }
-
-  // Add safe Object to the context that blocks dangerous methods
-  // Security: Prevents ATK-DATA-02 (Serialization Hijack via defineProperty)
-  // Note: We use the global Object to create SafeObject, then add it to context
-  // This shadows the internal V8 Object global with our safe version
-  const safeObject = createSafeObject(Object);
-  Object.defineProperty(context, 'Object', {
-    value: safeObject,
-    writable: false,
-    configurable: false,
-    enumerable: true,
-  });
 }
 
 /**
@@ -635,6 +809,9 @@ export class VmAdapter implements SandboxAdapter {
     const { stats, config } = executionContext;
     const startTime = Date.now();
 
+    // A promise rejection the script leaves unhandled must not end the host process
+    guardSandboxRejections();
+
     // Create memory tracker if memory limit is configured
     // This tracks string/array allocations and enforces the limit
     const memoryTracker =
@@ -655,23 +832,77 @@ export class VmAdapter implements SandboxAdapter {
       // IMPORTANT: Use empty object to get NEW isolated prototypes
       // codeGeneration.strings=false disables new Function() and eval() from strings
       // This prevents sandbox escape via constructor chain: [][c][c]('malicious code')
-      const baseSandbox = vm.createContext(
-        {},
-        {
-          codeGeneration: { strings: false, wasm: false },
-        },
-      );
+      // The sandbox object has NO prototype. The realm resolves a bare identifier through this
+      // object's prototype chain before its own global, so with a plain `{}` (whose prototype is
+      // the HOST's Object.prototype) the bare names `constructor`, `toString`, `valueOf`, ... were
+      // raw host functions inside the sandbox: `constructor` was the host's Object.
+      const baseSandbox = vm.createContext(Object.create(null) as Record<string, unknown>, {
+        codeGeneration: { strings: false, wasm: false },
+      });
 
       // Capture sandbox-realm helpers before any sanitization touches the realm's globals:
       // - the realm bridge re-creates host-function results as sandbox-realm values;
       // - the tool-namespace factory builds `toolNamespaces` objects inside the realm;
       // - the console factory builds the script's console inside the realm.
-      const realmBridge = SANDBOX_REALM_BRIDGE_SCRIPT.runInContext(baseSandbox) as SandboxRealmBridge;
+      // The realm's half of the membrane comes first: every host function that realm code is
+      // handed below is wrapped by it, and so is every value of the host a script can hold.
+      const realmMembrane = REALM_GUARD_SCRIPT.runInContext(baseSandbox) as RealmMembrane;
+      const airlock = createRealmAirlock(realmMembrane);
+      REALM_SYMBOL_REGISTRY_SCRIPT.runInContext(baseSandbox);
+      const realmBridge = (
+        SANDBOX_REALM_BRIDGE_SCRIPT.runInContext(baseSandbox) as (own: RealmMembrane['own']) => SandboxRealmBridge
+      )(realmMembrane.own);
+      const detachGlobalPrototype = DETACH_GLOBAL_PROTOTYPE_SCRIPT.runInContext(baseSandbox) as () => void;
+      const realmRuntime = REALM_RUNTIME_FACTORY_SCRIPT.runInContext(baseSandbox) as RealmRuntimeFactories;
+
+      // What sanitizeValue and the call gate use to get from a value a script holds to the host
+      // object behind it: through the airlock, then through the secure proxy.
+      const unwrapHostValue = <V>(value: V): V => unwrapSecureProxy(airlock.toHost(value));
+
+      // The host's per-loop iteration counter. Realm code calls both functions, so both are
+      // functions of the realm around the host's (called raw, a stack overflow at the entry of
+      // one was a HOST RangeError in the script's catch block).
+      const startLoop = realmMembrane.wrap(() => {
+        let iterations = 0;
+        return realmMembrane.wrap(() => {
+          if (executionContext.aborted) {
+            throw createSafeError('Execution aborted');
+          }
+          iterations++;
+          stats.iterationCount++;
+          if (iterations > config.maxIterations) {
+            throw createSafeError(
+              `Maximum iteration limit exceeded (${config.maxIterations}). This limit prevents infinite loops.`,
+            );
+          }
+        }, false);
+      }, false);
+
+      // for...of with the iteration limit, as a generator of the sandbox realm. (The safe
+      // runtime's __safe_forOf is a host generator function, which the membrane cannot wrap.)
+      const realmHelpers: Record<string, unknown> = {
+        __safe_forOf: realmRuntime.createForOf(startLoop),
+        ...realmRuntime.createLoops(startLoop),
+        __safe_parallel: realmRuntime.createParallel(
+          realmMembrane.wrap(() => executionContext.aborted === true, false),
+        ),
+      };
+      for (const [name, value] of Object.entries(realmHelpers)) {
+        Object.defineProperty(baseSandbox, name, {
+          value,
+          writable: false,
+          configurable: false,
+          enumerable: true,
+        });
+      }
+      // The script's cooperative deadline (see ../deadline-guard): vm's timeout below only covers
+      // the script up to its first await.
+      compileSandboxScript(realmTickSource(config.timeout), { filename: 'deadline.js' }).runInContext(baseSandbox);
       const installToolNamespaces = executionContext.toolNamespaces?.length
         ? (TOOL_NAMESPACE_FACTORY_SCRIPT.runInContext(baseSandbox) as unknown)
         : undefined;
       const handlerConsole = executionContext.consoleHandler
-        ? createHandlerConsole(baseSandbox, executionContext.consoleHandler, config)
+        ? createHandlerConsole(baseSandbox, realmMembrane, executionContext.consoleHandler, config)
         : undefined;
       const installConsole = handlerConsole
         ? undefined
@@ -679,15 +910,18 @@ export class VmAdapter implements SandboxAdapter {
 
       // Every call into a host function passed in `globals` goes through this gate
       // (abort check, maxGlobalFunctionCalls, result sanitization, safe errors).
-      const globalFunctionGate = createGlobalFunctionGate(executionContext, realmBridge);
+      const globalFunctionGate = createGlobalFunctionGate(executionContext, realmBridge, unwrapHostValue);
 
-      // Create safe runtime context with optional sidecar support and proxy config
+      // The host side of the runtime: only the direct-mode tool call function and the value
+      // globals. The sandbox realm has intrinsics of its own; it is given none of the host's.
       const safeRuntime = createSafeRuntime(executionContext, {
         sidecar: executionContext.sidecar,
         referenceConfig: executionContext.referenceConfig,
         secureProxyConfig: executionContext.secureProxyConfig,
         memoryTracker, // Pass tracker for allocation monitoring
         globalFunctionGate,
+        exposeToSandbox: airlock.toRealm,
+        hostObjects: false,
       });
 
       // CRITICAL: Inject memory-safe prototype methods BEFORE sanitizeVmContext
@@ -705,18 +939,52 @@ export class VmAdapter implements SandboxAdapter {
         // Inject memory tracking callback into the sandbox
         // This allows the patched methods to track cumulative memory in the host
         Object.defineProperty(baseSandbox, '__host_memory_track__', {
-          value: (bytes: number) => {
-            memoryTracker.track(bytes);
-          },
+          // A function of the realm around the host's: the patched methods call it from realm code
+          value: realmMembrane.wrap((bytes: number) => {
+            try {
+              memoryTracker.track(bytes);
+            } catch (err: unknown) {
+              // SECURITY: never throw a host Error into the sandbox realm (its prototype chain
+              // reaches the host Function constructor): the error is replaced here.
+              const code = (err as { code?: unknown } | null)?.code;
+              throw createSafeError(
+                err instanceof Error ? err.message : 'Memory tracking failed',
+                err instanceof Error ? err.name : 'Error',
+                typeof code === 'string' ? code : undefined,
+              );
+            }
+          }, false),
           writable: false,
           configurable: true,
           enumerable: false,
         });
 
-        const patchScript = new vm.Script(`
+        const patchScript = compileSandboxScript(`
           (function() {
+            // Strict mode: an unbound call (const f = [].fill; f(0)) must fail on its undefined
+            // "this". In sloppy mode "this" was coerced to the realm's global object, and fill
+            // RETURNED it.
+            'use strict';
             var memoryLimit = ${config.memoryLimit};
             var trackMemory = __host_memory_track__;
+
+            // A size is only usable when it is a positive number. NaN (a missing or non-numeric
+            // count, a receiver without a numeric length) must never reach the tracker: added to
+            // its running total it turns the total into NaN, and no limit check fires after that.
+            function saneSize(n) { return (typeof n === 'number' && n > 0) ? n : 0; }
+
+            // Charge what was really allocated when it is more than the estimate (a receiver or an
+            // argument that reports one size and then produces another).
+            function chargeActual(result, estimated, label) {
+              var actual = (typeof result === 'string') ? result.length * 2 : 0;
+              if (actual > estimated) {
+                if (actual > memoryLimit) {
+                  throw new RangeError(label + ' would exceed memory limit');
+                }
+                trackMemory(actual - estimated);
+              }
+              return result;
+            }
 
             // Get the ACTUAL prototype used by string literals in this realm
             // Using Object.getPrototypeOf('') gets the intrinsic String.prototype
@@ -726,9 +994,8 @@ export class VmAdapter implements SandboxAdapter {
             // Patch string repeat - primary attack vector for string bombs
             var originalRepeat = stringProto.repeat;
             stringProto.repeat = function(count) {
-              // Pre-check: estimate size BEFORE allocation
-              var estimatedSize = this.length * count * 2; // 2 bytes per char (UTF-16)
-              // Check single allocation limit
+              // Pre-check: estimate size BEFORE allocation (2 bytes per char, UTF-16)
+              var estimatedSize = saneSize(this.length * saneSize(+count) * 2);
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('String.repeat would exceed memory limit: ' +
                   Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
@@ -736,7 +1003,7 @@ export class VmAdapter implements SandboxAdapter {
               }
               // Track cumulative memory BEFORE allocation (throws if limit exceeded)
               trackMemory(estimatedSize);
-              return originalRepeat.call(this, count);
+              return chargeActual(originalRepeat.call(this, count), estimatedSize, 'String.repeat');
             };
 
             // Patch array join - can create huge strings from large arrays
@@ -750,17 +1017,14 @@ export class VmAdapter implements SandboxAdapter {
                 estimatedSize += (item === null || item === undefined) ? 0 : String(item).length;
                 if (i > 0) estimatedSize += sep.length;
               }
-              estimatedSize *= 2; // UTF-16
-
-              // Check single allocation limit
+              estimatedSize = saneSize(estimatedSize * 2); // UTF-16
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('Array.join would exceed memory limit: ' +
                   Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
                   Math.round(memoryLimit / 1024 / 1024) + 'MB');
               }
-              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
               trackMemory(estimatedSize);
-              return originalJoin.call(this, separator);
+              return chargeActual(originalJoin.call(this, separator), estimatedSize, 'Array.join');
             };
 
             // Patch string padStart/padEnd - can pad to huge sizes
@@ -768,23 +1032,21 @@ export class VmAdapter implements SandboxAdapter {
             var originalPadEnd = stringProto.padEnd;
 
             stringProto.padStart = function(targetLength, padString) {
-              var estimatedSize = Math.max(this.length, targetLength) * 2;
+              var estimatedSize = saneSize(Math.max(saneSize(this.length), saneSize(+targetLength)) * 2);
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('String.padStart would exceed memory limit');
               }
-              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
               trackMemory(estimatedSize);
-              return originalPadStart.call(this, targetLength, padString);
+              return chargeActual(originalPadStart.call(this, targetLength, padString), estimatedSize, 'String.padStart');
             };
 
             stringProto.padEnd = function(targetLength, padString) {
-              var estimatedSize = Math.max(this.length, targetLength) * 2;
+              var estimatedSize = saneSize(Math.max(saneSize(this.length), saneSize(+targetLength)) * 2);
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('String.padEnd would exceed memory limit');
               }
-              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
               trackMemory(estimatedSize);
-              return originalPadEnd.call(this, targetLength, padString);
+              return chargeActual(originalPadEnd.call(this, targetLength, padString), estimatedSize, 'String.padEnd');
             };
 
             // Patch array fill - converts sparse arrays to dense (allocates memory)
@@ -801,34 +1063,63 @@ export class VmAdapter implements SandboxAdapter {
               var fillCount = Math.max(0, finalEnd - k);
 
               // Estimate memory: 8 bytes per element (pointer size)
-              // For objects/arrays as fill value, each creates a reference
               var estimatedSize = fillCount * 8;
-
-              // Check single allocation limit
               if (estimatedSize > memoryLimit) {
                 throw new RangeError('Array.fill would exceed memory limit: ' +
                   Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
                   Math.round(memoryLimit / 1024 / 1024) + 'MB');
               }
-              // Track cumulative memory BEFORE allocation (throws if limit exceeded)
               trackMemory(estimatedSize);
               return originalFill.call(this, value, start, end);
+            };
+
+            // Array.from and Array.of build an array of any size in one call: charged for what
+            // they built (8 bytes per element), on the realm's own Array, so that the constructor
+            // of any array literal is covered as well.
+            var RealArray = arrayProto.constructor;
+            var apply = Reflect.apply;
+            var originalFrom = RealArray.from;
+            var originalOf = RealArray.of;
+            RealArray.from = function from() {
+              var result = apply(originalFrom, this, arguments);
+              trackMemory(saneSize(result && result.length) * 8);
+              return result;
+            };
+            RealArray.of = function of() {
+              var result = apply(originalOf, this, arguments);
+              trackMemory(saneSize(result && result.length) * 8);
+              return result;
             };
           })();
         `);
         patchScript.runInContext(baseSandbox);
+      }
 
-        // Defense-in-depth: Remove host callback from sandbox global after capture
-        try {
-          delete (baseSandbox as any)['__host_memory_track__'];
-        } catch {
-          /* ignore */
-        }
+      // __safe_concat and __safe_template, defined inside the realm by the same code as in the
+      // double VM (they read __host_memory_track__, which is why it is still there).
+      const shouldHardenStacks = config.sanitizeStackTraces ?? true;
+      const blockedProperties = executionContext.secureProxyConfig
+        ? buildBlockedPropertiesFromConfig(executionContext.secureProxyConfig)
+        : getBlockedPropertiesForLevel(this.securityLevel);
+      compileSandboxScript(
+        innerRealmRuntimeSource({
+          stackTraceHardeningCode: shouldHardenStacks ? STACK_TRACE_HARDENING_CODE : '',
+          allowComposites: executionContext.referenceConfig?.allowComposites === true,
+          memoryLimit: memoryTracker && config.memoryLimit && config.memoryLimit > 0 ? config.memoryLimit : 0,
+          blockedProperties: [...blockedProperties],
+        }),
+        { filename: 'realm-concat.js' },
+      ).runInContext(baseSandbox);
+
+      // Defense-in-depth: Remove host callback from sandbox global after capture
+      try {
+        delete (baseSandbox as any)['__host_memory_track__'];
+      } catch {
+        /* ignore */
       }
 
       // SECURITY HARDENING: prevent leaking host stack traces via error.stack inside the sandbox.
-      // Must run BEFORE sanitizeVmContext() replaces Object with SafeObject (which blocks defineProperty).
-      const shouldHardenStacks = config.sanitizeStackTraces ?? true;
+      // Must run BEFORE the safe Object replaces the realm's (it blocks defineProperty).
       if (shouldHardenStacks) {
         try {
           STACK_TRACE_HARDENING_SCRIPT.runInContext(baseSandbox);
@@ -843,9 +1134,12 @@ export class VmAdapter implements SandboxAdapter {
       const policyViolation: { type?: string } = {};
       if (isStrictOrSecure) {
         Object.defineProperty(baseSandbox, '__ag_reportViolation__', {
-          value: (type: string) => {
-            if (!policyViolation.type) policyViolation.type = String(type);
-          },
+          // A function of the sandbox realm that calls the host's recorder
+          value: realmRuntime.createReporter(
+            realmMembrane.wrap((type: string) => {
+              if (!policyViolation.type) policyViolation.type = String(type);
+            }, false),
+          ),
           writable: false,
           configurable: false,
           enumerable: false,
@@ -857,30 +1151,92 @@ export class VmAdapter implements SandboxAdapter {
         }
       }
 
-      // Sanitize the VM context by removing dangerous Node.js 24 globals
-      // Security: Prevents escape via Iterator helpers, ShadowRealm, etc.
-      sanitizeVmContext(baseSandbox, this.securityLevel);
+      // The Reflect global of a level that has one: the realm's own namespace without the
+      // methods the level does not get. (STRICT has none; removeDangerousGlobals deletes it.)
+      if (this.securityLevel !== 'STRICT') {
+        Object.defineProperty(baseSandbox, 'Reflect', {
+          value: realmRuntime.createSafeReflect(
+            this.securityLevel === 'SECURE' ? 'setPrototypeOf,apply,defineProperty' : 'setPrototypeOf',
+          ),
+          writable: false,
+          configurable: false,
+          enumerable: true,
+        });
+      }
 
       // TOOL BRIDGE (string mode): define __safe_callTool inside the VM realm and
       // communicate with the host tool handler via JSON string envelopes.
       if (config.toolBridge?.mode === 'string') {
         const maxPayloadBytes = config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
-        const hostToolBridge = createHostToolBridge(executionContext, { updateStats: true });
+        // The call is counted where the script makes it; the bridge itself is started from a
+        // microtask (see callBridge below), so it does not count again.
+        const hostToolBridge = createHostToolBridge(executionContext, { updateStats: false });
 
+        // Both are functions of the realm around the host's (see REALM_GUARD_SCRIPT).
         Object.defineProperty(baseSandbox, '__host_callToolBridge__', {
-          value: hostToolBridge,
+          value: {
+            count: realmMembrane.wrap(() => {
+              stats.toolCallCount++;
+            }, false),
+            start: realmMembrane.wrap(
+              (requestJson: string, resolve: (responseJson: string) => void, reject: (error: unknown) => void) => {
+                hostToolBridge(requestJson).then(resolve, (reason: unknown) => {
+                  reject(createSafeError(reason instanceof Error ? reason.message : 'Tool bridge failed'));
+                });
+              },
+              false,
+            ),
+          },
           writable: false,
           configurable: true, // allow deletion after capture
           enumerable: false,
         });
 
-        const bridgeInitScript = new vm.Script(`
+        const bridgeInitScript = compileSandboxScript(`
           (function() {
             var bridge = __host_callToolBridge__;
+            var countCall = bridge && bridge.count;
+            var startCall = bridge && bridge.start;
             var stringify = JSON.stringify;
             var parse = JSON.parse;
             var hasOwn = Object.prototype.hasOwnProperty;
+            var RealmPromise = Promise;
+            var promiseThen = Promise.prototype.then;
+            var settled = Promise.resolve();
+            var reflectApply = Reflect.apply;
             var maxBytes = ${maxPayloadBytes};
+
+            // Tool calls whose host bridge has not been started yet.
+            var pending = [];
+            var scheduled = false;
+            function startPending() {
+              scheduled = false;
+              var calls = pending;
+              pending = [];
+              for (var i = 0; i < calls.length; i++) {
+                try {
+                  startCall(calls[i].request, calls[i].resolve, calls[i].reject);
+                } catch (e) {
+                  calls[i].reject(e);
+                }
+              }
+            }
+
+            // A promise of this realm for the bridge's response, with the host bridge started from
+            // a microtask instead of from where the script is. A script can call a tool with the
+            // stack nearly full; started there, the host's async bridge failed halfway and left a
+            // rejected HOST promise that Node.js kept listed as unhandled, which ends the process.
+            function callBridge(requestJson) {
+              return new RealmPromise(function (resolve, reject) {
+                // Scheduled before it is queued: if this cannot finish because the stack is full,
+                // nothing is left in the queue for a later flush to start on the script's behalf.
+                if (!scheduled) {
+                  reflectApply(promiseThen, settled, [startPending]);
+                  scheduled = true;
+                }
+                pending[pending.length] = { request: requestJson, resolve: resolve, reject: reject };
+              });
+            }
 
             // Remove global handle after capture (defense-in-depth)
             try { delete globalThis.__host_callToolBridge__; } catch (e) { /* ignore */ }
@@ -931,7 +1287,7 @@ export class VmAdapter implements SandboxAdapter {
               if (typeof args !== 'object' || args === null || Array.isArray(args)) {
                 throw makeError('Tool arguments must be an object', 'TypeError');
               }
-              if (typeof bridge !== 'function') {
+              if (typeof startCall !== 'function' || typeof countCall !== 'function') {
                 throw makeError('Tool bridge is not available', 'Error');
               }
 
@@ -954,7 +1310,8 @@ export class VmAdapter implements SandboxAdapter {
                 throw makeError('Tool request exceeds maximum size (' + maxBytes + ' bytes)', 'RangeError');
               }
 
-              var responseJson = await bridge(requestJson);
+              countCall();
+              var responseJson = await callBridge(requestJson);
               if (typeof responseJson !== 'string') {
                 throw makeError('Tool bridge returned invalid response', 'Error');
               }
@@ -1015,8 +1372,12 @@ export class VmAdapter implements SandboxAdapter {
           levelConfig: executionContext.secureProxyConfig,
         });
 
+        // The secure proxy decides what a script may read off the function and off the promise
+        // it returns, but it is a HOST Proxy: handed to the script as it is, its traps were host
+        // functions entered straight from script code, and a call at a full stack gave the script
+        // a host RangeError. Like every other secure proxy, it goes behind the airlock.
         Object.defineProperty(baseSandbox, '__safe_callTool', {
-          value: proxiedVmSafeCallTool,
+          value: airlock.toRealm(proxiedVmSafeCallTool),
           writable: false,
           configurable: false,
           enumerable: true,
@@ -1033,12 +1394,13 @@ export class VmAdapter implements SandboxAdapter {
 
       // Add safe runtime functions to the isolated context as non-writable, non-configurable
       // Security: Prevents runtime override attacks on __safe_* functions
-      // Note: Skip 'Object' if already added by sanitizeVmContext (with SafeObject)
+      // Note: 'Object' is installed last, by installSafeObject (with SafeObject)
       for (const [key, value] of Object.entries(safeRuntime)) {
-        // Skip if property is already defined (e.g., Object was added by sanitizeVmContext)
+        // Skip what is already defined (the string-mode __safe_callTool above). The direct-mode
+        // tool call function is a host function behind a secure proxy: it goes through the airlock.
         if (key in baseSandbox) continue;
         Object.defineProperty(baseSandbox, key, {
-          value: value,
+          value: airlock.toRealm(value),
           writable: false,
           configurable: false,
           enumerable: true,
@@ -1052,22 +1414,32 @@ export class VmAdapter implements SandboxAdapter {
       // This blocks Vector 380 (Bridge-Serialized State Reflection) attack
       // SECURITY: functions are wrapped too, with the global-function gate, so no call into a host
       // function bypasses the limits or hands an unsanitized host value to the script.
+      // SECURITY: what the script holds is never the secure proxy itself (a host Proxy with host
+      // traps) but a proxy of its own realm in front of it (see ../realm-airlock), which also makes
+      // every value from `globals` read-only, as in the double VM.
       if (config.globals) {
         for (const [key, value] of Object.entries(config.globals)) {
           // Only proxy objects and functions, primitives are safe as-is
           const wrappedValue =
             value !== null && (typeof value === 'object' || typeof value === 'function')
-              ? createSecureProxy(value as object, {
-                  levelConfig: executionContext.secureProxyConfig,
-                  callGate: globalFunctionGate,
-                })
+              ? airlock.toRealm(
+                  createSecureProxy(value as object, {
+                    levelConfig: executionContext.secureProxyConfig,
+                    callGate: globalFunctionGate,
+                    exposeToSandbox: airlock.toRealm,
+                  }),
+                )
               : value;
-          Object.defineProperty(baseSandbox, key, {
-            value: wrappedValue,
-            writable: false,
-            configurable: false,
-            enumerable: false,
-          });
+          // Under its own name and under the name the transformer gives it
+          for (const name of [key, `__safe_${key}`]) {
+            if (name in baseSandbox) continue;
+            Object.defineProperty(baseSandbox, name, {
+              value: wrappedValue,
+              writable: false,
+              configurable: false,
+              enumerable: false,
+            });
+          }
         }
       }
 
@@ -1094,21 +1466,24 @@ export class VmAdapter implements SandboxAdapter {
       // Add __safe_console with rate limiting to prevent I/O flood attacks
       // Security: Limits total output bytes and call count
       // Note: The agentscript transformer converts `console` → `__safe_console` in whitelist mode
-      // Skip if user already provided console via globals (already added with __safe_ prefix by safeRuntime)
-      if (!('__safe_console' in safeRuntime)) {
+      // Skip if user already provided console via globals (already added with the __safe_ prefix above)
+      if (!('__safe_console' in baseSandbox)) {
         const consoleStats: ConsoleStats = { totalBytes: 0, callCount: 0 };
         Object.defineProperty(baseSandbox, '__safe_console', {
           value:
             handlerConsole ??
             installConsole?.(
-              createHostConsoleWriter(
-                createSafeConsole(
-                  {
-                    maxConsoleOutputBytes: config.maxConsoleOutputBytes,
-                    maxConsoleCalls: config.maxConsoleCalls,
-                  },
-                  consoleStats,
+              realmMembrane.wrap(
+                createHostConsoleWriter(
+                  createSafeConsole(
+                    {
+                      maxConsoleOutputBytes: config.maxConsoleOutputBytes,
+                      maxConsoleCalls: config.maxConsoleCalls,
+                    },
+                    consoleStats,
+                  ),
                 ),
+                true,
               ),
               ['log', 'error', 'warn', 'info'],
             ),
@@ -1126,6 +1501,23 @@ export class VmAdapter implements SandboxAdapter {
         /* defense-in-depth */
       }
 
+      // The last setup steps, once the trusted scripts above have captured the intrinsics they need
+      // and before any script code runs.
+      //
+      // 1. Detach the realm's global object from the realm's Object.prototype. Its members are
+      //    otherwise in scope as bare identifiers too: `constructor` is the realm's real Object
+      //    (not the safe one installed below), `__lookupGetter__` a way around the membrane.
+      detachGlobalPrototype();
+      // 2. The safe Object global.
+      Object.defineProperty(baseSandbox, 'Object', {
+        value: realmRuntime.createSafeObject(),
+        writable: false,
+        configurable: false,
+        enumerable: true,
+      });
+      // 3. Remove the dangerous globals from the sandbox realm.
+      removeDangerousGlobals(baseSandbox, this.securityLevel);
+
       // Wrap sandbox in protective Proxy to catch dynamic assignment attempts
       // Security: Prevents dynamic assignment like `this['__safe_callTool'] = malicious`
       // Note: Cannot use the Proxy as vm.runInContext requires the actual vm.Context
@@ -1139,14 +1531,17 @@ export class VmAdapter implements SandboxAdapter {
 
       // Wrap code in async IIFE to handle top-level await
       // Use string concatenation instead of template literals to avoid code injection patterns
+      // A strict-mode function, called plainly: `this` is undefined in it and in __ag_main (in
+      // sloppy mode a plain call binds `this` to the realm's global object), writes to read-only
+      // properties throw instead of being dropped, and `arguments.callee` is unavailable.
       const wrappedCode =
-        '(async () => {\n' +
+        '(async function () {\n"use strict";\n' +
         code +
         '\nreturn typeof __ag_main === "function" ? await __ag_main() : undefined;\n' +
         '})();';
 
       // Compile script
-      const script = new vm.Script(wrappedCode, {
+      const script = compileSandboxScript(wrappedCode, {
         filename: 'agentscript.js',
       });
 
@@ -1221,8 +1616,8 @@ export class VmAdapter implements SandboxAdapter {
         maxProperties: clampedProperties,
         allowDates: true,
         allowErrors: true,
-        // The membrane wraps the script's Dates; read them through their targets.
-        unwrap: unwrapSecureProxy,
+        // A value of the host that the script returns is read through its target.
+        unwrap: unwrapHostValue,
       });
 
       return {
@@ -1243,18 +1638,37 @@ export class VmAdapter implements SandboxAdapter {
         stats.memoryUsage = memSnapshot.peakTrackedBytes;
       }
 
-      // Handle memory limit errors specially
-      if (err instanceof MemoryLimitError) {
+      // Handle memory limit errors specially: the host error itself, or the safe error that
+      // replaces it wherever it would otherwise have reached the sandbox realm.
+      const isMemoryLimit =
+        err instanceof MemoryLimitError ||
+        (typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'MEMORY_LIMIT_EXCEEDED');
+      if (isMemoryLimit) {
+        const snapshot = memoryTracker?.getSnapshot();
         return {
           success: false,
           error: {
             name: 'MemoryLimitError',
-            message: err.message,
+            message: typeof err.message === 'string' ? err.message : 'Memory limit exceeded',
             code: 'MEMORY_LIMIT_EXCEEDED',
             data: {
-              usedBytes: err.usedBytes,
-              limitBytes: err.limitBytes,
+              usedBytes: err instanceof MemoryLimitError ? err.usedBytes : (snapshot?.trackedBytes ?? 0),
+              limitBytes: err instanceof MemoryLimitError ? err.limitBytes : (config.memoryLimit ?? 0),
             },
+          },
+          stats,
+        };
+      }
+
+      // A thrown string is the message itself: the loop iteration limit and the cooperative
+      // deadline both throw one, so that the value a script can catch is inert.
+      if (typeof error === 'string') {
+        return {
+          success: false,
+          error: {
+            name: 'VMExecutionError',
+            message: error,
+            code: 'VM_EXECUTION_ERROR',
           },
           stats,
         };

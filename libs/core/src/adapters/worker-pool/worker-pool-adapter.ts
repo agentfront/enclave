@@ -9,45 +9,97 @@
 
 import crypto from 'crypto';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../../types';
-import type { WorkerPoolConfig, WorkerPoolMetrics } from './config';
+import type { WorkerPoolConfig, WorkerPoolMetrics, ResourceUsage } from './config';
 import { buildWorkerPoolConfig } from './config';
 import type {
   WorkerToMainMessage,
   ExecutionResultMessage,
   ToolCallMessage,
   SerializedConfig,
-  SerializedError,
+  SerializedDoubleVmConfig,
 } from './protocol';
 import { isToolCallMessage, isExecutionResultMessage, isConsoleMessage } from './protocol';
 import { WorkerSlot } from './worker-slot';
 import { ExecutionQueue } from './execution-queue';
-import { MemoryMonitor } from './memory-monitor';
+import { MemoryMonitor, workerMemoryBytes } from './memory-monitor';
 import { RateLimiter, createRateLimiter } from './rate-limiter';
 import { sanitizeObject } from './safe-deserialize';
 import { decodeResult } from './result-encoding';
-import { WorkerPoolDisposedError, WorkerTimeoutError, TooManyPendingCallsError, QueueFullError } from './errors';
+import {
+  WorkerPoolDisposedError,
+  WorkerTimeoutError,
+  WorkerMemoryError,
+  TooManyPendingCallsError,
+  QueueFullError,
+} from './errors';
 import { sanitizeStackTrace } from '../../stack-trace';
 import { createConsoleSink } from '../../console-handler';
+import { createHostToolBridge, encodeToolBridgeFailure, encodeToolBridgeRequest } from '../../tool-bridge';
+import { serializePatterns } from '../../double-vm/suspicious-patterns';
+import type { DoubleVmConfig } from '../../double-vm/types';
+import { DEFAULT_DOUBLE_VM_CONFIG } from '../../types';
+
+/**
+ * The double VM configuration in the form that can be sent to a worker: regular expressions as
+ * source and flags, custom suspicious patterns as serialized detectors.
+ */
+function serializeDoubleVmConfig(config: DoubleVmConfig): SerializedDoubleVmConfig {
+  const validation = config.parentValidation;
+  return {
+    enabled: config.enabled,
+    parentTimeoutBuffer: config.parentTimeoutBuffer,
+    parentValidation: {
+      validateOperationNames: validation.validateOperationNames,
+      allowedOperationPattern: validation.allowedOperationPattern
+        ? { source: validation.allowedOperationPattern.source, flags: validation.allowedOperationPattern.flags }
+        : undefined,
+      blockedOperationPatterns: validation.blockedOperationPatterns?.map((pattern) => ({
+        source: pattern.source,
+        flags: pattern.flags,
+      })),
+      maxOperationsPerSecond: validation.maxOperationsPerSecond,
+      blockSuspiciousSequences: validation.blockSuspiciousSequences,
+      rapidEnumerationThreshold: validation.rapidEnumerationThreshold,
+      rapidEnumerationOverrides: { ...validation.rapidEnumerationOverrides },
+      suspiciousPatterns: serializePatterns(validation.suspiciousPatterns ?? []),
+    },
+  };
+}
 
 /**
  * Worker Pool Adapter
  *
  * Provides a worker thread-based sandbox adapter with:
- * - OS-level memory isolation
+ * - A heap limit per worker, enforced by the engine (by the pool when a heap flag of the process
+ *   overrides it, see WorkerSlot)
  * - Hard halt capability via worker.terminate()
  * - Pool management with min/max workers
  * - Memory monitoring and enforcement
  * - Rate limiting for message flood protection
+ *
+ * Inside the worker the script runs in the same sandbox as an in-process execution: the double VM
+ * by default (or a single VM when the double VM is disabled). The worker thread is an additional
+ * layer around that sandbox, not a replacement for it. Tool calls come back to this thread and
+ * go through the same tool bridge as in-process tool calls.
  */
 export class WorkerPoolAdapter implements SandboxAdapter {
   private readonly config: Required<WorkerPoolConfig>;
   private readonly securityLevel: SecurityLevel;
+  private readonly doubleVm: SerializedDoubleVmConfig;
   private readonly slots = new Map<string, WorkerSlot>();
+  /**
+   * Workers that are starting. A worker is in `slots` only once it is ready, so everything that
+   * compares the pool with its size has to count these as well: a burst of executions that each
+   * found "room" started a worker each, however small `maxWorkers` was.
+   */
+  private startingWorkers = 0;
   private readonly executionQueue: ExecutionQueue;
   private readonly memoryMonitor: MemoryMonitor;
   private readonly rateLimiter: RateLimiter;
   private disposed = false;
   private initialized = false;
+  /** The initialization in progress: concurrent callers share it */
+  private initialization: Promise<void> | null = null;
 
   // Bound event handler for proper cleanup
   private readonly boundMemoryExceededHandler = this.handleMemoryExceeded.bind(this);
@@ -59,10 +111,22 @@ export class WorkerPoolAdapter implements SandboxAdapter {
   private _timeoutExecutions = 0;
   private _workerRecycles = 0;
   private _forcedTerminations = 0;
+  private _heapLimitKills = 0;
 
-  constructor(config: Partial<WorkerPoolConfig> = {}, securityLevel: SecurityLevel = 'STANDARD') {
+  /**
+   * @param config Worker pool configuration
+   * @param securityLevel Security level of the enclave
+   * @param doubleVmConfig How the script is isolated inside each worker. Default: the double VM
+   *   with its default validation.
+   */
+  constructor(
+    config: Partial<WorkerPoolConfig> = {},
+    securityLevel: SecurityLevel = 'STANDARD',
+    doubleVmConfig: DoubleVmConfig = DEFAULT_DOUBLE_VM_CONFIG,
+  ) {
     this.securityLevel = securityLevel;
     this.config = buildWorkerPoolConfig(securityLevel, config);
+    this.doubleVm = serializeDoubleVmConfig(doubleVmConfig);
     this.executionQueue = new ExecutionQueue({
       maxQueueSize: this.config.maxQueueSize,
       queueTimeoutMs: this.config.queueTimeoutMs,
@@ -89,6 +153,17 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       return;
     }
 
+    // execute() initializes the pool when it has to. Executions that start at once share one
+    // initialization: each used to warm the pool again, with `minWorkers` workers of its own.
+    if (!this.initialization) {
+      this.initialization = this.warmUp().finally(() => {
+        this.initialization = null;
+      });
+    }
+    return this.initialization;
+  }
+
+  private async warmUp(): Promise<void> {
     if (this.config.warmOnInit) {
       // Spawn minimum workers
       const spawnPromises: Promise<WorkerSlot>[] = [];
@@ -187,7 +262,18 @@ export class WorkerPoolAdapter implements SandboxAdapter {
   // Pool Management
   // ============================================================================
 
-  private async createAndAddSlot(): Promise<WorkerSlot> {
+  /** Workers the pool has, or is about to have */
+  private get workerCount(): number {
+    return this.slots.size + this.startingWorkers;
+  }
+
+  /**
+   * Start a worker and add it to the pool.
+   *
+   * @param executionId When given, the new worker is acquired for this execution before anyone
+   *   else can see it idle (the caller asked for a worker because none was free).
+   */
+  private async createAndAddSlot(executionId?: string): Promise<WorkerSlot> {
     const slotId = `worker-${Date.now()}-${crypto.randomUUID()}`;
     const slot = new WorkerSlot(slotId, {
       memoryLimitMB: Math.round(this.config.memoryLimitPerWorker / 1024 / 1024),
@@ -200,8 +286,48 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       }
     });
 
-    await slot.spawn();
+    // A worker can fail while no execution is listening: an idle worker that exits, or one that
+    // sends a message the protocol rejects. An 'error' event without a listener is thrown as an
+    // uncaught exception in the host process, so the pool always listens, and keeps its books:
+    // a worker that is gone no longer counts against the pool size.
+    slot.on('error', () => {
+      if (slot.status === 'terminated') {
+        this.removeDeadSlot(slot);
+      }
+    });
+
+    // The slot's own heap check (used when the engine does not apply the worker's heap limit)
+    // ended an execution: the slot fails it and terminates the worker; the pool keeps count.
+    slot.on('heapLimitExceeded', () => {
+      this._heapLimitKills++;
+      this._forcedTerminations++;
+    });
+
+    this.startingWorkers++;
+    try {
+      try {
+        await slot.spawn();
+      } catch (error) {
+        // A worker that did not start properly is not in the pool's books; it must not stay alive
+        await slot.terminate(false).catch(() => undefined);
+        throw error;
+      }
+
+      // The pool may have been disposed while this worker was starting. dispose() terminates the
+      // workers it knows of; one added afterwards would never be terminated, and a running worker
+      // thread keeps the host process from exiting.
+      if (this.disposed) {
+        await slot.terminate(false).catch(() => undefined);
+        throw new WorkerPoolDisposedError();
+      }
+    } finally {
+      this.startingWorkers--;
+    }
+
     this.slots.set(slotId, slot);
+    if (executionId !== undefined) {
+      slot.acquire(executionId);
+    }
     return slot;
   }
 
@@ -221,10 +347,8 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     }
 
     // Try to create a new slot if under limit
-    if (this.slots.size < this.config.maxWorkers) {
-      const slot = await this.createAndAddSlot();
-      slot.acquire(`exec-${Date.now()}`);
-      return slot;
+    if (this.workerCount < this.config.maxWorkers) {
+      return this.createAndAddSlot(`exec-${Date.now()}`);
     }
 
     // Queue the request
@@ -241,9 +365,31 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     return slot;
   }
 
+  /**
+   * Take a worker that is gone (terminated by the watchdog, by the memory monitor, or by itself)
+   * out of the pool, and let a queued execution proceed: it finds the pool below its size and
+   * gets a new worker. A dead slot that stayed in the pool would count against `maxWorkers`
+   * forever, and with one worker every later execution would wait in the queue until it timed out.
+   */
+  private removeDeadSlot(slot: WorkerSlot): void {
+    if (this.slots.get(slot.id) !== slot) {
+      return;
+    }
+    this.slots.delete(slot.id);
+    this.rateLimiter.reset(slot.id);
+    if (!this.disposed) {
+      this.executionQueue.notifySlotAvailable(slot.id);
+    }
+  }
+
   private releaseSlot(slot: WorkerSlot): void {
-    // Don't operate on terminated/recycling slots
-    if (slot.status === 'terminated' || slot.status === 'recycling' || slot.status === 'terminating') {
+    if (slot.status === 'terminated' || slot.status === 'terminating') {
+      this.removeDeadSlot(slot);
+      return;
+    }
+
+    // A recycling slot is replaced by handleSlotRecycling
+    if (slot.status === 'recycling') {
       return;
     }
 
@@ -273,36 +419,48 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     this.rateLimiter.reset(slotId);
 
     // Create a replacement if needed
-    if (this.slots.size < this.config.minWorkers && !this.disposed) {
+    let replacement: WorkerSlot | undefined;
+    if (this.workerCount < this.config.minWorkers && !this.disposed) {
       try {
-        await this.createAndAddSlot();
+        replacement = await this.createAndAddSlot();
       } catch (error) {
-        console.error('Failed to create replacement worker:', error);
+        // Disposal while the replacement was starting is not a failure to report
+        if (!(error instanceof WorkerPoolDisposedError)) {
+          console.error('Failed to create replacement worker:', error);
+        }
       }
+    }
+
+    // An execution may be waiting in the queue for exactly this: the replacement, or room for a
+    // worker of its own. Nothing else tells it (a recycled worker is not "released"), and it
+    // would wait until its time in the queue ran out.
+    if (!this.disposed && (replacement?.isIdle || this.workerCount < this.config.maxWorkers)) {
+      this.executionQueue.notifySlotAvailable(replacement?.id ?? slotId);
     }
   }
 
-  private handleMemoryExceeded(slotId: string): void {
+  private handleMemoryExceeded(slotId: string, usage: ResourceUsage): void {
     const slot = this.slots.get(slotId);
     if (!slot) return;
 
     // If slot is executing, we need to force terminate
     if (slot.isExecuting) {
       this._forcedTerminations++;
+      // The execution that is waiting on this worker is told why it ends. A worker that is being
+      // terminated reports nothing, so the execution would otherwise go on until its next tool
+      // response failed to send ("has no worker") or its timeout expired.
+      slot.emit('error', new WorkerMemoryError(workerMemoryBytes(usage), this.config.memoryLimitPerWorker));
+      // The failed execution releases the slot, which takes it out of the pool and tells the
+      // queue. removeDeadSlot does both once, whoever gets there first: a second notification
+      // would wake a waiting execution for nothing and cost it one of its acquire retries.
       slot
         .terminate(false)
         .then(() => {
-          this.slots.delete(slotId);
-          this.rateLimiter.reset(slotId);
-          // Notify queue that a slot may be available for replacement
-          this.executionQueue.notifySlotAvailable(slotId);
+          this.removeDeadSlot(slot);
         })
         .catch((error) => {
           console.error('Failed to terminate memory-exceeded worker:', error);
-          this.slots.delete(slotId);
-          this.rateLimiter.reset(slotId);
-          // Still notify queue even on error
-          this.executionQueue.notifySlotAvailable(slotId);
+          this.removeDeadSlot(slot);
         });
     }
   }
@@ -367,17 +525,40 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       securityLevel: this.securityLevel,
       toolNamespaces: context.toolNamespaces ? [...context.toolNamespaces] : undefined,
       hasConsoleHandler: consoleSink !== undefined,
+      memoryLimit: context.config.memoryLimit,
+      toolBridgeMaxPayloadBytes: context.config.toolBridge?.maxPayloadBytes,
+      secureProxyConfig: context.secureProxyConfig,
+      maxGlobalFunctionCalls: context.config.maxGlobalFunctionCalls,
+      realmGlobalAllowlist: context.realmGlobalAllowlist ? [...context.realmGlobalAllowlist] : undefined,
+      referenceConfig: context.referenceConfig,
+      doubleVm: this.doubleVm,
     };
+
+    // Tool calls of the worker are answered by the same bridge as in-process tool calls: abort
+    // check, tool-call limit, argument sanitization, sidecar references, result sanitization.
+    const toolBridge = createHostToolBridge(context, { updateStats: true });
 
     return new Promise<ExecutionResult<T>>((resolve, reject) => {
       // Pending tool calls for this execution
       const pendingToolCalls = new Map<string, boolean>();
+
+      // An abort on this side (the enclave's timeout, or the caller) is passed on to the worker,
+      // whose sandbox then refuses further tool calls and loop iterations.
+      const abortSignal = context.abortController?.signal;
+      const abortHandler = () => {
+        try {
+          slot.sendMessage({ type: 'abort', requestId });
+        } catch {
+          // The worker is already gone
+        }
+      };
 
       // Cleanup function to remove handlers
       const cleanup = () => {
         clearTimeout(watchdogId);
         slot.off('message', messageHandler);
         slot.off('error', errorHandler);
+        abortSignal?.removeEventListener('abort', abortHandler);
       };
 
       // Message handler
@@ -387,7 +568,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
           this.rateLimiter.checkLimit(slot.id);
 
           if (isToolCallMessage(msg) && msg.requestId === requestId) {
-            await this.handleToolCall(slot, msg, context, pendingToolCalls);
+            await this.handleToolCall(slot, msg, toolBridge, context, pendingToolCalls);
           } else if (isExecutionResultMessage(msg) && msg.requestId === requestId) {
             // Execution complete
             cleanup();
@@ -427,6 +608,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
 
       slot.on('message', messageHandler);
       slot.once('error', errorHandler);
+      abortSignal?.addEventListener('abort', abortHandler, { once: true });
 
       // Send execute message
       slot.sendMessage({
@@ -441,6 +623,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
   private async handleToolCall(
     slot: WorkerSlot,
     msg: ToolCallMessage,
+    toolBridge: (requestJson: string) => Promise<string>,
     context: ExecutionContext,
     pendingToolCalls: Map<string, boolean>,
   ): Promise<void> {
@@ -451,39 +634,21 @@ export class WorkerPoolAdapter implements SandboxAdapter {
 
     pendingToolCalls.set(msg.callId, true);
 
-    let result: unknown;
-    let error: SerializedError | undefined;
-    // Whether the failure came from the tool handler itself (see ToolResponseMessage.toolError)
-    let toolError = false;
-
+    let response: string;
     try {
-      if (!context.toolHandler) {
-        throw new Error('No tool handler configured');
-      }
-
-      // Sanitize args before passing to handler
-      const sanitizedArgs = sanitizeObject(msg.args) as Record<string, unknown>;
-      toolError = true;
-      const handlerResult = await context.toolHandler(msg.toolName, sanitizedArgs);
-      // A result the enclave cannot carry back is a failure of the tool, as the string bridge
-      // reports it: the script gets it as an error (or a result, with throwOnError: false).
-      try {
-        result = sanitizeObject(handlerResult);
-      } catch {
-        throw Object.assign(new Error('Tool returned an unsupported value'), {
-          name: 'ToolBridgeError',
-          code: 'TOOL_RESULT_NOT_SAFE',
-        });
-      }
-      toolError = false;
+      // The message was validated against the protocol schema (tool name, argument shape); the
+      // arguments are stripped of prototype-pollution keys before they are used.
+      const args = sanitizeObject(msg.args) as Record<string, unknown>;
+      response = await toolBridge(encodeToolBridgeRequest(msg.toolName, args));
     } catch (e) {
-      const err = e as Error;
-      const code = (e as { code?: unknown } | null)?.code;
-      error = {
-        name: err.name || 'Error',
-        message: err.message || 'Unknown error',
-        ...(toolError && typeof code === 'string' ? { code } : {}),
-      };
+      // The bridge reports failures in its response; this is only reached if a request could not
+      // even be built. It is a refusal by the host, not a failure of the tool.
+      response = encodeToolBridgeFailure(
+        'ToolBridgeError',
+        (e as Error)?.message || 'Tool bridge failure',
+        'TOOL_BRIDGE_FAILURE',
+        context.config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024,
+      );
     } finally {
       pendingToolCalls.delete(msg.callId);
     }
@@ -493,9 +658,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       type: 'tool-response',
       requestId: msg.requestId,
       callId: msg.callId,
-      result,
-      error,
-      ...(error && toolError ? { toolError: true } : {}),
+      response,
     });
   }
 
@@ -537,6 +700,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
           code: error.code,
           // The worker trims its stack; sanitize it here too so the result obeys the option.
           stack: sanitizeStackTrace(error.stack, sanitizeStacks),
+          ...(error.data ? { data: sanitizeObject(error.data) as Record<string, unknown> } : {}),
         },
         stats: {
           duration,
@@ -581,12 +745,12 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       successfulExecutions: this._successfulExecutions,
       failedExecutions: this._failedExecutions,
       timeoutExecutions: this._timeoutExecutions,
-      memoryKills: this.memoryMonitor.getStats().memoryExceededCount,
+      memoryKills: this.memoryMonitor.getStats().memoryExceededCount + this._heapLimitKills,
       forcedTerminations: this._forcedTerminations,
       workerRecycles: this._workerRecycles,
       avgExecutionTimeMs: 0, // Would need additional tracking
-      avgWorkerMemory: memoryStats.avgRss,
-      maxWorkerMemory: memoryStats.maxRss,
+      avgWorkerMemory: memoryStats.avgWorkerBytes,
+      maxWorkerMemory: memoryStats.maxWorkerBytes,
     };
   }
 

@@ -14,6 +14,9 @@
 // Main Enclave class
 export { Enclave, runAgentScript } from './enclave';
 
+// Unhandled promise rejections of scripts (see the module for what it does to the process)
+export { disableSandboxRejectionGuard, isHostPromise } from './sandbox-rejections';
+
 // Types and interfaces
 export type {
   ExecutionResult,

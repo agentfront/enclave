@@ -16,7 +16,9 @@
     "format:all": "prettier --write .",
     "format:all:check": "prettier --check .",
     "prepare": "husky",
-    "docs": "cd docs && mint dev --port 4300"
+    "docs": "cd docs && mint dev --port 4300",
+    "test-script": "node scripts/security-tests.mjs",
+    "test:security": "node scripts/security-tests.mjs --all"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx}": [

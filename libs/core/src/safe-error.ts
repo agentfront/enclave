@@ -11,6 +11,18 @@
  *   and execute arbitrary host code (e.g. `process.env`, command execution).
  */
 
+/** Every error {@link createSafeError} made. Membership cannot be forged from sandbox code. */
+const safeErrors = new WeakSet<object>();
+
+/**
+ * Whether `value` is an error made by {@link createSafeError}: frozen, without a prototype chain
+ * or a stack, carrying only strings. Such an error is inert and may be handed to sandbox code as
+ * it is.
+ */
+export function isSafeError(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && safeErrors.has(value);
+}
+
 /**
  * Create an Error instance whose prototype chain is severed (actual [[Prototype]]),
  * preventing prototype-chain escape to host constructors.
@@ -21,6 +33,7 @@
  */
 export function createSafeError(message: string, name = 'Error', code?: string): Error {
   const error = new Error(message);
+  safeErrors.add(error);
   error.name = name;
 
   if (typeof code === 'string') {

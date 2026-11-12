@@ -1,209 +1,51 @@
 /**
  * Worker Script
  *
- * This script runs inside a worker thread and provides a dual-layer sandbox:
- * 1. Worker thread isolation (OS-level)
- * 2. VM context isolation (prototype isolation)
+ * Runs inside a worker thread of the pool.
  *
- * Tool calls are proxied to the main thread via message passing.
+ * What a worker adds to an execution: a heap limit that the engine enforces, and a way for the
+ * host to stop the execution whatever the script is doing (`worker.terminate()`).
+ *
+ * What it does NOT add is a sandbox. A worker thread has the whole Node.js API (`process`,
+ * `require`, the file system), and a `vm` context created here from this thread's own objects
+ * hands the script this thread's `Function` constructor one property read away. So the script
+ * runs here in the SAME sandbox as an in-process execution: the double VM (parent realm with the
+ * membrane and the tool gate, inner realm for the script), or a single VM when the double VM is
+ * disabled. The worker is a layer around that sandbox.
+ *
+ * Tool calls leave the sandbox through the string tool bridge, are sent to the host thread as
+ * messages, and are answered there by the host's tool bridge (see ../../tool-bridge): the same
+ * checks, sidecar handling and sanitization as for an in-process tool call.
  *
  * @packageDocumentation
  */
 
 import { parentPort } from 'worker_threads';
-import vm from 'vm';
 import crypto from 'crypto';
+import { TOOL_NAMESPACE_TOOL_NAME_PATTERN } from '@enclave-vm/ast';
 import type {
   MainToWorkerMessage,
   WorkerToMainMessage,
   ExecuteMessage,
   ToolResponseMessage,
   SerializedConfig,
-  WorkerExecutionStats,
+  SerializedDoubleVmConfig,
   SerializedError,
 } from './protocol';
 import { safeDeserialize, safeSerialize, sanitizeObject } from './safe-deserialize';
 import { encodeResult } from './result-encoding';
-import { sanitizeValue } from '../../value-sanitizer';
-import { TOOL_NAMESPACE_FACTORY_SOURCE, buildToolNamespaceBindings } from '../../tool-namespaces';
-import { CONSOLE_FACTORY_SOURCE, type ConsoleLevel } from '../../console-handler';
+import { DoubleVmWrapper } from '../../double-vm/double-vm-wrapper';
+import { VmAdapter } from '../vm-adapter';
+import { decodeToolBridgeRequest, encodeToolBridgeFailure } from '../../tool-bridge';
+import type { DoubleVmConfig } from '../../double-vm/types';
+import type { ConsoleLevel } from '../../console-handler';
 import {
-  SANDBOX_CONSOLE_FACTORY_SOURCE,
-  createHostConsoleWriter,
-  type HostConsoleMethods,
-  type InstallSandboxConsole,
-} from '../../sandbox-console';
-
-/**
- * Patch code executed inside the sandbox realm to prevent leaking host stack traces via `error.stack`.
- */
-const STACK_TRACE_HARDENING_CODE = `
-(function() {
-  function __ag_redactStackString(stackStr) {
-    try {
-      if (typeof stackStr !== 'string' || !stackStr) return 'Error';
-      var lines = String(stackStr).split('\\n');
-      var header = lines[0] ? String(lines[0]) : 'Error';
-      var frameCount = (lines.length > 1) ? (lines.length - 1) : 0;
-      var max = frameCount;
-      if (max > 25) max = 25;
-      var out = [header];
-      for (var i = 0; i < max; i++) out.push('    at [REDACTED]');
-      if (frameCount > max) out.push('    at [REDACTED]');
-      return out.join('\\n');
-    } catch (e) {
-      return 'Error';
-    }
-  }
-
-  function __ag_prepareStackTrace(err, stack) {
-    try {
-      var name = (err && err.name) ? String(err.name) : 'Error';
-      var message = (err && err.message) ? String(err.message) : '';
-      var header = message ? (name + ': ' + message) : name;
-      if (!stack || !stack.length) return header;
-      var lines = [header];
-      var max = stack.length;
-      if (max > 25) max = 25;
-      for (var i = 0; i < max; i++) {
-        lines.push('    at [REDACTED]');
-      }
-      if (stack.length > max) {
-        lines.push('    at [REDACTED]');
-      }
-      return lines.join('\\n');
-    } catch (e) {
-      return 'Error';
-    }
-  }
-
-  function __ag_lockStackGetter(proto) {
-    if (!proto) return;
-    try {
-      var desc = Object.getOwnPropertyDescriptor(proto, 'stack');
-      if (!desc || typeof desc.get !== 'function') return;
-      var origGet = desc.get;
-      var origSet = desc.set;
-      Object.defineProperty(proto, 'stack', {
-        get: function() {
-          try {
-            return __ag_redactStackString(origGet.call(this));
-          } catch (e) {
-            return 'Error';
-          }
-        },
-        set: function(v) {
-          try {
-            if (typeof origSet === 'function') return origSet.call(this, v);
-          } catch (e) {}
-        },
-        configurable: false,
-        enumerable: false
-      });
-    } catch (e) {}
-  }
-
-  function __ag_lockPrepareStackTrace(ErrCtor) {
-    if (!ErrCtor) return;
-    try {
-      Object.defineProperty(ErrCtor, 'prepareStackTrace', {
-        value: __ag_prepareStackTrace,
-        writable: false,
-        configurable: false,
-        enumerable: false
-      });
-    } catch (e) {}
-    try {
-      Object.defineProperty(ErrCtor, 'stackTraceLimit', {
-        value: 25,
-        writable: false,
-        configurable: false,
-        enumerable: false
-      });
-    } catch (e) {}
-  }
-
-  __ag_lockStackGetter(Error && Error.prototype);
-  __ag_lockPrepareStackTrace(Error);
-  __ag_lockPrepareStackTrace(EvalError);
-  __ag_lockPrepareStackTrace(RangeError);
-  __ag_lockPrepareStackTrace(ReferenceError);
-  __ag_lockPrepareStackTrace(SyntaxError);
-  __ag_lockPrepareStackTrace(TypeError);
-  __ag_lockPrepareStackTrace(URIError);
-  try {
-    if (typeof AggregateError !== 'undefined') __ag_lockPrepareStackTrace(AggregateError);
-  } catch (e) {}
-})();
-`.trim();
-
-const STACK_TRACE_HARDENING_SCRIPT = new vm.Script(STACK_TRACE_HARDENING_CODE);
-
-/**
- * Detect and report code-generation attempts (Function/eval) even if user code catches the thrown error.
- *
- * Used to fail closed in STRICT/SECURE modes.
- */
-const CODE_GENERATION_VIOLATION_DETECTOR_CODE = `
-(function() {
-  var __ag_report = (typeof __ag_reportViolation__ === 'function') ? __ag_reportViolation__ : null;
-  function __ag_reportOnce(kind) {
-    try {
-      if (__ag_report) __ag_report(kind);
-    } catch (e) {}
-  }
-
-  // Capture intrinsics so later global sanitization can't break the proxy handler.
-  var __ag_Reflect = (typeof Reflect !== 'undefined') ? Reflect : null;
-  var __ag_Proxy = (typeof Proxy !== 'undefined') ? Proxy : null;
-  var __ag_Object = (typeof Object !== 'undefined') ? Object : null;
-
-  function __ag_wrapCtor(Ctor, kind) {
-    if (!Ctor || !__ag_Proxy || !__ag_Reflect || !__ag_Object) return;
-    try {
-      var proxy = new __ag_Proxy(Ctor, {
-        apply: function(target, thisArg, args) {
-          __ag_reportOnce(kind);
-          return __ag_Reflect.apply(target, thisArg, args);
-        },
-        construct: function(target, args, newTarget) {
-          __ag_reportOnce(kind);
-          return __ag_Reflect.construct(target, args, newTarget);
-        }
-      });
-
-      try {
-        if (Ctor.prototype) {
-          __ag_Object.defineProperty(Ctor.prototype, 'constructor', {
-            value: proxy,
-            writable: false,
-            configurable: false,
-            enumerable: false
-          });
-        }
-      } catch (e) {}
-    } catch (e) {}
-  }
-
-  try { __ag_wrapCtor(Function, 'CODE_GENERATION'); } catch (e) {}
-  try { __ag_wrapCtor((async function(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
-  try { __ag_wrapCtor((function*(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
-  try { __ag_wrapCtor((async function*(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
-})();
-`.trim();
-
-const CODE_GENERATION_VIOLATION_DETECTOR_SCRIPT = new vm.Script(CODE_GENERATION_VIOLATION_DETECTOR_CODE);
-
-/**
- * Builds `toolNamespaces` objects inside the sandbox realm: frozen, null-prototype objects whose
- * methods call the sandbox's (gated) __safe_callTool.
- */
-const TOOL_NAMESPACE_FACTORY_SCRIPT = new vm.Script(TOOL_NAMESPACE_FACTORY_SOURCE, { filename: 'tool-namespaces.js' });
-
-/** Builds the script's console inside the sandbox realm (see ../../sandbox-console). */
-const SANDBOX_CONSOLE_FACTORY_SCRIPT = new vm.Script(SANDBOX_CONSOLE_FACTORY_SOURCE, { filename: 'console.js' });
-
-const CONSOLE_FACTORY_SCRIPT = new vm.Script(CONSOLE_FACTORY_SOURCE, { filename: 'handler-console.js' });
+  DEFAULT_DOUBLE_VM_CONFIG,
+  type ExecutionContext,
+  type ExecutionError,
+  type ExecutionStats,
+  type SandboxAdapter,
+} from '../../types';
 
 // ============================================================================
 // SECURITY: Capture parentPort then remove dangerous globals
@@ -215,7 +57,8 @@ if (!port) {
 }
 
 /**
- * Globals that are dangerous and must be removed before any user code runs
+ * Globals of this thread that nothing here needs after startup. Defense in depth: the script
+ * never runs in this realm, but a value that is not here cannot be reached from it either.
  */
 const DANGEROUS_GLOBALS = [
   'parentPort',
@@ -249,24 +92,54 @@ for (const name of DANGEROUS_GLOBALS) {
 interface CurrentExecution {
   id: string;
   aborted: boolean;
-  stats: WorkerExecutionStats;
-  config: SerializedConfig;
+  stats: ExecutionStats;
+  abortController: AbortController;
+  /** Tool calls of this execution that the host has not answered yet, by call id */
+  pendingToolCalls: Map<string, (responseJson: string) => void>;
+  maxPayloadBytes: number;
 }
 
 let currentExecution: CurrentExecution | null = null;
-interface PendingToolCall {
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-  /** From the script's callTool options: false turns a tool failure into a result object */
-  throwOnError: boolean;
-  toolName: string;
-}
 
-const pendingToolCalls = new Map<string, PendingToolCall>();
+const DEFAULT_MAX_PAYLOAD_BYTES = 5 * 1024 * 1024;
 
-/** A null-prototype object for callTool results handed to the sandbox (no prototype chain). */
-function plainResult(fields: Record<string, unknown>): Record<string, unknown> {
-  return Object.assign(Object.create(null) as Record<string, unknown>, fields);
+// Limits of the result message schema (see ./protocol): a longer field would make the host
+// reject the whole message.
+const MAX_ERROR_NAME_LENGTH = 100;
+const MAX_ERROR_MESSAGE_LENGTH = 10000;
+const MAX_ERROR_CODE_LENGTH = 100;
+const MAX_ERROR_STACK_LENGTH = 10000;
+const MAX_CONSOLE_ARGS = 100;
+
+// ============================================================================
+// Console
+// ============================================================================
+
+/**
+ * This thread's console writes to the host thread while an execution is running: the sandbox
+ * adapters write a script's console output (without a consoleHandler) to `console`, and the host
+ * prints it. Outside an execution the original methods are used.
+ */
+const FORWARDED_CONSOLE_LEVELS: ConsoleLevel[] = ['log', 'info', 'warn', 'error', 'debug'];
+for (const level of FORWARDED_CONSOLE_LEVELS) {
+  const original = console[level].bind(console);
+  console[level] = (...args: unknown[]): void => {
+    const execution = currentExecution;
+    if (!execution) {
+      original(...args);
+      return;
+    }
+    try {
+      sendMessage({
+        type: 'console',
+        requestId: execution.id,
+        level,
+        args: args.slice(0, MAX_CONSOLE_ARGS).map((arg) => (typeof arg === 'string' ? arg : String(arg))),
+      });
+    } catch {
+      // Console output is best effort
+    }
+  };
 }
 
 // ============================================================================
@@ -299,10 +172,10 @@ port.on('message', async (raw: string) => {
         break;
 
       default:
-        console.error('Unknown message type:', (msg as { type: string }).type);
+        process.stderr.write(`Unknown message type: ${String((msg as { type: unknown }).type)}\n`);
     }
   } catch (error) {
-    console.error('Worker message handler error:', error);
+    process.stderr.write(`Worker message handler error: ${String((error as Error)?.message ?? error)}\n`);
   }
 });
 
@@ -311,213 +184,264 @@ port.on('message', async (raw: string) => {
 // ============================================================================
 
 /**
- * Runs one script in a fresh sandbox context and posts its result (or error) to the host.
+ * Runs one script in the sandbox the configuration asks for and posts its result (or error) to
+ * the host.
  */
 async function handleExecute(msg: ExecuteMessage): Promise<void> {
   const startTime = Date.now();
-
-  currentExecution = {
+  const config = msg.config;
+  const stats: ExecutionStats = {
+    duration: 0,
+    toolCallCount: 0,
+    iterationCount: 0,
+    startTime,
+    endTime: 0,
+  };
+  const execution: CurrentExecution = {
     id: msg.requestId,
     aborted: false,
-    config: msg.config,
-    stats: {
-      duration: 0,
-      toolCallCount: 0,
-      iterationCount: 0,
-      startTime,
-      endTime: 0,
-    },
+    stats,
+    abortController: new AbortController(),
+    pendingToolCalls: new Map(),
+    maxPayloadBytes: config.toolBridgeMaxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES,
   };
+  currentExecution = execution;
 
+  // The same deadline rule as an in-process execution: a timer sets the flag, and the flag also
+  // reads the clock, because a timer cannot fire while the script keeps the thread busy.
+  const deadline = startTime + config.timeout;
+  const timeoutId = setTimeout(() => {
+    execution.aborted = true;
+    execution.abortController.abort();
+  }, config.timeout);
+
+  let adapter: SandboxAdapter | undefined;
   try {
-    // Create VM context with safe runtime
-    // codeGeneration.strings=false disables new Function() and eval() from strings
-    // This prevents sandbox escape via constructor chain: [][c][c]('malicious code')
-    const sandbox = createSandbox(msg.requestId, msg.config);
-    const context = vm.createContext(sandbox, {
-      codeGeneration: { strings: false, wasm: false },
-    });
+    const context: ExecutionContext = {
+      config: buildAdapterConfig(config),
+      stats,
+      abortController: execution.abortController,
+      get aborted(): boolean {
+        return execution.aborted || Date.now() >= deadline;
+      },
+      set aborted(value: boolean) {
+        execution.aborted = value;
+      },
+      hostToolBridge: (requestJson) => relayToolRequest(execution, requestJson),
+      consoleHandler: config.hasConsoleHandler
+        ? (level, text) => sendMessage({ type: 'console', requestId: execution.id, level, args: [text] })
+        : undefined,
+      secureProxyConfig: config.secureProxyConfig,
+      toolNamespaces: config.toolNamespaces,
+      realmGlobalAllowlist: config.realmGlobalAllowlist,
+      referenceConfig: config.referenceConfig,
+    };
 
-    if (msg.config.hasConsoleHandler) {
-      installHandlerConsole(context, msg.requestId, msg.config);
+    adapter = createSandboxAdapter(config);
+    const result = await adapter.execute(msg.code, context);
+
+    stats.endTime = Date.now();
+    stats.duration = stats.endTime - startTime;
+
+    if (result.success) {
+      // The adapter has sanitized the value (limits, '[Circular]', errors); what JSON cannot
+      // carry (Dates, NaN, ...) travels in a side list.
+      const { value, specialValues } = encodeResult(result.value);
+      sendMessage({
+        type: 'result',
+        requestId: msg.requestId,
+        success: true,
+        value,
+        ...(specialValues.length > 0 ? { specialValues } : {}),
+        stats: resultStats(stats),
+      });
     } else {
-      installSandboxConsoles(context);
-    }
-
-    const isStrictOrSecure = msg.config.securityLevel === 'STRICT' || msg.config.securityLevel === 'SECURE';
-    const policyViolation: { type?: string } = {};
-
-    // Tool namespaces (mail.list(args)): each method is a __safe_callTool call, so it is counted
-    // and limited like any other tool call.
-    const toolNamespaces = msg.config.toolNamespaces ?? [];
-    if (toolNamespaces.length > 0) {
-      const install = TOOL_NAMESPACE_FACTORY_SCRIPT.runInContext(context);
-      const callTool = (context as Record<string, unknown>)['__safe_callTool'];
-      for (const binding of buildToolNamespaceBindings(install, callTool, toolNamespaces)) {
-        for (const name of [binding.name, `__safe_${binding.name}`]) {
-          Object.defineProperty(context, name, {
-            value: binding.value,
-            writable: false,
-            configurable: false,
-            enumerable: false,
-          });
-        }
-      }
-    }
-
-    // SECURITY HARDENING: prevent leaking host stack traces via error.stack inside the sandbox.
-    const shouldHardenStacks = msg.config.sanitizeStackTraces ?? true;
-    if (shouldHardenStacks) {
-      try {
-        STACK_TRACE_HARDENING_SCRIPT.runInContext(context);
-      } catch {
-        // Ignore if the environment forbids patching (defense-in-depth only)
-      }
-    }
-
-    // STRICT/SECURE: record code-generation attempts (Function/eval) even if caught.
-    if (isStrictOrSecure) {
-      try {
-        Object.defineProperty(context, '__ag_reportViolation__', {
-          value: (type: string) => {
-            if (!policyViolation.type) policyViolation.type = String(type);
-          },
-          writable: false,
-          configurable: false,
-          enumerable: false,
-        });
-        CODE_GENERATION_VIOLATION_DETECTOR_SCRIPT.runInContext(context);
-      } catch {
-        // Best-effort only; codeGeneration.strings=false still blocks execution.
-      }
-    }
-
-    // Wrap code in async IIFE to support top-level await
-    // Must call __ag_main() if defined, as the enclave transforms code to wrap in async function __ag_main()
-    // Use string concatenation for clarity; security is enforced by AST validation upstream
-    const wrappedCode =
-      '(async () => {\n' +
-      msg.code +
-      '\nreturn typeof __ag_main === "function" ? await __ag_main() : undefined;\n' +
-      '})();';
-
-    // Compile and run with timeout
-    const script = new vm.Script(wrappedCode, {
-      filename: 'agentscript.js',
-    });
-
-    const result = await script.runInContext(context, {
-      timeout: msg.config.timeout,
-      breakOnSigint: true,
-    });
-
-    // Update stats
-    currentExecution.stats.endTime = Date.now();
-    currentExecution.stats.duration = currentExecution.stats.endTime - startTime;
-
-    // STRICT/SECURE: Fail closed on recorded policy violations even if user code caught them.
-    if (isStrictOrSecure && policyViolation.type) {
       sendMessage({
         type: 'result',
         requestId: msg.requestId,
         success: false,
-        error: {
-          name: 'SecurityViolationError',
-          message: 'Blocked operation: security policy violation',
-          code: 'SECURITY_VIOLATION',
-        },
-        stats: currentExecution.stats,
+        error: serializeExecutionError(result.error),
+        stats: resultStats(stats),
       });
-      return;
     }
-
-    // Same conversion as the in-process adapters (limits, '[Circular]', Dates, BigInts, ...);
-    // a value it refuses fails the run below.
-    const { value, specialValues } = encodeResult(
-      sanitizeValue(result, {
-        maxDepth: msg.config.maxSanitizeDepth,
-        maxProperties: msg.config.maxSanitizeProperties,
-      }),
-    );
-    sendMessage({
-      type: 'result',
-      requestId: msg.requestId,
-      success: true,
-      value,
-      ...(specialValues.length > 0 ? { specialValues } : {}),
-      stats: currentExecution.stats,
-    });
   } catch (error) {
-    // Update stats
-    if (currentExecution) {
-      currentExecution.stats.endTime = Date.now();
-      currentExecution.stats.duration = currentExecution.stats.endTime - startTime;
+    stats.endTime = Date.now();
+    stats.duration = stats.endTime - startTime;
+    try {
+      sendMessage({
+        type: 'result',
+        requestId: msg.requestId,
+        success: false,
+        error: serializeThrown(error, config.sanitizeStackTraces),
+        stats: resultStats(stats),
+      });
+    } catch {
+      // Nothing more can be reported; the host's watchdog ends the execution.
     }
-
-    // Send error result
-    sendMessage({
-      type: 'result',
-      requestId: msg.requestId,
-      success: false,
-      error: serializeError(error as Error, msg.config.sanitizeStackTraces),
-      stats: currentExecution?.stats ?? {
-        duration: Date.now() - startTime,
-        toolCallCount: 0,
-        iterationCount: 0,
-        startTime,
-        endTime: Date.now(),
-      },
-    });
   } finally {
-    // Clear pending tool calls for this execution
-    // Use delimiter to avoid false positives (e.g., "req-1" matching "req-10-abc")
-    for (const [callId, pending] of pendingToolCalls) {
-      if (callId.startsWith(`${msg.requestId}-`)) {
-        pending.reject(new Error('Execution ended'));
-        pendingToolCalls.delete(callId);
-      }
+    clearTimeout(timeoutId);
+    try {
+      adapter?.dispose();
+    } catch {
+      // Disposal is best effort
     }
-    currentExecution = null;
+    // Tool calls nobody will answer any more
+    for (const [callId, resolve] of execution.pendingToolCalls) {
+      execution.pendingToolCalls.delete(callId);
+      resolve(encodeToolBridgeFailure('AbortError', 'Execution ended', 'EXECUTION_ABORTED', execution.maxPayloadBytes));
+    }
+    if (currentExecution === execution) {
+      currentExecution = null;
+    }
   }
 }
 
+/**
+ * The sandbox for this execution: the double VM unless the host disabled it, in which case a
+ * single VM (the host has already logged the security warning for that choice).
+ */
+function createSandboxAdapter(config: SerializedConfig): SandboxAdapter {
+  const doubleVm = config.doubleVm;
+  if (doubleVm && doubleVm.enabled === false) {
+    return new VmAdapter(config.securityLevel);
+  }
+  if (!doubleVm) {
+    return new DoubleVmWrapper(DEFAULT_DOUBLE_VM_CONFIG, config.securityLevel);
+  }
+  return new DoubleVmWrapper(
+    deserializeDoubleVmConfig(doubleVm),
+    config.securityLevel,
+    doubleVm.parentValidation.suspiciousPatterns,
+  );
+}
+
+function deserializeDoubleVmConfig(doubleVm: SerializedDoubleVmConfig): DoubleVmConfig {
+  const validation = doubleVm.parentValidation;
+  return {
+    enabled: true,
+    parentTimeoutBuffer: doubleVm.parentTimeoutBuffer,
+    parentValidation: {
+      validateOperationNames: validation.validateOperationNames,
+      allowedOperationPattern: validation.allowedOperationPattern
+        ? new RegExp(validation.allowedOperationPattern.source, validation.allowedOperationPattern.flags)
+        : undefined,
+      blockedOperationPatterns: validation.blockedOperationPatterns?.map(
+        (pattern) => new RegExp(pattern.source, pattern.flags),
+      ),
+      maxOperationsPerSecond: validation.maxOperationsPerSecond,
+      blockSuspiciousSequences: validation.blockSuspiciousSequences,
+      rapidEnumerationThreshold: validation.rapidEnumerationThreshold,
+      rapidEnumerationOverrides: { ...validation.rapidEnumerationOverrides },
+      // The custom patterns arrive serialized and are passed to the wrapper in that form.
+      suspiciousPatterns: [],
+    },
+  };
+}
+
+/**
+ * The configuration an adapter reads from its execution context.
+ *
+ * Custom globals arrive as JSON data: a function does not cross the thread boundary, so the
+ * worker adapter never passes a host function into the sandbox.
+ */
+function buildAdapterConfig(config: SerializedConfig): ExecutionContext['config'] {
+  return {
+    timeout: config.timeout,
+    memoryLimit: config.memoryLimit ?? 0,
+    maxToolCalls: config.maxToolCalls,
+    maxIterations: config.maxIterations,
+    adapter: 'vm',
+    allowBuiltins: false,
+    globals: config.globals ? (sanitizeObject(config.globals) as Record<string, unknown>) : {},
+    // Tool calls always travel as strings from a worker: an object cannot be handed across.
+    toolBridge: {
+      mode: 'string',
+      maxPayloadBytes: config.toolBridgeMaxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES,
+    },
+    maxConsoleOutputBytes: config.maxConsoleOutputBytes,
+    maxConsoleCalls: config.maxConsoleCalls,
+    sanitizeStackTraces: config.sanitizeStackTraces,
+    maxSanitizeDepth: config.maxSanitizeDepth,
+    maxSanitizeProperties: config.maxSanitizeProperties,
+    maxGlobalFunctionCalls: config.maxGlobalFunctionCalls,
+  } as ExecutionContext['config'];
+}
+
 // ============================================================================
-// Tool Response Handler
+// Tool Calls
 // ============================================================================
+
+/**
+ * Carry one tool request to the host thread and resolve with the host's response. Both are in
+ * the string tool-bridge format; this side only moves them.
+ */
+function relayToolRequest(execution: CurrentExecution, requestJson: string): Promise<string> {
+  const refuse = (message: string, code: string): Promise<string> =>
+    Promise.resolve(encodeToolBridgeFailure('ToolBridgeError', message, code, execution.maxPayloadBytes));
+
+  const decoded = decodeToolBridgeRequest(requestJson);
+  if (!decoded.ok) {
+    return refuse(decoded.error, 'TOOL_BRIDGE_BAD_REQUEST');
+  }
+  // The host validates every message against the protocol schema, and a message it rejects ends
+  // the execution. A tool name the protocol cannot carry is refused here instead, so the script
+  // gets an ordinary error for that one call.
+  if (decoded.tool.length > 256 || !TOOL_NAMESPACE_TOOL_NAME_PATTERN.test(decoded.tool)) {
+    return refuse(
+      `Tool name "${decoded.tool.slice(0, 80)}" cannot be used with the worker_threads adapter: ` +
+        `it must start with a letter and contain only letters, digits, ':', '.', '_' and '-'.`,
+      'INVALID_TOOL_NAME',
+    );
+  }
+  if (currentExecution !== execution) {
+    return refuse('Execution ended', 'EXECUTION_ABORTED');
+  }
+
+  const callId = crypto.randomUUID();
+  return new Promise<string>((resolve) => {
+    execution.pendingToolCalls.set(callId, resolve);
+    try {
+      sendMessage({
+        type: 'tool-call',
+        requestId: execution.id,
+        callId,
+        toolName: decoded.tool,
+        args: sanitizeObject(decoded.args) as Record<string, unknown>,
+      });
+    } catch (error) {
+      execution.pendingToolCalls.delete(callId);
+      resolve(
+        encodeToolBridgeFailure(
+          'ToolBridgeError',
+          `Tool request could not be sent: ${String((error as Error)?.message ?? error)}`,
+          'TOOL_BRIDGE_FAILURE',
+          execution.maxPayloadBytes,
+        ),
+      );
+    }
+  });
+}
 
 function handleToolResponse(msg: ToolResponseMessage): void {
-  const pending = pendingToolCalls.get(msg.callId);
-  if (!pending) {
-    console.warn('Received response for unknown tool call:', msg.callId);
+  const execution = currentExecution;
+  if (!execution || execution.id !== msg.requestId) {
     return;
   }
-
-  pendingToolCalls.delete(msg.callId);
-
-  if (msg.error) {
-    // A failure of the tool itself resolves to { success: false, error } when the script asked
-    // for { throwOnError: false }; refusals by the host still reject.
-    if (!pending.throwOnError && msg.toolError === true) {
-      pending.resolve(
-        plainResult({
-          success: false,
-          error: plainResult({
-            name: msg.error.name,
-            message: msg.error.message,
-            ...(typeof msg.error.code === 'string' ? { code: msg.error.code } : {}),
-            toolName: pending.toolName,
-          }),
-        }),
-      );
-      return;
-    }
-    const error = new Error(msg.error.message);
-    error.name = msg.error.name;
-    pending.reject(error);
-  } else {
-    const result = sanitizeObject(msg.result);
-    pending.resolve(pending.throwOnError ? result : plainResult({ success: true, data: result }));
+  const resolve = execution.pendingToolCalls.get(msg.callId);
+  if (!resolve) {
+    return;
   }
+  execution.pendingToolCalls.delete(msg.callId);
+  resolve(
+    typeof msg.response === 'string'
+      ? msg.response
+      : encodeToolBridgeFailure(
+          'ToolBridgeError',
+          'Malformed tool response',
+          'TOOL_BRIDGE_FAILURE',
+          execution.maxPayloadBytes,
+        ),
+  );
 }
 
 // ============================================================================
@@ -543,17 +467,17 @@ function handleMemoryReport(): void {
 // ============================================================================
 
 function handleAbort(requestId: string): void {
-  if (currentExecution && currentExecution.id === requestId) {
-    currentExecution.aborted = true;
+  const execution = currentExecution;
+  if (!execution || execution.id !== requestId) {
+    return;
   }
+  execution.aborted = true;
+  execution.abortController.abort();
 
-  // Reject all pending tool calls for this request
-  // Use delimiter to avoid false positives (e.g., "req-1" matching "req-10-abc")
-  for (const [callId, pending] of pendingToolCalls) {
-    if (callId.startsWith(`${requestId}-`)) {
-      pending.reject(new Error('Execution aborted'));
-      pendingToolCalls.delete(callId);
-    }
+  // A tool call that is still waiting for the host will not be answered in time.
+  for (const [callId, resolve] of execution.pendingToolCalls) {
+    execution.pendingToolCalls.delete(callId);
+    resolve(encodeToolBridgeFailure('AbortError', 'Execution aborted', 'EXECUTION_ABORTED', execution.maxPayloadBytes));
   }
 }
 
@@ -565,426 +489,11 @@ function handleTerminate(graceful: boolean): void {
   if (graceful && currentExecution) {
     // Mark as aborted and let it finish naturally
     currentExecution.aborted = true;
+    currentExecution.abortController.abort();
   } else {
     // Force exit
     process.exit(0);
   }
-}
-
-// ============================================================================
-// Sandbox Creation - Security-Level-Aware
-// ============================================================================
-
-/**
- * Maps global names to their actual values.
- * This mapping is used by createSandbox to selectively expose globals
- * based on the security level.
- */
-function getGlobalValue(name: string, requestId: string, config: SerializedConfig): unknown {
-  // Runtime-injected safe functions (created dynamically)
-  switch (name) {
-    case '__safe_callTool':
-    case 'callTool': // Both are mapped to the safe version
-      return createProxiedCallTool(requestId, config);
-    case '__safe_forOf':
-      return createSafeForOf();
-    case '__safe_for':
-      return createSafeFor();
-    case '__safe_while':
-    case '__safe_doWhile':
-      return createSafeWhile();
-    case '__maxIterations':
-      return config.maxIterations ?? 10000;
-    case 'console':
-    case '__safe_console':
-      return createSafeConsole(requestId, config);
-
-    // Core built-in objects (always safe)
-    case 'Math':
-      return Math;
-    case 'JSON':
-      return JSON;
-    case 'Object':
-      return Object;
-    case 'Array':
-      return Array;
-    case 'String':
-      return String;
-    case 'Number':
-      return Number;
-    case 'Date':
-      return Date;
-
-    // Safe standard globals
-    case 'undefined':
-      return undefined;
-    case 'NaN':
-      return NaN;
-    case 'Infinity':
-      return Infinity;
-
-    // Utility functions (STANDARD level and above)
-    case 'parseInt':
-      return parseInt;
-    case 'parseFloat':
-      return parseFloat;
-    case 'isNaN':
-      return isNaN;
-    case 'isFinite':
-      return isFinite;
-    case 'encodeURI':
-      return encodeURI;
-    case 'decodeURI':
-      return decodeURI;
-    case 'encodeURIComponent':
-      return encodeURIComponent;
-    case 'decodeURIComponent':
-      return decodeURIComponent;
-
-    default:
-      return undefined;
-  }
-}
-
-/**
- * Get allowed globals based on security level.
- * This mirrors the AST guard's getAgentScriptGlobals for defense-in-depth.
- */
-function getAllowedGlobalsForSecurityLevel(securityLevel: string): readonly string[] {
-  // STRICT globals - absolute minimum
-  const strictGlobals = [
-    'callTool',
-    '__safe_callTool',
-    'Math',
-    'JSON',
-    'Array',
-    'Object',
-    'String',
-    'Number',
-    'Date',
-    'undefined',
-    'NaN',
-    'Infinity',
-    '__safe_forOf',
-    '__safe_for',
-    '__safe_while',
-    '__safe_doWhile',
-    '__maxIterations',
-  ] as const;
-
-  // SECURE globals - adds safe utility functions (pure, no side effects)
-  const secureGlobals = [
-    ...strictGlobals,
-    'parseInt',
-    'parseFloat',
-    'isNaN',
-    'isFinite',
-    'encodeURI',
-    'decodeURI',
-    'encodeURIComponent',
-    'decodeURIComponent',
-  ] as const;
-
-  // STANDARD globals - same as SECURE (room for future expansion)
-  const standardGlobals = [...secureGlobals] as const;
-
-  // PERMISSIVE globals - adds console for debugging
-  const permissiveGlobals = [...standardGlobals, 'console', '__safe_console'] as const;
-
-  switch (securityLevel) {
-    case 'PERMISSIVE':
-      return permissiveGlobals;
-    case 'STANDARD':
-      return standardGlobals;
-    case 'SECURE':
-      return secureGlobals;
-    case 'STRICT':
-    default:
-      return strictGlobals;
-  }
-}
-
-/**
- * Create a security-level-aware sandbox for code execution.
- *
- * IMPORTANT: This function enforces the same allowed globals as the AST guard
- * for defense-in-depth. If code bypasses AST validation, the sandbox still
- * blocks access to dangerous globals.
- */
-function createSandbox(requestId: string, config: SerializedConfig): Record<string, unknown> {
-  const sandbox: Record<string, unknown> = Object.create(null);
-
-  // Get allowed globals based on security level
-  const allowedGlobals = getAllowedGlobalsForSecurityLevel(config.securityLevel);
-
-  // Only add globals that are in the allowed list
-  for (const name of allowedGlobals) {
-    const value = getGlobalValue(name, requestId, config);
-    if (value !== undefined || name === 'undefined') {
-      sandbox[name] = value;
-    }
-  }
-
-  // Add custom globals if provided (these are assumed to be validated by AST guard)
-  if (config.globals) {
-    for (const [key, value] of Object.entries(config.globals)) {
-      // Only allow serializable values (functions are not allowed)
-      if (typeof value !== 'function') {
-        sandbox[key] = sanitizeObject(value);
-      }
-    }
-  }
-
-  return sandbox;
-}
-
-// ============================================================================
-// Safe Runtime Functions
-// ============================================================================
-
-function createProxiedCallTool(requestId: string, config: SerializedConfig) {
-  return async function __safe_callTool(
-    toolName: string,
-    args: Record<string, unknown>,
-    options?: { throwOnError?: unknown },
-  ): Promise<unknown> {
-    // callTool options: only { throwOnError: false } changes behavior
-    let throwOnError = true;
-    if (options !== undefined && options !== null) {
-      if (typeof options !== 'object') {
-        throw new TypeError('callTool options must be an object');
-      }
-      throwOnError = options.throwOnError !== false;
-    }
-
-    // Check if aborted
-    if (currentExecution?.aborted) {
-      throw new Error('Execution aborted');
-    }
-
-    // Increment tool call count
-    if (currentExecution) {
-      currentExecution.stats.toolCallCount++;
-    }
-
-    // Check tool call limit
-    if (currentExecution && currentExecution.stats.toolCallCount > config.maxToolCalls) {
-      throw new Error(
-        `Maximum tool call limit exceeded (${config.maxToolCalls}). ` + `This limit prevents runaway script execution.`,
-      );
-    }
-
-    // Validate inputs
-    if (typeof toolName !== 'string' || !toolName) {
-      throw new TypeError('Tool name must be a non-empty string');
-    }
-
-    if (typeof args !== 'object' || args === null || Array.isArray(args)) {
-      throw new TypeError('Tool arguments must be an object');
-    }
-
-    // Generate unique call ID
-    const callId = `${requestId}-${Date.now()}-${crypto.randomUUID()}`;
-
-    return new Promise((resolve, reject) => {
-      pendingToolCalls.set(callId, { resolve, reject, throwOnError, toolName });
-
-      sendMessage({
-        type: 'tool-call',
-        requestId,
-        callId,
-        toolName,
-        args: sanitizeObject(args) as Record<string, unknown>,
-      });
-    });
-  };
-}
-
-function createSafeForOf() {
-  return function* __safe_forOf<T>(iterable: Iterable<T>): Iterable<T> {
-    let iterations = 0;
-
-    for (const item of iterable) {
-      // Check if aborted
-      if (currentExecution?.aborted) {
-        throw new Error('Execution aborted');
-      }
-
-      // Increment iteration count
-      iterations++;
-      if (currentExecution) {
-        currentExecution.stats.iterationCount++;
-      }
-
-      // Check iteration limit
-      const maxIterations = currentExecution?.config.maxIterations ?? 10000;
-      if (iterations > maxIterations) {
-        throw new Error(
-          `Maximum iteration limit exceeded (${maxIterations}). ` + `This limit prevents infinite loops.`,
-        );
-      }
-
-      yield item;
-    }
-  };
-}
-
-function createSafeFor() {
-  return function __safe_for(init: () => void, test: () => boolean, update: () => void, body: () => void): void {
-    let iterations = 0;
-
-    init();
-
-    while (test()) {
-      // Check if aborted
-      if (currentExecution?.aborted) {
-        throw new Error('Execution aborted');
-      }
-
-      // Increment iteration count
-      iterations++;
-      if (currentExecution) {
-        currentExecution.stats.iterationCount++;
-      }
-
-      // Check iteration limit
-      const maxIterations = currentExecution?.config.maxIterations ?? 10000;
-      if (iterations > maxIterations) {
-        throw new Error(
-          `Maximum iteration limit exceeded (${maxIterations}). ` + `This limit prevents infinite loops.`,
-        );
-      }
-
-      body();
-      update();
-    }
-  };
-}
-
-function createSafeWhile() {
-  return function __safe_while(test: () => boolean, body: () => void): void {
-    let iterations = 0;
-
-    while (test()) {
-      // Check if aborted
-      if (currentExecution?.aborted) {
-        throw new Error('Execution aborted');
-      }
-
-      // Increment iteration count
-      iterations++;
-      if (currentExecution) {
-        currentExecution.stats.iterationCount++;
-      }
-
-      // Check iteration limit
-      const maxIterations = currentExecution?.config.maxIterations ?? 10000;
-      if (iterations > maxIterations) {
-        throw new Error(
-          `Maximum iteration limit exceeded (${maxIterations}). ` + `This limit prevents infinite loops.`,
-        );
-      }
-
-      body();
-    }
-  };
-}
-
-/** The consoles `createSafeConsole` made, as opposed to a `console` or `__safe_console` value passed in `globals`. */
-const builtInConsoles = new WeakSet<object>();
-
-/**
- * Replaces each console the sandbox got from `createSafeConsole` (`console` and `__safe_console`, at PERMISSIVE) with
- * one built inside the sandbox realm that writes through it. A value passed in `globals` under either name is kept.
- */
-function installSandboxConsoles(context: vm.Context): void {
-  const globals = context as Record<string, unknown>;
-  const consoles = ['console', '__safe_console'].filter((name) => builtInConsoles.has(globals[name] as object));
-  if (consoles.length === 0) return;
-  const install = SANDBOX_CONSOLE_FACTORY_SCRIPT.runInContext(context) as InstallSandboxConsole;
-  for (const name of consoles) {
-    globals[name] = install(createHostConsoleWriter(globals[name] as HostConsoleMethods), [
-      'log',
-      'warn',
-      'error',
-      'info',
-    ]);
-  }
-}
-
-/**
- * With a host consoleHandler: the script's console (at every security level) is built inside the
- * sandbox realm and sends each formatted line to the host, which calls the handler.
- */
-function installHandlerConsole(context: vm.Context, requestId: string, config: SerializedConfig): void {
-  const install = CONSOLE_FACTORY_SCRIPT.runInContext(context) as (
-    write: (level: ConsoleLevel, line: string) => void,
-    maxCalls: number,
-    maxBytes: number,
-  ) => object;
-  const handlerConsole = install(
-    (level, line) => sendMessage({ type: 'console', requestId, level, args: [line] }),
-    config.maxConsoleCalls,
-    config.maxConsoleOutputBytes,
-  );
-  for (const name of ['console', '__safe_console']) {
-    Object.defineProperty(context, name, {
-      value: handlerConsole,
-      writable: false,
-      configurable: false,
-      enumerable: false,
-    });
-  }
-}
-
-/**
- * The host console a PERMISSIVE sandbox writes through: it serializes the arguments, applies `maxConsoleCalls` and
- * `maxConsoleOutputBytes`, and posts each call to the host.
- */
-function createSafeConsole(requestId: string, config: SerializedConfig) {
-  let totalBytes = 0;
-  let callCount = 0;
-
-  function safeLog(level: 'log' | 'warn' | 'error' | 'info', args: unknown[]): void {
-    // Check call limit
-    callCount++;
-    if (callCount > config.maxConsoleCalls) {
-      throw new Error(`Console call limit exceeded (${config.maxConsoleCalls})`);
-    }
-
-    // Serialize and check size
-    const serialized = args.map((a) => {
-      try {
-        return JSON.stringify(sanitizeObject(a));
-      } catch {
-        return String(a);
-      }
-    });
-
-    const bytes = serialized.reduce((sum, s) => sum + (s?.length ?? 0), 0);
-    totalBytes += bytes;
-
-    if (totalBytes > config.maxConsoleOutputBytes) {
-      throw new Error(`Console output limit exceeded (${config.maxConsoleOutputBytes} bytes)`);
-    }
-
-    // Send to main thread
-    sendMessage({
-      type: 'console',
-      requestId,
-      level,
-      args: serialized,
-    });
-  }
-
-  const methods = {
-    log: (...args: unknown[]) => safeLog('log', args),
-    warn: (...args: unknown[]) => safeLog('warn', args),
-    error: (...args: unknown[]) => safeLog('error', args),
-    info: (...args: unknown[]) => safeLog('info', args),
-  };
-  builtInConsoles.add(methods);
-  return methods;
 }
 
 // ============================================================================
@@ -998,33 +507,68 @@ function sendMessage(msg: WorkerToMainMessage): void {
   port.postMessage(safeSerialize(msg));
 }
 
-function serializeError(error: Error | unknown, sanitizeStackTraces: boolean): SerializedError {
-  // Handle thrown strings (from iteration limit checks in transformed loops)
-  if (typeof error === 'string') {
-    return { name: 'Error', message: error };
-  }
-
-  const err = error as Error;
-  const serialized: SerializedError = {
-    name: err.name || 'Error',
-    message: err.message || 'Unknown error',
+function resultStats(stats: ExecutionStats): {
+  duration: number;
+  toolCallCount: number;
+  iterationCount: number;
+  startTime: number;
+  endTime: number;
+} {
+  const count = (value: unknown): number =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+  return {
+    duration: count(stats.duration),
+    toolCallCount: count(stats.toolCallCount),
+    iterationCount: count(stats.iterationCount),
+    startTime: count(stats.startTime),
+    endTime: count(stats.endTime),
   };
+}
 
-  if ((err as NodeJS.ErrnoException).code) {
-    serialized.code = (err as NodeJS.ErrnoException).code;
+function truncate(value: unknown, maxLength: number, fallback: string): string {
+  const text = typeof value === 'string' && value ? value : fallback;
+  return text.length > maxLength ? text.slice(0, maxLength) : text;
+}
+
+/** The error of a failed execution, as the adapter reported it. */
+function serializeExecutionError(error: ExecutionError | undefined): SerializedError {
+  const serialized: SerializedError = {
+    name: truncate(error?.name, MAX_ERROR_NAME_LENGTH, 'Error'),
+    message: truncate(error?.message, MAX_ERROR_MESSAGE_LENGTH, 'Unknown error'),
+  };
+  if (typeof error?.code === 'string' && error.code) {
+    serialized.code = truncate(error.code, MAX_ERROR_CODE_LENGTH, '');
   }
-
-  if (err.stack && !sanitizeStackTraces) {
-    serialized.stack = err.stack;
-  } else if (err.stack && sanitizeStackTraces) {
-    // Basic sanitization - remove file paths
-    serialized.stack = err.stack
-      .split('\n')
-      .slice(0, 5)
-      .map((line) => line.replace(/\(.*?:\d+:\d+\)/g, '(...)'))
-      .join('\n');
+  if (typeof error?.stack === 'string' && error.stack) {
+    serialized.stack = truncate(error.stack, MAX_ERROR_STACK_LENGTH, '');
   }
+  if (error?.data && typeof error.data === 'object') {
+    try {
+      // Through JSON: only data crosses the thread boundary
+      serialized.data = sanitizeObject(JSON.parse(JSON.stringify(error.data))) as Record<string, unknown>;
+    } catch {
+      // Details that cannot be serialized are left out
+    }
+  }
+  return serialized;
+}
 
+/** Something thrown by this script itself (not by the sandbox, which reports errors as results). */
+function serializeThrown(error: unknown, sanitizeStackTraces: boolean): SerializedError {
+  if (typeof error === 'string') {
+    return { name: 'Error', message: truncate(error, MAX_ERROR_MESSAGE_LENGTH, 'Unknown error') };
+  }
+  const err = (error ?? {}) as { name?: unknown; message?: unknown; code?: unknown; stack?: unknown };
+  const serialized: SerializedError = {
+    name: truncate(err.name, MAX_ERROR_NAME_LENGTH, 'Error'),
+    message: truncate(err.message, MAX_ERROR_MESSAGE_LENGTH, 'Unknown error'),
+  };
+  if (typeof err.code === 'string' && err.code) {
+    serialized.code = truncate(err.code, MAX_ERROR_CODE_LENGTH, '');
+  }
+  if (typeof err.stack === 'string' && err.stack && !sanitizeStackTraces) {
+    serialized.stack = truncate(err.stack, MAX_ERROR_STACK_LENGTH, '');
+  }
   return serialized;
 }
 

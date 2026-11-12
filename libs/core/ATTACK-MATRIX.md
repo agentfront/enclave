@@ -1,5 +1,7 @@
 # Enclave Security Attack Matrix
 
+> **Where the tests are.** The test files named in this document are not in this repository: they are in the private repository `agentfront/enclave-security-tests`, included here as the git submodule `security-tests`. [`SECURITY-TESTS.md`](../../SECURITY-TESTS.md) is the current catalog of categories and invariants and says how the tests are run. This document is the per-test index as of v2.4.0; the index of the categories added since is kept with the tests.
+
 **Version:** 2.4.0
 **Last Updated:** 2026-01-06
 **Total Attack Vectors:** 500+

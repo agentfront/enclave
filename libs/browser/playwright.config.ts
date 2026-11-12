@@ -1,5 +1,11 @@
 import { defineConfig } from '@playwright/test';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+
+// The browser security specs are not in this repository: they are in the private submodule
+// `security-tests` (see SECURITY-TESTS.md). Where it is checked out they run as a second project;
+// elsewhere the run has the public specs only. scripts/security-tests.mjs runs that project alone.
+const securitySpecs = path.resolve(__dirname, '../../security-tests/specs/browser');
 
 export default defineConfig({
   testDir: path.resolve(__dirname, 'e2e'),
@@ -29,5 +35,14 @@ export default defineConfig({
       name: 'chromium',
       use: { browserName: 'chromium' },
     },
+    ...(existsSync(securitySpecs)
+      ? [
+          {
+            name: 'chromium-security',
+            testDir: securitySpecs,
+            use: { browserName: 'chromium' as const },
+          },
+        ]
+      : []),
   ],
 });

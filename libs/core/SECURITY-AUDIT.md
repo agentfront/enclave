@@ -5,9 +5,11 @@
 **Test Suite:** 1255 security tests
 **Pass Rate:** 1255/1255 passing (100%)
 
+> **How to read this report.** It was written for v2.4.0 and is kept as a record of what was tested then. A pass rate describes the tests that existed, not the absence of weaknesses: several were found and fixed afterwards, and tests were added for each. Statements below that no longer described the implementation have been corrected in place and are marked _Updated_. The maintained index of security properties and their tests is `SECURITY-TESTS.md` in the repository root; the runtime behaviour is described in `README.md` ("What the Script's Realm Holds", "Worker Pool Adapter", "How `timeout` Is Enforced"). The test files it names are no longer in this repository: the security tests live in a private repository, mounted here as the git submodule `security-tests` (see `SECURITY-TESTS.md`).
+
 ## Executive Summary
 
-The enclave-vm package provides a **defense-in-depth security architecture** for safe AgentScript execution. The package successfully blocks **all major attack vectors** including code injection, prototype pollution, sandbox escapes, resource exhaustion attacks, **AI Scoring Gate** for semantic security analysis, and now includes the optional **Worker Pool Adapter** for OS-level memory isolation.
+The enclave-vm package provides a **defense-in-depth security architecture** for safe AgentScript execution: static validation, a reduced realm, a membrane between the script and the host, sanitized results and enforced limits, with an **AI Scoring Gate** for semantic analysis and an optional **Worker Pool Adapter** that adds a heap limit per worker and a hard stop. Each layer is tested on its own, with the other layers switched off.
 
 ## Security Test Results
 
@@ -138,18 +140,20 @@ The enclave-vm package provides a **defense-in-depth security architecture** for
 
 **Verdict:** AI Scoring Gate successfully detects semantic attack patterns with 8 detection rules.
 
-### ✅ Worker Pool Adapter - OS-Level Isolation (NEW - 100% passing)
+### ✅ Worker Pool Adapter (_Updated_)
 
-When enabled with `adapter: 'worker_threads'`, execution runs in isolated worker threads:
+When enabled with `adapter: 'worker_threads'`, each script runs in a worker thread. A worker thread is not a sandbox and not process isolation (it has the Node.js API and shares the process), so inside the worker the script runs in the same sandbox as in process:
 
-- **Worker thread isolation**: ✅ ENFORCED (separate V8 isolate per worker)
-- **Memory limit enforcement**: ✅ ENFORCED (--max-old-space-size)
-- **Hard halt capability**: ✅ ENFORCED (worker.terminate())
-- **Dangerous global removal**: ✅ ENFORCED (parentPort, workerData removed)
+- **Sandbox inside the worker**: ✅ the double VM by default (a single VM when the double VM is disabled)
+- **Memory limit enforcement**: ✅ a heap limit per worker (`resourceLimits`); a worker that exceeds it is terminated and replaced. When the process runs with `--max-old-space-size`, which replaces the limit of every worker thread, the pool enforces it from the host. ⚠️ Not a guarantee that the host process survives memory exhaustion in a worker (README, "The Worker Heap Limit")
+- **Pool size and shutdown**: ✅ `maxWorkers` holds under concurrent executions; a disposed pool leaves no worker thread or timer behind
+- **Hard halt capability**: ✅ `worker.terminate()` for a script nothing else can interrupt
+- **Tool calls**: ✅ answered by the host's tool bridge, as for in-process execution
+- **Untrusted worker messages**: ✅ every message is checked against the protocol schema on the host
 - **Message flood protection**: ✅ ENFORCED (rate limiting)
 - **Prototype-safe deserialization**: ✅ ENFORCED (JSON-only, no structured clone)
 
-**Verdict:** Worker Pool Adapter provides OS-level memory isolation with dual-layer sandbox (worker + VM).
+**Verdict:** The Worker Pool Adapter adds a heap limit and a stop that does not depend on the script, around the same sandbox as in-process execution. Tests: `enclave.worker-isolation` and `enclave.worker-resources` (ATK-WORKER).
 
 ### ✅ Side Channel Attack Prevention (Documented Limitations)
 
@@ -200,12 +204,9 @@ Since all these prerequisites are blocked in the Enclave sandbox, Spectre-class 
 **Mitigation:** Consider sanitizing stack traces before returning.
 **Priority:** Low
 
-### 3. VM Context State Sharing
+### 3. VM Context State Sharing (_Updated: no longer applies_)
 
-**Issue:** Multiple `enclave.run()` calls may share VM context state.
-**Impact:** Potential state leakage between executions in same enclave instance.
-**Mitigation:** Create new VM context for each execution or properly reset context.
-**Priority:** Medium
+Every `enclave.run()` creates new VM contexts (parent and inner realm, or the single VM's context) and discards them afterwards. Nothing a script leaves in its realm is visible to a later execution. Scripts also run in strict mode, so a script can only write to its realm's global object when both static layers are switched off.
 
 ## Security Architecture
 
@@ -512,6 +513,19 @@ All security mechanisms are functioning correctly with zero failures or skipped 
 
 ## Version History
 
+- **Unreleased** (2026-11): Runtime hardening
+  - The script's realm holds only the globals its validator allows (`realmGlobals: 'allowlist'`, the default for validated AgentScript); no name resolves through a prototype of the global object (ATK-GLOBALS)
+  - Scripts run in strict mode at every security level (ATK-THIS)
+  - Regular expressions cannot be executed in a realm with the allowlist (ATK-RXRT)
+  - The parent realm's intrinsics are frozen while a script runs, and the host console object is no longer in it (ATK-PLOCK)
+  - The worker adapter runs the double VM inside the worker, enforces a heap limit per worker, validates worker messages and recovers from dead workers (ATK-WORKER)
+  - The size check of returned values no longer calls into the value and counts unpaired surrogates at their serialized size (ATK-SIZE)
+  - Compiled sandbox code is not shared between realms on V8 13.x (Node.js 24), where that could crash the process (ATK-ENGINE)
+  - Execution time no longer grows with the number of earlier scripts of the same length: the script is the first thing in the double VM bootstrap, and the bootstrap is ASCII whatever the script contains (ATK-ENGINE, Sustained Load in the performance suite)
+  - Nothing a script can reach is a raw object of another realm, checked by a crawler that runs inside the sandbox (ATK-REACH)
+  - With composite handles disabled, a handle written by the script is refused like the operator that would have built it (ATK-SIDECAR)
+  - Static rules: syntax allowlist, lexical scope analysis, write and reflection rules (see `SECURITY-TESTS.md`, layer 1)
+
 - **v2.4.0** (2026-01-06): Attack Prevention Test Suite
   - Added comprehensive attack prevention tests (71 new tests)
   - New test categories with consistent ATK-XXX naming scheme:
@@ -623,12 +637,6 @@ The enclave-vm uses a **three-layer security approach**:
 #### 1. Custom Globals Vulnerability (FIXED)
 
 **Issue:** When user-provided objects were passed as globals without wrapping, prototype chain attacks could access real `process.env`.
-
-**Attack Pattern:**
-
-```javascript
-process.env['__p' + 'roto__']['con' + 'structor']['con' + 'structor']('return process.env.PATH')();
-```
 
 **Fix:** All custom globals are now recursively wrapped with SecureProxy in both vm-adapter.ts and parent-vm-bootstrap.ts.
 
@@ -758,14 +766,14 @@ The critical finding is that **even when attackers access the Function construct
 
 ### Security Mode Differences
 
-| Feature                               | AgentScript (Default) | PERMISSIVE         |
-| ------------------------------------- | --------------------- | ------------------ |
-| Function expressions                  | ❌ Blocked            | ✅ Allowed         |
-| Getter/Setter syntax                  | ❌ Blocked            | ✅ Allowed         |
-| `arguments.callee`                    | ❌ Blocked (strict)   | ✅ Available       |
-| `function.call(null)`                 | Returns undefined     | Returns globalThis |
-| Constructor access on wrapped globals | ❌ Blocked            | ✅ Allowed         |
-| Prototype pollution in sandbox        | ✅ Host isolated      | ✅ Host isolated   |
+| Feature                               | AgentScript (Default) | PERMISSIVE          |
+| ------------------------------------- | --------------------- | ------------------- |
+| Function expressions                  | ❌ Blocked            | ✅ Allowed          |
+| Getter/Setter syntax                  | ❌ Blocked            | ✅ Allowed          |
+| `arguments.callee`                    | ❌ Blocked (strict)   | ❌ Blocked (strict) |
+| `function.call(null)`                 | `this` is `null`      | `this` is `null`    |
+| Constructor access on wrapped globals | ❌ Blocked            | ✅ Allowed          |
+| Prototype pollution in sandbox        | ✅ Host isolated      | ✅ Host isolated    |
 
 ### Key Takeaways
 
@@ -773,7 +781,7 @@ The critical finding is that **even when attackers access the Function construct
 
 2. **AgentScript preset provides strong protection** - Blocks function expressions, getters/setters, and dangerous patterns statically
 
-3. **PERMISSIVE mode trades security for flexibility** - Allows more JavaScript features but still maintains host isolation
+3. **PERMISSIVE mode trades security for flexibility** - Allows more JavaScript features but still maintains host isolation. (_Updated_: scripts run in strict mode at every level, so `this` is never the realm's global object and `arguments.callee` is never available.)
 
 4. **Constructor access through primitives works but is contained** - The constructed functions run in sandbox context with no host access
 

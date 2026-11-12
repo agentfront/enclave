@@ -37,6 +37,7 @@ Optional: `nx local-registry enclave` starts a local Verdaccio registry for publ
 
 - Framework: Jest via Nx (`@nx/jest`).
 - Test placement/naming: `src/__tests__/**/*.spec.ts`; performance tests live under `libs/enclave-vm/src/__tests__/perf/**/*.perf.spec.ts`.
+- Security tests are not in this repository. A test that holds an attempt (a script written to escape the sandbox, bypass a rule or exhaust a limit) goes to the private submodule `security-tests/` (`specs/<library>` for Jest and Playwright, `test-script/cases` for full-pipeline cases), never under `libs/`. `SECURITY-TESTS.md` has the catalog and the commands; `yarn test:security` runs them. Do not quote a test or a script from the submodule in an issue, a pull request, a commit message or a CI log.
 - Coverage reports are written under `coverage/`; `enclave-vm` enforces a global coverage threshold (see `libs/enclave-vm/jest.config.ts`).
 
 ## Commit & Pull Request Guidelines

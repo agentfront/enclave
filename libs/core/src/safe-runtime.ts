@@ -53,6 +53,22 @@ export interface SafeRuntimeOptions {
    * through it.
    */
   globalFunctionGate?: GlobalFunctionCallGate;
+
+  /**
+   * Passed to the secure proxies this runtime creates (see `SecureProxyOptions.exposeToSandbox`).
+   */
+  exposeToSandbox?: (value: unknown) => unknown;
+
+  /**
+   * Whether the result includes the host's standard library (`Math`, `JSON`, `Array`, `Object`,
+   * `String`, `Number`, `Date`) behind secure proxies, the custom globals and the loop,
+   * concatenation and `parallel` helpers. Default: true.
+   *
+   * The VM adapter passes `false`: a sandbox realm has intrinsics of its own, and handing it the
+   * HOST's makes every one of them reachable from a script (a write through the proxy changed the
+   * host's `Math`). With `false` the result holds `__safe_callTool` and the value globals only.
+   */
+  hostObjects?: boolean;
 }
 
 /**
@@ -87,7 +103,10 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
   const resolver = sidecar && referenceConfig ? new ReferenceResolver(sidecar, referenceConfig) : undefined;
 
   // Build proxy options from config for consistent usage
-  const proxyOptions: SecureProxyOptions = secureProxyConfig ? { levelConfig: secureProxyConfig } : {};
+  const proxyOptions: SecureProxyOptions = {
+    ...(secureProxyConfig ? { levelConfig: secureProxyConfig } : {}),
+    ...(options?.exposeToSandbox ? { exposeToSandbox: options.exposeToSandbox } : {}),
+  };
 
   /**
    * Safe callTool implementation
@@ -579,6 +598,22 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
     } while (test());
   }
 
+  // Wrap the tool-call function with a secure proxy
+  // This prevents attacks like: callTool['const'+'ructor']
+  const safeCallToolProxy = createSecureProxy(__safe_callTool, proxyOptions);
+
+  if (options?.hostObjects === false) {
+    // (Typed as never so that the declared result stays the full runtime below: callers that ask
+    // for this know which members they get.)
+    return {
+      __safe_callTool: safeCallToolProxy,
+      __maxIterations: config.maxIterations,
+      NaN: NaN,
+      Infinity: Infinity,
+      undefined: undefined,
+    } as never;
+  }
+
   // Prepare custom globals with __safe_ prefix
   // Wrap all custom globals with secure proxies to block constructor access
   const customGlobalsWithPrefix: Record<string, unknown> = {};
@@ -614,9 +649,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
     proxyOptions,
   );
 
-  // Wrap the safe runtime functions themselves with secure proxies
-  // This prevents attacks like: callTool['const'+'ructor']
-  const safeCallToolProxy = createSecureProxy(__safe_callTool, proxyOptions);
+  // Wrap the other safe runtime functions with secure proxies as well
   const safeForOfProxy = createSecureProxy(__safe_forOf, proxyOptions);
   const safeForProxy = createSecureProxy(__safe_for, proxyOptions);
   const safeWhileProxy = createSecureProxy(__safe_while, proxyOptions);

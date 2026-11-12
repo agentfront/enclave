@@ -9,7 +9,6 @@
  * @packageDocumentation
  */
 
-import { TOOL_NAMESPACE_TOOL_NAME_PATTERN } from '@enclave-vm/ast';
 import { z } from 'zod';
 import type { SerializedIframeConfig } from '../types';
 
@@ -78,6 +77,7 @@ export type HostToOuterMessage = ExecuteMessage | ToolResponseMessage | AbortMes
 export interface ReadyMessage {
   __enclave_msg__: true;
   type: 'ready';
+  requestId?: string;
 }
 
 export interface ToolCallMessage {
@@ -120,19 +120,49 @@ export type OuterToInnerMessage = ToolResponseMessage | AbortMessage;
 // Validation Schemas
 // ============================================================================
 
-// Letters, digits, colons, dots (tool namespaces: `mail.list`), underscores and hyphens; shared
-// with the worker_threads protocol and the tool-namespace normalizer
-const TOOL_NAME_PATTERN = TOOL_NAMESPACE_TOOL_NAME_PATTERN;
+// The schemas describe the messages as the iframes send them. The host applies them to every
+// message that comes out of the sandbox (see parseOuterToHostMessage); a message that does not
+// match is not acted on.
+
 const ID_PATTERN = /^[a-zA-Z0-9-]+$/;
+const idSchema = z.string().min(1).max(100).regex(ID_PATTERN);
+
+/** Longest tool name the host accepts from the sandbox */
+export const MAX_TOOL_NAME_LENGTH = 256;
 
 export const toolCallMessageSchema = z
   .object({
     __enclave_msg__: z.literal(true),
     type: z.literal('tool-call'),
-    requestId: z.string().min(1).max(100).regex(ID_PATTERN),
-    callId: z.string().min(1).max(100).regex(ID_PATTERN),
-    toolName: z.string().min(1).max(256).regex(TOOL_NAME_PATTERN),
+    requestId: idSchema,
+    callId: idSchema,
+    // Which names are allowed is configuration (parentValidation's operation patterns, which the
+    // host applies as well); the protocol only requires a name of sane length.
+    toolName: z.string().min(1).max(MAX_TOOL_NAME_LENGTH),
     args: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+
+// Lengths are not limited here: an error text that is too long is cut by the host, not refused.
+// A script can throw an error with any message, and that must not look like a broken protocol.
+const serializedErrorSchema = z
+  .object({
+    name: z.string(),
+    message: z.string(),
+    code: z.string().optional(),
+    stack: z.string().optional(),
+  })
+  .strict();
+
+// The values are normalized by the host rather than refused (a clock that is set back while a
+// script runs gives a negative duration), so the schema only requires numbers.
+const statsSchema = z
+  .object({
+    duration: z.number(),
+    toolCallCount: z.number(),
+    iterationCount: z.number(),
+    startTime: z.number(),
+    endTime: z.number(),
   })
   .strict();
 
@@ -140,24 +170,11 @@ export const resultMessageSchema = z
   .object({
     __enclave_msg__: z.literal(true),
     type: z.literal('result'),
-    requestId: z.string().min(1).max(100).regex(ID_PATTERN),
+    requestId: idSchema,
     success: z.boolean(),
     value: z.unknown().optional(),
-    error: z
-      .object({
-        name: z.string().max(100),
-        message: z.string().max(10000),
-        code: z.string().max(100).optional(),
-        stack: z.string().max(10000).optional(),
-      })
-      .optional(),
-    stats: z.object({
-      duration: z.number().nonnegative(),
-      toolCallCount: z.number().nonnegative().int(),
-      iterationCount: z.number().nonnegative().int(),
-      startTime: z.number().nonnegative(),
-      endTime: z.number().nonnegative(),
-    }),
+    error: serializedErrorSchema.optional(),
+    stats: statsSchema,
   })
   .strict();
 
@@ -165,9 +182,9 @@ export const consoleMessageSchema = z
   .object({
     __enclave_msg__: z.literal(true),
     type: z.literal('console'),
-    requestId: z.string().min(1).max(100).regex(ID_PATTERN),
+    requestId: idSchema,
     level: z.enum(['log', 'warn', 'error', 'info']),
-    args: z.array(z.unknown()).max(100),
+    args: z.array(z.unknown()),
   })
   .strict();
 
@@ -175,6 +192,8 @@ export const readyMessageSchema = z
   .object({
     __enclave_msg__: z.literal(true),
     type: z.literal('ready'),
+    // The outer iframe stamps its request id on everything it sends
+    requestId: idSchema.optional(),
   })
   .strict();
 
@@ -182,8 +201,8 @@ export const toolResponseMessageSchema = z
   .object({
     __enclave_msg__: z.literal(true),
     type: z.literal('tool-response'),
-    requestId: z.string().min(1).max(100).regex(ID_PATTERN),
-    callId: z.string().min(1).max(100).regex(ID_PATTERN),
+    requestId: idSchema,
+    callId: idSchema,
     result: z.unknown().optional(),
     error: z
       .object({
@@ -195,6 +214,45 @@ export const toolResponseMessageSchema = z
     toolError: z.boolean().optional(),
   })
   .strict();
+
+const OUTER_TO_HOST_SCHEMAS = {
+  'tool-call': toolCallMessageSchema,
+  result: resultMessageSchema,
+  console: consoleMessageSchema,
+  ready: readyMessageSchema,
+} as const;
+
+/** What {@link parseOuterToHostMessage} returns */
+export type ParsedOuterToHostMessage = { ok: true; message: OuterToHostMessage } | { ok: false; reason: string };
+
+/**
+ * Check a message that came out of the sandbox against the protocol.
+ *
+ * @param data The message data, already known to carry the enclave marker
+ * @param requestId The id of the execution the receiving host is running
+ * @returns The message, typed, or why it is not one the protocol allows
+ */
+export function parseOuterToHostMessage(data: { type: string }, requestId: string): ParsedOuterToHostMessage {
+  const schema = Object.prototype.hasOwnProperty.call(OUTER_TO_HOST_SCHEMAS, data.type)
+    ? OUTER_TO_HOST_SCHEMAS[data.type as keyof typeof OUTER_TO_HOST_SCHEMAS]
+    : undefined;
+  if (!schema) {
+    return { ok: false, reason: 'unknown message type' };
+  }
+
+  const parsed = schema.safeParse(data);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const where = issue && issue.path.length > 0 ? issue.path.join('.') : 'message';
+    return { ok: false, reason: `${data.type} message, ${where}: ${issue ? issue.message : 'invalid'}` };
+  }
+
+  const message = parsed.data as OuterToHostMessage;
+  if ('requestId' in message && message.requestId !== undefined && message.requestId !== requestId) {
+    return { ok: false, reason: `${data.type} message for another execution` };
+  }
+  return { ok: true, message };
+}
 
 // ============================================================================
 // Type Guards

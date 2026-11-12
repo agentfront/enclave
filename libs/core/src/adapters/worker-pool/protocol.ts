@@ -12,6 +12,9 @@ import { TOOL_NAMESPACE_TOOL_NAME_PATTERN, type NormalizedToolNamespace } from '
 import type { ResourceUsage } from './config';
 import type { SpecialResultValue } from './result-encoding';
 import type { ConsoleLevel } from '../../console-handler';
+import type { SerializableSuspiciousPattern } from '../../double-vm/types';
+import type { SecureProxyLevelConfig } from '../../types';
+import type { ReferenceConfig } from '../../sidecar/reference-config';
 
 /**
  * Serialized error format for cross-thread communication
@@ -26,6 +29,35 @@ export interface SerializedError {
   code?: string;
   /** Sanitized stack trace (only if sanitizeStackTraces is false) */
   stack?: string;
+  /** Structured details of the error (JSON data), as `ExecutionError.data` */
+  data?: Record<string, unknown>;
+}
+
+/** A regular expression as it crosses the thread boundary. */
+export interface SerializedPattern {
+  source: string;
+  flags: string;
+}
+
+/**
+ * The double VM configuration as it crosses the thread boundary: regular expressions as source
+ * and flags, custom suspicious patterns as serialized detectors.
+ */
+export interface SerializedDoubleVmConfig {
+  /** false runs the script in a single VM inside the worker (not recommended) */
+  enabled: boolean;
+  parentTimeoutBuffer: number;
+  parentValidation: {
+    validateOperationNames: boolean;
+    allowedOperationPattern?: SerializedPattern;
+    blockedOperationPatterns?: SerializedPattern[];
+    maxOperationsPerSecond: number;
+    blockSuspiciousSequences: boolean;
+    rapidEnumerationThreshold: number;
+    rapidEnumerationOverrides: Record<string, number>;
+    /** The host's custom suspicious patterns (the default ones are added inside the worker) */
+    suspiciousPatterns: SerializableSuspiciousPattern[];
+  };
 }
 
 /**
@@ -82,6 +114,22 @@ export interface SerializedConfig {
    * security level, and each console message carries one formatted line as its only argument
    */
   hasConsoleHandler?: boolean;
+  /** Memory limit for the in-sandbox allocation tracking, in bytes (0 = no tracking) */
+  memoryLimit?: number;
+  /** Maximum size of a tool request or response, in bytes */
+  toolBridgeMaxPayloadBytes?: number;
+  /** Secure proxy (membrane) configuration of the enclave */
+  secureProxyConfig?: SecureProxyLevelConfig;
+  /** Cap on calls into host functions passed in `globals` */
+  maxGlobalFunctionCalls?: number;
+  /** Global names the script's realm may hold (`realmGlobals: 'allowlist'`); absent otherwise */
+  realmGlobalAllowlist?: string[];
+  /** Reference (sidecar) configuration: the worker needs it to treat reference ids correctly */
+  referenceConfig?: ReferenceConfig;
+  /**
+   * How the script is isolated inside the worker. Absent means the double VM with its defaults.
+   */
+  doubleVm?: SerializedDoubleVmConfig;
 }
 
 // ============================================================================
@@ -110,16 +158,12 @@ export interface ToolResponseMessage {
   requestId: string;
   /** Tool call identifier */
   callId: string;
-  /** Tool result (if successful) */
-  result?: unknown;
-  /** Error (if failed) */
-  error?: SerializedError;
   /**
-   * Set when the error is a failure of the tool itself (its handler threw or rejected), as
-   * opposed to the host refusing the call. A script's `callTool(..., { throwOnError: false })`
-   * receives only such failures as a result object.
+   * The host's answer in the string tool-bridge format (see ../../tool-bridge): the sanitized
+   * result, or an error that says whether the tool itself failed or the host refused the call.
+   * It is produced by the same bridge as for an in-process execution.
    */
-  toolError?: boolean;
+  response: string;
 }
 
 /**
@@ -289,6 +333,7 @@ export const executionResultMessageSchema = z
         message: z.string().max(10000),
         code: z.string().max(100).optional(),
         stack: z.string().max(10000).optional(),
+        data: z.record(z.string(), z.unknown()).optional(),
       })
       .optional(),
     stats: z.object({

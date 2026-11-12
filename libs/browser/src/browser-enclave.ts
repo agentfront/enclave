@@ -271,6 +271,7 @@ export class BrowserEnclave {
   private readonly adapter: IframeAdapter;
   private readonly config: {
     timeout: number;
+    toolCallGraceMs: number;
     maxIterations: number;
     maxToolCalls: number;
     maxConsoleOutputBytes: number;
@@ -297,9 +298,16 @@ export class BrowserEnclave {
       ...(options.secureProxyConfig ?? {}),
     };
 
+    const timeout = options.timeout ?? levelConfig.timeout;
+    const toolCallGraceMs = options.toolCallGraceMs ?? timeout;
+    if (typeof toolCallGraceMs !== 'number' || Number.isNaN(toolCallGraceMs) || toolCallGraceMs < 0) {
+      throw new TypeError('toolCallGraceMs must be a non-negative number (Infinity to wait without limit)');
+    }
+
     // Build config
     this.config = {
-      timeout: options.timeout ?? levelConfig.timeout,
+      timeout,
+      toolCallGraceMs,
       maxIterations: options.maxIterations ?? levelConfig.maxIterations,
       maxToolCalls: options.maxToolCalls ?? levelConfig.maxToolCalls,
       maxConsoleOutputBytes: options.maxConsoleOutputBytes ?? levelConfig.maxConsoleOutputBytes,
@@ -437,6 +445,7 @@ export class BrowserEnclave {
       const executionContext: IframeExecutionContext = {
         config: serializedConfig,
         toolHandler: toolHandler || this.config.toolHandler,
+        toolCallGraceMs: this.config.toolCallGraceMs,
         securityLevel: this.securityLevel,
         doubleIframeConfig: this.doubleIframeConfig,
         secureProxyConfig: this.config.secureProxyConfig,

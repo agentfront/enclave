@@ -75,6 +75,7 @@ describe('InterpreterAdapter (SandboxAdapter)', () => {
   it('fails cleanly when no toolHandler is configured', async () => {
     const res = await adapter.execute(main("return await __safe_callTool('x', {});"), makeContext());
     expect(res.success).toBe(false);
-    expect(res.error?.message).toMatch(/toolHandler/i);
+    // The same message as the VM adapters give.
+    expect(res.error?.message).toBe('No tool handler configured. Cannot execute tool calls.');
   });
 });

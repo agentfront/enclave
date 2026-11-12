@@ -25,6 +25,16 @@
         }
       }
     },
+    "test": {
+      "inputs": [
+        "default",
+        "^production",
+        "{workspaceRoot}/jest.preset.js",
+        { "externalDependencies": ["jest", "@nx/jest", "ts-jest"] },
+        { "dependentTasksOutputFiles": "**/*.d.ts", "transitive": true },
+        "securitySpecs"
+      ]
+    },
     "test-perf": {
       "executor": "@nx/jest:jest",
       "outputs": ["{workspaceRoot}/coverage/{projectRoot}"],
@@ -82,6 +92,9 @@
         "platform": "node",
         "esbuildOptions": {
           "outExtension": { ".js": ".mjs" },
+          "banner": {
+            "js": "import { fileURLToPath as __enclaveFileURLToPath } from 'node:url';\nimport { dirname as __enclaveDirname } from 'node:path';\nconst __dirname = __enclaveDirname(__enclaveFileURLToPath(import.meta.url));"
+          },
           "external": [
             "@babel/standalone",
             "@enclave-vm/types",

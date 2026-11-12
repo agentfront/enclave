@@ -483,8 +483,9 @@ export interface EnclaveConfig {
   /**
    * Maximum execution time in milliseconds. A tool call in progress when it passes is not cut
    * off and its result is delivered; the script's next tool call then fails with "Execution
-   * aborted". A handler that never settles keeps `run()` waiting, so bound slow tools in the
-   * handler. @enclave-vm/browser follows the same rules.
+   * aborted". How long it may still take is `toolCallGraceMs`; after that, and at once for a
+   * script that is waiting for anything else (a thenable that never calls back, a promise nobody
+   * settles), the execution ends with the timeout error.
    * Default: 30000 (30 seconds)
    */
   timeout?: number;
@@ -515,9 +516,18 @@ export interface EnclaveConfig {
   maxIterations?: number;
 
   /**
-   * Sandbox adapter to use. Takes effect only with `doubleVm: { enabled: false }`: with the double
-   * VM on (the default), scripts run in the double VM whatever this says. To run scripts with an
-   * adapter of your own, pass `sandboxAdapter`.
+   * Where the sandbox runs.
+   *
+   * - `'vm'` (default): in this process. The script runs in the double VM (or in a single VM
+   *   with `doubleVm: { enabled: false }`).
+   * - `'worker_threads'`: in a pool of worker threads. Inside the worker the script runs in the
+   *   same sandbox as with `'vm'` (the double VM by default); the worker adds a heap limit that
+   *   the engine enforces (`workerPoolConfig.memoryLimitPerWorker`) and a hard stop: a script
+   *   that does not end is terminated with its worker. Custom globals reach a worker as JSON
+   *   data, so functions in `globals` are not available there.
+   * - `'isolated-vm'`: reserved, not implemented.
+   *
+   * To run scripts with an adapter of your own, pass `sandboxAdapter`.
    * Default: 'vm'
    */
   adapter?: 'vm' | 'isolated-vm' | 'worker_threads';
@@ -679,6 +689,7 @@ import type { WorkerPoolConfig } from './adapters/worker-pool/config';
 import type { DoubleVmConfig, PartialDoubleVmConfig, ParentValidationConfig } from './double-vm/types';
 import type { NormalizedToolNamespace, ToolNamespaces } from '@enclave-vm/ast';
 import type { ConsoleHandler, ConsoleLevel } from './console-handler';
+import type { HostActivity } from './execution-deadline';
 
 /**
  * Internal execution context (tracks state during execution)
@@ -705,6 +716,13 @@ export interface ExecutionContext {
   toolNamespaces?: readonly NormalizedToolNamespace[];
 
   /**
+   * The global names that may exist in the script's realm (see `CreateEnclaveOptions.realmGlobals`).
+   * When set, the adapter removes every other standard global from the realm before the script
+   * runs. Absent means the security level's list of dangerous globals is removed instead.
+   */
+  realmGlobalAllowlist?: readonly string[];
+
+  /**
    * Statistics tracker
    */
   stats: ExecutionStats;
@@ -723,6 +741,21 @@ export interface ExecutionContext {
    * Tool handler
    */
   toolHandler?: ToolHandler;
+
+  /**
+   * What the host has in flight for this execution: tool calls and async functions from
+   * `globals` (see ./execution-deadline). Set by the enclave, which ends the execution once the
+   * deadline has passed and nothing is in flight; the gate for host functions reports to it.
+   */
+  hostActivity?: HostActivity;
+
+  /**
+   * Set when the host of this execution is on another thread (the worker pool sets it inside a
+   * worker): the function that carries a tool request, in the string tool-bridge format, to the
+   * host thread and resolves with its response. An adapter then relays tool calls through it
+   * instead of calling `toolHandler`, which does not exist on this side.
+   */
+  hostToolBridge?: (requestJson: string) => Promise<string>;
 
   /**
    * Receives the script's console calls (see `CreateEnclaveOptions.consoleHandler`)
@@ -889,6 +922,26 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
   transform?: boolean;
 
   /**
+   * Which standard globals exist in the realm the script runs in.
+   *
+   * - `'allowlist'`: only the names a validated script may use exist: the AgentScript globals of
+   *   the security level (`Math`, `JSON`, `Array`, `Object`, `String`, `Number`, `Date`, ...), the
+   *   enclave's own runtime helpers, your `globals` and your `toolNamespaces`. Every other
+   *   standard global (`Function`, `eval`, `globalThis`, `Proxy`, `Reflect`, `Symbol`, `Promise`,
+   *   `RegExp`, `WebAssembly`, ...) is removed from the realm before the script runs, and regular
+   *   expressions cannot be executed there. The validator already refuses those names; this makes
+   *   the realm agree with it, so a gap in the static rules does not hand the script a global.
+   * - `'security-level'`: only the dangerous globals listed for the security level are removed.
+   *
+   * Applies to the double VM (the default), also inside a `worker_threads` worker.
+   *
+   * Default: `'allowlist'` with the `agentscript` or `babel` preset while `validate` is on,
+   * `'security-level'` otherwise (other presets, or `validate: false`, let a script name
+   * standard globals that the allowlist would remove).
+   */
+  realmGlobals?: 'allowlist' | 'security-level';
+
+  /**
    * Whether to allow functions in custom globals
    * Default: Determined by securityLevel (false for STRICT/SECURE/STANDARD)
    *
@@ -912,6 +965,21 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * Only enable if you understand the security implications.
    */
   allowFunctionsInGlobals?: boolean;
+
+  /**
+   * How long, after `timeout` has passed, a tool call (or an async function from `globals`) that
+   * was in progress at that moment may still take to deliver its result, in milliseconds. When
+   * it runs out the execution ends with the timeout error, whatever is still in progress; the
+   * handler's own promise is left to settle and its result is dropped.
+   *
+   * 0 ends every execution at the deadline. `Infinity` waits for the handler however long it
+   * takes, which was the behaviour up to 2.18: a handler that never settles then keeps `run()`
+   * from settling. Not used by the `worker_threads` adapter, which ends an execution at the
+   * deadline.
+   *
+   * Default: the value of `timeout`, so `run()` takes at most twice `timeout`.
+   */
+  toolCallGraceMs?: number;
 
   /**
    * Maximum number of calls the script may make into functions passed in `globals`

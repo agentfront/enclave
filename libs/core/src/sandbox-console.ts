@@ -9,6 +9,8 @@
  * @packageDocumentation
  */
 
+import { hasHostStackReserve, STACK_EXHAUSTED_MESSAGE } from './stack-reserve';
+
 /** The host's console methods behind a sandbox console, by level. */
 export type HostConsoleMethods = Readonly<Record<string, (...args: unknown[]) => void>>;
 
@@ -65,6 +67,9 @@ export const SANDBOX_CONSOLE_FACTORY_SOURCE = `
 export function createHostConsoleWriter(methods: HostConsoleMethods): HostConsoleWriter {
   return (level, ...args) => {
     try {
+      // The host console is not started with the stack nearly full (see ./stack-reserve): cut
+      // off halfway, a write leaves the host's stream unusable. The script gets a RangeError.
+      if (!hasHostStackReserve()) return `RangeError\n${STACK_EXHAUSTED_MESSAGE}`;
       methods[level](...args);
       return undefined;
     } catch (error) {

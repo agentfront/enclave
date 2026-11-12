@@ -5,13 +5,12 @@
 // (no QuickJS / WASM / node:vm). This is the exact path FrontMCP runs on
 // Cloudflare Workers for its `codecall` tool.
 //
-// Contract under test: the transformer must be invoked with
-// `{ transformLoops: false }` for the interpreter target. The interpreter is
-// secure-by-construction and enforces its OWN step budget (`maxSteps` via
-// `tick()`), so the transformer's loop-rewrite helpers (`__safe_forOf`,
-// `__safe_for`, `__safe_while`) are both redundant AND undefined in the
-// interpreter's global scope. Leaving them in throws
-// `'__safe_forOf' is not defined` at runtime.
+// These tests invoke the transformer with `{ transformLoops: false }`: the interpreter enforces
+// its OWN step budget (`maxSteps` via `tick()`), so the loop-rewrite helpers are redundant for
+// this target. The adapter provides those helpers as well (`__safe_forOf`, `__safe_concat`,
+// `__safe_template`, ...), so code transformed with the default options runs too, which is what
+// an `Enclave` with `sandboxAdapter: new InterpreterAdapter()` produces; that path is covered by
+// interpreter-conformance.spec.ts.
 
 import { transformAgentScript } from '@enclave-vm/ast';
 
@@ -74,16 +73,6 @@ describe('AgentScript transform + Interpreter (worker codecall path)', () => {
     const res = await new InterpreterAdapter({ maxSteps: 5_000 }).execute(transformed, makeContext(handler));
     expect(res.success).toBe(false);
     expect(res.error?.code).toBe('STEP_LIMIT_EXCEEDED');
-  });
-
-  it('blocks prototype-escape regardless of transform (secure by construction)', async () => {
-    const transformed = transformAgentScript(
-      "return ({}).constructor.constructor('return 1')();",
-      INTERPRETER_TRANSFORM,
-    );
-    const res = await new InterpreterAdapter().execute(transformed, makeContext(handler));
-    expect(res.success).toBe(false);
-    expect(res.error?.message).toMatch(/constructor/i);
   });
 
   it('enforces maxToolCalls across transformed code', async () => {

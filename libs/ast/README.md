@@ -27,7 +27,7 @@ AST Guard is a powerful static analysis tool for JavaScript code. It provides a 
 - **Reflection API bypasses**: `Reflect.get`, `Reflect.construct`
 - **Global object access**: `window`, `globalThis`, `this`
 
-For detailed CVE analysis, see [CVE-COVERAGE.md](./docs/CVE-COVERAGE.md). For the full list of 100+ blocked attack vectors, see [SECURITY-AUDIT.md](./docs/SECURITY-AUDIT.md).
+The analysis of each CVE and the list of attack vectors these rules are tested against are kept with the security tests, which are not public; [SECURITY-TESTS.md](https://github.com/agentfront/enclave/blob/main/SECURITY-TESTS.md) lists the categories and the invariants they protect.
 
 ## Features
 
@@ -897,13 +897,10 @@ These are inherent to **any** static analyzer (not vulnerabilities):
 
 ## Documentation
 
-| Document                                                     | Purpose                                         |
-| ------------------------------------------------------------ | ----------------------------------------------- |
-| [docs/AGENTSCRIPT.md](./docs/AGENTSCRIPT.md)                 | AgentScript language reference for AI agents    |
-| [docs/CVE-COVERAGE.md](./docs/CVE-COVERAGE.md)               | Detailed CVE analysis and protection mechanisms |
-| [docs/SECURITY-AUDIT.md](./docs/SECURITY-AUDIT.md)           | Full list of 67+ blocked attack vectors         |
-| [docs/STDLIB-SECURITY.md](./docs/STDLIB-SECURITY.md)         | Standard library security analysis              |
-| [docs/LOOP-TRANSFORMATION.md](./docs/LOOP-TRANSFORMATION.md) | Future loop transformation design               |
+| Document                                                     | Purpose                                      |
+| ------------------------------------------------------------ | -------------------------------------------- |
+| [docs/AGENTSCRIPT.md](./docs/AGENTSCRIPT.md)                 | AgentScript language reference for AI agents |
+| [docs/LOOP-TRANSFORMATION.md](./docs/LOOP-TRANSFORMATION.md) | Future loop transformation design            |
 
 ## Roadmap
 

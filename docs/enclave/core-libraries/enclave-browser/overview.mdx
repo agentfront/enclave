@@ -41,7 +41,7 @@ description: 'Secure JavaScript execution in the browser using double iframe iso
 | **Code transformation** | Same (AgentScript) | Same (AgentScript) |
 | **Security levels** | Same 4 levels | Same 4 levels |
 | **Tool system** | Same `callTool()` API | Same `callTool()` API |
-| **Timeout and tool calls** | A call in progress is not cut off; the next call after `timeout` is refused | Same |
+| **Timeout and tool calls** | A call in progress at the deadline may still deliver within `toolCallGraceMs`; the next call after `timeout` is refused | Same |
 
 ## Installation
 
@@ -119,8 +119,9 @@ The value a script returns is copied out of the sandbox the same way as in `@enc
 |------|---------|--------|
 | `VALIDATION_ERROR` | AST validation failed | Fix the code — blocked construct used |
 | `EXECUTION_TIMEOUT` | Execution exceeded timeout | Optimize or increase timeout |
-| `MAX_TOOL_CALLS` | Tool call limit exceeded | Reduce tool calls or increase limit |
-| `MAX_ITERATIONS` | Loop iteration limit exceeded | Reduce loops or increase limit |
+| (none) | Tool call limit exceeded: `error.message` starts with `Maximum tool call limit exceeded` | Reduce tool calls or increase `maxToolCalls` |
+| (none) | Loop iteration limit exceeded: `error.message` starts with `Maximum iteration limit exceeded` | Reduce loops or increase `maxIterations` |
+| `PROTOCOL_VIOLATION` | The sandbox sent the host page a message the protocol does not allow; the execution was ended | Should not happen with the iframes this package creates: report it |
 | `IFRAME_CREATE_FAILED` | Failed to create sandbox iframe | Check browser compatibility |
 | `EXECUTION_ABORTED` | Execution was manually aborted | Expected when calling `abort()` |
 | `ADAPTER_DISPOSED` | Adapter was disposed during execution | Avoid disposing during execution |

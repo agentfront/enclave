@@ -442,14 +442,16 @@ function estimateStringSize(str: string): number {
       }
     } else if (code < 2048) {
       bytes += 2; // 2-byte UTF-8
-    } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
-      // High surrogate - check for low surrogate pair (emoji, supplementary chars)
-      const nextCode = str.charCodeAt(i + 1);
+    } else if (code >= 0xd800 && code <= 0xdfff) {
+      // Surrogates. A high surrogate followed by a low one is one supplementary character
+      // (4-byte UTF-8). Any other surrogate is unpaired, and JSON.stringify writes an unpaired
+      // surrogate as a \uXXXX escape: 6 bytes, twice what it was counted as here before.
+      const nextCode = code <= 0xdbff && i + 1 < str.length ? str.charCodeAt(i + 1) : 0;
       if (nextCode >= 0xdc00 && nextCode <= 0xdfff) {
-        bytes += 4; // 4-byte UTF-8 for surrogate pair
+        bytes += 4;
         i++; // Skip the low surrogate
       } else {
-        bytes += 3; // Unpaired high surrogate (3-byte UTF-8)
+        bytes += 6;
       }
     } else {
       bytes += 3; // 3-byte UTF-8 (BMP characters U+0800 to U+FFFF)
@@ -490,6 +492,13 @@ export function estimateSerializedSize(
   maxDepth = 2000,
   currentPath: Set<object> = new Set(),
 ): number {
+  // SECURITY: `value` is what the script returned, BEFORE it is sanitized: it may be an object of
+  // another realm, or a script-made Proxy. This walk therefore follows the same discipline as
+  // sanitizeValue: no method is ever looked up on the value, properties are read with the captured
+  // Reflect.get, a length is read once and only trusted when it is a real number, and builtin
+  // kinds are recognised by internal slot (hasBrand) rather than `instanceof`, which would ask the
+  // value for its prototype chain and does not recognise another realm's Date anyway.
+
   // Depth limit to prevent stack overflow - reject deeply nested structures
   if (depth > maxDepth) {
     throw new Error(
@@ -516,7 +525,7 @@ export function estimateSerializedSize(
   // Number: estimate digit count
   if (type === 'number') {
     const num = value as number;
-    if (!Number.isFinite(num)) return 4; // "null" for Infinity/NaN
+    if (!NumberIsFinite(num)) return 4; // "null" for Infinity/NaN
     return String(num).length;
   }
 
@@ -537,7 +546,7 @@ export function estimateSerializedSize(
   }
 
   // Arrays
-  if (Array.isArray(value)) {
+  if (ArrayIsArray(value)) {
     // Check for circular reference (is this object an ancestor of itself?)
     if (currentPath.has(value)) {
       // Circular reference detected - JSON.stringify would throw, but we estimate small
@@ -547,92 +556,112 @@ export function estimateSerializedSize(
     // Add to current path for descendant checks
     currentPath.add(value);
 
-    let size = 2; // brackets []
-    for (let i = 0; i < value.length; i++) {
-      if (i > 0) size += 1; // comma
-      let elementSize = estimateSerializedSize(value[i], maxBytes, depth + 1, maxDepth, currentPath);
-      // JSON.stringify turns undefined/function/symbol array elements into null (4 bytes)
-      if (elementSize === 0) elementSize = 4;
-      size += elementSize;
+    try {
+      // Read the length ONCE; a stateful `length` (a Proxy trap) must not steer the loop.
+      const rawLength = readProperty(value, 'length');
+      const length =
+        typeof rawLength === 'number' && NumberIsFinite(rawLength) && rawLength >= 0 ? MathFloor(rawLength) : 0;
 
-      // Check limit incrementally to fail fast
-      if (maxBytes > 0 && size > maxBytes) {
-        currentPath.delete(value); // Clean up before throwing
-        throw new Error(
-          `Array serialization would exceed limit: estimated ${size}+ > ${maxBytes} bytes. ` +
-            `This often indicates repeated references to large strings that expand during JSON serialization.`,
-        );
+      let size = 2; // brackets []
+      for (let i = 0; i < length; i++) {
+        if (i > 0) size += 1; // comma
+        let elementSize = estimateSerializedSize(readProperty(value, i), maxBytes, depth + 1, maxDepth, currentPath);
+        // JSON.stringify turns undefined/function/symbol array elements into null (4 bytes)
+        if (elementSize === 0) elementSize = 4;
+        size += elementSize;
+
+        // Check limit incrementally to fail fast
+        if (maxBytes > 0 && size > maxBytes) {
+          throw new Error(
+            `Array serialization would exceed limit: estimated ${size}+ > ${maxBytes} bytes. ` +
+              `This often indicates repeated references to large strings that expand during JSON serialization.`,
+          );
+        }
       }
+      return size;
+    } finally {
+      // Remove from current path (we're done with this branch), also when the limit was hit
+      currentPath.delete(value);
     }
-
-    // Remove from current path (we're done with this branch)
-    currentPath.delete(value);
-    return size;
   }
 
   // Objects
-  if (type === 'object' && value !== null) {
+  if (type === 'object') {
+    const object = value as object;
+
     // Check for circular reference (is this object an ancestor of itself?)
-    if (currentPath.has(value as object)) {
+    if (currentPath.has(object)) {
       // Circular reference detected
       return 4;
     }
 
+    // Handle special objects. Only values that are not plain objects pay for the brand checks.
+    if (!isPlainObject(object)) {
+      if (hasBrand(DateProtoGetTime, object)) {
+        return 26; // ISO date string with quotes: "2024-01-01T00:00:00.000Z"
+      }
+      if (hasBrand(RegExpProtoSourceGetter, object)) {
+        return 2; // RegExp serializes to "{}" in JSON.stringify
+      }
+    }
+
     // Add to current path for descendant checks
-    currentPath.add(value as object);
+    currentPath.add(object);
 
-    // Handle special objects
-    if (value instanceof Date) {
-      currentPath.delete(value as object);
-      return 26; // ISO date string with quotes: "2024-01-01T00:00:00.000Z"
-    }
-    if (value instanceof RegExp) {
-      // RegExp serializes to "{}" in JSON.stringify
-      currentPath.delete(value as object);
-      return 2; // "{}"
-    }
+    try {
+      let size = 2; // braces {}
+      const keys = ObjectKeys(object);
+      let first = true;
 
-    let size = 2; // braces {}
-    const keys = Object.keys(value as Record<string, unknown>);
-    let first = true;
+      for (const key of keys) {
+        // Skip dangerous keys (they're stripped)
+        if (DANGEROUS_KEYS.has(key)) continue;
 
-    for (const key of keys) {
-      // Skip dangerous keys (they're stripped)
-      if (key === '__proto__' || key === 'constructor') continue;
+        // A property that throws when read is skipped, as sanitizeValue skips it
+        let propValue: unknown;
+        try {
+          propValue = ReflectGet(object, key);
+        } catch {
+          continue;
+        }
 
-      if (!first) size += 1; // comma
-      first = false;
+        if (!first) size += 1; // comma
+        first = false;
 
-      // Key: quoted string + colon (accounting for JSON escaping)
-      size += estimateStringSize(key) + 1; // "key":
+        // Key: quoted string + colon (accounting for JSON escaping)
+        size += estimateStringSize(key) + 1; // "key":
 
-      // Value
-      let propValue: unknown;
-      try {
-        propValue = (value as Record<string, unknown>)[key];
-      } catch {
-        continue; // Skip throwing properties
+        // Value
+        size += estimateSerializedSize(propValue, maxBytes, depth + 1, maxDepth, currentPath);
+
+        // Check limit incrementally to fail fast
+        if (maxBytes > 0 && size > maxBytes) {
+          throw new Error(
+            `Object serialization would exceed limit: estimated ${size}+ > ${maxBytes} bytes. ` +
+              `This often indicates repeated references to large strings that expand during JSON serialization.`,
+          );
+        }
       }
-
-      const valueSize = estimateSerializedSize(propValue, maxBytes, depth + 1, maxDepth, currentPath);
-      size += valueSize;
-
-      // Check limit incrementally to fail fast
-      if (maxBytes > 0 && size > maxBytes) {
-        currentPath.delete(value as object); // Clean up before throwing
-        throw new Error(
-          `Object serialization would exceed limit: estimated ${size}+ > ${maxBytes} bytes. ` +
-            `This often indicates repeated references to large strings that expand during JSON serialization.`,
-        );
-      }
+      return size;
+    } finally {
+      // Remove from current path (we're done with this branch), also when the limit was hit
+      currentPath.delete(object);
     }
-
-    // Remove from current path (we're done with this branch)
-    currentPath.delete(value as object);
-    return size;
   }
 
   return 0;
+}
+
+/**
+ * Read one property of an untrusted value with the captured Reflect.get.
+ * A read that throws (a getter, a Proxy trap) is treated as an absent property.
+ */
+function readProperty(target: object, key: string | number): unknown {
+  try {
+    return ReflectGet(target, key);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

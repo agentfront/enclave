@@ -44,12 +44,24 @@ export interface MemoryMonitorStats {
   memoryExceededCount: number;
   /** Number of check failures */
   checkFailureCount: number;
-  /** Peak memory usage observed (bytes) */
+  /** Most that one worker held in any report (its heap plus its external memory, in bytes) */
   peakMemoryBytes: number;
-  /** Average memory usage (bytes) */
+  /** Average of what a worker held over all reports (bytes) */
   avgMemoryBytes: number;
   /** Total samples collected */
   totalSamples: number;
+}
+
+/**
+ * What a worker itself holds, from its memory report: its heap plus its external memory.
+ *
+ * Not `rss`: inside a worker thread `process.memoryUsage().rss` is the resident size of the
+ * whole process. Compared with a per-worker limit, it made every worker of a host larger than
+ * the limit look over it, at every check: idle workers were recycled, and an execution that was
+ * running (waiting for a tool call, say) lost its worker.
+ */
+export function workerMemoryBytes(usage: ResourceUsage): number {
+  return usage.heapUsed + usage.external;
 }
 
 /**
@@ -145,17 +157,20 @@ export class MemoryMonitor extends EventEmitter {
       const usage = await slot.requestMemoryReport(this.config.memoryReportTimeoutMs);
       results.set(slotId, usage);
 
-      // Track statistics
-      this._totalMemoryBytes += usage.rss;
+      // Track statistics: what the worker itself holds (see workerMemoryBytes), not `rss`
+      const held = workerMemoryBytes(usage);
+      this._totalMemoryBytes += held;
       this._totalSamples++;
-      if (usage.rss > this._peakMemoryBytes) {
-        this._peakMemoryBytes = usage.rss;
+      if (held > this._peakMemoryBytes) {
+        this._peakMemoryBytes = held;
       }
 
-      // Check limit
-      if (usage.rss > this.config.memoryLimitPerWorker) {
+      // Check limit: what this worker holds against what it may hold. The slot knows the latter
+      // (its limit plus the young generation the engine allows on top); 0 means no limit.
+      const limit = slot.memoryBudgetBytes > 0 ? slot.memoryBudgetBytes : this.config.memoryLimitPerWorker;
+      if (limit > 0 && workerMemoryBytes(usage) > limit) {
         this._memoryExceededCount++;
-        this.emit('memoryExceeded', slotId, usage, this.config.memoryLimitPerWorker);
+        this.emit('memoryExceeded', slotId, usage, limit);
 
         // Mark slot for recycling
         slot.markForRecycle();
@@ -178,11 +193,12 @@ export class MemoryMonitor extends EventEmitter {
     try {
       const usage = await slot.requestMemoryReport(this.config.memoryReportTimeoutMs);
 
-      // Track statistics
-      this._totalMemoryBytes += usage.rss;
+      // Track statistics: what the worker itself holds (see workerMemoryBytes), not `rss`
+      const held = workerMemoryBytes(usage);
+      this._totalMemoryBytes += held;
       this._totalSamples++;
-      if (usage.rss > this._peakMemoryBytes) {
-        this._peakMemoryBytes = usage.rss;
+      if (held > this._peakMemoryBytes) {
+        this._peakMemoryBytes = held;
       }
 
       return usage;
@@ -222,13 +238,20 @@ export class MemoryMonitor extends EventEmitter {
    * Get current memory usage summary
    */
   getCurrentUsageSummary(): {
+    /** Sum of the `rss` every worker reported: each report is the size of the WHOLE process */
     totalRss: number;
     avgRss: number;
     maxRss: number;
+    /** Sum of what the workers themselves hold (heap plus external memory) */
+    totalWorkerBytes: number;
+    avgWorkerBytes: number;
+    maxWorkerBytes: number;
     slotCount: number;
   } {
     let totalRss = 0;
     let maxRss = 0;
+    let totalWorkerBytes = 0;
+    let maxWorkerBytes = 0;
     let slotCount = 0;
 
     for (const slot of this.slots.values()) {
@@ -236,6 +259,11 @@ export class MemoryMonitor extends EventEmitter {
         totalRss += slot.memoryUsage.rss;
         if (slot.memoryUsage.rss > maxRss) {
           maxRss = slot.memoryUsage.rss;
+        }
+        const held = workerMemoryBytes(slot.memoryUsage);
+        totalWorkerBytes += held;
+        if (held > maxWorkerBytes) {
+          maxWorkerBytes = held;
         }
         slotCount++;
       }
@@ -245,6 +273,9 @@ export class MemoryMonitor extends EventEmitter {
       totalRss,
       avgRss: slotCount > 0 ? totalRss / slotCount : 0,
       maxRss,
+      totalWorkerBytes,
+      avgWorkerBytes: slotCount > 0 ? totalWorkerBytes / slotCount : 0,
+      maxWorkerBytes,
       slotCount,
     };
   }

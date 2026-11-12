@@ -2,6 +2,9 @@ import type * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
 import type { ValidationRule, ValidationContext } from '../interfaces';
 import { ValidationSeverity } from '../interfaces';
+import { analyzeScopes } from '../utils/scope-analysis';
+import { walkAll } from '../utils/ast-walk';
+import { tryGetStaticComputedKeys } from './coercion-utils';
 
 /**
  * Configuration options for ReservedPrefixRule
@@ -69,6 +72,8 @@ export class ReservedPrefixRule implements ValidationRule {
   private readonly reservedPrefixes: string[];
   private readonly allowedIdentifiers: Set<string>;
   private readonly customMessage?: string;
+  /** Nodes already reported in the current run, so the passes below never report one twice. */
+  private reported = new WeakSet<object>();
 
   constructor(options: ReservedPrefixOptions = {}) {
     this.reservedPrefixes = options.reservedPrefixes || ['__ag_', '__safe_'];
@@ -78,6 +83,7 @@ export class ReservedPrefixRule implements ValidationRule {
 
   validate(context: ValidationContext): void {
     const { ast } = context;
+    this.reported = new WeakSet<object>();
 
     // Walk the AST and check all identifier declarations AND assignments
     walk.simple(ast, {
@@ -185,6 +191,35 @@ export class ReservedPrefixRule implements ValidationRule {
         }
       },
     });
+
+    // The visitors above cover the common forms. These two passes cover the rest, in every
+    // position: bindings inside any pattern (catch ({ __safe_x }), class names, nested defaults),
+    // and identifiers written through destructuring, a for-in/of head or `delete`
+    // ([__safe_callTool] = y, ({ a: __safe_callTool } = y), for (__safe_callTool of z)).
+    const { bindings, references } = analyzeScopes(ast);
+    for (const binding of bindings) {
+      this.checkIdentifier(binding.node, context);
+    }
+    for (const ref of references) {
+      if (ref.write) this.checkAssignmentTarget(ref.node, context);
+    }
+
+    // Member targets in the same positions: [obj.__safe_x] = y, for (obj.__safe_x of z), obj.__safe_x++
+    walkAll(ast, (node, ancestors, key) => {
+      if (node.type !== 'MemberExpression') return;
+      const parent = ancestors[ancestors.length - 1];
+      if (!parent) return;
+      const isWriteTarget =
+        (parent.type === 'AssignmentExpression' && key === 'left') ||
+        (parent.type === 'UpdateExpression' && key === 'argument') ||
+        (parent.type === 'UnaryExpression' && parent.operator === 'delete') ||
+        ((parent.type === 'ForInStatement' || parent.type === 'ForOfStatement') && key === 'left') ||
+        parent.type === 'ArrayPattern' ||
+        parent.type === 'RestElement' ||
+        (parent.type === 'AssignmentPattern' && key === 'left') ||
+        (parent.type === 'Property' && key === 'value' && ancestors[ancestors.length - 2]?.type === 'ObjectPattern');
+      if (isWriteTarget) this.checkMemberAssignment(node, context);
+    });
   }
 
   /**
@@ -200,6 +235,8 @@ export class ReservedPrefixRule implements ValidationRule {
 
     for (const prefix of this.reservedPrefixes) {
       if (identifierName.startsWith(prefix)) {
+        if (this.reported.has(node)) return;
+        this.reported.add(node);
         context.report({
           code: 'RESERVED_PREFIX',
           message:
@@ -271,6 +308,8 @@ export class ReservedPrefixRule implements ValidationRule {
 
     for (const prefix of this.reservedPrefixes) {
       if (identifierName.startsWith(prefix)) {
+        if (this.reported.has(node)) return;
+        this.reported.add(node);
         context.report({
           code: 'RESERVED_PREFIX_ASSIGNMENT',
           message:
@@ -314,7 +353,11 @@ export class ReservedPrefixRule implements ValidationRule {
     if (node.computed && node.property.type === 'Literal') {
       // obj['__safe_foo'] = ...
       propName = String(node.property.value);
-    } else if (!node.computed && node.property.type === 'Identifier') {
+    } else if (node.computed) {
+      // obj[`__safe_foo`] = ..., obj[['__safe_foo']] = ...: every statically resolvable key form
+      const staticKeys = tryGetStaticComputedKeys(node.property);
+      propName = staticKeys.find((k) => this.reservedPrefixes.some((prefix) => k.startsWith(prefix))) ?? null;
+    } else if (node.property.type === 'Identifier') {
       // obj.__safe_foo = ...
       propName = node.property.name;
     }
@@ -323,6 +366,8 @@ export class ReservedPrefixRule implements ValidationRule {
 
     for (const prefix of this.reservedPrefixes) {
       if (propName.startsWith(prefix)) {
+        if (this.reported.has(node)) return;
+        this.reported.add(node);
         context.report({
           code: 'RESERVED_PREFIX_MEMBER_ASSIGNMENT',
           message:

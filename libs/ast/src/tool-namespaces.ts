@@ -13,7 +13,11 @@
  * @packageDocumentation
  */
 
-import { AGENTSCRIPT_DISALLOWED_IDENTIFIERS, AGENTSCRIPT_PERMISSIVE_GLOBALS } from './presets/agentscript.preset';
+import {
+  AGENTSCRIPT_DISALLOWED_IDENTIFIERS,
+  AGENTSCRIPT_DISALLOWED_PROPERTIES,
+  AGENTSCRIPT_PERMISSIVE_GLOBALS,
+} from './presets/agentscript.preset';
 
 /**
  * Tool namespaces as a host configures them.
@@ -86,6 +90,9 @@ const SANDBOX_NAMES: ReadonlySet<string> = new Set([
 
 const DISALLOWED: ReadonlySet<string> = new Set(AGENTSCRIPT_DISALLOWED_IDENTIFIERS);
 
+/** Property names the AgentScript validator refuses: a method with one of them could never be called. */
+const DISALLOWED_PROPERTIES: ReadonlySet<string> = new Set(AGENTSCRIPT_DISALLOWED_PROPERTIES);
+
 function fail(message: string): never {
   throw new TypeError(`Invalid toolNamespaces: ${message}`);
 }
@@ -110,7 +117,9 @@ function checkMethodName(namespace: string, method: unknown): string {
   const qualified = `${namespace}.${method}`;
   if (!IDENTIFIER.test(method)) fail(`method "${qualified}" is not a valid identifier`);
   if (method.startsWith('__') || PROTOTYPE_KEYS.has(method)) fail(`method "${qualified}" is a reserved name`);
-  if (DISALLOWED.has(method)) fail(`method "${qualified}" is a property name AgentScript refuses`);
+  if (DISALLOWED.has(method) || DISALLOWED_PROPERTIES.has(method)) {
+    fail(`method "${qualified}" is a property name AgentScript refuses`);
+  }
   return method;
 }
 

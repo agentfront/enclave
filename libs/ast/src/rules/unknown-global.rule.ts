@@ -1,7 +1,6 @@
-import type * as acorn from 'acorn';
-import * as walk from 'acorn-walk';
 import type { ValidationRule, ValidationContext } from '../interfaces';
 import { ValidationSeverity } from '../interfaces';
+import { analyzeScopes } from '../utils/scope-analysis';
 
 /**
  * Configuration options for UnknownGlobalRule
@@ -18,6 +17,13 @@ export interface UnknownGlobalOptions {
    * Default: true
    */
   allowStandardGlobals?: boolean;
+
+  /**
+   * Whether a script may assign to an allowed global (`Math = x`, `callTool = fn`, `[JSON] = y`,
+   * `for (Object of z)`, `delete Array`).
+   * Default: false. A global the script may READ is still not one it may replace.
+   */
+  allowGlobalAssignment?: boolean;
 
   /**
    * Custom error message
@@ -63,6 +69,16 @@ const STANDARD_SAFE_GLOBALS = new Set([
  * - Ensure explicit control over available APIs
  * - Create a secure sandbox with known capabilities
  *
+ * **Resolution is lexical.** An identifier counts as "declared locally" only when a declaration of
+ * that name is in scope where the identifier is used. A declaration in some other block, arrow
+ * function or catch clause does not make the name local elsewhere:
+ * ```javascript
+ * { let globalThis = 1; }
+ * const g = globalThis;          // ❌ BLOCKED: this `globalThis` is the global, not the block's variable
+ * ```
+ * Assignment targets are checked like reads (`x = 1`, `[x] = y`, `for (x of y)`, `x++`), and an
+ * assignment to an allowed global is refused unless `allowGlobalAssignment` is set.
+ *
  * **Example violations:**
  * ```javascript
  * console.log('hello');          // ❌ BLOCKED: console not in allowedGlobals
@@ -94,6 +110,7 @@ export class UnknownGlobalRule implements ValidationRule {
   readonly enabledByDefault = true;
 
   private readonly allowedGlobals: Set<string>;
+  private readonly allowGlobalAssignment: boolean;
   private readonly customMessage?: string;
 
   constructor(options: UnknownGlobalOptions = {}) {
@@ -114,256 +131,52 @@ export class UnknownGlobalRule implements ValidationRule {
       STANDARD_SAFE_GLOBALS.forEach((g) => this.allowedGlobals.add(g));
     }
 
+    this.allowGlobalAssignment = options.allowGlobalAssignment === true;
     this.customMessage = options.message;
   }
 
   validate(context: ValidationContext): void {
-    const { ast } = context;
+    // Every reference that no enclosing scope declares reaches a global.
+    const { freeReferences } = analyzeScopes(context.ast);
 
-    // Build symbol table of all declared identifiers
-    const declaredIdentifiers = new Set<string>();
-    this.collectDeclarations(ast, declaredIdentifiers);
+    for (const ref of freeReferences) {
+      const identifierName = ref.name;
+      const location = ref.node.loc
+        ? {
+            line: ref.node.loc.start.line,
+            column: ref.node.loc.start.column,
+            endLine: ref.node.loc.end.line,
+            endColumn: ref.node.loc.end.column,
+          }
+        : undefined;
 
-    // Check all identifier references
-    walk.ancestor(ast, {
-      Identifier: (node: any, ancestors: any[]) => {
-        // Skip if this is a declaration (already in declaredIdentifiers)
-        if (this.isDeclaration(node, ancestors)) {
-          return;
-        }
+      if (!this.allowedGlobals.has(identifierName)) {
+        context.report({
+          code: 'UNKNOWN_GLOBAL',
+          message:
+            this.customMessage ||
+            `Unknown identifier "${identifierName}". ` +
+              `All identifiers must be either declared locally or in the allowed globals list. ` +
+              `Allowed globals: ${Array.from(this.allowedGlobals).sort().join(', ')}`,
+          location,
+          data: {
+            identifier: identifierName,
+            allowedGlobals: Array.from(this.allowedGlobals).sort(),
+          },
+        });
+        continue;
+      }
 
-        // Skip if this is a property name (not a reference)
-        if (this.isPropertyName(node, ancestors)) {
-          return;
-        }
-
-        const identifierName = node.name;
-
-        // Check if identifier is declared or allowed
-        if (!declaredIdentifiers.has(identifierName) && !this.allowedGlobals.has(identifierName)) {
-          context.report({
-            code: 'UNKNOWN_GLOBAL',
-            message:
-              this.customMessage ||
-              `Unknown identifier "${identifierName}". ` +
-                `All identifiers must be either declared locally or in the allowed globals list. ` +
-                `Allowed globals: ${Array.from(this.allowedGlobals).sort().join(', ')}`,
-            location: node.loc
-              ? {
-                  line: node.loc.start.line,
-                  column: node.loc.start.column,
-                  endLine: node.loc.end.line,
-                  endColumn: node.loc.end.column,
-                }
-              : undefined,
-            data: {
-              identifier: identifierName,
-              allowedGlobals: Array.from(this.allowedGlobals).sort(),
-            },
-          });
-        }
-      },
-    });
-  }
-
-  /**
-   * Collect all declared identifiers in the AST
-   *
-   * **Note on scope handling:** This method builds a flat symbol table without
-   * tracking lexical scope. All declarations are collected into a single set
-   * regardless of where they're declared. This is an intentional simplification
-   * for performance reasons, and works correctly when used with AgentScript v1
-   * where user-defined functions are blocked by default (NoUserDefinedFunctionsRule).
-   *
-   * If user functions are enabled, inner-scope declarations will "whitelist"
-   * that identifier name globally, which may cause false negatives. Example:
-   * ```javascript
-   * function inner() { const x = 1; }  // declares 'x'
-   * Math.max(x, 5);  // 'x' passes because it's in the flat declared set
-   * ```
-   */
-  private collectDeclarations(ast: acorn.Node, declared: Set<string>): void {
-    walk.simple(ast, {
-      // Variable declarations
-      VariableDeclarator: (node: any) => {
-        this.collectPatternIdentifiers(node.id, declared);
-      },
-
-      // Function declarations
-      FunctionDeclaration: (node: any) => {
-        if (node.id) {
-          declared.add(node.id.name);
-        }
-        // Parameters are scoped to the function
-        if (node.params) {
-          node.params.forEach((param: any) => {
-            this.collectPatternIdentifiers(param, declared);
-          });
-        }
-      },
-
-      // Function expressions
-      FunctionExpression: (node: any) => {
-        if (node.id) {
-          declared.add(node.id.name);
-        }
-        if (node.params) {
-          node.params.forEach((param: any) => {
-            this.collectPatternIdentifiers(param, declared);
-          });
-        }
-      },
-
-      // Arrow functions
-      ArrowFunctionExpression: (node: any) => {
-        if (node.params) {
-          node.params.forEach((param: any) => {
-            this.collectPatternIdentifiers(param, declared);
-          });
-        }
-      },
-
-      // Class declarations
-      ClassDeclaration: (node: any) => {
-        if (node.id) {
-          declared.add(node.id.name);
-        }
-      },
-
-      // Import declarations
-      ImportSpecifier: (node: any) => {
-        if (node.local) {
-          declared.add(node.local.name);
-        }
-      },
-
-      ImportDefaultSpecifier: (node: any) => {
-        if (node.local) {
-          declared.add(node.local.name);
-        }
-      },
-
-      ImportNamespaceSpecifier: (node: any) => {
-        if (node.local) {
-          declared.add(node.local.name);
-        }
-      },
-
-      // Catch clause
-      CatchClause: (node: any) => {
-        if (node.param) {
-          this.collectPatternIdentifiers(node.param, declared);
-        }
-      },
-
-      // For-in / For-of loop variables
-      ForInStatement: (node: any) => {
-        if (node.left.type === 'VariableDeclaration') {
-          node.left.declarations.forEach((decl: any) => {
-            this.collectPatternIdentifiers(decl.id, declared);
-          });
-        }
-      },
-
-      ForOfStatement: (node: any) => {
-        if (node.left.type === 'VariableDeclaration') {
-          node.left.declarations.forEach((decl: any) => {
-            this.collectPatternIdentifiers(decl.id, declared);
-          });
-        }
-      },
-    });
-  }
-
-  /**
-   * Collect identifiers from patterns (destructuring, etc.)
-   */
-  private collectPatternIdentifiers(pattern: any, declared: Set<string>): void {
-    if (pattern.type === 'Identifier') {
-      declared.add(pattern.name);
-    } else if (pattern.type === 'ObjectPattern') {
-      pattern.properties.forEach((prop: any) => {
-        if (prop.type === 'Property') {
-          this.collectPatternIdentifiers(prop.value, declared);
-        } else if (prop.type === 'RestElement') {
-          this.collectPatternIdentifiers(prop.argument, declared);
-        }
-      });
-    } else if (pattern.type === 'ArrayPattern') {
-      pattern.elements.forEach((elem: any) => {
-        if (elem) {
-          this.collectPatternIdentifiers(elem, declared);
-        }
-      });
-    } else if (pattern.type === 'AssignmentPattern') {
-      this.collectPatternIdentifiers(pattern.left, declared);
-    } else if (pattern.type === 'RestElement') {
-      this.collectPatternIdentifiers(pattern.argument, declared);
+      if (ref.write && !this.allowGlobalAssignment) {
+        context.report({
+          code: 'GLOBAL_ASSIGNMENT',
+          message:
+            `Cannot assign to "${identifierName}": it is a global provided by the runtime, not a local variable. ` +
+            `Declare your own variable with const or let instead.`,
+          location,
+          data: { identifier: identifierName },
+        });
+      }
     }
-  }
-
-  /**
-   * Check if this identifier node is part of a declaration
-   */
-  private isDeclaration(node: any, ancestors: any[]): boolean {
-    if (ancestors.length < 2) return false;
-    const parent = ancestors[ancestors.length - 2];
-
-    // Variable declarator
-    if (parent.type === 'VariableDeclarator' && parent.id === node) {
-      return true;
-    }
-
-    // Function/class declaration
-    if ((parent.type === 'FunctionDeclaration' || parent.type === 'ClassDeclaration') && parent.id === node) {
-      return true;
-    }
-
-    // Function expression name
-    if (parent.type === 'FunctionExpression' && parent.id === node) {
-      return true;
-    }
-
-    // Import specifier
-    if (
-      (parent.type === 'ImportSpecifier' ||
-        parent.type === 'ImportDefaultSpecifier' ||
-        parent.type === 'ImportNamespaceSpecifier') &&
-      parent.local === node
-    ) {
-      return true;
-    }
-
-    // Catch clause parameter
-    if (parent.type === 'CatchClause' && parent.param === node) {
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Check if this identifier is a property name (not a value reference)
-   */
-  private isPropertyName(node: any, ancestors: any[]): boolean {
-    if (ancestors.length < 2) return false;
-    const parent = ancestors[ancestors.length - 2];
-
-    // Object property key: { foo: value }
-    if (parent.type === 'Property' && parent.key === node && !parent.computed) {
-      return true;
-    }
-
-    // Method definition key: class { foo() {} }
-    if (parent.type === 'MethodDefinition' && parent.key === node && !parent.computed) {
-      return true;
-    }
-
-    // Member expression property: obj.foo (but not obj[foo])
-    if (parent.type === 'MemberExpression' && parent.property === node && !parent.computed) {
-      return true;
-    }
-
-    return false;
   }
 }

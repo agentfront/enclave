@@ -7,13 +7,14 @@
  * @packageDocumentation
  */
 
-import { Worker } from 'worker_threads';
+import { Worker, type WorkerOptions } from 'worker_threads';
+import fs from 'fs';
 import path from 'path';
 import { EventEmitter } from 'events';
 import type { WorkerSlotStatus, ResourceUsage } from './config';
-import type { MainToWorkerMessage, WorkerToMainMessage } from './protocol';
+import { workerToMainMessageSchema, type MainToWorkerMessage, type WorkerToMainMessage } from './protocol';
 import { safeDeserialize, safeSerialize } from './safe-deserialize';
-import { WorkerStartupError, WorkerCrashedError } from './errors';
+import { WorkerStartupError, WorkerCrashedError, MessageValidationError, WorkerMemoryError } from './errors';
 
 /**
  * Events emitted by WorkerSlot
@@ -29,16 +30,203 @@ export interface WorkerSlotEvents {
   ready: [];
   /** State changed */
   stateChange: [WorkerSlotStatus, WorkerSlotStatus];
+  /** The host-side heap check ended the running execution (bytes the worker held) */
+  heapLimitExceeded: [number];
 }
 
 /**
  * Worker slot options
  */
 export interface WorkerSlotOptions {
-  /** Memory limit in MB for --max-old-space-size */
+  /** Heap limit of the worker in MB (its old generation); 0 for no limit */
   memoryLimitMB: number;
   /** Startup timeout in milliseconds */
   startupTimeoutMs?: number;
+}
+
+/** Where the build puts the worker script, relative to the package's output folder. */
+const WORKER_SCRIPT_RELATIVE_PATH = path.join('src', 'adapters', 'worker-pool', 'worker-script.js');
+
+const MB = 1024 * 1024;
+
+/** How often this thread reads the heap of an executing worker whose limit the engine does not apply */
+const HEAP_WATCHDOG_INTERVAL_MS = 100;
+
+/** How long spawn() waits for a new worker's heap statistics before going on without them */
+const HEAP_STATISTICS_TIMEOUT_MS = 2000;
+
+/** Rounding slack when a worker's actual heap limit is compared with the one it was created with */
+const HEAP_LIMIT_TOLERANCE_BYTES = 16 * MB;
+
+/**
+ * The young generation of a worker that has a memory limit, in MB.
+ *
+ * A worker thread shares the process. When a worker reaches the limit of its old generation,
+ * Node.js ends the worker and raises the limit by 16 MB so that the engine can finish what it is
+ * doing. One scavenge can move a whole semi-space, a third of the young generation, into the old
+ * generation at once. Left to the engine, the young generation of a limited worker is 192 MB on
+ * Node.js 24 (48 MB on Node.js 22): a burst of up to 64 MB against an allowance of 16, and when
+ * the burst is larger than the allowance the engine ends the PROCESS with a fatal out-of-memory
+ * error instead of the worker.
+ *
+ * Measured on Node.js 24.18 with a script that fills a 64 MB worker, each run a process of its
+ * own: with the engine's default, 13 of 480 processes aborted at 12 in parallel, 3 of 380 at 6 to
+ * 8 in parallel and 0 of 40 one at a time. With 24 MB (semi-spaces of 8 MB, half the allowance):
+ * 0 of 480 at 12 in parallel. 24 is also a value the engine keeps as it is: it rounds a
+ * semi-space up to a power of two, so asking for 16 gives 24 and asking for 32 gives 48.
+ *
+ * This bounds the burst of a scavenge. It does not make the limit a guarantee: one allocation
+ * larger than the allowance still ends the process (see "The Worker Heap Limit" in the README).
+ */
+export const WORKER_YOUNG_GENERATION_MB = 24;
+
+/**
+ * Who stops a worker that outgrows its memory limit:
+ *
+ * - `engine`: V8, through the worker's `resourceLimits`. The normal case.
+ * - `host`: this thread, by reading the worker's heap while it executes, because the engine does
+ *   not apply the limit (see {@link isHeapLimitApplied}).
+ * - `none`: nobody. No limit is configured, or the engine does not apply it and this Node.js
+ *   version cannot read a worker's heap from outside.
+ */
+export type HeapLimitEnforcement = 'engine' | 'host' | 'none';
+
+/** The fields of `worker.getHeapStatistics()` used here */
+interface WorkerHeapStatistics {
+  used_heap_size: number;
+  heap_size_limit: number;
+  external_memory: number;
+}
+
+/**
+ * Whether the engine applies the heap limit a worker was created with.
+ *
+ * `resourceLimits.maxOldGenerationSizeMb` does nothing when the process itself runs with
+ * `--max-old-space-size` (on the command line or in `NODE_OPTIONS`): the flag is process-wide,
+ * every worker gets its value, and `worker.resourceLimits` goes on reporting what was asked for.
+ * What tells the two cases apart is the worker's actual heap size limit: with the limit applied
+ * it is the old generation that was asked for plus the young generation.
+ *
+ * @param heapSizeLimitBytes `heap_size_limit` from the worker's heap statistics
+ * @param budgetBytes The limit the worker was created with plus its young generation
+ */
+export function isHeapLimitApplied(heapSizeLimitBytes: number, budgetBytes: number): boolean {
+  return heapSizeLimitBytes <= budgetBytes + HEAP_LIMIT_TOLERANCE_BYTES;
+}
+
+/**
+ * Whether the process was started with a V8 old-space flag, as far as its arguments tell. Only
+ * consulted where a worker's heap cannot be read (Node.js before 22.16), to say that the limit
+ * is not enforced.
+ */
+export function hasProcessHeapFlag(execArgv: readonly string[], nodeOptions: string | undefined): boolean {
+  return /--max[-_]old[-_]space[-_]size\b/.test(`${execArgv.join(' ')} ${nodeOptions ?? ''}`);
+}
+
+type HeapStatisticsReader = () => Promise<WorkerHeapStatistics>;
+
+function heapStatisticsReader(worker: Worker): HeapStatisticsReader | undefined {
+  const read = (worker as unknown as { getHeapStatistics?: HeapStatisticsReader }).getHeapStatistics;
+  return typeof read === 'function' ? read.bind(worker) : undefined;
+}
+
+/**
+ * A worker's heap statistics, read from this thread (`worker.getHeapStatistics()`, Node.js 22.16
+ * and later). The worker answers from an interrupt, so also while a script keeps it busy; only
+ * one long native call delays the answer. Resolves to undefined when they cannot be read: an
+ * older Node.js, a worker that is gone, or no answer within `timeoutMs`.
+ */
+function readHeapStatistics(worker: Worker, timeoutMs?: number): Promise<WorkerHeapStatistics | undefined> {
+  const read = heapStatisticsReader(worker);
+  if (!read) {
+    return Promise.resolve(undefined);
+  }
+
+  let statistics: Promise<WorkerHeapStatistics | undefined>;
+  try {
+    statistics = read().then(
+      (value) => value,
+      () => undefined,
+    );
+  } catch {
+    return Promise.resolve(undefined);
+  }
+  if (timeoutMs === undefined) {
+    return statistics;
+  }
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), timeoutMs);
+    // Waiting for an answer must not keep the host process alive
+    timer.unref();
+    void statistics.then((value) => {
+      clearTimeout(timer);
+      resolve(value);
+    });
+  });
+}
+
+/** The warning below is about the process, so it is given once per process, not per worker */
+let heapLimitWarningGiven = false;
+
+function warnHeapLimitNotApplied(limitMB: number, enforcement: HeapLimitEnforcement): void {
+  if (heapLimitWarningGiven) {
+    return;
+  }
+  heapLimitWarningGiven = true;
+  console.warn(
+    `[enclave-vm] A worker thread can grow beyond its heap limit (${limitMB} MB plus the young generation): ` +
+      'a V8 heap flag of this process (--max-old-space-size or --max-semi-space-size) overrides the resource ' +
+      'limits of every worker thread. ' +
+      (enforcement === 'host'
+        ? 'The worker pool enforces the limit itself by reading the heap of each executing worker; it is approximate.'
+        : 'This Node.js version cannot read the heap of a worker from outside (22.16 and later can), ' +
+          'so the limit is NOT enforced.'),
+  );
+}
+
+/**
+ * Find the compiled worker script (worker threads need JavaScript, built by the
+ * `build-worker-script` target) from the directory of the module that spawns the worker.
+ *
+ * That module is in a different place in each form the package runs in:
+ *
+ * - the CommonJS bundle `dist/index.js`: the script is at `dist/src/adapters/worker-pool/`;
+ * - the ES module bundle `dist/esm/index.mjs`: one level up from there;
+ * - the TypeScript sources under ts-jest (`src/adapters/worker-pool/`): in the `dist` folder
+ *   next to `src`;
+ * - an unbundled build: next to this module.
+ *
+ * @param moduleDir Directory of the calling module
+ * @param exists File existence check (a test passes its own)
+ * @throws Error naming every location tried when the script is in none of them
+ */
+export function resolveWorkerScriptPath(moduleDir: string, exists: (file: string) => boolean = fs.existsSync): string {
+  const candidates = [
+    path.join(moduleDir, 'worker-script.js'),
+    path.join(moduleDir, WORKER_SCRIPT_RELATIVE_PATH),
+    path.join(moduleDir, '..', WORKER_SCRIPT_RELATIVE_PATH),
+  ];
+  const sourceMarker = `${path.sep}src${path.sep}`;
+  const sourceIndex = moduleDir.lastIndexOf(sourceMarker);
+  if (sourceIndex !== -1) {
+    candidates.push(
+      path.join(
+        moduleDir.slice(0, sourceIndex),
+        'dist',
+        'src',
+        moduleDir.slice(sourceIndex + sourceMarker.length),
+        'worker-script.js',
+      ),
+    );
+  }
+
+  for (const candidate of candidates) {
+    if (exists(candidate)) return candidate;
+  }
+  throw new WorkerStartupError(
+    `Worker script not found. Build @enclave-vm/core first (nx build core). Looked in: ${candidates.join(', ')}`,
+  );
 }
 
 /**
@@ -68,6 +256,15 @@ export class WorkerSlot extends EventEmitter {
 
   /** Last memory report */
   private _memoryUsage: ResourceUsage | null = null;
+
+  /** Who enforces this worker's memory limit; decided when the worker has started */
+  private _heapLimitEnforcement: HeapLimitEnforcement = 'none';
+
+  /** What this worker may hold: its limit plus the young generation, in bytes. 0 without a limit. */
+  private _memoryBudgetBytes = 0;
+
+  /** The host-side heap check of the running execution (only with `host` enforcement) */
+  private heapWatchdog: ReturnType<typeof setInterval> | null = null;
 
   /** Configuration */
   private readonly options: Required<WorkerSlotOptions>;
@@ -124,6 +321,14 @@ export class WorkerSlot extends EventEmitter {
     return this._memoryUsage;
   }
 
+  get heapLimitEnforcement(): HeapLimitEnforcement {
+    return this._heapLimitEnforcement;
+  }
+
+  get memoryBudgetBytes(): number {
+    return this._memoryBudgetBytes;
+  }
+
   get isIdle(): boolean {
     return this._status === 'idle';
   }
@@ -150,13 +355,19 @@ export class WorkerSlot extends EventEmitter {
 
     const workerScriptPath = this.getWorkerScriptPath();
 
-    // Only pass --max-old-space-size if memory limit is set (> 0)
-    // Node.js 24+ has stricter worker permissions that may block this flag
-    const execArgv = this.options.memoryLimitMB > 0 ? [`--max-old-space-size=${this.options.memoryLimitMB}`] : [];
+    // The worker's heap limit is a resource limit of the worker itself. (It used to be passed as
+    // `execArgv: ['--max-old-space-size=N']`, which Node.js refuses for a worker with
+    // ERR_WORKER_INVALID_EXEC_ARGV: with any default memory limit no worker could be started.)
+    // A worker that reaches the limit is terminated by the engine and reported through 'error'.
+    const options: WorkerOptions = {};
+    if (this.options.memoryLimitMB > 0) {
+      options.resourceLimits = {
+        maxOldGenerationSizeMb: this.options.memoryLimitMB,
+        maxYoungGenerationSizeMb: WORKER_YOUNG_GENERATION_MB,
+      };
+    }
 
-    this._worker = new Worker(workerScriptPath, {
-      execArgv,
-    });
+    this._worker = new Worker(workerScriptPath, options);
 
     // Set up event handlers
     this._worker.on('message', this.boundMessageHandler);
@@ -166,28 +377,115 @@ export class WorkerSlot extends EventEmitter {
     // Wait for ready message
     await this.waitForReady();
 
+    await this.resolveHeapLimitEnforcement();
+
+    // The worker may have exited while its heap limit was being read
+    if (!this._worker || this.isTerminated) {
+      throw new WorkerStartupError(`Worker ${this.id} exited while starting`);
+    }
+
     this.setStatus('idle');
+  }
+
+  /**
+   * Work out what this worker may hold and who stops it when it holds more (see
+   * {@link HeapLimitEnforcement}). Asking for a limit is not enough to have one: a process-wide
+   * heap flag silently replaces it, so the worker's actual limit is read back.
+   */
+  private async resolveHeapLimitEnforcement(): Promise<void> {
+    const worker = this._worker;
+    const limitBytes = this.options.memoryLimitMB * MB;
+    if (!worker || limitBytes <= 0) {
+      return;
+    }
+
+    // The engine's limit is on the old generation; the young generation comes on top of it.
+    const youngGenerationMB = worker.resourceLimits?.maxYoungGenerationSizeMb ?? 0;
+    this._memoryBudgetBytes = limitBytes + youngGenerationMB * MB;
+    this._heapLimitEnforcement = 'engine';
+
+    const statistics = await readHeapStatistics(worker, HEAP_STATISTICS_TIMEOUT_MS);
+    const flagged = hasProcessHeapFlag(process.execArgv, process.env['NODE_OPTIONS']);
+    if (statistics) {
+      if (!isHeapLimitApplied(statistics.heap_size_limit, this._memoryBudgetBytes)) {
+        this._heapLimitEnforcement = 'host';
+        warnHeapLimitNotApplied(this.options.memoryLimitMB, 'host');
+      }
+    } else if (heapStatisticsReader(worker)) {
+      // The worker did not say what its limit is (no answer in time). Not knowing is not the same
+      // as the engine applying it, so the host watches this worker: a heap read every 100 ms,
+      // which changes nothing when the engine does enforce the limit.
+      this._heapLimitEnforcement = 'host';
+      if (flagged) {
+        warnHeapLimitNotApplied(this.options.memoryLimitMB, 'host');
+      }
+    } else if (flagged) {
+      this._heapLimitEnforcement = 'none';
+      warnHeapLimitNotApplied(this.options.memoryLimitMB, 'none');
+    }
+  }
+
+  /**
+   * With `host` enforcement: read the worker's heap while it executes, and end the execution
+   * when the worker holds more than its budget. The engine would have done the same at the old
+   * generation limit; from outside only the total is visible, so the young generation is part
+   * of the budget and the limit is approximate (a script can also allocate between two reads).
+   */
+  private startHeapWatchdog(): void {
+    if (this._heapLimitEnforcement !== 'host' || this.heapWatchdog) {
+      return;
+    }
+
+    let reading = false;
+    this.heapWatchdog = setInterval(() => {
+      const worker = this._worker;
+      if (!worker || reading || this._status !== 'executing') {
+        return;
+      }
+      reading = true;
+      void readHeapStatistics(worker).then((statistics) => {
+        reading = false;
+        if (!statistics || this._worker !== worker || this._status !== 'executing') {
+          return;
+        }
+        const used = statistics.used_heap_size + statistics.external_memory;
+        if (used > this._memoryBudgetBytes) {
+          this.emit('heapLimitExceeded', used);
+          this.failExecution(new WorkerMemoryError(used, this.options.memoryLimitMB * MB));
+        }
+      });
+    }, HEAP_WATCHDOG_INTERVAL_MS);
+    // The check alone must not keep the host process alive
+    this.heapWatchdog.unref();
+  }
+
+  private stopHeapWatchdog(): void {
+    if (this.heapWatchdog) {
+      clearInterval(this.heapWatchdog);
+      this.heapWatchdog = null;
+    }
+  }
+
+  /**
+   * End the execution that is running in this worker with `error`, and the worker with it. The
+   * waiting execution is told first: a worker that is being terminated reports nothing itself,
+   * and the execution would wait for its timeout.
+   */
+  failExecution(error: Error): void {
+    if (this.isTerminated) {
+      return;
+    }
+    this.emit('error', error);
+    this.terminate(false).catch(() => {
+      // The worker is already gone
+    });
   }
 
   /**
    * Get the path to the worker script
    */
   private getWorkerScriptPath(): string {
-    // Worker threads require a JavaScript file, not TypeScript.
-    // When running compiled code from dist, __dirname points to the dist directory.
-    // When running tests with ts-jest, __dirname points to src directory.
-    // In that case, we need to find the compiled JS in the dist folder.
-
-    const jsPath = path.join(__dirname, 'worker-script.js');
-
-    // Check if we're running from src (ts-jest tests)
-    if (__dirname.includes('/src/')) {
-      // Replace /src/ with /dist/src/ to find compiled JS
-      const distPath = __dirname.replace('/src/', '/dist/src/');
-      return path.join(distPath, 'worker-script.js');
-    }
-
-    return jsPath;
+    return resolveWorkerScriptPath(__dirname);
   }
 
   /**
@@ -195,17 +493,29 @@ export class WorkerSlot extends EventEmitter {
    */
   private waitForReady(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const onReady = () => {
+      const settle = () => {
         clearTimeout(timeout);
+        this.off('ready', onReady);
+        this.off('error', onError);
+      };
+      const onReady = () => {
+        settle();
         resolve();
+      };
+      // A worker that fails while starting (its script throws, or it exits) reports why, instead
+      // of leaving the caller to wait for the startup timeout.
+      const onError = (error: Error) => {
+        settle();
+        reject(new WorkerStartupError(`Worker ${this.id} failed to start: ${error.message}`, error));
       };
 
       const timeout = setTimeout(() => {
-        this.off('ready', onReady); // Remove listener on timeout to prevent memory leak
+        settle();
         reject(new WorkerStartupError(`Worker ${this.id} startup timeout`));
       }, this.options.startupTimeoutMs);
 
       this.once('ready', onReady);
+      this.once('error', onError);
     });
   }
 
@@ -220,12 +530,14 @@ export class WorkerSlot extends EventEmitter {
     this._currentExecutionId = executionId;
     this._lastActiveAt = Date.now();
     this.setStatus('executing');
+    this.startHeapWatchdog();
   }
 
   /**
    * Release this slot after execution
    */
   release(): void {
+    this.stopHeapWatchdog();
     if (this._status !== 'executing') {
       return;
     }
@@ -262,7 +574,9 @@ export class WorkerSlot extends EventEmitter {
       // Send terminate message and wait
       this.sendMessage({ type: 'terminate', graceful: true });
 
-      // Wait for graceful exit (with timeout)
+      // Wait for graceful exit (with timeout). The timer is cleared when the worker exits first:
+      // left pending, it kept the host process alive for five seconds after every recycled worker.
+      let gracePeriod: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
         new Promise<void>((resolve) => {
           if (worker) {
@@ -271,8 +585,11 @@ export class WorkerSlot extends EventEmitter {
             resolve();
           }
         }),
-        new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+        new Promise<void>((resolve) => {
+          gracePeriod = setTimeout(resolve, 5000);
+        }),
       ]);
+      clearTimeout(gracePeriod);
     }
 
     // Force terminate if still running
@@ -328,24 +645,37 @@ export class WorkerSlot extends EventEmitter {
   // ============================================================================
 
   private handleMessage(raw: string): void {
+    let msg: WorkerToMainMessage;
     try {
-      const msg = safeDeserialize(raw) as WorkerToMainMessage;
-
-      if (msg.type === 'ready') {
-        this.emit('ready');
-      } else if (msg.type === 'memory-report-result') {
-        this._memoryUsage = msg.usage;
+      // The worker is the less trusted side of this boundary: if a script ever gets out of the
+      // sandbox inside it, the worker's messages are the script's. Every message is parsed
+      // without prototype pollution and then checked against the protocol schema (shape, types,
+      // identifier and tool-name patterns, size limits) before anything here acts on it.
+      const parsed = workerToMainMessageSchema.safeParse(safeDeserialize(raw));
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        throw new MessageValidationError(
+          `worker message rejected by the protocol schema${issue ? ` (${issue.path.join('.') || 'message'}: ${issue.message})` : ''}`,
+        );
       }
-
-      this.emit('message', msg);
+      msg = parsed.data as WorkerToMainMessage;
     } catch (error) {
-      console.error(`Worker ${this.id} message parse error:`, error);
-      this.markForRecycle(); // Recycle on protocol errors (defensive)
+      // The execution that is waiting on this worker fails now, and the worker is replaced.
+      this.emit('error', error instanceof Error ? error : new MessageValidationError(String(error)));
+      this.markForRecycle();
+      return;
     }
+
+    if (msg.type === 'ready') {
+      this.emit('ready');
+    } else if (msg.type === 'memory-report-result') {
+      this._memoryUsage = msg.usage;
+    }
+
+    this.emit('message', msg);
   }
 
   private handleError(error: Error): void {
-    console.error(`Worker ${this.id} error:`, error);
     this.emit('error', error);
 
     // Mark for recycling on error
@@ -376,6 +706,7 @@ export class WorkerSlot extends EventEmitter {
   }
 
   private cleanup(): void {
+    this.stopHeapWatchdog();
     if (this._worker) {
       this._worker.off('message', this.boundMessageHandler);
       this._worker.off('error', this.boundErrorHandler);

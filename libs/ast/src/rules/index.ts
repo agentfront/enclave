@@ -22,3 +22,4 @@ export * from './no-computed-destructuring.rule';
 export * from './infinite-loop.rule';
 export * from './resource-exhaustion.rule';
 export * from './no-json-callbacks.rule';
+export * from './allowed-syntax.rule';

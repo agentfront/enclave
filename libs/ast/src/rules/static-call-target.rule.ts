@@ -1,5 +1,6 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
+import { walkAll, type AnyNode } from '../utils/ast-walk';
 
 /**
  * Options for StaticCallTargetRule
@@ -23,6 +24,20 @@ export interface StaticCallTargetOptions {
    * Default: 0 (first argument)
    */
   argumentPosition?: number;
+
+  /**
+   * Require every use of a target function to be a direct call: `callTool('name', args)`.
+   *
+   * The static-argument check only sees `CallExpression`s whose callee is the target by name. Any
+   * other use of the function value takes the call out of its sight, so with this option they are
+   * all refused: an alias (`const c = callTool`), passing it as a value (`names.map(callTool)`),
+   * `callTool.call(...)` / `.apply` / `.bind`, `new callTool(...)`, a tagged template, a
+   * parenthesized or sequence callee (`(0, callTool)(name)`), and re-declaring the name.
+   * `typeof callTool` stays allowed.
+   *
+   * Default: false
+   */
+  requireDirectCall?: boolean;
 }
 
 /**
@@ -54,14 +69,20 @@ export class StaticCallTargetRule implements ValidationRule {
   private readonly targetFunctions: Set<string>;
   private readonly allowedToolNames: (string | RegExp)[] | undefined;
   private readonly argumentPosition: number;
+  private readonly requireDirectCall: boolean;
 
   constructor(private options: StaticCallTargetOptions = {}) {
     this.targetFunctions = new Set(options.targetFunctions ?? ['callTool', '__safe_callTool']);
     this.allowedToolNames = options.allowedToolNames;
     this.argumentPosition = options.argumentPosition ?? 0;
+    this.requireDirectCall = options.requireDirectCall === true;
   }
 
   validate(context: ValidationContext): void {
+    if (this.requireDirectCall) {
+      this.checkDirectCalls(context);
+    }
+
     walk.simple(context.ast as any, {
       CallExpression: (node: any) => {
         const callee = node.callee;
@@ -159,6 +180,32 @@ export class StaticCallTargetRule implements ValidationRule {
   }
 
   /**
+   * Refuse every occurrence of a target function name that is not the callee of a direct call.
+   * Property names (`obj.callTool`, `{ callTool: 1 }`) are not the function and are left alone.
+   */
+  private checkDirectCalls(context: ValidationContext): void {
+    walkAll(context.ast, (node, ancestors, key) => {
+      if (node.type !== 'Identifier' || !this.targetFunctions.has(node.name)) return;
+
+      const parent: AnyNode | undefined = ancestors[ancestors.length - 1];
+      if (parent && isPropertyNamePosition(parent, key)) return;
+      if (parent?.type === 'CallExpression' && key === 'callee') return;
+      // `typeof callTool` only yields a string; it cannot hand the function to anything.
+      if (parent?.type === 'UnaryExpression' && parent.operator === 'typeof') return;
+
+      context.report({
+        code: 'INDIRECT_CALL_TARGET',
+        message:
+          `"${node.name}" can only be called directly, as ${node.name}('tool-name', args). ` +
+          `Storing it in a variable, passing it as a value, or calling it through call/apply/bind, ` +
+          `new or a tagged template is not allowed, because the tool name could no longer be checked.`,
+        location: node.loc ? { line: node.loc.start.line, column: node.loc.start.column } : undefined,
+        data: { function: node.name, parentType: parent?.type },
+      });
+    });
+  }
+
+  /**
    * Extract a static string value from an AST node
    * Returns null if the node is not a static string
    */
@@ -214,4 +261,15 @@ export class StaticCallTargetRule implements ValidationRule {
         return `Dynamic expressions (${node.type})`;
     }
   }
+}
+
+/** Whether `key` of `parent` holds a property NAME rather than a value reference. */
+function isPropertyNamePosition(parent: AnyNode, key: string): boolean {
+  if (parent.computed) return false;
+  if (parent.type === 'MemberExpression') return key === 'property';
+  if (parent.type === 'Property' || parent.type === 'MethodDefinition' || parent.type === 'PropertyDefinition') {
+    // The key is a name. (`{ callTool }` also has a separate value node, which IS a reference.)
+    return key === 'key';
+  }
+  return false;
 }

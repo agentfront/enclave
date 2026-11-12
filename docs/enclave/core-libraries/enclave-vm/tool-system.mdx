@@ -153,6 +153,10 @@ const result = await enclave.run(code);
 
 Every call into a function from `globals` goes through the enclave's gate: it is refused after an abort, counts toward `maxGlobalFunctionCalls` (default 10 × `maxToolCalls`), shares the double VM's rate limit with tool calls, and returns a sanitized, plain-data copy of the result (functions and symbols are refused). Errors it throws reach the script without the host stack, and `new` is refused. The `worker_threads` adapter does not pass functions into the sandbox.
 
+Arguments are copied into plain host data before the function runs, the way tool arguments are: it receives null-prototype objects, arrays, primitives and `Date`s, never a live script value, and a call that passes a function or a symbol is refused. The script's `this` is not passed.
+
+Values passed in `globals` are read-only inside the sandbox. A script cannot assign to them, add or delete properties, freeze them, or call a built-in method that changes its receiver (`push`, `sort`, `Map.prototype.set`, ...); an array returned by `map`, `filter` or `slice` is the script's own copy. To let scripts keep state, return it from a tool.
+
 Functions (and objects with methods) are refused inside arrays, Maps and Sets, because the built-in methods of those collections hand elements to the script directly; keep them as properties of plain objects. Promises, WeakMaps, iterators and generators are refused anywhere in `globals`.
 
 ## One-Shot Execution

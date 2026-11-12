@@ -22,3 +22,6 @@ out
 docs/
 
 .nx/self-healing
+
+# The private security case suite (git submodule): formatted in its own repository
+security-tests/

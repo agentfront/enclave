@@ -46,6 +46,13 @@ const DEFAULT_STRING_METHODS = [
 ];
 
 /**
+ * String methods that COMPILE a string argument into a regular expression.
+ * `'text'.match('(a+)+$')` builds and runs the regex `/(a+)+$/`: a string is not a way around the
+ * regex ban for these three. (`split`, `replace` and `replaceAll` treat a string literally.)
+ */
+const PATTERN_COMPILING_STRING_METHODS = new Set(['match', 'matchAll', 'search']);
+
+/**
  * Default methods on regex objects
  */
 const DEFAULT_REGEX_METHODS = [
@@ -112,6 +119,21 @@ export class NoRegexMethodsRule implements ValidationRule {
       CallExpression: (node: any) => {
         this.checkMethodCall(node, context);
       },
+      // str.match`pattern` calls the method with the template strings: the same regex path as a
+      // call, written without a CallExpression.
+      TaggedTemplateExpression: (node: any) => {
+        const tag = node.tag;
+        if (tag?.type !== 'MemberExpression') return;
+        const methodName = this.getMethodName(tag);
+        if (methodName && (this.blockedStringMethods.has(methodName) || this.blockedRegexMethods.has(methodName))) {
+          context.report({
+            code: 'NO_REGEX_METHOD',
+            message: `Use of .${methodName}() as a template tag is not allowed (the template is used as a regex, ReDoS risk)`,
+            location: this.getLocation(tag),
+            data: { method: methodName, form: 'tagged-template' },
+          });
+        }
+      },
     });
   }
 
@@ -139,6 +161,24 @@ export class NoRegexMethodsRule implements ValidationRule {
       // Check if argument is a regex literal or RegExp constructor
       if (this.hasRegexArgument(node)) {
         this.report(node, methodName, context);
+        return;
+      }
+
+      // match / matchAll / search turn a string argument into a regex, so when string arguments
+      // are not accepted as proof of safety, a string here is a regex by another spelling.
+      if (
+        !this.allowStringArguments &&
+        PATTERN_COMPILING_STRING_METHODS.has(methodName) &&
+        this.hasStringArgument(node)
+      ) {
+        context.report({
+          code: 'NO_REGEX_METHOD',
+          message:
+            `Use of .${methodName}() with a string is not allowed: the string is compiled into a regular ` +
+            `expression (ReDoS risk). Use .includes(), .indexOf(), .startsWith() or .endsWith() instead.`,
+          location: this.getLocation(callee),
+          data: { method: methodName, form: 'string-pattern' },
+        });
         return;
       }
 

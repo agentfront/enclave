@@ -2,6 +2,8 @@
  * Memory measurement utilities for benchmarking
  */
 
+import * as vm from 'vm';
+
 export interface MemorySnapshot {
   timestamp: number;
   rss: number;
@@ -69,7 +71,7 @@ export async function trackMemory<T>(
 
   // Force GC before measurement
   if (opts.forceGCBefore) {
-    forceGC();
+    await collectGarbage();
   }
 
   const samples: MemorySnapshot[] = [];
@@ -108,7 +110,7 @@ export async function trackMemory<T>(
 
     // Force GC after and capture cleaned state
     if (opts.forceGCAfter) {
-      forceGC();
+      await collectGarbage();
     }
     const cleanedSnapshot = captureMemory();
 
@@ -128,6 +130,31 @@ export async function trackMemory<T>(
       clearInterval(intervalId);
     }
     throw error;
+  }
+}
+
+/**
+ * Run a full garbage collection and wait for it, however the process was started.
+ *
+ * With `--expose-gc` this is `gc()`. Without it, `vm.measureMemory()` with eager execution makes
+ * the engine collect right away. Without either, a heap figure includes whatever garbage the
+ * engine has not got round to yet: 100 executions then measure anything from -80 MB to +150 MB,
+ * depending on whether a collection happens to fall between the two readings.
+ *
+ * @returns false when no collection could be started
+ */
+export async function collectGarbage(): Promise<boolean> {
+  if (forceGC()) {
+    return true;
+  }
+  if (typeof vm.measureMemory !== 'function') {
+    return false;
+  }
+  try {
+    await vm.measureMemory({ mode: 'summary', execution: 'eager' });
+    return true;
+  } catch {
+    return false;
   }
 }
 

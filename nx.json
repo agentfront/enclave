@@ -36,7 +36,8 @@
       "!{projectRoot}/src/test-setup.[jt]s",
       "!{projectRoot}/test-setup.[jt]s"
     ],
-    "sharedGlobals": []
+    "sharedGlobals": [],
+    "securitySpecs": [{ "runtime": "node scripts/security-tests.mjs --fingerprint" }]
   },
   "plugins": [
     {

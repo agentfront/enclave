@@ -24,6 +24,13 @@ const DANGEROUS_DESTRUCTURING_KEYS = new Set([
  */
 export interface NoComputedDestructuringOptions {
   /**
+   * Further static keys to refuse in a destructuring pattern, in addition to the prototype-chain
+   * keys that are always refused. Use it to keep `const { getPrototypeOf } = Object` in step with
+   * a rule that refuses `Object.getPrototypeOf`.
+   */
+  additionalDangerousKeys?: string[];
+
+  /**
    * Custom error message
    */
   message?: string;
@@ -75,9 +82,11 @@ export class NoComputedDestructuringRule implements ValidationRule {
   readonly enabledByDefault = true;
 
   private readonly customMessage?: string;
+  private readonly dangerousKeys: ReadonlySet<string>;
 
   constructor(options: NoComputedDestructuringOptions = {}) {
     this.customMessage = options.message;
+    this.dangerousKeys = new Set([...DANGEROUS_DESTRUCTURING_KEYS, ...(options.additionalDangerousKeys ?? [])]);
   }
 
   validate(context: ValidationContext): void {
@@ -114,13 +123,13 @@ export class NoComputedDestructuringRule implements ValidationRule {
           // Static key: { "constructor": binding } / { constructor: binding }. These are not
           // computed, so the guard above never fired — block dangerous names explicitly.
           const staticName = this.staticKeyName(prop.key);
-          if (staticName !== undefined && DANGEROUS_DESTRUCTURING_KEYS.has(staticName)) {
+          if (staticName !== undefined && this.dangerousKeys.has(staticName)) {
             report({
               code: 'NO_DANGEROUS_DESTRUCTURING',
               message:
                 this.customMessage ||
                 `Destructuring the '${staticName}' property is not allowed: { ${this.describeKey(prop.key)}: ... }. ` +
-                  `This property's prototype chain can reach the Function constructor for sandbox escape. ` +
+                  `This property is a prototype-chain or reflection entry point that can be used for sandbox escape. ` +
                   `Remove the '${staticName}' binding.`,
               location: this.keyLocation(prop, node),
               data: {
