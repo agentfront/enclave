@@ -232,7 +232,7 @@ The enclave runs the pre-scanner with its `standard` preset (5 MB of input, 10,0
 
 ### Regular expression
 
-**Code:** `PRESCANNER_REDOS` or `PRESCANNER_REGEX_BLOCKED`
+**Code:** `PRESCANNER_REDOS` (a regex literal the pre-scanner rates as vulnerable), `NO_REGEX_LITERAL` or `NO_REGEX_METHOD` (the AgentScript rules)
 
 **Solution:** AgentScript has no regular expressions. Use string methods with plain strings (`includes`, `startsWith`, `split(',')`), or let a tool do the matching.
 
