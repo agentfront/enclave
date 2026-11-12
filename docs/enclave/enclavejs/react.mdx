@@ -14,7 +14,7 @@ npm install @enclave-vm/react
 ```
 
 **Peer Dependencies:**
-- `react` >= 17.0.0
+- `react` >= 18.0.0
 
 ## Quick Start
 
@@ -23,7 +23,7 @@ import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
 function App() {
   return (
-    <EnclaveProvider brokerUrl="http://localhost:3000">
+    <EnclaveProvider config={{ baseUrl: 'https://api.example.com' }}>
       <CodeEditor />
     </EnclaveProvider>
   );
@@ -35,13 +35,13 @@ function CodeEditor() {
   return (
     <div>
       <button
-        onClick={() => execute('console.log("Hello!"); return 42;')}
+        onClick={() => execute('return 42;')}
         disabled={state === 'running'}
       >
         Run
       </button>
       <pre>{stdout}</pre>
-      {result && <div>Result: {JSON.stringify(result)}</div>}
+      {result?.success && <div>Result: {JSON.stringify(result.value)}</div>}
       {error && <div className="error">{error.message}</div>}
     </div>
   );
@@ -53,30 +53,78 @@ function CodeEditor() {
 The provider sets up the EnclaveClient context for your application.
 
 ```tsx
-import { EnclaveProvider, type EnclaveProviderProps } from '@enclave-vm/react';
+import { EnclaveProvider, type EnclaveClientConfig } from '@enclave-vm/react';
 
-const props: EnclaveProviderProps = {
+const config: EnclaveClientConfig = {
   // Required: Broker URL
-  brokerUrl: 'http://localhost:3000',
+  baseUrl: 'https://api.example.com',
 
-  // Optional: Custom headers
+  // Optional: Headers sent with every request (e.g., credentials)
   headers: {
     'Authorization': 'Bearer token',
   },
 
-  // Optional: Timeout (ms)
-  timeout: 30000,
+  // Optional: How long to wait for the server (ms)
+  timeout: 60000,
 
-  // Optional: Reconnection config
-  reconnect: {
-    enabled: true,
-    maxAttempts: 5,
-  },
+  // Optional: Reconnection
+  autoReconnect: true,
+  maxReconnectAttempts: 3,
+  reconnectDelay: 1000,
 };
 
 function App() {
   return (
-    <EnclaveProvider {...props}>
+    <EnclaveProvider config={config}>
+      <MyApp />
+    </EnclaveProvider>
+  );
+}
+```
+
+`config` takes exactly the options of [`EnclaveClient`](/enclavejs/client#client-configuration): `baseUrl`, `headers`, `timeout`, `autoReconnect`, `maxReconnectAttempts`, `reconnectDelay`, `maxEventLength` and `fetch`. Any other option, such as `encryption`, `auth` or `serverUrl`, throws when the provider renders.
+
+<Note>
+  The client does not encrypt. Requests and events travel as plain JSON over HTTP and are protected only by the transport: use an `https:` base URL, and send credentials with `headers`.
+</Note>
+
+### Configuration Changes
+
+The provider builds the client from `config`:
+
+- When a render brings a configuration with other values, such as another `baseUrl` or a renewed token in `headers`, the provider builds a new client from it. The context then hands out that client together with that configuration.
+- A render with an equal configuration, such as an object literal written inline, keeps the client.
+- A session that was started before the change finishes on the client it was started with.
+
+```tsx
+function App({ token }: { token: string }) {
+  return (
+    <EnclaveProvider
+      config={{
+        baseUrl: 'https://api.example.com',
+        headers: { 'Authorization': `Bearer ${token}` },
+      }}
+    >
+      <MyApp />
+    </EnclaveProvider>
+  );
+}
+```
+
+### Using Your Own Client
+
+Pass a client that you created yourself with the `client` prop. The provider then builds none; `config` is still required, and the context reports it as it is.
+
+```tsx
+import { EnclaveClient } from '@enclave-vm/client';
+import { EnclaveProvider } from '@enclave-vm/react';
+
+const config = { baseUrl: 'https://api.example.com' };
+const client = new EnclaveClient(config);
+
+function App() {
+  return (
+    <EnclaveProvider config={config} client={client}>
       <MyApp />
     </EnclaveProvider>
   );
@@ -95,14 +143,15 @@ import { useEnclaveSession } from '@enclave-vm/react';
 function CodeRunner() {
   const {
     execute,      // Function to execute code
-    state,        // Current session state
-    stdout,       // Accumulated stdout output
-    result,       // Final result (when completed)
-    error,        // Error (if any)
-    sessionId,    // Current session ID
-    stats,        // Execution stats
     cancel,       // Cancel execution
     reset,        // Reset state
+    state,        // Current session state
+    isRunning,    // Whether a session is running
+    sessionId,    // ID of the latest session
+    result,       // SessionResult (when the session has ended)
+    error,        // Error (if the session failed)
+    stdout,       // Accumulated stdout output
+    events,       // Events received
   } = useEnclaveSession();
 
   return (
@@ -118,8 +167,6 @@ function CodeRunner() {
 ### Session States
 
 ```tsx
-import type { SessionState } from '@enclave-vm/react';
-
 // Available states
 type SessionState =
   | 'idle'        // No execution in progress
@@ -127,6 +174,10 @@ type SessionState =
   | 'completed'   // Execution finished successfully
   | 'error'       // Execution failed
   | 'cancelled';  // Execution was cancelled
+```
+
+```tsx
+import { useEnclaveSession } from '@enclave-vm/react';
 
 function StatusIndicator() {
   const { state } = useEnclaveSession();
@@ -153,15 +204,14 @@ import { useEnclaveSession, type UseEnclaveSessionOptions } from '@enclave-vm/re
 
 function CodeRunner() {
   const options: UseEnclaveSessionOptions = {
-    // Default limits for all executions
-    limits: {
-      timeout: 30000,
-      memoryLimit: 128 * 1024 * 1024,
-    },
+    // Limits requested for every execution
+    timeoutMs: 30000,            // Maximum session duration (ms)
+    maxToolCalls: 20,
+    heartbeatIntervalMs: 15000,
 
     // Event handlers
-    onSessionInit: (event) => {
-      console.log('Session started:', event.sessionId);
+    onStart: () => {
+      console.log('Execution started');
     },
 
     onStdout: (chunk) => {
@@ -172,20 +222,21 @@ function CodeRunner() {
       console.log(`[${level}]`, message);
     },
 
-    onToolCall: (callId, name, args) => {
-      console.log('Tool called:', name);
+    onToolCall: (callId, toolName, args) => {
+      console.log('Tool called:', toolName);
     },
 
-    onFinal: (result, stats) => {
-      console.log('Completed:', result);
+    onToolResultApplied: (callId) => {
+      console.log('Tool result applied:', callId);
+    },
+
+    onComplete: (result) => {
+      console.log('Finished:', result.success);
     },
 
     onError: (error) => {
-      console.error('Error:', error);
+      console.error('Error:', error.code, error.message);
     },
-
-    // Clear stdout on new execution
-    clearOnExecute: true,
   };
 
   const session = useEnclaveSession(options);
@@ -193,6 +244,10 @@ function CodeRunner() {
   return <div>{/* ... */}</div>;
 }
 ```
+
+`onComplete` is called with the result of every execution, whether it succeeded, failed or was cancelled. `onError` is called for non-fatal errors that the session reports while it runs, when the execution fails, and with the code `CANCEL_FAILED` when the broker does not confirm a cancellation.
+
+There is also a `sessionId` option. The ID is used for every execution of the hook; without it, each execution gets a generated ID.
 
 ### Return Value
 
@@ -202,26 +257,27 @@ import type { UseEnclaveSessionReturn } from '@enclave-vm/react';
 const session: UseEnclaveSessionReturn = useEnclaveSession();
 
 // Execute code
-await session.execute(code);
-await session.execute(code, { timeout: 5000 });
+const result = await session.execute(code);
 
 // Current state
 session.state;      // SessionState
+session.isRunning;  // boolean
 session.sessionId;  // SessionId | null
 
 // Output
 session.stdout;     // string (accumulated)
-session.logs;       // LogEntry[]
-session.result;     // any | null
-session.error;      // Error | null
-
-// Stats
-session.stats;      // SessionStats | null
+session.events;     // StreamEvent[]
+session.result;     // SessionResult | null
+session.error;      // { code?, message } | null
 
 // Actions
 await session.cancel();  // Cancel current execution
 session.reset();         // Reset to idle state
 ```
+
+`execute` resolves with the `SessionResult` of the execution, also when it fails or is cancelled. `result` holds the same object: the returned value is `result.value`, and the client's stats are `result.stats`.
+
+`stdout`, `events`, `result` and `error` are cleared when the next execution starts. `reset()` clears them too, but it does not cancel a running session.
 
 ## useEnclaveClient Hook
 
@@ -235,11 +291,11 @@ function CustomComponent() {
 
   // Use client directly for advanced scenarios
   const handleExecute = async () => {
-    const handle = await client.execute(code, {
+    const session = client.executeStream(code, {
       onStdout: console.log,
     });
 
-    const result = await handle.result;
+    const result = await session.wait();
   };
 
   return <button onClick={handleExecute}>Execute</button>;
@@ -259,7 +315,6 @@ function DebugComponent() {
   return (
     <div>
       <p>Broker URL: {context.config.baseUrl}</p>
-      <p>Client ready: {context.client ? 'Yes' : 'No'}</p>
     </div>
   );
 }
@@ -274,7 +329,7 @@ import { useState } from 'react';
 import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
 function CodeEditor() {
-  const [code, setCode] = useState('console.log("Hello!");\nreturn 42;');
+  const [code, setCode] = useState('return 42;');
   const { execute, state, stdout, result, error, reset } = useEnclaveSession();
 
   return (
@@ -300,10 +355,10 @@ function CodeEditor() {
         <pre>{stdout}</pre>
       </div>
 
-      {result !== null && (
+      {result?.success && (
         <div className="result">
           <h3>Result</h3>
-          <pre>{JSON.stringify(result, null, 2)}</pre>
+          <pre>{JSON.stringify(result.value, null, 2)}</pre>
         </div>
       )}
 
@@ -319,7 +374,7 @@ function CodeEditor() {
 
 function App() {
   return (
-    <EnclaveProvider brokerUrl="http://localhost:3000">
+    <EnclaveProvider config={{ baseUrl: 'https://api.example.com' }}>
       <CodeEditor />
     </EnclaveProvider>
   );
@@ -328,18 +383,19 @@ function App() {
 
 ### With Tool Calls
 
+Tools run on the broker. The hook is told about tool calls; it executes nothing.
+
 ```tsx
 function ToolDemo() {
   const { execute, state, stdout, result } = useEnclaveSession({
-    onToolCall: (callId, name, args) => {
-      console.log(`Tool ${name} called with:`, args);
+    onToolCall: (callId, toolName, args) => {
+      console.log(`Tool ${toolName} called with:`, args);
     },
   });
 
   const runWithTool = () => {
     execute(`
-      const time = await tools.getCurrentTime();
-      console.log('Current time:', time);
+      const time = await callTool('getCurrentTime', {});
       return time;
     `);
   };
@@ -350,7 +406,7 @@ function ToolDemo() {
         Get Current Time
       </button>
       <pre>{stdout}</pre>
-      {result && <p>Time: {result}</p>}
+      {result?.success && <p>Time: {String(result.value)}</p>}
     </div>
   );
 }
@@ -365,8 +421,7 @@ function CancellableExecution() {
   const runLongTask = () => {
     execute(`
       for (let i = 0; i < 100; i++) {
-        console.log('Step', i);
-        await new Promise(r => setTimeout(r, 100));
+        await callTool('processItem', { id: i });
       }
       return 'done';
     `);
@@ -375,7 +430,7 @@ function CancellableExecution() {
   return (
     <div>
       {state === 'running' ? (
-        <button onClick={cancel}>Cancel</button>
+        <button onClick={() => cancel()}>Cancel</button>
       ) : (
         <button onClick={runLongTask}>Start Long Task</button>
       )}
@@ -384,6 +439,8 @@ function CancellableExecution() {
   );
 }
 ```
+
+`cancel()` ends the session in the client, where the state becomes `'cancelled'`, and asks the broker to end it. The hook does not cancel a running session when the component unmounts.
 
 ### Multiple Sessions
 
@@ -416,6 +473,15 @@ function MultiSession() {
 ## TypeScript Types
 
 ```tsx
+// Types of the hooks and the provider
+import type {
+  SessionState,
+  UseEnclaveSessionOptions,
+  UseEnclaveSessionReturn,
+  EnclaveProviderProps,
+  EnclaveContextValue,
+} from '@enclave-vm/react';
+
 // Re-exported from @enclave-vm/client
 import type {
   EnclaveClient,

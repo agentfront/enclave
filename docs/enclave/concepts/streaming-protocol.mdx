@@ -3,7 +3,7 @@ title: 'Streaming Protocol'
 description: 'NDJSON streaming protocol for real-time code execution'
 ---
 
-The EnclaveJS streaming protocol enables real-time communication between clients and the execution runtime. It uses NDJSON (Newline Delimited JSON) for efficient streaming with optional end-to-end encryption.
+The EnclaveJS streaming protocol enables real-time communication between clients and the execution runtime. It uses NDJSON (Newline Delimited JSON) for efficient streaming. Events travel as plain JSON, protected by the transport.
 
 ## Protocol Overview
 
@@ -212,57 +212,70 @@ POST /sessions/:sessionId/tool-result
 }
 ```
 
-## End-to-End Encryption
+## Encryption
 
-Optional encryption using ECDH key exchange + AES-256-GCM:
+The first-party client and broker do not encrypt. `@enclave-vm/client`, `@enclave-vm/react`, `@enclave-vm/broker` and `@enclave-vm/runtime` perform no handshake and have no encryption option: a session is plain NDJSON protected only by the transport, so use HTTPS.
 
-### Key Exchange
+The protocol types in `@enclave-vm/types` define hello messages and an encrypted envelope, and `@enclave-vm/stream` exports matching primitives (ECDH P-256, HKDF-SHA-256, AES-256-GCM). They are defined, but the first-party client and broker do not use them. An application that wants payload encryption on top of TLS has to implement both ends itself; see [Encrypted Sessions](/examples/encrypted-sessions).
 
-```
-1. Client generates ECDH key pair (P-256)
-2. Client sends ClientHello with public key
-3. Server generates ECDH key pair
-4. Server sends ServerHello with public key
-5. Both derive shared secret
-6. Session keys derived via HKDF
-```
+### Hello Messages
 
-### Encrypted Events
+`ClientHello` and `ServerHello` carry the ephemeral public keys of an ECDH key exchange:
 
 ```json
 {
-  "encrypted": true,
-  "iv": "base64-nonce",
-  "ciphertext": "base64-encrypted-event",
-  "tag": "base64-auth-tag"
+  "protocolVersion": 2,
+  "clientEphemeralPubKeyB64": "base64-public-key",
+  "curve": "P-256",
+  "supportedAlgorithms": ["AES-GCM-256"]
 }
 ```
 
-### Configuration
-
-```ts
-const client = new EnclaveClient({
-  serverUrl: 'https://broker.example.com',
-  encryption: {
-    enabled: true,
-    curve: 'P-256',
-  },
-});
+```json
+{
+  "protocolVersion": 2,
+  "serverEphemeralPubKeyB64": "base64-public-key",
+  "curve": "P-256",
+  "selectedAlgorithm": "AES-GCM-256",
+  "kdf": "HKDF-SHA-256",
+  "keyId": "k_..."
+}
 ```
+
+The exchange is not authenticated. `ServerHello` has a reserved `signatureB64` field, but nothing creates or verifies it. The exchange protects against a party that can only read the connection, not against one that can change messages.
+
+### Encrypted Envelope
+
+An event of type `enc` wraps another event:
+
+```json
+{
+  "protocolVersion": 2,
+  "sessionId": "s_abc123",
+  "seq": 42,
+  "type": "enc",
+  "payload": {
+    "kid": "k_...",
+    "nonceB64": "base64-nonce",
+    "ciphertextB64": "base64-ciphertext-with-auth-tag"
+  }
+}
+```
+
+The stream primitives authenticate the header of the envelope (protocol version, session id, sequence number, key id) together with the event inside it. `@enclave-vm/client` does not decrypt `enc` events: a session that receives one fails with `PARSE_ERROR`.
 
 ## Reconnection
 
-The protocol supports reconnection with event replay:
+The client reconnects to a session when its connection is lost, and the broker replays the events the client has not seen:
 
 ```ts
+import { EnclaveClient } from '@enclave-vm/client';
+
 const client = new EnclaveClient({
-  reconnection: {
-    enabled: true,
-    maxAttempts: 5,
-    initialDelayMs: 1000,
-    maxDelayMs: 30000,
-    backoffMultiplier: 2,
-  },
+  baseUrl: 'https://broker.example.com',
+  autoReconnect: true, // default
+  maxReconnectAttempts: 3, // default
+  reconnectDelay: 1000, // milliseconds, default
 });
 ```
 
@@ -278,7 +291,7 @@ Events include sequence numbers for ordering:
 }
 ```
 
-On reconnection, the client sends the last received sequence number to resume from that point.
+On reconnection, the client asks the broker for the events after the last one it received: `GET /sessions/:sessionId/stream?fromSeq=N`, where `N` is the next sequence number the client expects.
 
 ## Event Filtering
 

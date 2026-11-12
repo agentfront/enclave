@@ -180,23 +180,25 @@ describe('RuntimeWorker', () => {
       });
       await worker.start();
 
-      const channel1 = createMemoryChannel();
-      const channel2 = createMemoryChannel();
-      const channel3 = createMemoryChannel();
+      // Executing is not implemented, so a request ends at once and frees its place
+      for (const sessionId of ['s_1', 's_2', 's_3']) {
+        await expect(
+          worker.handleRequest(
+            { type: 'execute', sessionId: sessionId as `s_${string}`, code: 'return 1' },
+            createMemoryChannel(),
+          ),
+        ).rejects.toThrow('not implemented');
+      }
 
-      // Start first session
-      await worker.handleRequest({ type: 'execute', sessionId: 's_1' as `s_${string}`, code: 'return 1' }, channel1);
-
-      // Start second session
-      await worker.handleRequest({ type: 'execute', sessionId: 's_2' as `s_${string}`, code: 'return 2' }, channel2);
-
-      // Wait a bit for sessions to be registered
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      const sessions = worker.getSessions();
-      expect(sessions.length).toBeLessThanOrEqual(2);
+      expect(worker.getSessions().length).toBe(0);
 
       await worker.stop();
+    });
+
+    it('should refuse a session limit that is not a positive integer', () => {
+      expect(() => createRuntimeWorker({ maxSessions: 0 })).toThrow(RangeError);
+      expect(() => createRuntimeWorker({ maxSessions: Number.NaN })).toThrow(RangeError);
+      expect(() => createRuntimeWorker({ maxSessions: undefined })).not.toThrow();
     });
   });
 });

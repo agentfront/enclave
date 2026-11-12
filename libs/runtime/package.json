@@ -1,7 +1,7 @@
 {
   "name": "@enclave-vm/runtime",
   "version": "2.19.1",
-  "description": "Standalone runtime worker for EnclaveJS - deployable execution environment",
+  "description": "Building blocks of a runtime worker for EnclaveJS: session bookkeeping and channels (does not execute code)",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",
   "license": "Apache-2.0",

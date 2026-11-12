@@ -133,7 +133,8 @@ export interface UseEnclaveSessionReturn<T = unknown> {
  */
 export interface EnclaveProviderProps {
   /**
-   * Client configuration
+   * Client configuration. A render with other values builds a new client from them;
+   * a render with equal values keeps the client.
    */
   config: EnclaveClientConfig;
 
@@ -158,7 +159,7 @@ export interface EnclaveContextValue {
   client: EnclaveClient;
 
   /**
-   * Client configuration
+   * The configuration the client was built from (with a pre-created client: the `config` prop)
    */
   config: EnclaveClientConfig;
 }

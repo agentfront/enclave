@@ -10,6 +10,10 @@ import type { SessionId, StreamEvent, SessionLimits, ErrorPayload, ToolProgressP
 
 /**
  * Client configuration
+ *
+ * These are all the options there are. The constructor refuses any other key: the client has
+ * no `encryption` and no `auth` option. Requests and events travel as plain JSON, so use an
+ * `https:` base URL, and send credentials with `headers`.
  */
 export interface EnclaveClientConfig {
   /**
@@ -18,12 +22,16 @@ export interface EnclaveClientConfig {
   baseUrl: string;
 
   /**
-   * Default headers to include in all requests
+   * Default headers to include in all requests (for example `Authorization`)
    */
   headers?: Record<string, string>;
 
   /**
-   * Request timeout in milliseconds
+   * How long the client waits for the server, in milliseconds: for the answer to a request,
+   * and for the next event on an open stream. On a stream the wait is never shorter than two
+   * heartbeat intervals of the session (15 seconds each unless `limits.heartbeatIntervalMs`
+   * asks for another). When it runs out the connection counts as lost: the client reconnects
+   * if `autoReconnect` allows it, otherwise the session fails with `TIMEOUT`.
    * @default 60000
    */
   timeout?: number;
@@ -47,6 +55,13 @@ export interface EnclaveClientConfig {
   reconnectDelay?: number;
 
   /**
+   * Largest event the client accepts, in characters of its JSON line. A longer event ends the
+   * session with `PARSE_ERROR`.
+   * @default 8388608 (8 MiB)
+   */
+  maxEventLength?: number;
+
+  /**
    * Custom fetch implementation (for Node.js or testing)
    */
   fetch?: typeof fetch;
@@ -67,7 +82,7 @@ export interface ExecuteOptions {
   limits?: Partial<SessionLimits>;
 
   /**
-   * Abort signal for cancellation
+   * Abort signal for cancellation. Aborting it does what `SessionHandle.cancel()` does.
    */
   signal?: AbortSignal;
 }
@@ -117,7 +132,9 @@ export interface SessionEventHandlers {
   onHeartbeat?: () => void;
 
   /**
-   * Called on non-fatal error
+   * Called on non-fatal error: an `error` event of the session, or, with the code
+   * `CANCEL_FAILED`, a cancellation that the server did not confirm (the script may still
+   * be running)
    */
   onError?: (code: string, message: string) => void;
 
@@ -208,7 +225,9 @@ export interface SessionHandle {
   wait(): Promise<SessionResult>;
 
   /**
-   * Cancel the session
+   * Cancel the session: it ends as `CANCELLED` here, and the server is asked to end it.
+   * Does not reject; a stop that the server did not confirm is reported to `onError`
+   * with the code `CANCEL_FAILED`.
    */
   cancel(reason?: string): Promise<void>;
 
