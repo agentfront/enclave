@@ -64,8 +64,17 @@ interface CallbackInvoker {
 export interface InterpreterAdapterOptions {
   /** Override the instruction budget (default 5,000,000). */
   maxSteps?: number;
-  /** Override the max interpreter call depth (default 256). */
+  /**
+   * How deep the calls of a script may nest (default 256). Counted along each chain of calls: a
+   * callback is a call of the function that invokes it, and the tasks of a `parallel` batch each
+   * continue the chain that started the batch, so a batch does not add up.
+   */
   maxCallDepth?: number;
+  /**
+   * How many calls of an execution may be unfinished at once, running or waiting, over all its
+   * chains (default 4096). It bounds what the waiting calls of nested `parallel` batches hold.
+   */
+  maxPendingCalls?: number;
   /**
    * The most a script may allocate, in bytes, as the interpreter estimates it (default 64 MB).
    * An execution's own `memoryLimit` applies when it is lower.
@@ -182,6 +191,7 @@ export class InterpreterAdapter implements SandboxAdapter {
         instanceChecks: safe.instanceChecks,
         maxSteps: this.options.maxSteps ?? DEFAULT_MAX_STEPS,
         maxCallDepth: this.options.maxCallDepth ?? DEFAULT_MAX_CALL_DEPTH,
+        maxPendingCalls: this.options.maxPendingCalls,
         signal: context.abortController.signal,
         charge,
       });

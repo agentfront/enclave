@@ -219,7 +219,8 @@ It differs from the VM adapters in what isolates a script. There is one realm: t
 | Option | Default | Description |
 |--------|---------|-------------|
 | `maxSteps` | `5000000` | Evaluated nodes before the execution is ended (bounds loops) |
-| `maxCallDepth` | `256` | Nested calls of script functions |
+| `maxCallDepth` | `256` | How deep calls may nest, along one chain of calls. A callback is one call deeper than the function that invokes it; the tasks of a `parallel` batch each continue the chain that started the batch and do not add up |
+| `maxPendingCalls` | `4096` | Calls of the whole execution that have not returned yet (running or waiting), over all its chains |
 | `maxAllocationBytes` | `67108864` | What a script may allocate, as the interpreter estimates it; the execution's `memoryLimit` applies when it is lower |
 
 ## Security Options

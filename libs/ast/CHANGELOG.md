@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.19.0] - 2026-11-12
+
 A security release of the static layer. The invariants behind each item, and the categories of the tests that pin them, are listed under "Layer 1: static" in `SECURITY-TESTS.md`; nothing here says more than that file does.
 
 ### Security
