@@ -7,13 +7,16 @@ This page documents error codes you may encounter when using Enclave, along with
 
 ## Execution Errors
 
+`run()` does not reject for a failing script. It resolves with `success: false` and an `error` that has a `name`, a `message` and a `code`. The message says what happened; the code says which stage reported it. See [Error Codes](/core-libraries/enclave-vm/configuration#error-codes) for the complete list.
+
 ### VALIDATION_ERROR
 
-**Cause:** Code failed AST validation. A blocked construct was used.
+**Cause:** Code failed AST validation: a blocked construct was used. Also returned for a script of more than 5,242,880 characters, or one that is not a string.
 
 **Example:**
 ```
-Error: VALIDATION_ERROR - Identifier 'eval' is not allowed
+AgentScript validation failed:
+UNKNOWN_GLOBAL (line 2): Unknown identifier "fetch". All identifiers must be either declared locally or in the allowed globals list. ...
 ```
 
 **Solution:**
@@ -24,18 +27,19 @@ Error: VALIDATION_ERROR - Identifier 'eval' is not allowed
 ```ts
 if (!result.success && result.error?.code === 'VALIDATION_ERROR') {
   console.log('Validation failed:', result.error.message);
-  // Review and fix the code
+  console.log('Issues:', result.error.data?.issues); // { code, severity, message, location? }
 }
 ```
 
-### TIMEOUT
+### Errors of the running script
+
+A script that fails while it runs has the code `DOUBLE_VM_EXECUTION_ERROR` (or `VM_EXECUTION_ERROR` with `doubleVm: { enabled: false }`), whatever the reason. Tell the reasons apart by the message.
+
+#### Timeout
+
+**Message:** `Script execution timed out after 5000ms`
 
 **Cause:** Execution exceeded the configured timeout.
-
-**Example:**
-```
-Error: TIMEOUT - Execution exceeded 5000ms timeout
-```
 
 **Solutions:**
 1. Optimize slow tool calls
@@ -48,14 +52,13 @@ const enclave = new Enclave({
 });
 ```
 
-### MAX_TOOL_CALLS
+In process the deadline is cooperative: it is checked between the steps of the script's own code. With `adapter: 'worker_threads'`, a script that is still running five seconds after its timeout is terminated with its worker, and the error is `WorkerTimeoutError` with the code `EXECUTION_ERROR`.
+
+#### Tool call limit
+
+**Message:** `Maximum tool call limit exceeded (50). This limit prevents runaway script execution.`
 
 **Cause:** Script made too many tool calls.
-
-**Example:**
-```
-Error: MAX_TOOL_CALLS - Exceeded limit of 50 tool calls
-```
 
 **Solutions:**
 1. Batch operations in tools instead of individual calls
@@ -72,96 +75,104 @@ for (const id of ids) {
 await callTool('users:getMany', { ids });
 ```
 
-### MAX_ITERATIONS
+#### Iteration limit
+
+**Message:** `Maximum iteration limit exceeded (10000). This limit prevents infinite loops.`
 
 **Cause:** Loop iterations exceeded the limit.
-
-**Example:**
-```
-Error: MAX_ITERATIONS - Exceeded limit of 10000 iterations
-```
 
 **Solutions:**
 1. Use pagination or limits in data fetching
 2. Process data in chunks
 3. Increase maxIterations (carefully)
 
-### TOOL_ERROR
+#### A tool failed
 
-**Cause:** A tool handler threw an error.
-
-**Example:**
-```
-Error: TOOL_ERROR - Tool 'users:get' failed: User not found
-```
+**Cause:** A tool handler threw an error, and the script did not catch it. The message is the handler's.
 
 **Solutions:**
 1. Check tool inputs are valid
-2. Handle errors in tool handlers gracefully
-3. Provide meaningful error messages
+2. Throw errors with meaningful messages from tool handlers
+3. Let the script handle the failure: `try` / `catch`, or `callTool(name, args, { throwOnError: false })`, which resolves to `{ success: false, error }` instead of throwing
 
-```ts
-toolHandler: async (name, args) => {
-  try {
-    return await executeToolSafely(name, args);
-  } catch (error) {
-    // Return structured error instead of throwing
-    return { error: true, message: error.message };
-  }
+```js
+const r = await callTool('users:get', { id }, { throwOnError: false });
+if (!r.success) {
+  return { failed: r.error.message };
 }
+return r.data;
 ```
 
 ### MEMORY_LIMIT_EXCEEDED
 
-**Cause:** Script used more memory than allowed.
+**Cause:** Script used more memory than `memoryLimit` allows, as the enclave counts it. The default limit is 1 MB.
 
 **Example:**
 ```
-Error: MEMORY_LIMIT_EXCEEDED - Used 64MB (limit: 32MB)
+Memory limit exceeded: 1.20MB used > 1.00MB limit
 ```
+
+`error.data` holds `usedBytes` and `limitBytes`.
 
 **Solutions:**
 1. Process large data in chunks
-2. Use Reference Sidecar for large tool responses
+2. Pass large strings between tools by reference with the [Reference Sidecar](/core-libraries/enclave-vm/reference-sidecar)
 3. Increase memory limit
 
 ```ts
 const enclave = new Enclave({
   memoryLimit: 64 * 1024 * 1024, // 64MB
-  sidecar: { enabled: true }, // For large data
 });
 ```
 
+A returned value that is larger than the memory limit allows fails with `SERIALIZATION_LIMIT_EXCEEDED`.
+
+### SECURITY_VIOLATION
+
+**Cause:** The script contains a dynamic import (`import()` or `import.meta`), which is refused before the script runs, also with `validate: false`. At `STRICT` and `SECURE` the code is also returned when the runtime recorded a blocked operation during the run.
+
+**Solution:** Remove the construct. A script reaches the outside through tools only.
+
 ### SCORING_BLOCKED
 
-**Cause:** AI Scoring Gate detected suspicious patterns.
+**Cause:** The AI Scoring Gate gave the script a score at or above `blockThreshold`, or it could not score the script and `failOpen` is `false`.
 
 **Example:**
 ```
-Error: SCORING_BLOCKED - Score 75 exceeds threshold 70
+Script blocked by AI scoring (score: 75): EXFIL_PATTERN: Potential data exfiltration: users:list → email:send; ...
 ```
+
+`error.data` holds `totalScore`, `riskLevel` and `signals`.
 
 **Solutions:**
 1. Review code for exfiltration patterns
 2. Avoid list→send sequences
 3. Use specific queries instead of wildcards
-4. Adjust scoring thresholds if false positive
+4. Adjust scoring thresholds if false positive: the score is a heuristic
+
+### ENCLAVE_ERROR
+
+**Cause:** A failure outside the sandbox before the script ran. The most common one is a syntax error: `Failed to parse AgentScript code: ...`.
+
+**Solution:** Fix the syntax of the script.
 
 ## Validation Issues
 
 ### Unknown global
 
-**Message:** `Unknown global 'xyz' - not in allowed list`
+**Message:** `Unknown identifier "xyz". All identifiers must be either declared locally or in the allowed globals list.` (code `UNKNOWN_GLOBAL`)
 
 **Cause:** Code references an identifier not in the allowed globals list.
 
-**Solution:** Add to allowedGlobals or use a tool instead:
+**Solution:** Use a tool instead, or give the enclave the value as a custom global:
 
 ```ts
-const preset = createAgentScriptPreset({
-  allowedGlobals: ['callTool', 'Math', 'JSON', 'context'],
+const enclave = new Enclave({
+  globals: { context: { userId: 'user-123' } },
 });
 ```
+
+With `@enclave-vm/ast` on its own, list the name in `allowedGlobals` of the preset.
 
 ### Blocked identifier
 
@@ -205,29 +216,39 @@ items.map(item => item.value);
 
 ## Pre-Scanner Errors
 
+The enclave runs the pre-scanner with its `standard` preset (5 MB of input, 10,000 lines, nesting depth 50). A stricter preset applies only when you run a `PreScanner` yourself.
+
 ### Input size exceeded
 
-**Message:** `Input size 150KB exceeds limit 100KB`
+**Message:** `Input size (...) exceeds maximum allowed (...)` (code `PRESCANNER_INPUT_TOO_LARGE`)
 
-**Solution:** Reduce code size or adjust pre-scanner limits.
+**Solution:** Reduce code size.
 
 ### Nesting depth exceeded
 
-**Message:** `Nesting depth 25 exceeds limit 20`
+**Message:** `Bracket nesting depth (51) exceeds maximum allowed (50)` (code `PRESCANNER_NESTING_OVERFLOW`)
 
 **Solution:** Simplify nested expressions.
 
-### Potential ReDoS pattern
+### Regular expression
 
-**Message:** `Regex pattern '(a+)+' may cause ReDoS`
+**Code:** `PRESCANNER_REDOS` or `PRESCANNER_REGEX_BLOCKED`
 
-**Solution:** Remove or simplify the regex pattern.
+**Solution:** AgentScript has no regular expressions. Use string methods with plain strings (`includes`, `startsWith`, `split(',')`), or let a tool do the matching.
+
+### Look-alike letter
+
+**Code:** `PRESCANNER_HOMOGRAPH`
+
+**Cause:** The script contains a letter from another script that looks like an ASCII letter (for example a Cyrillic `а`), anywhere in its text, string literals included.
+
+**Solution:** Replace the letter. Text in such a script reaches a script through a tool result, not as a literal.
 
 ## Connection Errors
 
 ### Connection refused
 
-**Cause:** Cannot connect to broker or runtime.
+**Cause:** The client cannot connect to the broker.
 
 **Solutions:**
 1. Check the server is running
@@ -245,13 +266,19 @@ items.map(item => item.value);
 
 ## Debugging Tips
 
-### Enable verbose errors
+### Read the whole error
 
 ```ts
-const enclave = new Enclave({
-  verboseErrors: true,
-});
+const result = await enclave.run(code);
+
+if (!result.success) {
+  console.log(result.error?.code, result.error?.name);
+  console.log(result.error?.message);
+  console.log(result.error?.data); // validation issues, scoring signals, memory figures
+}
 ```
+
+An error made inside the sandbox has no `stack`. The message is where the information is.
 
 ### Log validation results
 
@@ -264,7 +291,7 @@ const result = await validator.validate(code);
 if (!result.valid) {
   console.log('Validation issues:');
   for (const issue of result.issues) {
-    console.log(`  ${issue.rule}: ${issue.message}`);
+    console.log(`  ${issue.code}: ${issue.message}`);
     if (issue.location) {
       console.log(`    at line ${issue.location.line}, column ${issue.location.column}`);
     }

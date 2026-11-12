@@ -10,15 +10,18 @@ This guide covers security best practices for hardening Enclave deployments in p
 ### Critical
 
 - [ ] Use `STRICT` security level for untrusted code
-- [ ] Enable AI Scoring Gate
-- [ ] Set memory limits
+- [ ] Set memory limits, on the sandbox and on the process or container around it
 - [ ] Configure timeouts
 - [ ] Validate all tool inputs
+- [ ] Authenticate callers in front of every endpoint that accepts code
 - [ ] Run as non-root user
 
 ### Recommended
 
 - [ ] Use HTTPS for client connections and authenticate requests in front of the broker
+- [ ] Give the broker's routes an `identify` hook, so that a session belongs to the caller that created it
+- [ ] Run the sandbox in the worker pool, a child process or a container when the host must survive any script
+- [ ] Consider the AI Scoring Gate as an additional, heuristic signal
 - [ ] Implement rate limiting
 - [ ] Use network segmentation
 - [ ] Enable audit logging
@@ -77,24 +80,28 @@ app.post('/execute', async (req, res) => {
 
 ### Layer 2: Pre-Scanner
 
-Block obvious attacks early:
+`Enclave` runs the validator's pre-scanner with its `standard` preset, which bounds the size, the nesting and the literals of a script and refuses a fixed list of look-alike letters. It does not refuse bidirectional control characters or invisible characters. For the stricter checks, run the `agentscript` pre-scanner preset yourself before you hand the code to the enclave:
 
 ```ts
-import { PreScanner, createPreScannerConfig } from '@enclave-vm/ast';
+import { PreScanner } from '@enclave-vm/ast';
 
-const scanner = new PreScanner(createPreScannerConfig('agentscript'));
+// The constructor takes { preset, config }; without a preset it uses 'standard'
+const scanner = new PreScanner({ preset: 'agentscript' });
 
 function preScreen(code: string): boolean {
   const result = scanner.scan(code);
-  if (!result.valid) {
+  if (!result.success) {
     logger.warn('Pre-scan blocked code', {
-      issues: result.issues,
+      code: result.fatalIssue?.code,
+      message: result.fatalIssue?.message,
     });
     return false;
   }
   return true;
 }
 ```
+
+The `agentscript` preset is strict about size as well: 100 KB of code, 1,000 lines, and no regular-expression literals.
 
 ### Layer 3: AST Validation
 
@@ -129,7 +136,7 @@ const validator = new JSAstValidator(
 
 ### Layer 4: AI Scoring Gate
 
-Detect suspicious semantic patterns:
+An optional heuristic: it scores a script by its tool calls and refuses it at a threshold. It flags patterns that look risky; a low score does not show that a script is safe.
 
 ```ts
 const enclave = new Enclave({
@@ -137,25 +144,28 @@ const enclave = new Enclave({
     scorer: 'rule-based',
     blockThreshold: 70,
     warnThreshold: 40,
-    onScore: (result) => {
-      if (result.score >= 40) {
-        logger.warn('Suspicious code pattern', {
-          score: result.score,
-          signals: result.signals,
-        });
-      }
-    },
+    failOpen: false, // Refuse a script the gate cannot score
   },
 });
+
+const result = await enclave.run(code);
+
+// The gate has no callback: read the score from the result
+if (result.scoringResult?.warned) {
+  logger.warn('Suspicious code pattern', {
+    score: result.scoringResult.totalScore,
+    signals: result.scoringResult.signals,
+  });
+}
 ```
 
 ### Layer 5: Runtime Isolation
 
-Maximum runtime isolation:
+Limits, and the worker pool around the sandbox:
 
 ```ts
 const enclave = new Enclave({
-  // Memory limit
+  // Memory limit (the enclave's own accounting; the default is 1 MB)
   memoryLimit: 64 * 1024 * 1024, // 64MB
 
   // Execution timeout
@@ -167,13 +177,20 @@ const enclave = new Enclave({
   // Iteration limit
   maxIterations: 10000,
 
-  // Use worker pool for OS-level isolation
-  adapter: createWorkerPoolAdapter({
-    poolSize: 4,
-    maxWorkerMemory: 128 * 1024 * 1024,
-  }),
+  // Run scripts in worker threads: a heap limit per worker and a hard stop
+  adapter: 'worker_threads',
+  workerPoolConfig: {
+    maxWorkers: 4,
+    memoryLimitPerWorker: 128 * 1024 * 1024,
+  },
 });
 ```
+
+What these limits are, and are not:
+
+- In process, `timeout` and `memoryLimit` are the enclave's own accounting, not the engine's. The deadline is checked between the steps of the script's own code, so one call into a built-in is bounded by the size of what it works on, not by `timeout`. `memoryLimit` counts the operations that make text and arrays grow; it does not count copies, objects, Maps or Sets.
+- The worker pool adds the engine's heap limit and terminates a script that is still running five seconds after its timeout. A worker thread shares the process with the host: it is not process isolation, and the heap limit is a backstop, not a guarantee that the process survives.
+- A host that must survive whatever a script does runs the enclave in a child process or a container with limits of the operating system.
 
 ### Layer 6: Output Sanitization
 
@@ -263,34 +280,38 @@ const enclave = new Enclave({
 
 ### Permission Control
 
-Implement tool permissions per user:
+Implement tool permissions per user. A tool handler receives the tool name and the arguments, nothing about the caller, so create the enclave (or pass the handler to `run()`) for the user the script runs for:
 
 ```ts
 interface UserPermissions {
   tools: string[];
   limits: {
     maxToolCalls: number;
-    maxDataSize: number;
   };
 }
 
-const enclave = new Enclave({
-  toolHandler: async (name, args, context) => {
-    const permissions = await getUserPermissions(context.userId);
+async function runForUser(userId: string, code: string) {
+  const permissions = await getUserPermissions(userId);
 
-    // Check tool access
-    if (!permissions.tools.includes(name)) {
-      throw new Error(`Tool ${name} not allowed for user`);
-    }
+  const enclave = new Enclave({
+    securityLevel: 'STRICT',
+    // The enclave enforces the call limit itself
+    maxToolCalls: permissions.limits.maxToolCalls,
+    toolHandler: async (name, args) => {
+      // Check tool access
+      if (!permissions.tools.includes(name)) {
+        throw new Error(`Tool ${name} not allowed for user`);
+      }
+      return executeTool(name, args, { userId });
+    },
+  });
 
-    // Check limits
-    if (context.toolCallCount >= permissions.limits.maxToolCalls) {
-      throw new Error('Tool call limit exceeded');
-    }
-
-    return executeTool(name, args);
-  },
-});
+  try {
+    return await enclave.run(code);
+  } finally {
+    enclave.dispose();
+  }
+}
 ```
 
 ### Data Filtering
@@ -325,20 +346,20 @@ function filterSensitiveData(data: unknown): unknown {
 
 ### Isolation
 
-Run Enclave in isolated network:
+Run the process that executes scripts (your application with `@enclave-vm/core`, or the broker) on an internal network, behind the gateway that authenticates callers. A script has no network access of its own; what reaches the network are your tool handlers, so give that process only the routes its tools need:
 
 ```yaml
 # docker-compose.yml
 services:
-  enclave-runtime:
+  gateway:
     networks:
       - enclave-internal
-    # No external network access
+      - external
 
   enclave-broker:
     networks:
       - enclave-internal
-      - external
+    # Reached through the gateway only
 
 networks:
   enclave-internal:
@@ -473,34 +494,35 @@ function logAudit(log: AuditLog) {
   auditStore.insert(log);
 }
 
-const enclave = new Enclave({
-  toolHandler: async (name, args, context) => {
-    const start = Date.now();
-    let result: unknown;
-    let error: Error | undefined;
+// A tool handler receives (name, args). Who the script runs for comes from your own code.
+function createAuditedEnclave(userId: string, sessionId: string) {
+  return new Enclave({
+    toolHandler: async (name, args) => {
+      const start = Date.now();
+      let error: Error | undefined;
 
-    try {
-      result = await executeTool(name, args);
-      return result;
-    } catch (e) {
-      error = e as Error;
-      throw e;
-    } finally {
-      logAudit({
-        timestamp: new Date().toISOString(),
-        userId: context.userId,
-        sessionId: context.sessionId,
-        action: `tool:${name}`,
-        details: {
-          args: sanitizeForLog(args),
-          duration: Date.now() - start,
-        },
-        result: error ? 'failure' : 'success',
-        errorCode: error?.message,
-      });
-    }
-  },
-});
+      try {
+        return await executeTool(name, args);
+      } catch (e) {
+        error = e as Error;
+        throw e;
+      } finally {
+        logAudit({
+          timestamp: new Date().toISOString(),
+          userId,
+          sessionId,
+          action: `tool:${name}`,
+          details: {
+            args: sanitizeForLog(args),
+            duration: Date.now() - start,
+          },
+          result: error ? 'failure' : 'success',
+          errorCode: error?.message,
+        });
+      }
+    },
+  });
+}
 ```
 
 ### Log Retention
@@ -525,7 +547,7 @@ const logConfig = {
 
 ```dockerfile
 # Use specific version
-FROM node:20.10-slim
+FROM node:22-slim
 
 # Run as non-root
 RUN useradd -m -u 1001 enclave

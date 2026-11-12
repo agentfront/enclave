@@ -9,7 +9,7 @@ EnclaveJS is a streaming runtime layer built on top of `@enclave-vm/core` that e
 
 ## Architecture
 
-EnclaveJS provides a distributed architecture for executing AI-generated code with streaming results:
+A client sends a script to a broker over HTTP. The broker runs it in an `@enclave-vm/core` sandbox in its own process, runs the tools the script calls, and streams the events of the session back:
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
@@ -22,16 +22,17 @@ flowchart LR
         B1["Tool Registry"]
         B2["Session Manager"]
     end
-    subgraph runtime["Runtime<br/>(@enclave-vm/runtime)"]
-        RT1["@enclave-vm/core"]
+    subgraph sandbox["Sandbox, in the broker's process<br/>(@enclave-vm/core)"]
         RT2["Sandboxed Code"]
     end
-    react -->|HTTP| broker
-    broker -->|WS| runtime
+    react -->|"HTTP (NDJSON)"| broker
+    broker -->|in process| sandbox
     style react fill:#f0b865,stroke:#c78935,color:#333
     style broker fill:#e8a045,stroke:#c78935,color:#fff
-    style runtime fill:#e8a045,stroke:#c78935,color:#fff
+    style sandbox fill:#e8a045,stroke:#c78935,color:#fff
 ```
+
+`@enclave-vm/runtime` is not part of this picture: it holds building blocks of a separate runtime worker and does not execute scripts yet.
 
 ## Packages
 
@@ -52,15 +53,16 @@ flowchart LR
     React hooks and components
   </Card>
   <Card title="@enclave-vm/runtime" icon="microchip" href="/enclavejs/runtime">
-    Standalone deployable runtime worker
+    Building blocks of a runtime worker; not a runnable service
   </Card>
 </CardGroup>
 
 ## Key Features
 
-- **Real-time Streaming**: NDJSON-based protocol for streaming stdout, logs, and tool calls
-- **Tool Orchestration**: Define tools with Zod schemas, handle tool calls during execution
+- **Real-time Streaming**: NDJSON-based protocol that streams the events of a session (tool calls, progress, the result)
+- **Tool Orchestration**: Define tools with Zod schemas on the broker, which runs them when a script calls them
 - **Session Management**: Track execution sessions with limits, stats, and lifecycle management
+- **Bring your own authentication**: The broker does not authenticate callers or limit request rates; with its `identify` hook a session belongs to the caller that created it
 - **Encryption Primitives**: ECDH, HKDF and AES-256-GCM building blocks in `@enclave-vm/stream`. The client and broker do not encrypt: sessions are plain JSON protected by HTTPS
 - **Automatic Reconnection**: Built-in reconnection with sequence tracking and event buffering
 - **React Integration**: First-class React hooks for building interactive code execution UIs
@@ -70,11 +72,11 @@ flowchart LR
 ### Server Setup (Broker)
 
 ```typescript
-import { Broker, createBroker } from '@enclave-vm/broker';
+import { createBroker } from '@enclave-vm/broker';
 import { z } from 'zod';
 
 const broker = createBroker({
-  securityLevel: 'SECURE',
+  enclave: { securityLevel: 'SECURE' },
 });
 
 // Register a tool
@@ -88,17 +90,21 @@ broker.tool('getCurrentTime', {
   },
 });
 
-// Execute code with streaming
-const stream = broker.execute(`
-  const time = await tools.getCurrentTime({ timezone: 'America/New_York' });
-  console.log('Current time:', time);
+// Execute code; the events of the run go to onEvent
+const result = await broker.execute(
+  `
+  const time = await callTool('getCurrentTime', { timezone: 'America/New_York' });
   return time;
-`);
+`,
+  {
+    onEvent: (event) => console.log(event.type, event.payload),
+  },
+);
 
-for await (const event of stream) {
-  console.log(event.type, event.payload);
-}
+console.log(result.success ? result.value : result.error);
 ```
+
+To serve sessions over HTTP for the client, register the broker's routes on an Express app; see [@enclave-vm/broker](/enclavejs/broker#http-api).
 
 ### Client Setup (React)
 
@@ -107,19 +113,19 @@ import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
 function App() {
   return (
-    <EnclaveProvider brokerUrl="http://localhost:3000">
+    <EnclaveProvider config={{ baseUrl: 'http://localhost:3000' }}>
       <CodeExecutor />
     </EnclaveProvider>
   );
 }
 
 function CodeExecutor() {
-  const { execute, state, stdout, result, error } = useEnclaveSession();
+  const { execute, state, result, error } = useEnclaveSession();
 
   const runCode = async () => {
     await execute(`
-      console.log('Hello from the sandbox!');
-      return 42;
+      const time = await callTool('getCurrentTime', {});
+      return time;
     `);
   };
 
@@ -128,41 +134,27 @@ function CodeExecutor() {
       <button onClick={runCode} disabled={state === 'running'}>
         {state === 'running' ? 'Running...' : 'Run Code'}
       </button>
-      <pre>{stdout}</pre>
-      {result && <div>Result: {JSON.stringify(result)}</div>}
+      {result?.success && <div>Result: {JSON.stringify(result.value)}</div>}
       {error && <div>Error: {error.message}</div>}
     </div>
   );
 }
 ```
 
-## Deployment Modes
+## Deployment
 
-### Embedded Mode
-
-The broker runs the sandbox directly (simplest setup):
+The broker runs the sandbox in its own process. There is no mode option: `createBroker()` takes `enclave`, `limits`, `history` and `sessions`.
 
 ```typescript
-const broker = createBroker({ mode: 'embedded' });
-```
-
-### Extracted Mode
-
-The broker connects to a separate runtime worker via WebSocket (for isolation/scaling):
-
-```typescript
-// Broker
 const broker = createBroker({
-  mode: 'extracted',
-  runtimeUrl: 'ws://localhost:3001',
+  enclave: { securityLevel: 'SECURE' },
+  limits: { maxToolCalls: 20, toolTimeoutMs: 10_000 },
 });
-
-// Runtime Worker
-import { createRuntimeWorker } from '@enclave-vm/runtime';
-
-const worker = createRuntimeWorker({ port: 3001 });
-await worker.start();
 ```
+
+A session runs on the broker's thread. A script that computes without calling a tool holds that thread, and with it every other session, until it ends or reaches `toolTimeoutMs`. When you serve callers you do not trust, keep that limit low and run the broker in a process of its own, or give the sandbox the worker-pool adapter (`enclave: { adapter: 'worker_threads' }`).
+
+A deployment in which the broker hands execution to a separate runtime worker is not implemented: the broker has no option to connect to one, and `@enclave-vm/runtime` rejects an `execute` request with `RuntimeNotImplementedError`.
 
 ## Stream Events
 
@@ -170,14 +162,17 @@ The streaming protocol emits these event types:
 
 | Event Type | Description |
 |------------|-------------|
-| `session_init` | Session started with config |
-| `stdout` | Console output chunk |
-| `log` | Log message (debug/info/warn/error) |
-| `tool_call` | Tool execution request |
-| `tool_result_applied` | Tool result acknowledgment |
+| `session_init` | Session started: cancel URL and expiry |
+| `tool_call` | The script called a tool |
+| `tool_progress` | Progress of a tool call |
+| `tool_result_applied` | The tool result was handed to the script |
+| `partial_result` | Part of a result |
 | `heartbeat` | Keep-alive message |
-| `final` | Session completed with stats |
-| `error` | Execution error |
+| `deadline_exceeded` | The deadline of the session passed |
+| `final` | Session ended, with the result or the error, and stats |
+| `error` | An error next to the final event, such as a cancellation |
+
+The protocol also defines `stdout` and `log` events; the broker does not emit them. See [Streaming Protocol](/concepts/streaming-protocol).
 
 ## Links
 

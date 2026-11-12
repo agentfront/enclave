@@ -232,13 +232,13 @@ Secrets are resolved per tool and handed to the handler only; they are not part 
 
 ## Related packages
 
-| Package                           | Description                     |
-| --------------------------------- | ------------------------------- |
-| [@enclave-vm/core](../core)       | The sandbox                     |
-| [@enclave-vm/types](../types)     | Protocol types and Zod schemas  |
-| [@enclave-vm/client](../client)   | Browser and Node.js client      |
-| [@enclave-vm/stream](../stream)   | NDJSON and reconnection helpers |
-| [@enclave-vm/runtime](../runtime) | Standalone runtime worker       |
+| Package                           | Description                                                   |
+| --------------------------------- | ------------------------------------------------------------- |
+| [@enclave-vm/core](../core)       | The sandbox                                                   |
+| [@enclave-vm/types](../types)     | Protocol types and Zod schemas                                |
+| [@enclave-vm/client](../client)   | Browser and Node.js client                                    |
+| [@enclave-vm/stream](../stream)   | NDJSON and reconnection helpers                               |
+| [@enclave-vm/runtime](../runtime) | Runtime worker building blocks (does not execute scripts yet) |
 
 ## License
 

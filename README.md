@@ -42,7 +42,7 @@
 
 ```bash
 npm install @enclave-vm/core    # Secure JS sandbox
-npm install ast-guard           # AST security validation
+npm install @enclave-vm/ast     # AST security validation
 ```
 
 ### Streaming Runtime
@@ -55,16 +55,17 @@ npm install @enclave-vm/react    # React hooks & components
 
 ## Packages
 
-| Package                                           | Description                                         |
-| ------------------------------------------------- | --------------------------------------------------- |
-| [`@enclave-vm/core`](./libs/enclave-vm)           | Secure JavaScript sandbox with 6 security layers    |
-| [`@enclave-vm/broker`](./libs/enclavejs-broker)   | Tool registry, secrets management, session API      |
-| [`@enclave-vm/client`](./libs/enclavejs-client)   | Browser & Node.js client for streaming sessions     |
-| [`@enclave-vm/react`](./libs/enclavejs-react)     | React hooks: `useEnclaveSession`, `EnclaveProvider` |
-| [`@enclave-vm/runtime`](./libs/enclavejs-runtime) | Deployable runtime worker (Lambda, Vercel, etc.)    |
-| [`@enclave-vm/types`](./libs/enclavejs-types)     | TypeScript types & Zod schemas                      |
-| [`@enclave-vm/stream`](./libs/enclavejs-stream)   | NDJSON streaming, encryption, reconnection          |
-| [`ast-guard`](./libs/ast-guard)                   | AST-based security validator                        |
+| Package                                 | Description                                                                                 |
+| --------------------------------------- | ------------------------------------------------------------------------------------------- |
+| [`@enclave-vm/core`](./libs/core)       | Secure JavaScript sandbox with 6 security layers                                            |
+| [`@enclave-vm/ast`](./libs/ast)         | AST-based security validator                                                                |
+| [`@enclave-vm/browser`](./libs/browser) | The sandbox for browsers, in nested iframes                                                 |
+| [`@enclave-vm/broker`](./libs/broker)   | Tool registry, secrets, sessions and their HTTP routes (bring your own authentication)      |
+| [`@enclave-vm/client`](./libs/client)   | Browser & Node.js client for streaming sessions (plain JSON over HTTP; use HTTPS)           |
+| [`@enclave-vm/react`](./libs/react)     | React hooks: `useEnclaveSession`, `EnclaveProvider`                                         |
+| [`@enclave-vm/types`](./libs/types)     | TypeScript types & Zod schemas                                                              |
+| [`@enclave-vm/stream`](./libs/stream)   | NDJSON streaming, reconnection helpers, encryption primitives the other packages do not use |
+| [`@enclave-vm/runtime`](./libs/runtime) | Building blocks of a runtime worker; it does not execute scripts yet                        |
 
 ## Quick Start
 
@@ -98,7 +99,7 @@ import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
 function App() {
   return (
-    <EnclaveProvider brokerUrl="https://your-server.com">
+    <EnclaveProvider config={{ baseUrl: 'https://your-server.com' }}>
       <CodeRunner />
     </EnclaveProvider>
   );
@@ -129,11 +130,11 @@ function CodeRunner() {
 
 See [README-ARCHITECTURE.md](./README-ARCHITECTURE.md) for detailed architecture documentation covering:
 
-- Deployment scenarios (embedded vs extracted runtime)
+- Deployment scenarios (what is implemented today, and the design for a separate runtime)
 - Streaming protocol (NDJSON)
 - Tool broker pattern
-- Reference sidecar & auto-ref
-- Security & encryption
+- Reference sidecar
+- Security: what the transport has to provide, and what the packages do not
 
 ## Demos
 
@@ -156,6 +157,8 @@ Starts a 3-server architecture with a web UI, covering embedded, lambda, and dir
 - **Client** (port 4100) — Web UI
 - **Broker** (port 4101) — Tool execution & session management
 - **Runtime** (port 4102) — Sandboxed code execution
+
+The three servers are written for the demo, on `@enclave-vm/core` and `@enclave-vm/types`. They are not the `@enclave-vm/broker` and `@enclave-vm/runtime` packages: the runtime package does not execute scripts yet.
 
 **[Read the full documentation →](https://agentfront.dev/docs/guides/enclave)**
 
