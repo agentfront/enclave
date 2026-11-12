@@ -405,7 +405,10 @@ function invokeGlobalFunction(
 
   let result: unknown;
   try {
-    result = ReflectApply(fn, thisArg, safeArgs);
+    // In the async context of the caller of run(), not in the script's (see ./async-context)
+    result = activity?.inHostContext
+      ? activity.inHostContext(() => ReflectApply(fn, thisArg, safeArgs))
+      : ReflectApply(fn, thisArg, safeArgs);
   } catch (error: unknown) {
     return failure(error);
   }

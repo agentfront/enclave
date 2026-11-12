@@ -73,6 +73,7 @@ import { assertNodeVmAvailable } from './node-vm';
 import { normalizeEnclaveOptions } from './enclave-options';
 import { describeThrown, normalizeErrorText } from './thrown-value';
 import { refuseDynamicImport } from './dynamic-import';
+import { separateAsyncContexts } from './async-context';
 
 /**
  * Default security level
@@ -652,6 +653,11 @@ export class Enclave {
       // waiting for something of its own that will never happen; one that is waiting for the host
       // gets `toolCallGraceMs` more: see ./execution-deadline.
       const hostActivity = createHostActivity(this.toolCallGraceMs);
+      // The script runs in an async context of its own, which carries no AsyncLocalStorage store
+      // of the host; the host's callbacks run in the context run() was called in (see
+      // ./async-context).
+      const asyncContexts = separateAsyncContexts();
+      hostActivity.inHostContext = asyncContexts.inHostContext;
       const hostToolHandler = toolHandler || this.config.toolHandler;
       // Once run() has returned, the script's execution is over for the host as well. A script
       // can leave work behind (a tool call it did not await, a `then` on one): when that wakes up
@@ -671,7 +677,8 @@ export class Enclave {
         toolHandler: hostToolHandler ? trackToolCalls(hostToolHandler, hostActivity) : undefined,
         hostActivity,
         consoleHandler: hostConsoleHandler
-          ? (level, message) => (returned ? undefined : hostConsoleHandler(level, message))
+          ? (level, message) =>
+              returned ? undefined : asyncContexts.inHostContext(() => hostConsoleHandler(level, message))
           : undefined,
         sidecar,
         referenceConfig: this.referenceConfig,
@@ -707,7 +714,7 @@ export class Enclave {
         // Not with the worker pool: from this thread a script that waits in a worker looks the
         // same as one that keeps its worker busy, and the pool ends both itself, five seconds
         // after the deadline, by terminating the worker.
-        const execution = adapter.execute<T>(transformedCode, context);
+        const execution = asyncContexts.inScriptContext(() => adapter.execute<T>(transformedCode, context));
         const outcome =
           this.config.adapter === 'worker_threads'
             ? await execution
