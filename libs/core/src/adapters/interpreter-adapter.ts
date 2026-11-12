@@ -78,6 +78,8 @@ interface CallbackInvoker {
   call(fn: unknown, args: unknown[]): unknown;
   /** Set when the execution has returned: from then on a helper reaches nothing of the host */
   over?: boolean;
+  /** How a helper has a BigInt it made counted like one an operator of the script made */
+  countBigInt?(value: bigint): void;
 }
 
 /** Thrown by a helper that is called for an execution that has returned */
@@ -249,6 +251,7 @@ export class InterpreterAdapter implements SandboxAdapter {
       });
       const running = interpreter;
       callbacks.call = (fn, args) => running.call(fn, args);
+      callbacks.countBigInt = (value) => running.countBigInt(value);
       chargeForHelper = (bytes) => running.chargeAllocation(bytes);
     } catch (error) {
       return this.fail<T>(error, startTime, stats.toolCallCount, 0, sanitizeStacks);
@@ -354,6 +357,8 @@ export class InterpreterAdapter implements SandboxAdapter {
       const result: unknown = (left as never as number) + (right as never as number);
       if (typeof result === 'string') {
         charge((result.length - (typeof left === 'string' ? left.length : 0)) * 2);
+      } else if (typeof result === 'bigint') {
+        callbacks.countBigInt?.(result);
       }
       return result;
     };

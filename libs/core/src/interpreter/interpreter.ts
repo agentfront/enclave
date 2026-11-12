@@ -40,6 +40,8 @@
 //   built-in or host function starts, so a script that only computes ends at its deadline;
 //   a search whose cost is the product of two lengths is made in pieces, between which both
 //   are checked;
+// - a BigInt is bounded in size, and what it holds and what working on it costs are counted
+//   like the rest (the engine itself would let one value take 128 MB);
 // - what evaluation allocates is charged to the host's budget. A text is
 //   charged in full when it is made; the one exception is a variable that is appended to
 //   (`s += x`), which is charged for what is appended until its value is read for anything
@@ -176,6 +178,40 @@ const LONG_SEARCH_TEXT = 64;
 
 /** The most a built-in call that cannot be made in pieces may have to work through in the worst case */
 const MAX_CALL_WORK = 2 ** 33;
+
+/**
+ * The largest BigInt a script may hold, in bits (about 315,000 decimal digits). The engine
+ * allows a thousand times that for one value, and its arithmetic on such values runs for
+ * seconds in one step; at this size no single operation takes more than a few hundredths of one.
+ */
+export const MAX_BIGINT_BITS = 2 ** 20;
+
+/** The decimal digits of the largest BigInt, with a sign */
+const MAX_BIGINT_DIGITS = Math.ceil(MAX_BIGINT_BITS * Math.log10(2)) + 1;
+
+/** A BigInt of up to this many bits is like a number: neither charged nor counted as work */
+const WORD_BITS = 64;
+
+/** Work per bit of a BigInt that is multiplied, divided or made */
+const BIGINT_WORK = 64;
+
+/** Work per bit of a BigInt that is written as decimal text, or per char of a text it is read from */
+const BIGINT_TEXT_WORK = 1024;
+
+/** The operators that compare, and convert a text operand to the kind of the other one */
+const COMPARISONS = new Set(['==', '!=', '<', '<=', '>', '>=']);
+
+/** The bits of a BigInt, without its sign. */
+function bitsOf(value: bigint): number {
+  // Hexadecimal is the one form the engine writes in time proportional to the size
+  const hex = value.toString(16);
+  const start = value < 0n ? 1 : 0;
+  return (hex.length - start - 1) * 4 + (32 - Math.clz32(Number.parseInt(hex[start], 16)));
+}
+
+function bigIntTooLarge(): InterpreterError {
+  return new InterpreterError(`A BigInt cannot be larger than ${MAX_BIGINT_BITS} bits`);
+}
 
 /** String methods that look for a text in a text */
 const TEXT_SEARCHES = new Set(['indexOf', 'lastIndexOf', 'includes', 'split', 'replace', 'replaceAll']);
@@ -361,10 +397,12 @@ interface TextMeasure {
   active: Set<unknown[]>;
   /** Text length of the functions seen */
   functions: Map<unknown, number>;
+  /** Work the conversion needs beyond writing the chars (a BigInt is slow to write in decimal) */
+  work: number;
 }
 
 function newTextMeasure(): TextMeasure {
-  return { length: 0, items: 0, active: new Set(), functions: new Map() };
+  return { length: 0, items: 0, active: new Set(), functions: new Map(), work: 0 };
 }
 
 /** Upper bound of the text of one array item that is neither a string nor an array. */
@@ -373,8 +411,12 @@ function scalarTextLength(item: unknown, measure: TextMeasure): number {
     case 'number':
     case 'boolean':
       return 32; // also covers a number in the longest locale format
-    case 'bigint':
-      return String(item).length;
+    case 'bigint': {
+      // From its size: writing it out to measure it would be the conversion itself
+      const bits = bitsOf(item as bigint);
+      if (bits > WORD_BITS) measure.work += bits * BIGINT_TEXT_WORK;
+      return Math.ceil(bits * Math.log10(2)) + 2;
+    }
     case 'function': {
       let length = measure.functions.get(item);
       if (length === undefined) {
@@ -722,6 +764,8 @@ export class Interpreter {
   /** The functions the host provides: the globals, their members, and what `bind` made of them */
   private readonly provided = new WeakSet<object>();
   private readonly errorCopies = new WeakMap<object, object>();
+  /** BigInt literals of the program that were found to be within the size a BigInt may have */
+  private readonly checkedLiterals = new WeakSet<object>();
 
   constructor(private readonly options: InterpreterOptions) {
     this.globals = options.globals;
@@ -847,8 +891,73 @@ export class Interpreter {
 
   /** {@link assertArrayTextWithinLimit}, and the text the arrays are written as counted as work. */
   private arrayOperands(...values: unknown[]): void {
-    const text = assertArrayTextWithinLimit(...values);
-    if (text > 0) this.work(text * WRITE_WORK);
+    let measure: TextMeasure | undefined;
+    for (const value of values) {
+      if (!Array.isArray(value)) continue;
+      measure ??= newTextMeasure();
+      measureArrayText(value, 1, measure, 0);
+      if (measure.length > MAX_JOIN_LENGTH) throw new InterpreterError(TEXT_TOO_LONG);
+    }
+    if (measure) this.work(measure.length * WRITE_WORK + measure.work);
+  }
+
+  /**
+   * Count a BigInt an operation made: it is held to the size a BigInt may have, and beyond the
+   * size of a number what it holds is charged to the budget and making it counts as work. Also
+   * for the runtime helper that adds for a transformed `+`.
+   *
+   * @throws InterpreterError when the value is larger than {@link MAX_BIGINT_BITS}
+   */
+  countBigInt(value: bigint): void {
+    const bits = bitsOf(value);
+    if (bits > MAX_BIGINT_BITS) throw bigIntTooLarge();
+    if (bits <= WORD_BITS) return;
+    this.work(bits * BIGINT_WORK);
+    this.charge(Math.ceil(bits / 8));
+  }
+
+  /** Count the work of writing a value as text, when it is a BigInt: the engine writes it in decimal. */
+  private bigIntAsText(value: unknown): void {
+    if (typeof value !== 'bigint') return;
+    const bits = bitsOf(value);
+    if (bits > WORD_BITS) this.work(bits * BIGINT_TEXT_WORK);
+  }
+
+  /**
+   * What is checked before an operator is applied to a BigInt: the operations whose result can
+   * be far larger than their operands are refused from the operands, and what the engine reads
+   * to compare a BigInt with a text is bounded and counted.
+   */
+  private checkBigIntOperands(operator: string, left: unknown, right: unknown): void {
+    if (typeof left === 'bigint' && typeof right === 'bigint') {
+      if (operator === '<<' || operator === '>>') {
+        // A shift to the left makes a value longer by its count
+        const count = Number(operator === '<<' ? right : -right);
+        if (count > 0 && left !== 0n && bitsOf(left) + count > MAX_BIGINT_BITS) throw bigIntTooLarge();
+      } else if (operator === '**') {
+        // A power has at least (bits - 1) * exponent + 1 bits
+        const bits = bitsOf(left);
+        if (bits > 1 && (bits - 1) * Number(right) + 1 > MAX_BIGINT_BITS) throw bigIntTooLarge();
+      } else if (operator === '/' || operator === '%') {
+        // The result can be small where the work is not
+        const bits = bitsOf(left);
+        if (bits > WORD_BITS) this.work(bits * BIGINT_WORK);
+      }
+      return;
+    }
+    const other = typeof left === 'bigint' ? right : left;
+    if (COMPARISONS.has(operator)) {
+      // The engine reads a BigInt out of a text to compare the two
+      const chars = typeof other === 'string' ? other.length : assertArrayTextWithinLimit(other);
+      if (chars > MAX_BIGINT_DIGITS) {
+        throw new InterpreterError(`A BigInt cannot be compared with a text of more than ${MAX_BIGINT_DIGITS} chars`);
+      }
+      this.work(chars * BIGINT_TEXT_WORK);
+    } else if (operator === '+') {
+      // Added to a text or an array, a BigInt is written out
+      this.bigIntAsText(left);
+      this.bigIntAsText(right);
+    }
   }
 
   /** Charge an allocation to the host's budget. */
@@ -1095,6 +1204,10 @@ export class Interpreter {
         if ((node as ESTree.RegExpLiteral).regex) {
           throw new InterpreterError('Regular expressions are not supported');
         }
+        if (typeof node.value === 'bigint' && !this.checkedLiterals.has(node)) {
+          if (bitsOf(node.value) > MAX_BIGINT_BITS) throw bigIntTooLarge();
+          this.checkedLiterals.add(node);
+        }
         return node.value;
       case 'Identifier':
         return scope.has(node.name) ? scope.get(node.name) : this.readGlobal(node.name);
@@ -1262,7 +1375,8 @@ export class Interpreter {
       out += node.quasis[i].value.cooked ?? '';
       if (i < node.expressions.length) {
         const value = await this.evalExpr(node.expressions[i], scope);
-        assertArrayTextWithinLimit(value);
+        this.arrayOperands(value);
+        this.bigIntAsText(value);
         out += String(value);
         if (out.length > MAX_JOIN_LENGTH) throw new InterpreterError(TEXT_TOO_LONG);
       }
@@ -1302,17 +1416,23 @@ export class Interpreter {
     switch (node.operator) {
       case '!':
         return !truthy(v);
-      case '-':
+      case '-': {
         this.numericOperand(v);
-        return -(v as number);
+        const negated: unknown = -(v as number);
+        if (typeof negated === 'bigint') this.countBigInt(negated);
+        return negated;
+      }
       case '+':
         this.numericOperand(v);
         return +(v as number);
       case 'typeof':
         return typeof v;
-      case '~':
+      case '~': {
         this.numericOperand(v);
-        return ~(v as number);
+        const inverted: unknown = ~(v as number);
+        if (typeof inverted === 'bigint') this.countBigInt(inverted);
+        return inverted;
+      }
       case 'void':
         return undefined;
       default:
@@ -1391,6 +1511,14 @@ export class Interpreter {
    *   caller charges for the text that comes of it
    */
   private binary(operator: string, left: unknown, right: unknown, partOfSum = false): unknown {
+    if (typeof left !== 'bigint' && typeof right !== 'bigint') return this.operate(operator, left, right, partOfSum);
+    this.checkBigIntOperands(operator, left, right);
+    const result = this.operate(operator, left, right, partOfSum);
+    if (typeof result === 'bigint') this.countBigInt(result);
+    return result;
+  }
+
+  private operate(operator: string, left: unknown, right: unknown, partOfSum: boolean): unknown {
     // Every operator but the two strict comparisons converts an array operand to text.
     if (operator !== '===' && operator !== '!==') this.arrayOperands(left, right);
     // Two texts are compared char by char, and a number is read out of a text char by char.
@@ -1648,6 +1776,15 @@ export class Interpreter {
         if (typeof arg === 'string') read += arg.length;
       }
       this.work(stringMethod === 'localeCompare' ? read * LOCALE_COMPARE_WORK : read);
+      // A BigInt is written as text by whatever converts its arguments, and by its own methods
+      if (typeof thisArg === 'bigint') this.bigIntAsText(thisArg);
+      if (!ARRAY_DATA_FUNCTIONS.has(fn)) {
+        const isData = arrayMethod === undefined ? undefined : ARRAY_DATA_ARGUMENTS.get(arrayMethod);
+        const converted = CONVERTED_ARGUMENTS.get(fn) ?? args.length;
+        for (let i = 0; i < args.length && i < converted; i++) {
+          if (!isData?.(i)) this.bigIntAsText(args[i]);
+        }
+      }
 
       let result = this.searchInPieces(arrayMethod, stringMethod, thisArg, args);
       if (result === NOT_SEARCHED) {
@@ -1910,8 +2047,9 @@ export class Interpreter {
         if (Array.isArray(arg) && !isData?.(i)) measureArray(arg);
       }
       if (arrayMethod === undefined && stringMethod === undefined && Array.isArray(thisArg)) measureArray(thisArg);
-      arrayText = (measure as TextMeasure | undefined)?.length ?? 0;
-      this.work(arrayText * WRITE_WORK);
+      const measured = measure as TextMeasure | undefined;
+      arrayText = measured?.length ?? 0;
+      this.work(arrayText * WRITE_WORK + (measured?.work ?? 0));
     }
 
     if (stringMethod !== undefined) args = this.checkStringMethod(stringMethod, thisArg, args, arrayText);
@@ -2066,6 +2204,7 @@ export class Interpreter {
         if (measure.length > MAX_JOIN_LENGTH) {
           throw new InterpreterError(`Array '${name}' would produce more than ${MAX_JOIN_LENGTH} chars`);
         }
+        this.work(measure.work);
         return name === 'join' && args.length > 0 ? [given, ...args.slice(1)] : args;
       }
       // Without a comparison function the engine compares the items as text: strings as they
@@ -2437,6 +2576,7 @@ export class Interpreter {
   /** A computed property key as text. An array as a key is its items, joined. */
   private keyText(value: unknown): string {
     this.arrayOperands(value);
+    this.bigIntAsText(value);
     // The engine reads a key through to look it up
     this.work(operandSize(value));
     return String(value);
