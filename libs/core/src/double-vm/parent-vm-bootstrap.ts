@@ -2339,7 +2339,10 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
    * Sliding one-second window; entries older than two seconds are dropped.
    */
   function enforceRateLimit(now) {
-    while (operationHistory.length > 0 && now - operationHistory[0].timestamp > 2000) {
+    // Kept for as long as the longest look-back of a sequence detector (30 seconds for the
+    // built-in ones, twice that here), not only for the rate window below: a detector that
+    // asks for the last ten seconds has to find them.
+    while (operationHistory.length > 0 && now - operationHistory[0].timestamp > 60000) {
       operationHistory.shift();
     }
     while (globalFunctionCallTimes.length > 0 && now - globalFunctionCallTimes[0] > 2000) {
