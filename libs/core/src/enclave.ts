@@ -526,6 +526,9 @@ export class Enclave {
           wrapInMain: needsWrapping,
           transformCallTool: true,
           transformLoops: true,
+          // The limit is written into each loop's check as a number: nothing a script declares
+          // can stand in for it
+          maxIterations: this.config.maxIterations,
           // Pass custom global names so they aren't transformed to __safe_ prefix
           additionalIdentifiers: this.customGlobalNames,
         });
