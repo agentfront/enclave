@@ -11,6 +11,8 @@
  * - at the start of every function body (arrow functions with an expression body get a block body),
  *   which bounds recursion and every callback a built-in drives (`map`, `sort`, a Proxy trap, a
  *   `toString` called by a coercion, ...);
+ * - in front of what a parameter evaluates before the body starts (a default value, a computed
+ *   key of a destructuring pattern);
  * - at the start of every loop body.
  *
  * `__ag_tick` is the sandbox realm's `__safe_tick`, captured once at program scope. The adapter
@@ -44,6 +46,9 @@ export const REALM_TICK_FN = '__safe_tick';
  */
 export const TICKS_PER_CLOCK_CHECK = 256;
 
+/** What a deadline check throws once the execution it belongs to has ended. */
+export const EXECUTION_ENDED_MESSAGE = 'Script execution has ended';
+
 /** Result of the deadline-guard transform. */
 export interface DeadlineGuardResult {
   /** Number of function and loop bodies that received a deadline check. */
@@ -73,8 +78,52 @@ function prependToBlock(block: any): void {
   block.body.splice(index, 0, tickStatement());
 }
 
+/** `expression` preceded by the check: `(__ag_tick(), expression)`. */
+function tickBefore(expression: any): any {
+  return {
+    type: 'SequenceExpression',
+    expressions: [tickStatement().expression, expression],
+  };
+}
+
+/**
+ * Put the check in front of everything a parameter evaluates before the function body starts:
+ * a default value (`(a = expr) => ...`, also inside a destructuring pattern) and a computed key
+ * of a pattern. Without it the body's own check comes too late for that code.
+ */
+function guardParameter(pattern: any): void {
+  if (!pattern || typeof pattern !== 'object') return;
+  switch (pattern.type) {
+    case 'AssignmentPattern':
+      pattern.right = tickBefore(pattern.right);
+      guardParameter(pattern.left);
+      break;
+    case 'ObjectPattern':
+      for (const property of pattern.properties ?? []) {
+        if (property.type === 'RestElement') {
+          guardParameter(property.argument);
+        } else {
+          if (property.computed) {
+            property.key = tickBefore(property.key);
+          }
+          guardParameter(property.value);
+        }
+      }
+      break;
+    case 'ArrayPattern':
+      for (const element of pattern.elements ?? []) guardParameter(element);
+      break;
+    case 'RestElement':
+      guardParameter(pattern.argument);
+      break;
+    default:
+      break;
+  }
+}
+
 function guardFunction(node: any): boolean {
   if (!node.body) return false;
+  for (const parameter of node.params ?? []) guardParameter(parameter);
   if (node.body.type === 'BlockStatement') {
     prependToBlock(node.body);
     return true;
@@ -153,6 +202,11 @@ export function injectDeadlineChecks(ast: acorn.Node, parse: (source: string) =>
  * It captures the realm's own `Date.now` (so nothing the script does to `Date` afterwards matters)
  * and installs `__safe_tick` as a read-only global. What it throws is a string: an inert value in a
  * script's `catch`, and the adapters already report a thrown string as the error message.
+ *
+ * The expression's value is a function of that realm, for the adapter alone: called when the
+ * execution has ended (its script has settled, either way), it makes every later check throw at
+ * once, so that what the script left behind stops at its next function entry or loop iteration
+ * instead of going on until the deadline.
  */
 export function realmTickSource(timeoutMs: number): string {
   const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.floor(timeoutMs) : 0;
@@ -178,6 +232,12 @@ export function realmTickSource(timeoutMs: number): string {
     configurable: false,
     enumerable: false
   });
+  return function () {
+    if (!expired) {
+      expired = true;
+      message = ${JSON.stringify(EXECUTION_ENDED_MESSAGE)};
+    }
+  };
 })(${timeout})
 `.trim();
 }

@@ -833,6 +833,9 @@ export class VmAdapter implements SandboxAdapter {
     // Start tracking before execution
     memoryTracker?.start();
 
+    // Set once the realm has its deadline check (see ../deadline-guard)
+    let endDeadlineChecks: (() => void) | undefined;
+
     try {
       // Create sandbox context with safe globals only
       // IMPORTANT: Use empty object to get NEW isolated prototypes
@@ -906,7 +909,12 @@ export class VmAdapter implements SandboxAdapter {
       }
       // The script's cooperative deadline (see ../deadline-guard): vm's timeout below only covers
       // the script up to its first await.
-      compileSandboxScript(realmTickSource(config.timeout), { filename: 'deadline.js' }).runInContext(baseSandbox);
+      // What it evaluates to ends the checks: called when the execution is over (see `finally`
+      // below), it makes whatever the script left behind stop at its next function entry or loop
+      // iteration instead of going on until the deadline.
+      endDeadlineChecks = compileSandboxScript(realmTickSource(config.timeout), {
+        filename: 'deadline.js',
+      }).runInContext(baseSandbox) as () => void;
       const installToolNamespaces = executionContext.toolNamespaces?.length
         ? (TOOL_NAMESPACE_FACTORY_SCRIPT.runInContext(baseSandbox) as unknown)
         : undefined;
@@ -1725,6 +1733,13 @@ export class VmAdapter implements SandboxAdapter {
         },
         stats,
       };
+    } finally {
+      // The execution is over, whichever way: nothing the script left behind runs on from here
+      try {
+        endDeadlineChecks?.();
+      } catch {
+        // The realm is gone
+      }
     }
   }
 

@@ -3027,7 +3027,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   // The script's cooperative deadline (see ../deadline-guard): the inner realm's __safe_tick,
   // which the transformed script calls at every function entry and loop iteration. vm's timeout
   // below only covers the script up to its first await.
-  new vm.Script(${JSON.stringify(realmTickSource(innerTimeout))}, {
+  // What that script evaluates to ends the checks: called when the script has settled, it makes
+  // whatever the script left behind stop at its next function entry or loop iteration.
+  var __ag_endDeadlineChecks = new vm.Script(${JSON.stringify(realmTickSource(innerTimeout))}, {
     filename: 'inner-deadline.js'
   }).runInContext(innerContext);
 
@@ -3748,10 +3750,16 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   __ag_lockdownParentRealm();
 
   // Note: codeGeneration is set in createContext(), not runInContext()
-  var result = await script.runInContext(innerContext, {
-    timeout: ${innerTimeout},
-    breakOnSigint: true
-  });
+  var result;
+  try {
+    result = await script.runInContext(innerContext, {
+      timeout: ${innerTimeout},
+      breakOnSigint: true
+    });
+  } finally {
+    // The execution is over, whichever way: nothing the script left behind runs on from here
+    try { __ag_endDeadlineChecks(); } catch (e) { /* the realm is gone */ }
+  }
 
   return result;
 })();
