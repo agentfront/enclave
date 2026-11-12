@@ -121,10 +121,11 @@ export function assertStorable(target: unknown, key: string, value: unknown): vo
 const MAX_STRING_OP_LENGTH = 1_000_000;
 
 /**
- * Longest text one conversion of an array may produce: `join`, `'' + array`, a template literal,
- * an array given to a built-in function that expects text or a number (the budget still applies).
+ * Longest text one conversion may produce: `join`, `'' + array`, a template literal, an array
+ * given to a built-in function that expects text or a number, a text that is normalized or
+ * encoded (the budget still applies).
  */
-const MAX_JOIN_LENGTH = 16_000_000;
+export const MAX_JOIN_LENGTH = 16_000_000;
 
 /** Deepest nesting of arrays that is followed when an array is turned into text */
 const MAX_TEXT_NESTING = 64;
@@ -160,6 +161,7 @@ const FunctionProtoCall: unknown = Function.prototype.call;
 const FunctionProtoApply: unknown = Function.prototype.apply;
 const FunctionProtoBind: unknown = Function.prototype.bind;
 const FunctionProtoToString = Function.prototype.toString;
+const ArrayProtoToLocaleString: unknown = Array.prototype.toLocaleString;
 
 /** The methods of a built-in prototype, with their names. A name no script may use is no method here. */
 function methodsOf(prototype: object): ReadonlyMap<unknown, string> {
@@ -1230,13 +1232,9 @@ export class Interpreter {
     assertKeyAllowed(key);
     assertStorable(object, key, value);
     if (Array.isArray(object)) {
-      // A length is converted here, once: the number that is checked is the number that is set
-      if (key === 'length') value = convertedOnce(value, Number);
-      const grownTo = arrayLengthAfterWrite(object, key, value);
-      if (grownTo > MAX_ARRAY_LENGTH) {
-        throw new InterpreterError(`An array cannot be longer than ${MAX_ARRAY_LENGTH} items`);
-      }
-      if (grownTo > object.length) this.charge((grownTo - object.length) * 8);
+      const checked = checkArrayWrite(object, key, value);
+      if (checked.length > object.length) this.charge((checked.length - object.length) * 8);
+      value = checked.value;
     }
     (object as Record<string, unknown>)[key] = value;
   }
@@ -1347,6 +1345,11 @@ export class Interpreter {
       const arrayMethod = ARRAY_METHODS.get(fn);
       if (arrayMethod !== undefined && HIGHER_ORDER_ARRAY_METHODS.has(arrayMethod) && typeof args[0] === 'function') {
         return await this.callArrayMethod(thisArg as unknown[], arrayMethod, args, own);
+      }
+      if (arrayMethod === 'toLocaleString') {
+        const text = this.arrayLocaleText(thisArg as unknown[], args, new Set(), { length: 0 }, 0);
+        this.chargeValue(text);
+        return text;
       }
       // A function of the script that the built-in invokes while it starts is its callee
       const builtin = fn as (...a: unknown[]) => unknown;
@@ -1561,6 +1564,24 @@ export class Interpreter {
       return args;
     }
 
+    // A normalization form can write several chars for one: up to four when it only takes
+    // composed chars apart, up to eighteen when it also replaces compatibility chars. A char of
+    // the basic Latin range is never changed.
+    if (name === 'normalize') {
+      const form = convertedOnce(args[0], String);
+      const growth = form === 'NFKC' || form === 'NFKD' ? 18 : 4;
+      if (receiver.length * growth > MAX_JOIN_LENGTH) {
+        let produced = 0;
+        for (let i = 0; i < receiver.length && produced <= MAX_JOIN_LENGTH; i++) {
+          produced += receiver.charCodeAt(i) < 0x80 ? 1 : growth;
+        }
+        if (produced > MAX_JOIN_LENGTH) {
+          throw new InterpreterError(`String 'normalize' could produce more than ${MAX_JOIN_LENGTH} chars`);
+        }
+      }
+      return args.length === 0 ? args : [form, ...args.slice(1)];
+    }
+
     // The engine stops at the limit it is given: the array it builds is never longer than a
     // script's arrays may be, plus the one item that shows the limit was passed.
     if (name === 'split') {
@@ -1581,11 +1602,14 @@ export class Interpreter {
     };
 
     switch (name) {
+      // Written by the interpreter itself, one item at a time (see arrayLocaleText): how long
+      // the text of a number or a date is depends on the locale and the options.
+      case 'toLocaleString':
+        return args;
       // `join` writes every item and a separator between them into one string, in one step; so
-      // do the two conversions to text.
+      // does the conversion to text.
       case 'join':
-      case 'toString':
-      case 'toLocaleString': {
+      case 'toString': {
         // The separator is converted once: the text that is measured is the text that is written
         const given = name !== 'join' || args.length === 0 ? undefined : convertedOnce(args[0], String);
         const separator = given === undefined ? ',' : String(given);
@@ -1643,6 +1667,47 @@ export class Interpreter {
       default:
         return args;
     }
+  }
+
+  /**
+   * `array.toLocaleString(locales, options)`: the text of every item in the locale's format,
+   * joined by commas, as the engine writes it. The engine does it in one step and the length of
+   * what an item becomes is not known beforehand (a number can take hundreds of chars with the
+   * right options), so the items are converted here one at a time: each counts as a step, and
+   * the text is refused as soon as it is longer than a script's longest text.
+   */
+  private arrayLocaleText(
+    array: unknown[],
+    args: unknown[],
+    active: Set<unknown[]>,
+    written: { length: number },
+    depth: number,
+  ): string {
+    if (depth > MAX_TEXT_NESTING) throw new InterpreterError(TEXT_TOO_LONG);
+    const parts: string[] = [];
+    active.add(array);
+    try {
+      for (let i = 0; i < array.length; i++) {
+        this.tick();
+        const item: unknown = array[i];
+        let text = '';
+        if (Array.isArray(item) && (item as { toLocaleString?: unknown }).toLocaleString === ArrayProtoToLocaleString) {
+          // The engine writes nothing for an array it is already converting
+          if (!active.has(item)) text = this.arrayLocaleText(item, args, active, written, depth + 1);
+        } else if (item !== null && item !== undefined) {
+          text = String((item as { toLocaleString(...options: unknown[]): unknown }).toLocaleString(...args));
+          written.length += text.length;
+        }
+        if (i > 0) written.length += 1;
+        if (written.length > MAX_JOIN_LENGTH) {
+          throw new InterpreterError(`Array 'toLocaleString' would produce more than ${MAX_JOIN_LENGTH} chars`);
+        }
+        parts.push(text);
+      }
+    } finally {
+      active.delete(array);
+    }
+    return parts.join(',');
   }
 
   /**
@@ -1962,6 +2027,23 @@ export function isScriptData(value: unknown): boolean {
  */
 function convertedOnce(value: unknown, convert: (value: unknown) => unknown): unknown {
   return typeof value === 'object' && value !== null ? convert(value) : value;
+}
+
+/**
+ * Check `array[key] = value` against the longest array a script may make, wherever the write is
+ * made: an assignment, or a built-in that copies members onto an array.
+ *
+ * @returns What to write (a length is converted here, once: the number that is checked is the
+ *   number that is set) and the length the array has afterwards
+ * @throws InterpreterError when the array would be longer than {@link MAX_ARRAY_LENGTH}
+ */
+export function checkArrayWrite(array: unknown[], key: string, value: unknown): { value: unknown; length: number } {
+  if (key === 'length') value = convertedOnce(value, Number);
+  const length = arrayLengthAfterWrite(array, key, value);
+  if (length > MAX_ARRAY_LENGTH) {
+    throw new InterpreterError(`An array cannot be longer than ${MAX_ARRAY_LENGTH} items`);
+  }
+  return { value, length };
 }
 
 /** The length an array has after `array[key] = value`. */

@@ -26,6 +26,7 @@ import type * as ESTree from 'estree';
 import { createConsoleSink } from '../console-handler';
 import {
   Interpreter,
+  MAX_JOIN_LENGTH,
   StepLimitError,
   isBlockedKey,
   isEngineCalledKey,
@@ -56,6 +57,19 @@ const MAX_PARALLEL_ITEMS = 100;
 const MAX_SERIALIZED_RESULT_BYTES = 50 * 1024 * 1024;
 const DEFAULT_MAX_CONSOLE_CALLS = 100;
 const DEFAULT_MAX_CONSOLE_OUTPUT_BYTES = 64 * 1024;
+/** The tool bridge's own default for the size of a request */
+const DEFAULT_MAX_TOOL_PAYLOAD_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Whether a value is certain to serialize to more than `bytes`: judged by the size estimate,
+ * which walks the value without building its text, and with room to spare, so that a value
+ * the limit itself would accept is never refused here. What this refuses, the limit refuses too;
+ * the difference is that the text is not built first.
+ */
+function certainlyLargerThan(value: unknown, bytes: number): boolean {
+  if (!Number.isFinite(bytes) || bytes <= 0) return false;
+  return !checkSerializedSize(value, bytes).ok;
+}
 
 /** What the runtime helpers know of the execution they belong to */
 interface CallbackInvoker {
@@ -340,12 +354,21 @@ export class InterpreterAdapter implements SandboxAdapter {
       if (!Array.isArray(quasis)) throw sandboxError('Template pieces must be an array', 'TypeError');
       const parts: string[] = [];
       let hasReference = false;
+      let length = 0;
+      // As long as a template literal may be in the interpreter itself
+      const add = (part: string): void => {
+        length += part.length;
+        if (length > MAX_JOIN_LENGTH) {
+          throw sandboxError(`A template literal cannot produce more than ${MAX_JOIN_LENGTH} chars`, 'RangeError');
+        }
+        parts.push(part);
+      };
       for (let i = 0; i < quasis.length; i++) {
-        parts.push(String(quasis[i]));
+        add(String(quasis[i]));
         if (i < values.length) {
           const value = values[i];
           if (typeof value === 'string' && isReferenceId(value)) hasReference = true;
-          parts.push(String(value));
+          add(String(value));
         }
       }
       if (hasReference) return joinReferences(parts.filter((part) => part !== ''));
@@ -428,13 +451,20 @@ export class InterpreterAdapter implements SandboxAdapter {
               `Console call limit exceeded (max: ${maxConsoleCalls}). This limit prevents I/O flood attacks.`,
             );
           }
-          const line = args.map(consoleText).join(' ');
-          consoleLength += line.length;
-          if (consoleLength > maxConsoleOutputBytes) {
-            throw sandboxError(
+          const outputLimit = (): Error =>
+            sandboxError(
               `Console output size limit exceeded (max: ${maxConsoleOutputBytes} bytes). This limit prevents I/O flood attacks.`,
             );
+          // An argument that cannot fit is refused before its text is built. The margin is
+          // wide (the estimate is in bytes and also counts members the text leaves out): what
+          // matters is that the text that is built is of the order of the limit, not of the value.
+          const room = (maxConsoleOutputBytes - consoleLength) * 16 + 64 * 1024;
+          for (const arg of args) {
+            if (arg !== null && typeof arg === 'object' && certainlyLargerThan(arg, room)) throw outputLimit();
           }
+          const line = args.map(consoleText).join(' ');
+          consoleLength += line.length;
+          if (consoleLength > maxConsoleOutputBytes) throw outputLimit();
           sink(level, line);
         };
       globals['__safe_console'] = frozenRecord({
@@ -486,6 +516,7 @@ export class InterpreterAdapter implements SandboxAdapter {
         ? (Object.create(context, { toolHandler: { value: configured } }) as ExecutionContext)
         : context;
     const bridge = createHostToolBridge(bridgeContext, { updateStats: true });
+    const maxPayloadBytes = context.config.toolBridge?.maxPayloadBytes ?? DEFAULT_MAX_TOOL_PAYLOAD_BYTES;
 
     return async (toolName: unknown, args: unknown, options?: unknown): Promise<unknown> => {
       if (execution.over) throw executionOver();
@@ -501,6 +532,16 @@ export class InterpreterAdapter implements SandboxAdapter {
       }
       if (typeof args !== 'object' || args === null || Array.isArray(args)) {
         throw sandboxError('Tool arguments must be an object', 'TypeError');
+      }
+
+      // Arguments the bridge is certain to refuse for their size are refused here, in the
+      // bridge's words, before the request is built from them.
+      if (certainlyLargerThan(args, maxPayloadBytes * 2 + 1024)) {
+        throw sandboxError(
+          `Tool request exceeds maximum size (${maxPayloadBytes} bytes)`,
+          'ToolBridgeError',
+          'TOOL_BRIDGE_REQUEST_TOO_LARGE',
+        );
       }
 
       let requestJson: string;
