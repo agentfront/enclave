@@ -6,22 +6,15 @@
  * @packageDocumentation
  */
 
-import type { SessionId, SessionLimits, StreamEvent } from '@enclave-vm/types';
+import type { EventFilterConfig, SessionId, SessionLimits, StreamEvent } from '@enclave-vm/types';
 import { DEFAULT_SESSION_LIMITS } from '@enclave-vm/types';
 import type { Broker } from '../broker';
 import type { BrokerSession } from '../broker-session';
 import type { SessionInfo } from '../session-manager';
-import type {
-  BrokerRequest,
-  BrokerResponse,
-  CreateSessionRequest,
-  SessionInfoResponse,
-  ListSessionsResponse,
-  ErrorResponse,
-} from './types';
+import type { BrokerRequest, BrokerResponse, SessionInfoResponse, ListSessionsResponse, ErrorResponse } from './types';
 import { EventFilter, createEventFilter } from '../event-filter';
 import { BrokerError, BrokerErrorCode } from '../errors';
-import { parseCreateSessionRequest } from './request-validation';
+import { parseCreateSessionRequest, parseFilterParameter, REQUEST_FILTER_LIMITS } from './request-validation';
 import type { RequestedLimits } from './request-validation';
 
 /**
@@ -276,8 +269,7 @@ export class SessionHandler {
       this.sendError(res, 400, parsed.code, parsed.message);
       return;
     }
-    const { code, sessionId, config } = parsed.value;
-    const body = req.body as CreateSessionRequest;
+    const { code, sessionId, config, filter } = parsed.value;
 
     // Check if broker is disposed
     if (this.broker.isDisposed) {
@@ -292,8 +284,8 @@ export class SessionHandler {
       const limits = this.boundLimits(config);
 
       // Create event filter if configured
-      if (body.filter) {
-        eventFilter = createEventFilter({ config: body.filter });
+      if (filter) {
+        eventFilter = this.requestFilter(filter);
       }
 
       // Create session (an id that is in use is refused by the session manager)
@@ -401,15 +393,21 @@ export class SessionHandler {
     if (!session) return;
 
     // Parse stream options - validate fromSeq to handle NaN
-    const parsedFromSeq = parseInt(req.query['fromSeq'] ?? '0', 10);
-    const fromSeq = Number.isFinite(parsedFromSeq) && parsedFromSeq >= 0 ? parsedFromSeq : 0;
+    const rawFromSeq: unknown = req.query['fromSeq'];
+    const parsedFromSeq = typeof rawFromSeq === 'string' ? parseInt(rawFromSeq, 10) : 0;
+    const fromSeq = Number.isSafeInteger(parsedFromSeq) && parsedFromSeq >= 0 ? parsedFromSeq : 0;
 
     // Parse filter config if provided (JSON-encoded query parameter)
     let eventFilter: EventFilter | undefined;
-    if (req.query['filter']) {
+    const rawFilter: unknown = req.query['filter'];
+    if (rawFilter !== undefined && rawFilter !== '') {
+      const parsedFilter = parseFilterParameter(rawFilter);
+      if (!parsedFilter.ok) {
+        this.sendError(res, 400, parsedFilter.code, parsedFilter.message);
+        return;
+      }
       try {
-        const filterConfig = JSON.parse(req.query['filter']);
-        eventFilter = createEventFilter({ config: filterConfig });
+        eventFilter = this.requestFilter(parsedFilter.value);
       } catch {
         this.sendError(res, 400, 'INVALID_FILTER', 'Invalid filter configuration');
         return;
@@ -493,6 +491,14 @@ export class SessionHandler {
     }
 
     res.status(200).json({ success: true, sessionId });
+  }
+
+  /**
+   * The filter for a configuration that arrived in a request and passed validation. It gets a
+   * budget for the whole stream, and its globs are matched without expansion.
+   */
+  private requestFilter(config: EventFilterConfig): EventFilter {
+    return createEventFilter({ config, budgetMs: REQUEST_FILTER_LIMITS.budgetMs, expandGlobs: false });
   }
 
   /**
