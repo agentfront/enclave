@@ -310,6 +310,60 @@ describe('RuleBasedScorer', () => {
     });
   });
 
+  describe('customRules', () => {
+    const exfiltration = `
+      const users = await callTool('users:list', { limit: 50 });
+      await callTool('webhooks:post', { to: 'a', body: users });
+    `;
+    const bulkInLoop = `
+      for (const page of [1, 2, 3]) {
+        await callTool('crm:bulkExport', { page });
+      }
+    `;
+    const signalsOf = async (code: string, customRules?: Record<string, number>) => {
+      const result = await new RuleBasedScorer(customRules).score(extractor.extract(code));
+      return Object.fromEntries(result.signals.map((signal) => [signal.id, signal.score]));
+    };
+
+    it('should use the built-in scores without custom rules', async () => {
+      expect(await signalsOf(exfiltration)).toEqual({ EXFIL_PATTERN: 50 });
+      expect(await signalsOf(bulkInLoop)).toEqual({ LOOP_TOOL_CALL: 25, BULK_OPERATION: 15 });
+    });
+
+    it('should replace the base score of a rule', async () => {
+      expect(await signalsOf(exfiltration, { EXFIL_PATTERN: 100 })).toEqual({ EXFIL_PATTERN: 100 });
+      expect(await signalsOf(bulkInLoop, { LOOP_TOOL_CALL: 40 })).toEqual({ LOOP_TOOL_CALL: 40, BULK_OPERATION: 15 });
+    });
+
+    it('should let a custom score exceed the built-in cap of its rule', async () => {
+      // One bulk tool: the built-in cap of the rule is 30
+      expect(await signalsOf(bulkInLoop, { BULK_OPERATION: 45 })).toEqual({ LOOP_TOOL_CALL: 25, BULK_OPERATION: 45 });
+    });
+
+    it('should turn a rule off at 0', async () => {
+      expect(await signalsOf(exfiltration, { EXFIL_PATTERN: 0 })).toEqual({});
+      expect(await signalsOf(bulkInLoop, { BULK_OPERATION: 0 })).toEqual({ LOOP_TOOL_CALL: 25 });
+    });
+
+    it('should clamp a custom score to 0-100', async () => {
+      expect(await signalsOf(exfiltration, { EXFIL_PATTERN: 500 })).toEqual({ EXFIL_PATTERN: 100 });
+      expect(await signalsOf(exfiltration, { EXFIL_PATTERN: -5 })).toEqual({});
+    });
+
+    it('should ignore ids that are not rules and values that are not numbers', async () => {
+      const custom = { NOT_A_RULE: 100, EXFIL_PATTERN: 'high', toString: 100 } as unknown as Record<string, number>;
+
+      expect(await signalsOf(exfiltration, custom)).toEqual({ EXFIL_PATTERN: 50 });
+    });
+
+    it('should change the total score', async () => {
+      const builtIn = await new RuleBasedScorer().score(extractor.extract(exfiltration));
+      const custom = await new RuleBasedScorer({ EXFIL_PATTERN: 80 }).score(extractor.extract(exfiltration));
+
+      expect([builtIn.totalScore, custom.totalScore]).toEqual([50, 80]);
+    });
+  });
+
   describe('scoring metadata', () => {
     it('should include scoring time', async () => {
       const code = `const x = 1;`;

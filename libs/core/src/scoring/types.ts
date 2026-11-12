@@ -14,9 +14,11 @@ import { normalizeToolNamespaces, type NormalizedToolNamespace, type ToolNamespa
  *
  * - `disabled`: No scoring, pass-through mode (0ms latency)
  * - `rule-based`: Pure TypeScript rules, zero dependencies (~1ms latency)
- * - `local-llm`: On-device LLM scoring (~5-10ms latency, model download required)
+ * - `local-llm`: The host's `customAnalyzer`, or a built-in keyword heuristic over the extracted
+ *   features. A Hugging Face model is loaded at initialization when the optional dependency is
+ *   installed (downloaded on first use), but no score is computed from it.
  * - `external-api`: External API-based scoring (~100ms latency, best detection)
- * - `progressive`: Fast rule-based check, escalate to ML if suspicious
+ * - `progressive`: Fast rule-based check, escalate to a detailed scorer if suspicious
  */
 export type ScorerType = 'disabled' | 'rule-based' | 'local-llm' | 'external-api' | 'progressive';
 
@@ -707,7 +709,11 @@ export interface ScoringGateConfig {
   failOpen?: boolean;
 
   /**
-   * Custom rules to add or override for rule-based scorer
+   * Scores for the rules of the rule-based scorer, by rule id (see `RuleId`): the base score a
+   * rule contributes when it fires, instead of the built-in one. Values are clamped to 0-100;
+   * 0 turns a rule off. Ids that are not rule ids, and values that are not numbers, are ignored.
+   *
+   * @example { EXFIL_PATTERN: 100, BULK_OPERATION: 0 }
    */
   customRules?: Record<string, number>;
 
