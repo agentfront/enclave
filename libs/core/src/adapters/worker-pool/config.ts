@@ -66,26 +66,36 @@ export interface WorkerPoolConfig {
   maxQueueSize: number;
 
   /**
-   * Time to wait for graceful shutdown before force terminating workers
+   * Time an idle worker that was asked to exit gets before it is terminated. Only a worker with
+   * nothing to run is asked: one that may still be running a script is terminated at once.
    * @default 5000
    */
   gracefulShutdownTimeoutMs: number;
 
   /**
-   * Maximum messages per second allowed from a single worker
-   * Prevents message flooding attacks
+   * Maximum messages per second a worker may send while it runs one execution: what a script
+   * makes it send (tool calls, console output). The count starts with each execution; the
+   * result and the worker's confirmation that it is idle are not counted. An execution that
+   * sends more fails with `MessageFloodError`, and its worker is terminated.
    * @default 1000
    */
   maxMessagesPerSecond: number;
 
   /**
-   * Maximum concurrent pending tool calls per execution
+   * Maximum concurrent pending tool calls per execution. An execution with more in flight fails
+   * with `TooManyPendingCallsError`, and its worker is terminated.
    * @default 100
    */
   maxPendingToolCalls: number;
 
   /**
-   * Maximum size of a single message in bytes
+   * Maximum size of a single message from a worker, in bytes. A larger message is refused before
+   * it is parsed: the execution fails with `MessageSizeError` and the worker is replaced.
+   *
+   * The limit applied to an execution is never below what the enclave's own limits let one
+   * message carry: a tool request (`toolBridge.maxPayloadBytes`) or a result (`memoryLimit`).
+   * So it decides where those are larger than it or off: with `memoryLimit: 0` it is the only
+   * bound on the size of a result.
    * @default 16 * 1024 * 1024 (16MB)
    */
   maxMessageSizeBytes: number;
