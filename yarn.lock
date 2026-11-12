@@ -12865,7 +12865,7 @@ __metadata:
     express: "npm:^4.21.0"
     ts-node: "npm:^10.9.2"
     typescript: "npm:^5.6.3"
-    zod: "npm:^3.24.0"
+    zod: "npm:^4.6.6"
   languageName: unknown
   linkType: soft
 
@@ -14293,13 +14293,6 @@ __metadata:
   version: 1.2.2
   resolution: "yocto-queue@npm:1.2.2"
   checksum: 10c0/36d4793e9cf7060f9da543baf67c55e354f4862c8d3d34de1a1b1d7c382d44171315cc54abf84d8900b8113d742b830108a1434f4898fb244f9b7e8426d4b8f5
-  languageName: node
-  linkType: hard
-
-"zod@npm:^3.24.0":
-  version: 3.25.76
-  resolution: "zod@npm:3.25.76"
-  checksum: 10c0/5718ec35e3c40b600316c5b4c5e4976f7fee68151bc8f8d90ec18a469be9571f072e1bbaace10f1e85cf8892ea12d90821b200e980ab46916a6166a4260a983c
   languageName: node
   linkType: hard
 
