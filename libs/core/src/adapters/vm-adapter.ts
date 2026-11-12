@@ -1183,19 +1183,6 @@ export class VmAdapter implements SandboxAdapter {
         }
       }
 
-      // The Reflect global of a level that has one: the realm's own namespace without the
-      // methods the level does not get. (STRICT has none; removeDangerousGlobals deletes it.)
-      if (this.securityLevel !== 'STRICT') {
-        Object.defineProperty(baseSandbox, 'Reflect', {
-          value: realmRuntime.createSafeReflect(
-            this.securityLevel === 'SECURE' ? 'setPrototypeOf,apply,defineProperty' : 'setPrototypeOf',
-          ),
-          writable: false,
-          configurable: false,
-          enumerable: true,
-        });
-      }
-
       // TOOL BRIDGE (string mode): define __safe_callTool inside the VM realm and
       // communicate with the host tool handler via JSON string envelopes.
       if (config.toolBridge?.mode === 'string') {
@@ -1444,6 +1431,21 @@ export class VmAdapter implements SandboxAdapter {
         } catch {
           // ignore
         }
+      }
+
+      // The Reflect global of a level that has one: the realm's own namespace without the
+      // methods the level does not get. (STRICT has none; removeDangerousGlobals deletes it.)
+      // Installed after the tool bridge above: that script captures the realm's own
+      // Reflect.apply, which the namespace of SECURE does not have.
+      if (this.securityLevel !== 'STRICT') {
+        Object.defineProperty(baseSandbox, 'Reflect', {
+          value: realmRuntime.createSafeReflect(
+            this.securityLevel === 'SECURE' ? 'setPrototypeOf,apply,defineProperty' : 'setPrototypeOf',
+          ),
+          writable: false,
+          configurable: false,
+          enumerable: true,
+        });
       }
 
       // Add safe runtime functions to the isolated context as non-writable, non-configurable

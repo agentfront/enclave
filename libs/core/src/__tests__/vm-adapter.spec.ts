@@ -163,6 +163,25 @@ describe('VmAdapter', () => {
       expect(result.success).toBe(false);
       expect(result.error?.message).toMatch(/maximum tool call limit/i);
     });
+
+    it.each(['STRICT', 'SECURE', 'STANDARD', 'PERMISSIVE'] as const)(
+      'should complete a tool call at the %s security level',
+      async (securityLevel) => {
+        const toolHandler: ToolHandler = async (_name, args) => ({ echoed: args['n'] });
+
+        const enclave = createVmAdapterEnclave({ securityLevel, toolHandler });
+        const result = await enclave.run(`
+          const first = await callTool('echo', { n: 7 });
+          const second = await callTool('echo', { n: first.echoed + 1 });
+          return [first.echoed, second.echoed];
+        `);
+        enclave.dispose();
+
+        expect(result.error?.message).toBeUndefined();
+        expect(result.value).toEqual([7, 8]);
+        expect(result.stats.toolCallCount).toBe(2);
+      },
+    );
   });
 
   describe('Custom Globals', () => {
