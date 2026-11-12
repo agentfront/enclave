@@ -20,6 +20,7 @@ import type {
   ErrorResponse,
 } from './types';
 import { EventFilter, createEventFilter } from '../event-filter';
+import { BrokerError, BrokerErrorCode } from '../errors';
 import { parseCreateSessionRequest } from './request-validation';
 import type { RequestedLimits } from './request-validation';
 
@@ -162,7 +163,7 @@ export class SessionHandler {
       this.sendError(res, 400, parsed.code, parsed.message);
       return;
     }
-    const { code, config } = parsed.value;
+    const { code, sessionId, config } = parsed.value;
     const body = req.body as CreateSessionRequest;
 
     // Check if broker is disposed
@@ -171,22 +172,39 @@ export class SessionHandler {
       return;
     }
 
+    let session: BrokerSession;
+    let eventFilter: EventFilter | undefined;
     try {
       // What the request asks for, bounded by the broker's own limits
       const limits = this.boundLimits(config);
 
       // Create event filter if configured
-      let eventFilter: EventFilter | undefined;
       if (body.filter) {
         eventFilter = createEventFilter({ config: body.filter });
       }
 
-      // Create session
-      const session = this.broker.createSession({
-        sessionId: body.sessionId,
-        limits,
-      });
+      // Create session (an id that is in use is refused by the session manager)
+      session = this.broker.createSession({ sessionId, limits });
+    } catch (error) {
+      this.sendCreateFailure(res, error);
+      return;
+    }
 
+    // Handle client disconnect - use flag to prevent double cleanup
+    let unsubscribe: () => void = () => undefined;
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      unsubscribe();
+      if (!session.isTerminal()) {
+        session.cancel('Client disconnected').catch(() => {
+          // Ignore cancellation errors
+        });
+      }
+    };
+
+    try {
       // Set up streaming response
       res.setHeader('Content-Type', 'application/x-ndjson');
       res.setHeader('Cache-Control', 'no-cache');
@@ -194,7 +212,7 @@ export class SessionHandler {
       res.setHeader('X-Session-ID', session.sessionId);
 
       // Subscribe to events and stream (with filtering)
-      const unsubscribe = session.onEvent((event: StreamEvent) => {
+      unsubscribe = session.onEvent((event: StreamEvent) => {
         // Apply filter if configured
         if (eventFilter && !eventFilter.shouldSend(event)) {
           return; // Skip filtered events
@@ -202,35 +220,45 @@ export class SessionHandler {
         this.writeEvent(res, event);
       });
 
-      // Handle client disconnect - use flag to prevent double cleanup
-      let cleanedUp = false;
-      const cleanup = () => {
-        if (cleanedUp) return;
-        cleanedUp = true;
-        unsubscribe();
-        if (!session.isTerminal()) {
-          session.cancel('Client disconnected').catch(() => {
-            // Ignore cancellation errors
-          });
-        }
-      };
-
       if (req.signal) {
         req.signal.addEventListener('abort', cleanup, { once: true });
       }
+    } catch {
+      // The stream could not be set up: the session does not stay registered without one
+      cleanup();
+      await this.broker.terminateSession(session.sessionId).catch(() => false);
+      this.sendError(res, 500, 'SESSION_CREATE_ERROR', 'Failed to create session');
+      return;
+    }
 
-      // Start execution
-      try {
-        await session.execute(code);
-      } catch {
-        // Error already emitted through events
-      } finally {
-        cleanup();
-        res.end();
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      this.sendError(res, 500, 'SESSION_CREATE_ERROR', message);
+    // Start execution
+    try {
+      await session.execute(code);
+    } catch {
+      // Error already emitted through events
+    } finally {
+      cleanup();
+      res.end();
+    }
+  }
+
+  /**
+   * Answer a failed session creation with a code and a fixed text.
+   */
+  private sendCreateFailure(res: BrokerResponse, error: unknown): void {
+    const code = error instanceof BrokerError ? error.code : undefined;
+    switch (code) {
+      case BrokerErrorCode.SessionExists:
+        this.sendError(res, 409, 'SESSION_EXISTS', 'A session with this id already exists');
+        return;
+      case BrokerErrorCode.InvalidSessionId:
+        this.sendError(res, 400, 'INVALID_REQUEST', 'Invalid "sessionId" field');
+        return;
+      case BrokerErrorCode.MaxSessionsReached:
+        this.sendError(res, 503, 'MAX_SESSIONS_REACHED', 'The broker has reached its session limit');
+        return;
+      default:
+        this.sendError(res, 500, 'SESSION_CREATE_ERROR', 'Failed to create session');
     }
   }
 

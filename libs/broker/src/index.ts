@@ -10,6 +10,9 @@
 export { Broker, createBroker } from './broker';
 export type { BrokerConfig, ExecuteOptions } from './broker';
 
+// Errors
+export { BrokerError, BrokerErrorCode } from './errors';
+
 // Tool Registry
 export { ToolRegistry, createToolRegistry } from './tool-registry';
 export type {

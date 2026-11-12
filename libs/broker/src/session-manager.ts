@@ -12,6 +12,12 @@ import { BrokerSession, createBrokerSession } from './broker-session';
 import type { BrokerSessionConfig } from './broker-session';
 import type { ToolRegistry } from './tool-registry';
 import { mergeSessionLimits } from './limits';
+import { BrokerError, BrokerErrorCode } from './errors';
+
+/**
+ * The longest session id the manager registers.
+ */
+const MAX_SESSION_ID_LENGTH = 256;
 
 /**
  * Session manager configuration
@@ -86,15 +92,30 @@ export class SessionManager {
   /**
    * Create a new session
    *
-   * @throws Error if max sessions reached or manager is disposed
+   * A session id names one session for as long as that session is registered: an id that is in
+   * use is refused.
+   *
+   * @throws BrokerError if the id is not usable or is in use, or if max sessions is reached
+   * @throws Error if the manager is disposed
    */
   create(config?: BrokerSessionConfig): CreateSessionResult {
     if (this.disposed) {
       throw new Error('Session manager is disposed');
     }
 
+    const requestedId: unknown = config?.sessionId;
+    if (requestedId !== undefined) {
+      if (typeof requestedId !== 'string' || requestedId.length === 0 || requestedId.length > MAX_SESSION_ID_LENGTH) {
+        throw new BrokerError(BrokerErrorCode.InvalidSessionId, 'Session id must be a non-empty string');
+      }
+      if (this.sessions.has(requestedId as SessionId)) {
+        throw new BrokerError(BrokerErrorCode.SessionExists, 'A session with this id already exists');
+      }
+    }
+
     if (this.sessions.size >= this.config.maxSessions) {
-      throw new Error(
+      throw new BrokerError(
+        BrokerErrorCode.MaxSessionsReached,
         `Maximum sessions reached (${this.config.maxSessions}). ` +
           'Wait for existing sessions to complete or increase maxSessions.',
       );

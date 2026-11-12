@@ -8,6 +8,8 @@
  * @packageDocumentation
  */
 
+import type { SessionId } from '@enclave-vm/types';
+
 /**
  * Outcome of a validation: the checked value, or the answer for the caller.
  */
@@ -27,7 +29,21 @@ export interface RequestedLimits {
  */
 export interface ParsedCreateSessionRequest {
   code: string;
+  sessionId?: SessionId;
   config: RequestedLimits;
+}
+
+/**
+ * A session id a request may name: the prefix, then 1 to 128 characters that need no encoding
+ * in a URL path or a header value.
+ */
+const SESSION_ID_PATTERN = /^s_[A-Za-z0-9._:~-]{1,128}$/;
+
+/**
+ * Whether a value is a session id a request may name.
+ */
+export function isRequestSessionId(value: unknown): value is SessionId {
+  return typeof value === 'string' && SESSION_ID_PATTERN.test(value);
 }
 
 const invalid = (message: string, code = 'INVALID_REQUEST'): { ok: false; code: string; message: string } => ({
@@ -74,6 +90,11 @@ export function parseCreateSessionRequest(body: unknown): Validated<ParsedCreate
     return invalid('Missing or invalid "code" field');
   }
 
+  const sessionId = field(body, 'sessionId');
+  if (sessionId !== undefined && !isRequestSessionId(sessionId)) {
+    return invalid('Invalid "sessionId" field');
+  }
+
   const config: RequestedLimits = {};
   const rawConfig = field(body, 'config');
   if (rawConfig !== undefined) {
@@ -102,5 +123,5 @@ export function parseCreateSessionRequest(body: unknown): Validated<ParsedCreate
     }
   }
 
-  return { ok: true, value: { code, config } };
+  return { ok: true, value: { code, sessionId, config } };
 }
