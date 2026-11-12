@@ -251,6 +251,92 @@ describe('ScoringGate', () => {
     });
   });
 
+  describe('code that cannot be parsed', () => {
+    const unparseable = `await callTool('users:list', {}); await callTool('emails:send', {}); {`;
+
+    it('should allow it with failOpen (the default) and say why', async () => {
+      const gate = new ScoringGate({ scorer: 'rule-based' });
+
+      const result = await gate.evaluate(unparseable);
+
+      expect(result.allowed).toBe(true);
+      expect(result.totalScore).toBeUndefined();
+      expect(result.reason).toMatch(/^Scoring error \(fail-open\): Code could not be parsed for scoring/);
+      gate.dispose();
+    });
+
+    it('should block it with failOpen false', async () => {
+      const gate = new ScoringGate({ scorer: 'rule-based', failOpen: false });
+
+      const result = await gate.evaluate(unparseable);
+
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toMatch(/^Scoring error \(fail-closed\): Code could not be parsed for scoring/);
+      gate.dispose();
+    });
+
+    it('should not cache the outcome', async () => {
+      const gate = new ScoringGate({ scorer: 'rule-based', failOpen: false });
+
+      await gate.evaluate(unparseable);
+      const again = await gate.evaluate(unparseable);
+
+      expect(again.cached).toBe(false);
+      expect(gate.getCacheStats()?.size).toBe(0);
+      gate.dispose();
+    });
+  });
+
+  describe('progressive mode and failOpen', () => {
+    // 55 on the rules: above the escalation threshold, below the block threshold
+    const code = `return await callTool('users:get', { password: 'x' });`;
+    const scoring = {
+      strategy: 'progressive' as const,
+      fast: { type: 'rule-based' as const },
+      detailed: { type: 'external-api' as const }, // named, not configured: there is no detailed scorer
+      escalationThreshold: 30,
+    };
+    let warn: jest.SpyInstance;
+
+    beforeEach(() => {
+      warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
+    it('should use the fast score when the detailed stage is missing and failOpen is true', async () => {
+      const gate = new ScoringGate({ scoring, blockThreshold: 70, failOpen: true });
+
+      const result = await gate.evaluate(code);
+
+      expect(result.allowed).toBe(true);
+      expect(result.totalScore).toBe(55);
+      gate.dispose();
+    });
+
+    it('should block when the detailed stage is missing and failOpen is false', async () => {
+      const gate = new ScoringGate({ scoring, blockThreshold: 70, failOpen: false });
+
+      const result = await gate.evaluate(code);
+
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toMatch(/fail-closed.*no detailed scorer is configured/);
+      gate.dispose();
+    });
+
+    it('should not need the detailed stage below the escalation threshold', async () => {
+      const gate = new ScoringGate({ scoring, blockThreshold: 70, failOpen: false });
+
+      const result = await gate.evaluate(`return await callTool('users:get', { id: 1 });`);
+
+      expect(result.allowed).toBe(true);
+      expect(result.totalScore).toBe(0);
+      gate.dispose();
+    });
+  });
+
   describe('initialization', () => {
     it('should auto-initialize on evaluate if needed', async () => {
       const gate = new ScoringGate({ scorer: 'rule-based' });

@@ -28,10 +28,10 @@ export class ScoringGate {
   private initialized = false;
 
   constructor(config: ScoringGateConfig) {
-    this.extractor = new FeatureExtractor();
-
     // Normalize configuration (handles both legacy and new progressive mode)
     this.config = normalizeScoringConfig(config);
+
+    this.extractor = new FeatureExtractor({ toolNamespaces: this.config.toolNamespaces });
 
     // Initialize cache if enabled
     if (this.config.cache.enabled && this.config.scorerType !== 'disabled') {
@@ -89,7 +89,9 @@ export class ScoringGate {
         if (!this.config.progressiveConfig) {
           throw new ScoringGateError('progressive scorer requires scoring configuration');
         }
-        return new ProgressiveScorer(this.config.progressiveConfig);
+        // Fail-closed covers the detailed stage: once the fast score calls for it, it is
+        // part of the answer, and a script is not let through on the fast score alone
+        return new ProgressiveScorer(this.config.progressiveConfig, { requireDetailed: !this.config.failOpen });
 
       default:
         throw new ScoringGateError(`Unknown scorer type: ${this.config.scorerType}`);

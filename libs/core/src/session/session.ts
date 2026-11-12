@@ -61,10 +61,21 @@ export class Session implements ISession {
   private readonly config: SessionConfig;
   private readonly toolHandler?: AsyncToolHandler;
   private _pendingToolCall: PendingToolCall | null = null;
+  /**
+   * How the promise of the pending tool call is settled. Kept beside the pending call and tied
+   * to its call id from the moment the call exists, so a result always reaches the call it was
+   * submitted for, whenever the tool handler of that call settles.
+   */
+  private pendingSettlement: {
+    callId: CallId;
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+  } | null = null;
   private readonly stats: ExecutionStats;
   private stdoutBytes: number;
+  /** The promise every caller of wait() gets while the session is running, and how it is resolved */
+  private waitPromise: Promise<SessionFinalResult> | null = null;
   private resolveWait: ((result: SessionFinalResult) => void) | null = null;
-  private rejectWait: ((error: Error) => void) | null = null;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: SessionOptions = {}) {
@@ -191,6 +202,15 @@ export class Session implements ISession {
       timestamp,
     };
 
+    // The promise that submitToolResult settles. It exists before the tool handler is told
+    // about the call: a handler may submit the result before it returns.
+    const settled = new Promise<unknown>((resolve, reject) => {
+      this.pendingSettlement = { callId, resolve, reject };
+    });
+    // The caller gets `settled` below. If the handler throws first, nobody does: a rejection
+    // that arrives later (cancel) then has no listener of its own.
+    settled.catch(() => undefined);
+
     // Emit tool call event
     this.events.emitToolCall(callId, toolName, args);
 
@@ -209,22 +229,8 @@ export class Session implements ISession {
       await this.toolHandler(callId, toolName, args);
     }
 
-    // Return a promise that will be resolved when submitToolResult is called
-    return new Promise((resolve, reject) => {
-      // Store resolvers on the pending call for later resolution
-      (
-        this._pendingToolCall as PendingToolCall & {
-          resolve: (value: unknown) => void;
-          reject: (error: Error) => void;
-        }
-      ).resolve = resolve;
-      (
-        this._pendingToolCall as PendingToolCall & {
-          resolve: (value: unknown) => void;
-          reject: (error: Error) => void;
-        }
-      ).reject = reject;
-    });
+    // Settled when submitToolResult is called for this call (or the session is cancelled)
+    return settled;
   }
 
   /**
@@ -243,14 +249,12 @@ export class Session implements ISession {
       throw new Error(`Tool result callId mismatch: expected ${this._pendingToolCall.callId}, got ${result.callId}`);
     }
 
-    // Get the stored resolvers
-    const pendingCall = this._pendingToolCall as PendingToolCall & {
-      resolve?: (value: unknown) => void;
-      reject?: (error: Error) => void;
-    };
+    // How this call is settled (the settlement of the pending call, by its call id)
+    const settlement = this.pendingSettlement?.callId === result.callId ? this.pendingSettlement : null;
 
     // Clear pending call before resolving
     this._pendingToolCall = null;
+    this.pendingSettlement = null;
 
     // Emit tool result applied event
     this.events.emitToolResultApplied(result.callId);
@@ -263,11 +267,11 @@ export class Session implements ISession {
 
     // Resolve or reject the tool call promise
     if (result.success) {
-      pendingCall.resolve?.(result.value);
+      settlement?.resolve(result.value);
     } else {
       const error = new Error(result.error?.message ?? 'Tool call failed');
       (error as Error & { code?: string }).code = result.error?.code;
-      pendingCall.reject?.(error);
+      settlement?.reject(error);
     }
   }
 
@@ -360,11 +364,9 @@ export class Session implements ISession {
 
     // Reject pending tool call if any
     if (this._pendingToolCall) {
-      const pendingCall = this._pendingToolCall as PendingToolCall & {
-        reject?: (error: Error) => void;
-      };
-      pendingCall.reject?.(new Error('Session cancelled'));
+      this.pendingSettlement?.reject(new Error('Session cancelled'));
       this._pendingToolCall = null;
+      this.pendingSettlement = null;
     }
 
     // Transition to cancelled
@@ -424,11 +426,13 @@ export class Session implements ISession {
       }
     }
 
-    // Return existing promise if already waiting
-    return new Promise((resolve, reject) => {
-      this.resolveWait = resolve;
-      this.rejectWait = reject;
-    });
+    // Return existing promise if already waiting: every waiter is settled when the session ends
+    if (!this.waitPromise) {
+      this.waitPromise = new Promise((resolve) => {
+        this.resolveWait = resolve;
+      });
+    }
+    return this.waitPromise;
   }
 
   /**
@@ -492,7 +496,7 @@ export class Session implements ISession {
     if (this.resolveWait) {
       this.resolveWait(result);
       this.resolveWait = null;
-      this.rejectWait = null;
+      this.waitPromise = null;
     }
   }
 }

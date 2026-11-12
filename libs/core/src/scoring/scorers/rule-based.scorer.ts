@@ -62,12 +62,31 @@ export class RuleBasedScorer extends BaseScorer {
   readonly type = 'rule-based' as const;
   readonly name = 'RuleBasedScorer';
 
-  private customRules: Record<string, number>;
+  /** The base score of each rule: the built-in one, or the host's from `customRules` */
+  private readonly ruleScores: Record<RuleId, number>;
 
+  /**
+   * @param customRules Scores by rule id that replace the built-in ones (clamped to 0-100).
+   * Ids that are not rule ids and values that are not numbers are ignored.
+   */
   constructor(customRules?: Record<string, number>) {
     super();
-    this.customRules = customRules ?? {};
+    this.ruleScores = { ...RULE_SCORES };
+    for (const id of Object.keys(RULE_SCORES) as RuleId[]) {
+      const custom = customRules && Object.hasOwn(customRules, id) ? customRules[id] : undefined;
+      if (typeof custom === 'number' && !Number.isNaN(custom)) {
+        this.ruleScores[id] = this.clampScore(custom);
+      }
+    }
     this.ready = true; // Rule-based scorer is always ready
+  }
+
+  /**
+   * The most a rule contributes: its built-in cap, or its base score where a host set one
+   * above the cap
+   */
+  private capFor(id: RuleId, builtInCap: number): number {
+    return Math.max(builtInCap, this.ruleScores[id]);
   }
 
   async score(features: ExtractedFeatures): Promise<ScoringResult> {
@@ -121,8 +140,11 @@ export class RuleBasedScorer extends BaseScorer {
       return;
     }
 
-    // Base score for sensitive field access
-    let score = RULE_SCORES.SENSITIVE_FIELD;
+    // Base score for sensitive field access (a rule with a base score of 0 is off)
+    let score = this.ruleScores.SENSITIVE_FIELD;
+    if (score === 0) {
+      return;
+    }
 
     // Add category bonuses
     for (const category of features.sensitive.categories) {
@@ -136,7 +158,7 @@ export class RuleBasedScorer extends BaseScorer {
 
     signals.push({
       id: 'SENSITIVE_FIELD',
-      score: Math.min(score, 60), // Cap at 60 for this rule
+      score: Math.min(score, this.capFor('SENSITIVE_FIELD', 60)), // Cap at 60 for this rule
       description: `Accesses sensitive fields: ${features.sensitive.fieldsAccessed.slice(0, 5).join(', ')}${
         features.sensitive.fieldsAccessed.length > 5 ? '...' : ''
       }`,
@@ -157,7 +179,10 @@ export class RuleBasedScorer extends BaseScorer {
     }
 
     // Scale score based on how excessive the limit is
-    let score = RULE_SCORES.EXCESSIVE_LIMIT;
+    let score = this.ruleScores.EXCESSIVE_LIMIT;
+    if (score === 0) {
+      return;
+    }
     if (features.signals.maxLimit > 100000) {
       score += 10;
     }
@@ -195,13 +220,13 @@ export class RuleBasedScorer extends BaseScorer {
       }
     }
 
-    if (!foundWildcard) {
+    if (!foundWildcard || this.ruleScores.WILDCARD_QUERY === 0) {
       return;
     }
 
     signals.push({
       id: 'WILDCARD_QUERY',
-      score: RULE_SCORES.WILDCARD_QUERY,
+      score: this.ruleScores.WILDCARD_QUERY,
       description: 'Uses wildcard or empty filter query',
       level: 'medium',
     });
@@ -213,12 +238,12 @@ export class RuleBasedScorer extends BaseScorer {
   private checkLoopToolCalls(features: ExtractedFeatures, signals: RiskSignal[]): void {
     const toolsInLoops = features.patterns.toolsInLoops;
 
-    if (toolsInLoops.length === 0) {
+    if (toolsInLoops.length === 0 || this.ruleScores.LOOP_TOOL_CALL === 0) {
       return;
     }
 
     // Scale score based on number of tools in loops and nesting
-    let score = RULE_SCORES.LOOP_TOOL_CALL * toolsInLoops.length;
+    let score = this.ruleScores.LOOP_TOOL_CALL * toolsInLoops.length;
 
     // Deep nesting increases score
     if (features.patterns.maxLoopNesting > 1) {
@@ -232,7 +257,7 @@ export class RuleBasedScorer extends BaseScorer {
 
     signals.push({
       id: 'LOOP_TOOL_CALL',
-      score: Math.min(score, 50), // Cap at 50
+      score: Math.min(score, this.capFor('LOOP_TOOL_CALL', 50)), // Cap at 50
       description: `${toolsInLoops.length} tool(s) called inside loops with max nesting ${features.patterns.maxLoopNesting}`,
       level: this.getLevelForScore(score),
       context: {
@@ -249,7 +274,7 @@ export class RuleBasedScorer extends BaseScorer {
   private checkExfiltrationPatterns(features: ExtractedFeatures, signals: RiskSignal[]): void {
     const sequence = features.patterns.toolSequence;
 
-    if (sequence.length < 2) {
+    if (sequence.length < 2 || this.ruleScores.EXFIL_PATTERN === 0) {
       return;
     }
 
@@ -262,7 +287,7 @@ export class RuleBasedScorer extends BaseScorer {
         if (fetchPattern.test(current) && sendPattern.test(next)) {
           signals.push({
             id: 'EXFIL_PATTERN',
-            score: RULE_SCORES.EXFIL_PATTERN,
+            score: this.ruleScores.EXFIL_PATTERN,
             description: `Potential data exfiltration: ${current} → ${next}`,
             level: 'critical',
             context: { fetchTool: current, sendTool: next },
@@ -276,7 +301,7 @@ export class RuleBasedScorer extends BaseScorer {
     if (FeatureExtractor.detectExfiltrationPattern(sequence)) {
       signals.push({
         id: 'EXFIL_PATTERN',
-        score: RULE_SCORES.EXFIL_PATTERN,
+        score: this.ruleScores.EXFIL_PATTERN,
         description: 'Potential data exfiltration pattern detected',
         level: 'critical',
         context: { toolSequence: sequence },
@@ -288,6 +313,10 @@ export class RuleBasedScorer extends BaseScorer {
    * Rule 6: Check for extreme numeric values
    */
   private checkExtremeValues(features: ExtractedFeatures, signals: RiskSignal[]): void {
+    if (this.ruleScores.EXTREME_VALUE === 0) {
+      return;
+    }
+
     // Check all tool calls for extreme values
     for (const tc of features.toolCalls) {
       const extremeValues = tc.numericLiterals.filter((n) => n > RULE_THRESHOLDS.EXTREME_VALUE);
@@ -295,7 +324,7 @@ export class RuleBasedScorer extends BaseScorer {
       if (extremeValues.length > 0) {
         signals.push({
           id: 'EXTREME_VALUE',
-          score: RULE_SCORES.EXTREME_VALUE,
+          score: this.ruleScores.EXTREME_VALUE,
           description: `Extreme numeric value in ${tc.toolName}: ${extremeValues[0].toLocaleString()}`,
           level: 'high',
           context: { toolName: tc.toolName, values: extremeValues },
@@ -311,15 +340,15 @@ export class RuleBasedScorer extends BaseScorer {
   private checkDynamicToolNames(features: ExtractedFeatures, signals: RiskSignal[]): void {
     const dynamicCalls = features.toolCalls.filter((tc) => !tc.isStaticName);
 
-    if (dynamicCalls.length === 0) {
+    if (dynamicCalls.length === 0 || this.ruleScores.DYNAMIC_TOOL === 0) {
       return;
     }
 
-    const score = RULE_SCORES.DYNAMIC_TOOL * dynamicCalls.length;
+    const score = this.ruleScores.DYNAMIC_TOOL * dynamicCalls.length;
 
     signals.push({
       id: 'DYNAMIC_TOOL',
-      score: Math.min(score, 40), // Cap at 40
+      score: Math.min(score, this.capFor('DYNAMIC_TOOL', 40)), // Cap at 40
       description: `${dynamicCalls.length} tool call(s) with dynamic/variable names`,
       level: 'medium',
       context: {
@@ -335,16 +364,16 @@ export class RuleBasedScorer extends BaseScorer {
   private checkBulkOperations(features: ExtractedFeatures, signals: RiskSignal[]): void {
     const bulkTools = features.toolCalls.filter((tc) => FeatureExtractor.isBulkOperation(tc.toolName));
 
-    if (bulkTools.length === 0) {
+    if (bulkTools.length === 0 || this.ruleScores.BULK_OPERATION === 0) {
       return;
     }
 
-    const score = RULE_SCORES.BULK_OPERATION * bulkTools.length;
+    const score = this.ruleScores.BULK_OPERATION * bulkTools.length;
     const toolNames = bulkTools.map((tc) => tc.toolName);
 
     signals.push({
       id: 'BULK_OPERATION',
-      score: Math.min(score, 30), // Cap at 30
+      score: Math.min(score, this.capFor('BULK_OPERATION', 30)), // Cap at 30
       description: `Bulk operation(s) detected: ${toolNames.join(', ')}`,
       level: 'medium',
       context: { tools: toolNames },

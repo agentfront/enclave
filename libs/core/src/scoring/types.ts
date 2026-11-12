@@ -7,14 +7,18 @@
  * @packageDocumentation
  */
 
+import { normalizeToolNamespaces, type NormalizedToolNamespace, type ToolNamespaces } from '@enclave-vm/ast';
+
 /**
  * Scorer implementation types
  *
  * - `disabled`: No scoring, pass-through mode (0ms latency)
  * - `rule-based`: Pure TypeScript rules, zero dependencies (~1ms latency)
- * - `local-llm`: On-device LLM scoring (~5-10ms latency, model download required)
+ * - `local-llm`: The host's `customAnalyzer`, or a built-in keyword heuristic over the extracted
+ *   features. A Hugging Face model is loaded at initialization when the optional dependency is
+ *   installed (downloaded on first use), but no score is computed from it.
  * - `external-api`: External API-based scoring (~100ms latency, best detection)
- * - `progressive`: Fast rule-based check, escalate to ML if suspicious
+ * - `progressive`: Fast rule-based check, escalate to a detailed scorer if suspicious
  */
 export type ScorerType = 'disabled' | 'rule-based' | 'local-llm' | 'external-api' | 'progressive';
 
@@ -442,8 +446,11 @@ export interface LocalLlmConfig {
 
   /**
    * Scoring mode
-   * - classification: Use text classification model for direct scoring
-   * - similarity: Use embeddings + VectoriaDB for similarity-based scoring
+   * - classification: the score is the `customAnalyzer`'s, or the built-in keyword heuristic
+   *   over the extracted features. No classification model is run.
+   * - similarity: additionally searches a VectoriaDB index for similar patterns. The index is
+   *   created empty and this configuration has no way to add patterns to it, so the search
+   *   finds nothing and the score is the same as in classification mode.
    * @default 'classification'
    */
   mode?: 'classification' | 'similarity';
@@ -490,8 +497,8 @@ export interface LocalLlmConfig {
    * Custom analyzer for external LLM or static code analysis
    *
    * If provided, this analyzer will be used instead of the built-in
-   * heuristic-based analysis. The HuggingFace pipeline will still be
-   * loaded for potential embedding support.
+   * heuristic-based analysis. The HuggingFace pipeline is still loaded
+   * when the optional dependency is installed; its output is not used.
    *
    * @example
    * ```typescript
@@ -694,14 +701,31 @@ export interface ScoringGateConfig {
    * - true (fail-open): Allow execution if scoring fails
    * - false (fail-closed): Block execution if scoring fails
    *
+   * A scoring error is anything that keeps the configured scorer from giving its answer: code
+   * the feature extractor cannot parse, a scorer that throws, and in progressive mode a detailed
+   * stage that fails or is missing once the fast score called for it. With `failOpen: false`
+   * each of these blocks the script; with `failOpen: true` the script runs (in progressive
+   * mode, on the fast score alone), and `reason` of the result says why.
+   *
    * @default true
    */
   failOpen?: boolean;
 
   /**
-   * Custom rules to add or override for rule-based scorer
+   * Scores for the rules of the rule-based scorer, by rule id (see `RuleId`): the base score a
+   * rule contributes when it fires, instead of the built-in one. Values are clamped to 0-100;
+   * 0 turns a rule off. Ids that are not rule ids, and values that are not numbers, are ignored.
+   *
+   * @example { EXFIL_PATTERN: 100, BULK_OPERATION: 0 }
    */
   customRules?: Record<string, number>;
+
+  /**
+   * The tool namespaces of the sandbox whose scripts are scored (the `toolNamespaces` of the
+   * enclave). A call of a namespace method, `mail.send(args)`, is scored as the tool call it
+   * stands for, `callTool('mail.send', args)`. Without this the gate only sees `callTool`.
+   */
+  toolNamespaces?: ToolNamespaces | ReadonlyArray<NormalizedToolNamespace>;
 
   /**
    * Log detailed scoring information
@@ -738,6 +762,11 @@ export interface NormalizedScoringConfig {
    * The effective scorer type
    */
   scorerType: ScorerType;
+
+  /**
+   * Validated tool namespaces whose method calls are scored as tool calls (empty when none)
+   */
+  toolNamespaces: ReadonlyArray<NormalizedToolNamespace>;
 
   /**
    * Progressive config if using progressive strategy
@@ -822,8 +851,15 @@ export function normalizeScoringConfig(config: ScoringGateConfig): NormalizedSco
     scorerType = config.scorer ?? 'disabled';
   }
 
+  // Namespaces as a host writes them are validated and normalized like the enclave does it;
+  // a list is taken as normalized already (the enclave passes its own)
+  const toolNamespaces: ReadonlyArray<NormalizedToolNamespace> = Array.isArray(config.toolNamespaces)
+    ? (config.toolNamespaces as ReadonlyArray<NormalizedToolNamespace>)
+    : normalizeToolNamespaces(config.toolNamespaces as ToolNamespaces | undefined);
+
   return {
     scorerType,
+    toolNamespaces,
     progressiveConfig,
     blockThreshold: config.blockThreshold ?? DEFAULT_SCORING_CONFIG.blockThreshold,
     warnThreshold: config.warnThreshold ?? DEFAULT_SCORING_CONFIG.warnThreshold,
