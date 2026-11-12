@@ -233,6 +233,25 @@ const INTRINSIC_OBJECT_NEUTRALIZATION_CODE = `
 const INTRINSIC_OBJECT_NEUTRALIZATION_SCRIPT = new ReusableSandboxScript(INTRINSIC_OBJECT_NEUTRALIZATION_CODE);
 
 /**
+ * Closes the prototype of the realm's plain objects: it takes no new property. Not only a
+ * script's objects inherit from it. So do the objects the host's own machinery makes in the
+ * realm, and what those are read as must not depend on a property a script added. The members
+ * it has stay as they are, so an object can still override one of them for itself (the double VM
+ * freezes this prototype, and the other built-in ones, outright).
+ *
+ * It throws where the prototype is still open afterwards: the realm is then not set up.
+ */
+const CLOSE_OBJECT_PROTOTYPE_SCRIPT = new ReusableSandboxScript(
+  `(function () {
+    'use strict';
+    var root = Object.getPrototypeOf({});
+    Object.preventExtensions(root);
+    if (Object.isExtensible(root)) throw new TypeError('The prototype of plain objects could not be closed');
+  })()`,
+  { filename: 'close-object-prototype.js' },
+);
+
+/**
  * Evaluated in a pristine sandbox realm, returns a function that gives the realm's global object a
  * null prototype. It captures the realm's own Object.setPrototypeOf up front: by the time the
  * function is called, that method has been removed from the realm's Object.
@@ -1549,6 +1568,11 @@ export class VmAdapter implements SandboxAdapter {
       } catch {
         /* defense-in-depth */
       }
+
+      // The prototype of plain objects takes no new property from here on (see the script). After
+      // everything above, which may still have had something to put there, and not optional: a
+      // failure ends the execution.
+      CLOSE_OBJECT_PROTOTYPE_SCRIPT.runInContext(baseSandbox);
 
       // The last setup steps, once the trusted scripts above have captured the intrinsics they need
       // and before any script code runs.
