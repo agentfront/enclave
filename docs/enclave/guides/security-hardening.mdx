@@ -20,7 +20,8 @@ This guide covers security best practices for hardening Enclave deployments in p
 ### Recommended
 
 - [ ] Use HTTPS for client connections: the client and the broker exchange plain JSON
-- [ ] Run the sandbox in the worker pool, a child process or a container when the host must survive any script
+- [ ] Run the sandbox in the worker pool for a hard stop of a script that runs past its timeout and a heap limit per worker. A worker thread shares the host's process: the pool does not guarantee that the host survives
+- [ ] Run the enclave in a child process or a container with limits of the operating system when the host must survive any script
 - [ ] Consider the AI Scoring Gate as an additional, heuristic signal
 - [ ] Implement rate limiting
 - [ ] Use network segmentation

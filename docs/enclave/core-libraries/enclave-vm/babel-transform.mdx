@@ -280,7 +280,10 @@ const result = await enclave.run(code);
 | `Output exceeds maximum size` | Transform produced too much output | Simplify input code |
 | `Babel transform timed out after Nms` | One transform took longer than the level's transform timeout | Simplify the code or use a higher security level |
 | `Code contains invalid null bytes` | The source contains a null byte | Clean input before transform |
-| `Import rewrite failed: ...` | An import of a package that is not listed, a computed dynamic import, or an invalid version or base URL | List the package in `packageVersions` |
+| `Import rewrite failed: Package "X" is not allowed` | An import of a package that is not on the allowlist | List the package in `allowedPackages` when that list is given, otherwise in `packageVersions` |
+| `Import rewrite failed: Dynamic import() is only allowed with a string literal as its specifier` | A dynamic import whose specifier is computed | Write the specifier as a string literal; listing a package does not help |
+| `Import rewrite failed: Invalid version for package "X"` | A version in `packageVersions` with path or URL characters | Give a version number, a range or a tag, or an empty string for the latest version |
+| `Import rewrite failed: CDN URL must use HTTPS` or `Invalid CDN URL` | `cdnBaseUrl` is not an HTTPS URL, or holds credentials, a query or a fragment | Give an `https:` URL made of a host and, optionally, a path |
 
 ## Performance
 
