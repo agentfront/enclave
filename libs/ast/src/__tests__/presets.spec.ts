@@ -137,6 +137,16 @@ describe('Presets', () => {
       expect(result.valid).toBe(false);
       expect(result.issues.some((issue) => issue.data?.['identifier'] === 'window')).toBe(true);
     });
+
+    it('should block `this` as a value, not only its members', async () => {
+      const validator = new JSAstValidator(createStrictPreset());
+
+      for (const code of ['const self = this;', 'use(this);', 'const { name } = this;', 'const name = this.name;']) {
+        const result = await validator.validate(code);
+        expect(result.valid).toBe(false);
+        expect(result.issues.some((issue) => issue.code === 'NO_GLOBAL_ACCESS')).toBe(true);
+      }
+    });
   });
 
   describe('SECURE Preset', () => {
@@ -217,6 +227,16 @@ describe('Presets', () => {
 
       // This shouldn't pass because secure block constructor
       expect(result.valid).toBe(false);
+    });
+
+    it('should block `this`', async () => {
+      const validator = new JSAstValidator(createSecurePreset());
+
+      for (const code of ['const self = this;', 'use(this);', 'const { name } = this;', 'const name = this.name;']) {
+        const result = await validator.validate(code);
+        expect(result.valid).toBe(false);
+        expect(result.issues.some((issue) => issue.data?.['identifier'] === 'this')).toBe(true);
+      }
     });
   });
 

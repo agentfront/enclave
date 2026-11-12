@@ -189,9 +189,17 @@ export interface ValidationConfig {
   parseOptions?: acorn.Options;
   /** Rule configurations */
   rules?: Record<string, RuleConfig | boolean>;
-  /** Maximum number of issues before stopping (0 = unlimited) */
+  /**
+   * Maximum number of issues one validation collects. Default: `DEFAULT_MAX_ISSUES` (100);
+   * `0` collects every issue.
+   *
+   * At the cap the validation stops as soon as an error is on the list. While only warnings were
+   * found the remaining rules still run (one of them may refuse the source) and further warnings
+   * are not collected. A result cut short this way has `incomplete: true`; it is never `valid`
+   * unless every rule ran and none reported an error.
+   */
   maxIssues?: number;
-  /** Stop on first error */
+  /** Stop on first error. The result is then not valid and has `incomplete: true`. */
   stopOnFirstError?: boolean;
   /** Transformation configuration */
   transform?: TransformConfig;
@@ -215,8 +223,14 @@ export interface ValidationResult {
   ast?: acorn.Node;
   /** Parse error if parsing failed */
   parseError?: Error;
-  /** Number of rules that were executed during validation */
+  /** Number of rules that were started during validation (fewer than enabled when it stopped early) */
   rulesExecuted?: number;
+  /**
+   * `true` when `issues` is not everything the rules had to report: the validation stopped early
+   * (`stopOnFirstError`, or an error with the list at `maxIssues`), or issues over `maxIssues`
+   * were not collected. Absent otherwise.
+   */
+  incomplete?: boolean;
   /** Transformed code (if transformation is enabled) */
   transformedCode?: string;
   /** Pre-scanner error if pre-scan failed */

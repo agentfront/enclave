@@ -13,6 +13,24 @@ import { transformAst, generateCode } from './transformer';
 import { PreScanner, PreScannerError, type PreScannerPresetLevel, type PartialPreScannerConfig } from './pre-scanner';
 
 /**
+ * How many issues one validation collects when the caller sets no `maxIssues`.
+ *
+ * The source is text the host did not write, and the result is built in the host: without a
+ * bound, the list of issues grows with the source for as long as the source is refused.
+ */
+export const DEFAULT_MAX_ISSUES = 100;
+
+/**
+ * The cap of one validation. `0` (or `Infinity`) is the documented way to ask for every issue;
+ * a value that is not a count (negative, `NaN`, below one) is not taken for "no cap".
+ */
+function resolveMaxIssues(value: unknown): number {
+  if (value === 0 || value === Infinity) return Infinity;
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 1) return Math.floor(value);
+  return DEFAULT_MAX_ISSUES;
+}
+
+/**
  * Main AST validator class
  */
 export class JSAstValidator {
@@ -80,6 +98,28 @@ export class JSAstValidator {
     }
 
     const issues: ValidationIssue[] = [];
+    const maxIssues = resolveMaxIssues(config.maxIssues);
+    // An error was reported (whether or not the cap left room for more issues after it)
+    let hasError = false;
+    // The list is not everything the rules had to say: issues over the cap, or an early stop
+    let incomplete = false;
+
+    /**
+     * Keep an issue while the cap leaves room. The first error is kept in any case, in place of
+     * the last issue collected before it, so that a list that is full of warnings still shows why
+     * the source is refused, and never holds more than the cap.
+     */
+    const collect = (issue: ValidationIssue): void => {
+      const isError = issue.severity === ValidationSeverity.ERROR;
+      if (issues.length < maxIssues) {
+        issues.push(issue);
+      } else {
+        incomplete = true;
+        if (isError && !hasError) issues[issues.length - 1] = issue;
+      }
+      if (isError) hasError = true;
+    };
+
     let ast: acorn.Node | undefined;
     let parseError: Error | undefined;
     let preScanError: Error | undefined;
@@ -109,7 +149,7 @@ export class JSAstValidator {
 
       // Add pre-scanner issues to validation issues
       for (const issue of preScanResult.issues) {
-        issues.push({
+        collect({
           code: issue.code,
           severity:
             issue.severity === 'error'
@@ -137,6 +177,7 @@ export class JSAstValidator {
           preScanError,
           preScanStats,
           rulesExecuted: 0,
+          ...(incomplete ? { incomplete } : {}),
         };
       }
     }
@@ -155,7 +196,7 @@ export class JSAstValidator {
       const error = err as Error & { loc?: { line: number; column: number } };
       parseError = new ParseError(error.message || 'Failed to parse source code', error.loc?.line, error.loc?.column);
 
-      issues.push({
+      collect({
         code: 'PARSE_ERROR',
         severity: ValidationSeverity.ERROR,
         message: parseError.message,
@@ -168,6 +209,7 @@ export class JSAstValidator {
         parseError,
         preScanStats,
         rulesExecuted: 0,
+        ...(incomplete ? { incomplete } : {}),
       };
     }
 
@@ -175,6 +217,9 @@ export class JSAstValidator {
     const enabledRules = this.getEnabledRules(config);
 
     // Execute rules
+    let rulesExecuted = 0;
+    // The rules did not all run to their end: what they would have reported is unknown
+    let stopped = false;
     try {
       for (const rule of enabledRules) {
         // Get rule configuration for severity override
@@ -197,26 +242,31 @@ export class JSAstValidator {
               severity,
             };
 
-            issues.push(fullIssue);
+            collect(fullIssue);
 
             // Stop on first error if configured
             if (config.stopOnFirstError && fullIssue.severity === ValidationSeverity.ERROR) {
               throw new StopValidationError();
             }
 
-            // Stop if max issues reached
-            if (config.maxIssues && config.maxIssues > 0 && issues.length >= config.maxIssues) {
+            // Stop at the cap only once an error is on the list. While everything collected is a
+            // warning the remaining rules still have to run: one of them may refuse the source,
+            // and a validation that stopped before it would have called the source valid.
+            if (hasError && issues.length >= maxIssues) {
               throw new StopValidationError();
             }
           },
         };
 
+        rulesExecuted++;
         await rule.validate(context);
       }
     } catch (err) {
       if (!(err instanceof StopValidationError)) {
         throw err;
       }
+      stopped = true;
+      incomplete = true;
     }
 
     const durationMs = Date.now() - startTime;
@@ -231,7 +281,7 @@ export class JSAstValidator {
         transformedCode = generateCode(astClone);
       } catch (err) {
         const error = err as Error;
-        issues.push({
+        collect({
           code: 'TRANSFORM_ERROR',
           severity: ValidationSeverity.ERROR,
           message: `Code transformation failed: ${error.message}`,
@@ -240,12 +290,14 @@ export class JSAstValidator {
     }
 
     return {
-      valid: !issues.some((issue) => issue.severity === ValidationSeverity.ERROR),
+      // Valid is the answer of every rule: a validation that stopped early cannot give it
+      valid: !stopped && !hasError && !issues.some((issue) => issue.severity === ValidationSeverity.ERROR),
       issues,
       ast,
-      rulesExecuted: enabledRules.length,
+      rulesExecuted,
       transformedCode,
       preScanStats,
+      ...(incomplete ? { incomplete } : {}),
     };
   }
 

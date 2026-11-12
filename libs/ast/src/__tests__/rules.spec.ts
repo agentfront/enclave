@@ -7,6 +7,8 @@ import {
   CallArgumentValidationRule,
   NoEvalRule,
   NoAsyncRule,
+  NoGlobalAccessRule,
+  NoCallTargetAssignmentRule,
 } from '../rules';
 import { ValidationSeverity } from '../interfaces';
 
@@ -281,6 +283,133 @@ describe('Validation Rules', () => {
         rules: { 'disallowed-identifier': true },
       });
       expect(result.issues[0].message).toBe('Cannot use eval here');
+    });
+
+    it('should detect the `this` keyword when `this` is on the list', async () => {
+      const validator = new JSAstValidator([new DisallowedIdentifierRule({ disallowed: ['this'] })]);
+
+      const result = await validator.validate('const self = this;');
+      expect(result.valid).toBe(false);
+      expect(result.issues.map((issue) => issue.code)).toEqual(['DISALLOWED_IDENTIFIER']);
+      expect(result.issues[0].data).toEqual({ identifier: 'this' });
+
+      const other = new JSAstValidator([new DisallowedIdentifierRule({ disallowed: ['eval'] })]);
+      expect((await other.validate('const self = this;')).valid).toBe(true);
+    });
+  });
+
+  describe('NoGlobalAccessRule', () => {
+    const codes = async (rule: NoGlobalAccessRule, source: string) =>
+      (await new JSAstValidator([rule]).validate(source)).issues.map((issue) => issue.code);
+
+    it('should detect `this` as a value when it is a blocked global', async () => {
+      const rule = new NoGlobalAccessRule({ blockedGlobals: ['this'] });
+
+      expect(await codes(rule, 'const self = this;')).toEqual(['NO_GLOBAL_ACCESS']);
+      expect(await codes(rule, 'use(this);')).toEqual(['NO_GLOBAL_ACCESS']);
+      // A member of it is one issue, as before
+      expect(await codes(rule, 'const value = this.name;')).toEqual(['NO_GLOBAL_ACCESS']);
+    });
+
+    it('should leave `this` alone when it is not a blocked global', async () => {
+      const rule = new NoGlobalAccessRule({ blockedGlobals: ['window'] });
+
+      expect(await codes(rule, 'const self = this;')).toEqual([]);
+    });
+
+    it.each([
+      ['a call', 'const copy = Object.create(base);'],
+      ['a name in brackets', "const copy = Object['create'](base);"],
+      ['a method that is not called', 'const make = Object.create;'],
+      ['a method passed on', 'const copies = bases.map(Object.create);'],
+      ['another reflection static', 'const proto = Object.getPrototypeOf(value);'],
+    ])('should detect a reflection static of Object in %s', async (_name, source) => {
+      expect(await codes(new NoGlobalAccessRule(), source)).toEqual(['NO_META_PROGRAMMING']);
+    });
+
+    it('should accept the other statics of Object', async () => {
+      expect(await codes(new NoGlobalAccessRule(), 'const names = Object.keys(value);')).toEqual([]);
+    });
+
+    describe('with requireDirectObjectUse', () => {
+      const rule = new NoGlobalAccessRule({ requireDirectObjectUse: true });
+
+      it.each([
+        ['a static call', 'const names = Object.keys(value);'],
+        ['a static as a callback', 'const names = values.map(Object.keys);'],
+        ['a call and a construction', 'const a = Object(1); const b = new Object();'],
+        ['typeof and instanceof', "const known = typeof Object === 'function' && value instanceof Object;"],
+        ['a variable of the script called Object', 'const read = (Object) => Object;'],
+      ])('should accept %s', async (_name, source) => {
+        expect(await codes(rule, source)).toEqual([]);
+      });
+
+      it.each([
+        ['an alias', 'const O = Object;'],
+        ['an argument', 'use(Object);'],
+        ['destructuring', 'const { keys } = Object;'],
+        ['a member whose name is computed', 'const value = Object[name];'],
+        ['valueOf', 'const O = Object.valueOf();'],
+      ])('should detect %s', async (_name, source) => {
+        expect(await codes(rule, source)).toEqual(['OBJECT_INDIRECT_USE']);
+      });
+
+      it('should not apply without the option', async () => {
+        expect(await codes(new NoGlobalAccessRule(), 'const O = Object;')).toEqual([]);
+      });
+    });
+  });
+
+  describe('NoCallTargetAssignmentRule', () => {
+    const issuesOf = async (source: string) =>
+      (await new JSAstValidator([new NoCallTargetAssignmentRule()]).validate(source)).issues;
+
+    it.each([
+      ['an assignment', 'callTool = other;', 'assignment'],
+      ['a compound assignment', 'callTool ||= other;', 'assignment'],
+      ['a declaration', 'const callTool = other;', 'declaration'],
+      ['a destructuring declaration', 'const { callTool } = other;', 'destructuring'],
+      ['a function declaration', 'function callTool() {}', 'function-declaration'],
+      ['a parameter', 'const f = (callTool) => 1;', 'parameter'],
+      ['a catch parameter', 'try { } catch (callTool) { }', 'catch-parameter'],
+    ])('should detect %s', async (_name, source, type) => {
+      const issues = await issuesOf(source);
+
+      expect(issues.map((issue) => issue.code)).toEqual(['NO_CALL_TARGET_ASSIGNMENT']);
+      expect(issues[0].data).toMatchObject({ target: 'callTool', type });
+    });
+
+    it.each([
+      ['an object-destructuring assignment', '({ a: callTool } = other);'],
+      ['an array-destructuring assignment', '[callTool] = other;'],
+      ['a rest element of a destructuring assignment', '[...callTool] = other;'],
+      ['a default in a destructuring assignment', '({ a: callTool = 1 } = other);'],
+      ['a for-of head', 'for (callTool of other) { }'],
+      ['a for-in head', 'for (callTool in other) { }'],
+      ['an increment', 'callTool++;'],
+      ['a decrement', '--callTool;'],
+    ])('should detect %s as an assignment', async (_name, source) => {
+      const issues = await issuesOf(source);
+
+      expect(issues.map((issue) => issue.code)).toEqual(['NO_CALL_TARGET_ASSIGNMENT']);
+      expect(issues[0].data).toMatchObject({ target: 'callTool', type: 'assignment' });
+    });
+
+    it.each([
+      ['a pattern in a catch clause', 'try { } catch ({ callTool }) { }'],
+      ['an array pattern in a catch clause', 'try { } catch ([callTool]) { }'],
+      ['a pattern behind a default value', 'const { a: { callTool } = {} } = other;'],
+      ['a pattern in a parameter default', 'const f = ({ a: [callTool] = [] }) => 1;'],
+      ['a class expression name', 'const C = class callTool {};'],
+      ['a loop declaration', 'for (const callTool of other) { }'],
+    ])('should detect %s as shadowing', async (_name, source) => {
+      const issues = await issuesOf(source);
+
+      expect(issues.map((issue) => issue.code)).toEqual(['NO_CALL_TARGET_ASSIGNMENT']);
+    });
+
+    it('should allow using the protected target', async () => {
+      expect(await issuesOf("const result = callTool('name', { callTool: 1 }); other.callTool = result;")).toEqual([]);
     });
   });
 

@@ -25,9 +25,15 @@ AST Guard is a powerful static analysis tool for JavaScript code. It provides a 
 - **Constructor chain escapes**: `[].constructor.constructor('code')()`
 - **Prototype pollution**: `__proto__`, `Object.setPrototypeOf`
 - **Reflection API bypasses**: `Reflect.get`, `Reflect.construct`
-- **Global object access**: `window`, `globalThis`, `this`
+- **Global object access**: members of `window`, `globalThis`, `self` and `global`, and `this` in any position
 
 The analysis of each CVE and the list of attack vectors these rules are tested against are kept with the security tests, which are not public; [SECURITY-TESTS.md](https://github.com/agentfront/enclave/blob/main/SECURITY-TESTS.md) lists the categories and the invariants they protect.
+
+### What a Preset Is, and What It Is Not
+
+The STRICT, SECURE, STANDARD and PERMISSIVE presets are **filters on source text**: each one refuses the constructs it lists, in the spellings a parser can see. A filter is not a security boundary. A script can build a property name while it runs, reach an object through a value instead of a name, or use a construct no rule of the preset lists, and a static rule cannot see that (see [Known Limitations](#known-limitations)). Passing one of these presets does not make code safe to run.
+
+To run code you do not trust, put the validator in front of a runtime sandbox: [`@enclave-vm/core`](https://github.com/agentfront/enclave/tree/main/libs/core) validates with the AgentScript preset (an allowlist of syntax, names and property keys, not a list of refusals) and then runs the script in a realm that holds nothing else, behind a membrane, with limits. There, a gap in a static rule is not a way out.
 
 ## Features
 
@@ -80,7 +86,7 @@ if (!result.valid) {
 
 ## Presets
 
-AST Guard provides pre-configured security presets for quick and easy setup. Choose from five security levels, from maximum lockdown to minimal restrictions.
+AST Guard provides pre-configured security presets for quick and easy setup. Choose from five security levels, from maximum lockdown to minimal restrictions. They decide which source a host accepts; they do not contain the code that is accepted (see [What a Preset Is, and What It Is Not](#what-a-preset-is-and-what-it-is-not)).
 
 ### Available Presets
 
@@ -120,7 +126,7 @@ const validator = new JSAstValidator(balancedRules);
 Includes all security rules to block known sandbox escape exploits:
 
 - ✅ NoEvalRule - Blocks eval() and Function constructor
-- ✅ NoGlobalAccessRule - Blocks constructor chains, Reflect API, global object access
+- ✅ NoGlobalAccessRule - Blocks constructor chains, Reflect API, members of the global objects, and `this` in any position
 - ✅ NoAsyncRule - Blocks async/await patterns
 - ✅ DisallowedIdentifierRule - Blocks dangerous identifiers
 - ✅ ForbiddenLoopRule - Blocks loops (or optionally allow bounded loops)
@@ -320,7 +326,7 @@ const result = await validator.validate(userCode, {
 });
 
 if (result.valid) {
-  // Safe to execute in sandbox
+  // Accepted by the filter: run it in a sandbox that holds on its own
   executeInSandbox(userCode);
 }
 ```
@@ -406,6 +412,7 @@ The AgentScript preset uses security-level-aware globals for defense-in-depth:
 `normalizeToolNamespaces(spec, { reservedNames })` validates the `toolNamespaces` option of `@enclave-vm/core`
 and `@enclave-vm/browser` (`{ mail: ['list', 'send'] }` or `{ users: { get: 'users:get' } }`) and returns it as
 plain data, so every runtime refuses the same names: non-identifiers, prototype keys, names starting with `__`,
+names the language calls on an object by itself (`then`, `toString`, `valueOf`, `toLocaleString`, `toJSON`),
 reserved words and sandbox globals as namespaces, identifiers AgentScript refuses (as namespaces or method
 names), collisions with `reservedNames`, duplicated methods, and tool names that are empty, oversized or not
 valid tool names (`TOOL_NAMESPACE_TOOL_NAME_PATTERN`: letters, digits, `:`, `.`, `_` and `-`, starting with a
@@ -440,9 +447,19 @@ const rules = createAgentScriptPreset({
 | `additionalDisallowedIdentifiers` | `string[]` | `[]`                       | Additional identifiers to block beyond the default set         |
 | `allowArrowFunctions`             | `boolean`  | `true`                     | Whether to allow arrow functions (for array methods)           |
 | `allowedLoops`                    | `object`   | `{ allowFor, allowForOf }` | Override default loop restrictions                             |
-| `reservedPrefixes`                | `string[]` | `['__ag_', '__safe_']`     | Reserved prefixes that user code cannot use                    |
+| `reservedPrefixes`                | `string[]` | `[]`                       | Prefixes to reserve in addition to `__ag_` and `__safe_`       |
 | `staticCallTarget`                | `object`   | `{ enabled: true }`        | Configuration for static call target validation                |
 | `callToolValidation`              | `object`   | -                          | Validation rules for callTool arguments                        |
+| `hostObjectGlobals`               | `string[]` | `[]`                       | Globals that are host objects (tool namespaces), not strings   |
+| `requireDirectRegexMethodCalls`   | `boolean`  | `false`                    | Refuse `match` / `matchAll` / `search` as anything but a call  |
+| `additionalAllowedSyntax`         | `string[]` | `[]`                       | Node types (or variants of one) to allow beyond the allowlist  |
+
+`requireDirectRegexMethodCalls` is for a host where the validator is the only thing between a script and the
+regular-expression engine. A direct call of `match`, `matchAll` or `search` is always checked, and `.call`,
+`.apply`, `.bind` and a template tag on them are always refused; with the option, the method cannot be read as a
+value or taken by destructuring either. That also refuses reading a field of ordinary data with one of these
+names (`params.search`), so it is off by default: `@enclave-vm/core` by default runs scripts in a realm where
+regular expressions cannot run whatever a script does.
 
 **Example with all options:**
 
@@ -672,10 +689,16 @@ const result = await validator.validate(code, {
   // Stop on first error
   stopOnFirstError: false,
 
-  // Maximum number of issues (0 = unlimited)
+  // Maximum number of issues to collect (default: 100, 0 = unlimited)
   maxIssues: 100,
 });
 ```
+
+`maxIssues` bounds what one validation builds from a source the host did not write. It defaults to
+`DEFAULT_MAX_ISSUES` (100); pass `0` to collect every issue. At the cap the validation stops as soon as an
+error is on the list. While only warnings were found the remaining rules still run, because one of them may
+refuse the source, and further warnings are not collected. A result that was cut short has
+`incomplete: true`, and `valid` is `true` only when every rule ran and none reported an error.
 
 ### Rule Management
 
@@ -700,8 +723,10 @@ validator.unregisterRule('no-eval');
 
 ```typescript
 interface ValidationResult {
-  valid: boolean; // true if no errors
-  issues: ValidationIssue[]; // All issues found
+  valid: boolean; // true if every rule ran and none reported an error
+  issues: ValidationIssue[]; // The issues found, at most maxIssues
+  incomplete?: boolean; // true if the list was cut at maxIssues or the validation stopped early
+  rulesExecuted?: number; // Rules that were started
   ast?: acorn.Node; // Parsed AST (if parsing succeeded)
   parseError?: Error; // Parse error (if parsing failed)
 }
@@ -770,7 +795,8 @@ const validator = new JSAstValidator([
 
 const result = await validator.validate(userCode);
 if (result.valid) {
-  // Safe to execute
+  // Accepted by the filter. `node:vm` alone is not a security boundary: for code you do not
+  // trust, run it with @enclave-vm/core.
   vm.runInContext(userCode, sandbox);
 }
 ```
@@ -894,6 +920,9 @@ These are inherent to **any** static analyzer (not vulnerabilities):
 | Computed property access     | `obj['constructor']` | `Object.freeze(Object.prototype)` |
 | Runtime string construction  | `'con' + 'structor'` | VM isolation                      |
 | Destructuring property names | `{ constructor: c }` | Freeze prototypes                 |
+| A global under another name  | `const w = window`   | Remove the global from the realm  |
+
+They are why a preset is a filter and not a boundary: what a script does with a value at run time is decided where it runs.
 
 ## Documentation
 

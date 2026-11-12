@@ -322,6 +322,22 @@ export interface AgentScriptOptions {
   hostObjectGlobals?: string[];
 
   /**
+   * Refuse every use of a property named `match`, `matchAll` or `search` that is not a direct
+   * call: reading it as a value, a member of it, and taking it by destructuring. (A direct call
+   * is checked as always; `.call`, `.apply`, `.bind` and a template tag are always refused.)
+   *
+   * The method as a value is where every call the validator cannot check starts from. Refusing
+   * the value also refuses a field of ordinary data with one of these names (`params.search`),
+   * so it is off by default: by default the realm of `@enclave-vm/core` refuses to run a regular
+   * expression whatever a script does. Turn it on where the validator is the only thing between
+   * a script and the regular-expression engine (a realm that is not reduced to the allowlist).
+   * Methods of the globals listed in `hostObjectGlobals` are not affected.
+   *
+   * Default: false
+   */
+  requireDirectRegexMethodCalls?: boolean;
+
+  /**
    * Additional identifiers to block beyond the default dangerous set.
    *
    * These always take precedence over `allowedGlobals`. If an identifier
@@ -369,8 +385,9 @@ export interface AgentScriptOptions {
   };
 
   /**
-   * Reserved prefixes that user code cannot use
-   * Default: ['__ag_', '__safe_']
+   * Further prefixes that user code cannot use, in addition to the two of the runtime
+   * (`__ag_` and `__safe_`), which are always reserved.
+   * Default: []
    */
   reservedPrefixes?: string[];
 
@@ -402,7 +419,9 @@ export interface AgentScriptOptions {
    * Syntax node types to allow in addition to `AGENTSCRIPT_ALLOWED_NODE_TYPES`.
    *
    * AgentScript refuses every construct that is not on its syntax allowlist (`this`, classes,
-   * `new.target`, `debugger`, ...). Listing a node type here re-enables it.
+   * `new.target`, `debugger`, ...). Listing a node type here re-enables it. A construct that
+   * shares its node type with an allowed one is listed under its own name: `UsingDeclaration`,
+   * `AwaitUsingDeclaration`, `ForAwaitStatement`, `GeneratorFunction`.
    * Each of the refused constructs is refused for a security reason (see
    * `AGENTSCRIPT_ALLOWED_NODE_TYPES`), so only do this for a host that does not run untrusted code.
    *
@@ -534,7 +553,8 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   // 2. Block reserved internal prefixes
   rules.push(
     new ReservedPrefixRule({
-      reservedPrefixes: options.reservedPrefixes || ['__ag_', '__safe_'],
+      // The prefixes of the runtime are reserved whatever a host adds to them
+      reservedPrefixes: [...new Set(['__ag_', '__safe_', ...(options.reservedPrefixes ?? [])])],
       allowedIdentifiers: ['__ag_main'], // Allow the compiler wrapper function
     }),
   );
@@ -565,6 +585,8 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
       blockedGlobals: ['window', 'globalThis', 'self', 'global', 'this'],
       blockMemberAccess: true,
       blockComputedAccess: true,
+      // The reflection statics are refused by name on `Object`, so `Object` may not go by another name
+      requireDirectObjectUse: true,
     }),
   );
 
@@ -607,16 +629,19 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   // better error messages and faster failure for obvious infinite loops.
   rules.push(new InfiniteLoopRule());
 
-  // 8. Validate callTool arguments (if configured)
+  // 8. Validate callTool arguments (if configured). Under both names: a host validates a script
+  // as written (`callTool`) or after the transform that renames the call (`__safe_callTool`).
   if (options.callToolValidation) {
+    const callToolArguments = {
+      minArgs: options.callToolValidation.minArgs || 2,
+      maxArgs: options.callToolValidation.maxArgs || 2,
+      expectedTypes: options.callToolValidation.expectedTypes || ['string', 'object'],
+    };
     rules.push(
       new CallArgumentValidationRule({
         functions: {
-          callTool: {
-            minArgs: options.callToolValidation.minArgs || 2,
-            maxArgs: options.callToolValidation.maxArgs || 2,
-            expectedTypes: options.callToolValidation.expectedTypes || ['string', 'object'],
-          },
+          callTool: callToolArguments,
+          __safe_callTool: callToolArguments,
         },
       }),
     );
@@ -641,7 +666,9 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   if (options.requireCallTool) {
     rules.push(
       new RequiredFunctionCallRule({
-        required: ['callTool'],
+        // Either name is the call: as written, or after the transform that renames it
+        required: ['callTool', '__safe_callTool'],
+        mode: 'any',
         minCalls: 1,
         messageTemplate: 'AgentScript code must contain at least one callTool invocation',
       }),
@@ -662,6 +689,7 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
     new NoRegexMethodsRule({
       allowStringArguments: false, // Block even string arguments for maximum security
       hostObjectNames: (options.hostObjectGlobals ?? []).flatMap((name) => [name, `__safe_${name}`]),
+      requireDirectCall: options.requireDirectRegexMethodCalls === true,
     }),
   );
 
