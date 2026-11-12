@@ -117,8 +117,13 @@ const DEFAULT_SERIALIZED_PATTERNS: SerializableSuspiciousPattern[] = [
       var isBulk = /\\b(bulk|batch|mass|dump)\\b|export[_-]all\\b/i.test(operationName);
       if (typeof args === 'object' && args !== null) {
         try {
+          // Each test reads the text once, whatever it holds: "limit" with four digits in a row
+          // anywhere after it, a "*" value, "no limit".
           var argStr = JSON.stringify(args).toLowerCase();
-          if (/limit.*[0-9]{4,}|"\\*"|no[_-]?limit/i.test(argStr)) return true;
+          var limitAt = argStr.indexOf('limit');
+          if (limitAt !== -1 && /[0-9]{4}/.test(argStr.slice(limitAt + 5))) return true;
+          if (argStr.indexOf('"*"') !== -1) return true;
+          if (/no[_-]?limit/.test(argStr)) return true;
         } catch(e) {}
       }
       return isBulk;

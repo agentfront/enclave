@@ -90,19 +90,20 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   // ============================================================
   // Safe Error
   // ============================================================
+  // An error of the sandbox: frozen, without a stack, and with own "constructor" and "__proto__"
+  // properties that are null. Making one costs the same whatever the script has done: it uses
+  // only built-ins taken above, never one the script's realm has had replaced.
   function createSafeError(message, name) {
-    var error = new Error(message);
-    // Use _defineProperty (saved before neutralization) to set name as own property,
-    // since Error.prototype.name is frozen and direct assignment throws in strict mode.
+    var error = new _ErrorConstructor(message);
+    // An own property: Error.prototype is frozen, so plain assignment would throw in strict mode.
     try { _defineProperty(error, 'name', { value: name || 'Error', writable: false, configurable: false, enumerable: false }); }
     catch(e) { try { error.name = name || 'Error'; } catch(e2) {} }
-    try { Object.setPrototypeOf(error, null); } catch(e) {}
     try {
       _defineProperty(error, 'constructor', { value: null, writable: false, configurable: false, enumerable: false });
       _defineProperty(error, '__proto__', { value: null, writable: false, configurable: false, enumerable: false });
       _defineProperty(error, 'stack', { value: undefined, writable: false, configurable: false, enumerable: false });
     } catch(e) {}
-    try { Object.freeze(error); } catch(e) {}
+    try { _freeze(error); } catch(e) {}
     return error;
   }
 
