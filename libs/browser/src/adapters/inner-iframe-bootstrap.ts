@@ -16,6 +16,12 @@ import type { SerializedIframeConfig } from '../types';
 /** What a script gets when it runs a regular expression in a realm that has none. */
 export const REGEXP_REFUSED_MESSAGE = 'Regular expressions are not available in this sandbox';
 
+/** What a script gets when it uses a connection object of a realm that has none. */
+export const CONNECTION_REFUSED_MESSAGE = 'Network connections are not available in this sandbox';
+
+/** Error code of a run whose sandbox could not be set up; the script was not started. */
+export const SANDBOX_SETUP_FAILED_CODE = 'SANDBOX_SETUP_FAILED';
+
 export interface InnerIframeBootstrapOptions {
   userCode: string;
   config: SerializedIframeConfig;
@@ -61,6 +67,22 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 
   // Pending tool call resolvers: callId -> { resolve, reject }
   var pendingToolCalls = {};
+
+  // The window this frame reports to, and the built-ins this code calls while a script runs:
+  // taken now, before the realm is reduced and before anything the host configured has a name.
+  var outerWindow = window.parent;
+  var _defineProperty = Object.defineProperty;
+  var _freeze = Object.freeze;
+  var _hasOwnProperty = Object.prototype.hasOwnProperty;
+  var _ReflectOwnKeys = Reflect.ownKeys;
+  var _ErrorConstructor = Error;
+
+  // A step of the setup that did not take effect. The script is not started then: a sandbox
+  // that is missing one of its measures is not the sandbox the host asked for.
+  var setupFailure = null;
+  function failSetup(what) {
+    if (setupFailure === null) setupFailure = what;
+  }
 
   // ============================================================
   // Safe Error
@@ -700,7 +722,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     'fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource',
     'Worker', 'SharedWorker', 'ServiceWorker',
     'importScripts', 'localStorage', 'sessionStorage',
-    'indexedDB', 'caches', 'navigator',
+    'indexedDB', 'caches', 'navigator', 'clientInformation',
     'open', 'close', 'alert', 'confirm', 'prompt'
   ];
   for (var bd = 0; bd < browserDangerous.length; bd++) {
@@ -712,6 +734,8 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   // Note: window.document is a non-configurable accessor property that cannot be
   // deleted or redefined. It is shadowed via 'var document = undefined' in the
   // user code execution scope below.
+
+${CONNECTION_BACKSTOP_SOURCE}
 
   // ============================================================
   // Inject Safe Globals
@@ -743,10 +767,8 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     })(blockedObjMethods[bm]);
   }
 
-  // Save reference to Object.defineProperty before neutralizing it
-  var _defineProperty = Object.defineProperty;
-
-  // Neutralize dangerous static methods on intrinsic Object
+  // Neutralize dangerous static methods on intrinsic Object (this code keeps the references it
+  // took at the top)
   (function() {
     var RealObject = Object.getPrototypeOf({}).constructor;
     var dangerous = ['getOwnPropertyDescriptors', 'getOwnPropertyDescriptor', 'defineProperty', 'defineProperties', 'setPrototypeOf'];
@@ -854,6 +876,20 @@ ${config.blockRegExp ? REGEXP_BACKSTOP_SOURCE : ''}
     // Shadow non-deletable browser globals so user code sees undefined
     var document = undefined;
 
+    if (setupFailure !== null) {
+      sendToOuter({
+        type: 'result',
+        success: false,
+        error: {
+          name: 'SandboxSetupError',
+          message: 'The sandbox could not be set up (' + setupFailure + '); the script was not started.',
+          code: ${JSON.stringify(SANDBOX_SETUP_FAILED_CODE)}
+        },
+        stats: { duration: Date.now() - startTime, toolCallCount: 0, iterationCount: 0, startTime: startTime, endTime: Date.now() }
+      });
+      return;
+    }
+
     try {
       // The transformed code defines __ag_main as a function declaration.
       // We embed it directly — CSP 'unsafe-inline' allows inline scripts
@@ -934,6 +970,54 @@ const REGEXP_BACKSTOP_SOURCE = `
       if (names[n] in window) {
         try { _defineProperty(window, names[n], { value: undefined, writable: false, configurable: false, enumerable: false }); } catch(e2) {}
       }
+    }
+  })();`;
+
+/**
+ * Statements of the inner iframe script that make the realm unable to open a connection the
+ * document policy has no say over. The policy (`default-src 'none'`) governs every request source
+ * it knows; a peer connection is not one of them, so the names that create one are removed from
+ * the realm, at every security level and for every preset.
+ *
+ * As for regular expressions, the object behind the name is made unusable as well: every member
+ * of the constructor and of its prototype is replaced by a function that throws, and both are
+ * frozen. If a name is still there afterwards, the script is not started.
+ */
+const CONNECTION_BACKSTOP_SOURCE = `
+  // ============================================================
+  // Connections Outside The Document Policy
+  // ============================================================
+  (function() {
+    var refuse = () => {
+      throw createSafeError(${JSON.stringify(CONNECTION_REFUSED_MESSAGE)}, 'TypeError');
+    };
+    _freeze(refuse);
+    var names = ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection'];
+    for (var n = 0; n < names.length; n++) {
+      var name = names[n];
+      try {
+        var connection = window[name];
+        var parts = typeof connection === 'function' ? [connection.prototype, connection] : [];
+        for (var p = 0; p < parts.length; p++) {
+          var part = parts[p];
+          if (part === null || (typeof part !== 'object' && typeof part !== 'function')) continue;
+          var keys = _ReflectOwnKeys(part);
+          for (var k = 0; k < keys.length; k++) {
+            var descriptor = _getOwnPropertyDescriptor(part, keys[k]);
+            if (descriptor && descriptor.configurable) {
+              _defineProperty(part, keys[k], { value: refuse, writable: false, configurable: false, enumerable: false });
+            }
+          }
+          _freeze(part);
+        }
+      } catch(e) {
+        failSetup('"' + name + '" could not be made unusable');
+      }
+      try { delete window[name]; } catch(e) {}
+      if (name in window) {
+        try { _defineProperty(window, name, { value: undefined, writable: false, configurable: false, enumerable: false }); } catch(e2) {}
+      }
+      if (typeof window[name] !== 'undefined') failSetup('"' + name + '" could not be removed');
     }
   })();`;
 
