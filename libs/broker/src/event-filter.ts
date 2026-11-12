@@ -41,10 +41,21 @@ const MAX_EVALUATION_TIMEOUT_MS = 10_000;
 
 /**
  * How often the evaluation of one event is tried when the time limit was reached while the
- * process got less than STARVED_CPU_SHARE of that time on a processor.
+ * evaluating thread got less than STARVED_CPU_SHARE of that time on a processor.
  */
-const MAX_EVALUATION_ATTEMPTS = 3;
+const MAX_EVALUATION_ATTEMPTS = 5;
 const STARVED_CPU_SHARE = 0.5;
+
+/**
+ * Processor time this thread has used, in milliseconds. A runtime that does not report it per
+ * thread reports it for the process; that is never less, so an evaluation is never taken for
+ * one that got too little processor time when it did not.
+ */
+function cpuTimeMs(): number {
+  const perThread = (process as { threadCpuUsage?: () => NodeJS.CpuUsage }).threadCpuUsage;
+  const usage = typeof perThread === 'function' ? perThread.call(process) : process.cpuUsage();
+  return (usage.user + usage.system) / 1000;
+}
 
 /**
  * Event filter options.
@@ -62,9 +73,9 @@ export interface EventFilterOptions {
   onError?: (error: Error, event: StreamEvent) => void;
 
   /**
-   * Total time, in milliseconds, this filter may spend evaluating regular expressions and
-   * globs over its whole life. When it is used up, those patterns count as not evaluable for
-   * every later event. Set it for a filter that lives as long as one stream and whose patterns
+   * Total processor time, in milliseconds, this filter may spend evaluating regular
+   * expressions and globs over its whole life. When it is used up, those patterns count as not
+   * evaluable for every later event. Set it for a filter that lives as long as one stream and whose patterns
    * were not written by the embedder.
    *
    * @default no budget
@@ -265,9 +276,10 @@ export class EventFilter {
    * Evaluate all rules, slow patterns included, under the time limit. Returns undefined when
    * the evaluation did not finish.
    *
-   * The limit is a limit on elapsed time. When it is reached although the process got little
+   * The limit is a limit on elapsed time. When it is reached although the thread got little
    * processor time meanwhile (the machine was busy with something else), the evaluation is
-   * tried again, a bounded number of times, so that a busy machine does not drop events.
+   * tried again, a bounded number of times, so that a busy machine does not drop events. An
+   * evaluation that used its time on a processor is not tried again.
    */
   private evaluateWithinLimit(event: StreamEvent, subjects: Map<string, Subject>): boolean | undefined {
     for (let attempt = 1; ; attempt++) {
@@ -276,23 +288,22 @@ export class EventFilter {
         limit = Math.max(1, Math.min(limit, Math.ceil(this.budgetMs - this.spentMs)));
       }
 
-      const cpuBefore = process.cpuUsage();
+      const cpuBefore = cpuTimeMs();
       const outcome = runBounded(() => {
-        const started = performance.now();
+        const started = cpuTimeMs();
         const matches = this.matchesAnyRule(event, subjects, true) === true;
-        return { matches, elapsed: performance.now() - started };
+        return { matches, used: cpuTimeMs() - started };
       }, limit);
 
       if (outcome.done) {
-        this.spentMs += outcome.value.elapsed;
+        this.spentMs += outcome.value.used;
         return outcome.value.matches;
       }
 
       // The matchers were stopped in the middle of their work: build them again.
       this.recompileGlobs();
 
-      const cpu = process.cpuUsage(cpuBefore);
-      const cpuMs = (cpu.user + cpu.system) / 1000;
+      const cpuMs = cpuTimeMs() - cpuBefore;
       const starved = cpuMs < limit * STARVED_CPU_SHARE;
       this.spentMs += starved ? cpuMs : limit;
       if (starved && attempt < MAX_EVALUATION_ATTEMPTS && !this.budgetUsedUp()) {
