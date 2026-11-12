@@ -15,6 +15,7 @@ export async function loadHarness(page: Page) {
 /** Options forwarded to BrowserEnclave constructor inside evaluate(). */
 export interface RunOptions {
   securityLevel?: string;
+  preset?: string;
   timeout?: number;
   toolCallGraceMs?: number;
   maxIterations?: number;

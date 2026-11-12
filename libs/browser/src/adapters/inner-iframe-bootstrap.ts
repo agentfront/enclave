@@ -13,6 +13,9 @@
 import { buildIframeHtml, safeJsonStringify } from './iframe-html-builder';
 import type { SerializedIframeConfig } from '../types';
 
+/** What a script gets when it runs a regular expression in a realm that has none. */
+export const REGEXP_REFUSED_MESSAGE = 'Regular expressions are not available in this sandbox';
+
 export interface InnerIframeBootstrapOptions {
   userCode: string;
   config: SerializedIframeConfig;
@@ -773,7 +776,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     Number: createSecureProxy(Number),
     Date: createSecureProxy(Date),
     Boolean: createSecureProxy(Boolean),
-    RegExp: createSecureProxy(RegExp),
+    ${config.blockRegExp ? '' : 'RegExp: createSecureProxy(RegExp),'}
     Error: createSecureProxy(Error),
     TypeError: createSecureProxy(TypeError),
     RangeError: createSecureProxy(RangeError),
@@ -842,6 +845,8 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     }
   }
 
+${config.blockRegExp ? REGEXP_BACKSTOP_SOURCE : ''}
+
   // ============================================================
   // Execute User Code
   // ============================================================
@@ -891,6 +896,46 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 })();
 `.trim();
 }
+
+/**
+ * Statements of the inner iframe script that make regular expressions unusable in its realm.
+ * Emitted when the script was validated as AgentScript, which has no regular expressions and
+ * whose validator refuses every way to write or run one. This is the runtime half of that rule,
+ * the one `INNER_REALM_REGEX_BACKSTOP_SOURCE` is in `@enclave-vm/core`: a pattern that backtracks
+ * is work no iteration limit sees, and `String.prototype.match/matchAll/search` build a regular
+ * expression from a string inside the engine, without the `RegExp` name or a literal.
+ *
+ * Every regular expression of the realm reaches its matcher through `RegExp.prototype`, so the
+ * methods there are replaced by a function that throws, and the prototype is frozen. The names
+ * `RegExp` and `URLPattern` (which compiles patterns of its own) are removed from the realm.
+ *
+ * It runs after the bootstrap has taken what it needs from `RegExp.prototype` (the `source` and
+ * flag getters, which stay), and nothing in the bootstrap matches a pattern after it.
+ */
+const REGEXP_BACKSTOP_SOURCE = `
+  // ============================================================
+  // Regular Expressions
+  // ============================================================
+  (function() {
+    var proto = RegExp.prototype;
+    var refuse = () => {
+      throw createSafeError(${JSON.stringify(REGEXP_REFUSED_MESSAGE)}, 'TypeError');
+    };
+    Object.freeze(refuse);
+    var keys = ['exec', 'test', 'compile', Symbol.match, Symbol.matchAll, Symbol.replace, Symbol.search, Symbol.split];
+    for (var i = 0; i < keys.length; i++) {
+      _defineProperty(proto, keys[i], { value: refuse, writable: false, configurable: false, enumerable: false });
+    }
+    Object.freeze(proto);
+
+    var names = ['RegExp', 'URLPattern'];
+    for (var n = 0; n < names.length; n++) {
+      try { delete window[names[n]]; } catch(e) {}
+      if (names[n] in window) {
+        try { _defineProperty(window, names[n], { value: undefined, writable: false, configurable: false, enumerable: false }); } catch(e2) {}
+      }
+    }
+  })();`;
 
 /**
  * Generate the user code execution block.
