@@ -42,6 +42,11 @@ export interface WorkerSlotOptions {
   memoryLimitMB: number;
   /** Startup timeout in milliseconds */
   startupTimeoutMs?: number;
+  /**
+   * Largest message the worker may send, in bytes of UTF-8. A larger one is refused before it is
+   * parsed. Default: the pool's default `maxMessageSizeBytes`.
+   */
+  maxMessageSizeBytes?: number;
   /** How long an idle worker that was asked to leave gets before it is terminated. Default: 5000 */
   gracefulShutdownTimeoutMs?: number;
 }
@@ -268,6 +273,9 @@ export class WorkerSlot extends EventEmitter {
   /** The host-side heap check of the running execution (only with `host` enforcement) */
   private heapWatchdog: ReturnType<typeof setInterval> | null = null;
 
+  /** Largest message the worker may send right now, in bytes (see limitMessageSize) */
+  private messageSizeLimitBytes: number;
+
   /** The worker sent something the protocol does not allow: it is ended, not asked to leave */
   private protocolViolated = false;
 
@@ -278,7 +286,7 @@ export class WorkerSlot extends EventEmitter {
   private readonly options: Required<WorkerSlotOptions>;
 
   /** Message handler bound to this instance */
-  private readonly boundMessageHandler: (raw: string) => void;
+  private readonly boundMessageHandler: (raw: unknown) => void;
 
   /** Error handler bound to this instance */
   private readonly boundErrorHandler: (error: Error) => void;
@@ -294,9 +302,11 @@ export class WorkerSlot extends EventEmitter {
     this.options = {
       memoryLimitMB: options.memoryLimitMB,
       startupTimeoutMs: options.startupTimeoutMs ?? 10000,
+      maxMessageSizeBytes: options.maxMessageSizeBytes ?? DEFAULT_WORKER_POOL_CONFIG.maxMessageSizeBytes,
       gracefulShutdownTimeoutMs:
         options.gracefulShutdownTimeoutMs ?? DEFAULT_WORKER_POOL_CONFIG.gracefulShutdownTimeoutMs,
     };
+    this.messageSizeLimitBytes = this.options.maxMessageSizeBytes;
 
     this.boundMessageHandler = this.handleMessage.bind(this);
     this.boundErrorHandler = this.handleError.bind(this);
@@ -544,10 +554,20 @@ export class WorkerSlot extends EventEmitter {
   }
 
   /**
+   * The largest message the worker may send while it runs the next execution, in bytes. The pool
+   * sets it per execution, because what one message may legitimately carry depends on the
+   * limits of the enclave the script belongs to. release() puts the slot's own limit back.
+   */
+  limitMessageSize(maxBytes: number): void {
+    this.messageSizeLimitBytes = maxBytes;
+  }
+
+  /**
    * Release this slot after execution
    */
   release(): void {
     this.stopHeapWatchdog();
+    this.messageSizeLimitBytes = this.options.maxMessageSizeBytes;
     if (this._status !== 'executing') {
       return;
     }
@@ -673,14 +693,18 @@ export class WorkerSlot extends EventEmitter {
   // Event Handlers
   // ============================================================================
 
-  private handleMessage(raw: string): void {
+  private handleMessage(raw: unknown): void {
     let msg: WorkerToMainMessage;
     try {
       // The worker is the less trusted side of this boundary: if a script ever gets out of the
-      // sandbox inside it, the worker's messages are the script's. Every message is parsed
-      // without prototype pollution and then checked against the protocol schema (shape, types,
-      // identifier and tool-name patterns, size limits) before anything here acts on it.
-      const parsed = workerToMainMessageSchema.safeParse(safeDeserialize(raw));
+      // sandbox inside it, the worker's messages are the script's. A message is text, no larger
+      // than the limit: anything else is refused before this thread does any work on it. Then it
+      // is parsed without prototype pollution and checked against the protocol schema (shape,
+      // types, identifier and tool-name patterns, size limits) before anything here acts on it.
+      if (typeof raw !== 'string') {
+        throw new MessageValidationError('worker message is not text');
+      }
+      const parsed = workerToMainMessageSchema.safeParse(safeDeserialize(raw, this.messageSizeLimitBytes));
       if (!parsed.success) {
         const issue = parsed.error.issues[0];
         throw new MessageValidationError(

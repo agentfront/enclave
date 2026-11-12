@@ -89,7 +89,13 @@ export interface WorkerPoolConfig {
   maxPendingToolCalls: number;
 
   /**
-   * Maximum size of a single message in bytes
+   * Maximum size of a single message from a worker, in bytes. A larger message is refused before
+   * it is parsed: the execution fails with `MessageSizeError` and the worker is replaced.
+   *
+   * The limit applied to an execution is never below what the enclave's own limits let one
+   * message carry: a tool request (`toolBridge.maxPayloadBytes`) or a result (`memoryLimit`).
+   * So it decides where those are larger than it or off: with `memoryLimit: 0` it is the only
+   * bound on the size of a result.
    * @default 16 * 1024 * 1024 (16MB)
    */
   maxMessageSizeBytes: number;

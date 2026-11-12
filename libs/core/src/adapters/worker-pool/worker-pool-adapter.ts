@@ -83,6 +83,12 @@ function serializeDoubleVmConfig(config: DoubleVmConfig): SerializedDoubleVmConf
  */
 const IDLE_CONFIRMATION_TIMEOUT_MS = 1000;
 
+/** The tool bridge's default limit on one request (see ../../tool-bridge) */
+const DEFAULT_TOOL_PAYLOAD_BYTES = 5 * 1024 * 1024;
+
+/** Room for what a message carries around its payload: type, identifiers, a tool name, statistics */
+const MESSAGE_ENVELOPE_BYTES = 64 * 1024;
+
 /** A message that belongs to one execution: only a worker that is running that execution sends it */
 function isExecutionMessage(msg: WorkerToMainMessage): boolean {
   return !isMemoryReportResultMessage(msg) && !isWorkerReadyMessage(msg);
@@ -318,6 +324,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     const slotId = `worker-${Date.now()}-${crypto.randomUUID()}`;
     const slot = new WorkerSlot(slotId, {
       memoryLimitMB: Math.round(this.config.memoryLimitPerWorker / 1024 / 1024),
+      maxMessageSizeBytes: this.config.maxMessageSizeBytes,
       gracefulShutdownTimeoutMs: this.config.gracefulShutdownTimeoutMs,
     });
 
@@ -641,8 +648,9 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     const toolBridge = createHostToolBridge(context, { updateStats: true });
 
     // The message rate is the execution's: what an earlier execution sent from this worker is
-    // not held against this one.
+    // not held against this one. So is the size a message may have (see messageSizeLimit).
     this.rateLimiter.reset(slot.id);
+    slot.limitMessageSize(this.messageSizeLimit(context));
 
     return new Promise<ExecutionResult<T>>((resolve, reject) => {
       // Pending tool calls for this execution
@@ -813,6 +821,24 @@ export class WorkerPoolAdapter implements SandboxAdapter {
         end(error as Error);
       }
     });
+  }
+
+  /**
+   * The largest message a worker may send while it runs a script of this execution.
+   *
+   * `maxMessageSizeBytes`, but never less than what the enclave's own limits allow one message
+   * to carry: a tool request (the tool bridge's `maxPayloadBytes`) or a result (the serialized
+   * size the sandbox accepts under `memoryLimit`). Where the sandbox bounds nothing itself
+   * (`memoryLimit: 0`), this is the bound on what the host thread parses.
+   */
+  private messageSizeLimit(context: ExecutionContext): number {
+    const toolRequest = context.config.toolBridge?.maxPayloadBytes ?? DEFAULT_TOOL_PAYLOAD_BYTES;
+    const result = context.config.memoryLimit ?? 0;
+    return Math.max(
+      this.config.maxMessageSizeBytes,
+      toolRequest + MESSAGE_ENVELOPE_BYTES,
+      result + MESSAGE_ENVELOPE_BYTES,
+    );
   }
 
   private async handleToolCall(
