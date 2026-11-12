@@ -53,7 +53,22 @@ const BLOCKED_KEYS = new Set([
 
 /** Whether a property key is one a script may never use. */
 export function isBlockedKey(key: string): boolean {
-  return BLOCKED_KEYS.has(key);
+  return key === '__proto__' || BLOCKED_KEYS.has(key);
+}
+
+/** Refuse a key a script may never use. Called where a property is written or deleted. */
+function assertKeyAllowed(key: string): void {
+  if (isBlockedKey(key)) throw new InterpreterError(`Forbidden property access: ${key}`);
+}
+
+/**
+ * Read a property under a key the script chose. The key is checked here, at the read, whatever the
+ * caller checked before: `__proto__` of any object, and what the other blocked keys lead to, is a
+ * prototype the whole process shares, and a value read here can become the target of a write.
+ */
+function readProperty(object: unknown, key: string): unknown {
+  if (key === '__proto__' || BLOCKED_KEYS.has(key)) throw new InterpreterError(`Forbidden property access: ${key}`);
+  return (object as Record<string, unknown>)[key];
 }
 
 /**
@@ -355,10 +370,26 @@ export function isScriptError(value: unknown): boolean {
 /** A lexical scope with a parent chain and per-binding const protection. */
 class Scope {
   private readonly vars = new Map<string, { value: unknown; mutable: boolean }>();
-  constructor(private readonly parent?: Scope) {}
+  /**
+   * How many calls deep the code of this scope runs: 0 for the program, and for the body of a
+   * function one more than where it was called from. A block inside has the depth around it.
+   */
+  readonly depth: number;
+
+  constructor(
+    private readonly parent?: Scope,
+    depth?: number,
+  ) {
+    this.depth = depth ?? parent?.depth ?? 0;
+  }
 
   child(): Scope {
     return new Scope(this);
+  }
+
+  /** The scope of one call of a function defined in this scope, running `depth` calls deep. */
+  activation(depth: number): Scope {
+    return new Scope(this, depth);
   }
 
   declare(name: string, value: unknown, mutable: boolean): void {
@@ -396,8 +427,19 @@ export interface InterpreterOptions {
   globals: Record<string, unknown>;
   /** Max evaluated nodes before aborting (interrupts infinite loops). */
   maxSteps: number;
-  /** Max nested call depth (interpreter-defined functions). */
+  /**
+   * How deep calls may nest: a call counts from where it is made to where it returns, along the
+   * chain of calls it belongs to. A callback counts as a call of the function that invokes it,
+   * so the tasks of one `parallel` batch each continue the chain that started the batch and do
+   * not add up.
+   */
   maxCallDepth: number;
+  /**
+   * How many calls of the whole execution may be unfinished at once, over all its chains: the
+   * ones that are running and the ones waiting for something they await. This bounds what the
+   * waiting calls hold. Default: {@link DEFAULT_MAX_PENDING_CALLS}.
+   */
+  maxPendingCalls?: number;
   /** Optional cancellation. */
   signal?: AbortSignal;
   /**
@@ -427,6 +469,9 @@ interface Reference {
   set(value: unknown): void;
 }
 
+/** Unfinished calls an execution may have at once, when the host sets no `maxPendingCalls`. */
+export const DEFAULT_MAX_PENDING_CALLS = 4096;
+
 type PatternMode = 'const' | 'let' | 'assign';
 
 type FunctionNode = ESTree.FunctionDeclaration | ESTree.ArrowFunctionExpression | ESTree.FunctionExpression;
@@ -441,7 +486,18 @@ function ignoreRejection(): void {
  */
 export class Interpreter {
   private steps = 0;
-  private callDepth = 0;
+  /** Calls that have not returned: the running ones and the ones waiting on an `await` */
+  private pendingCalls = 0;
+  /**
+   * The depth of whatever is making a call right now, for the function of the script that call
+   * starts. A function of the script is a host function too, and a built-in, `parallel` or a
+   * bound function invokes it without saying how deep it is: it reads this as it starts, in the
+   * same synchronous step as the call, and runs one deeper. Set by {@link withCallerDepth} for
+   * the synchronous part of a call only; a call that is waiting does not hold it, which is what
+   * keeps the depth of one chain apart from the depth of another. 0 when the host itself calls.
+   */
+  private callerDepth = 0;
+  private readonly maxPendingCalls: number;
   private readonly globals: Record<string, unknown>;
   /** The error that ended the run (step budget, abort, allocation budget); set once, never caught */
   private fatal: unknown;
@@ -450,6 +506,7 @@ export class Interpreter {
 
   constructor(private readonly options: InterpreterOptions) {
     this.globals = options.globals;
+    this.maxPendingCalls = options.maxPendingCalls ?? DEFAULT_MAX_PENDING_CALLS;
   }
 
   /**
@@ -459,12 +516,11 @@ export class Interpreter {
    */
   call(fn: unknown, args: unknown[]): unknown {
     if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
-    // A function of the script is called as it is, as the array methods call their callbacks:
-    // the calls it makes are counted where they are made. The call depth is one count for the
-    // whole execution (it also bounds how many calls a script can have waiting at once), and a
-    // batch of parallel tasks must not use it up by being a batch.
+    // The call continues the chain of the helper that makes it, one call deeper, when the helper
+    // makes it while its own call is starting (`parallel` starts every task that way). A call a
+    // helper makes later, after an `await`, starts a chain of its own.
     if (this.interpretedFunctions.has(fn)) return (fn as (...a: unknown[]) => unknown)(...args);
-    return this.callFunction(fn, undefined, args);
+    return this.callFunction(fn, undefined, args, this.callerDepth);
   }
 
   /** Number of AST nodes evaluated so far (for execution stats). */
@@ -828,7 +884,7 @@ export class Interpreter {
         }
       case 'MemberExpression': {
         const { object, key } = await this.evalMemberTarget(node, scope);
-        return (object as Record<string, unknown>)[key];
+        return readProperty(object, key);
       }
       case 'CallExpression':
         return this.evalCall(node, scope);
@@ -877,6 +933,7 @@ export class Interpreter {
       if (node.argument.type !== 'MemberExpression') throw new InterpreterError('Only a property can be deleted');
       const { object, key } = await this.evalMemberTarget(node.argument, scope);
       this.assertChangeable(object);
+      assertKeyAllowed(key);
       return delete (object as Record<string, unknown>)[key];
     }
     const v = await this.evalExpr(node.argument, scope);
@@ -1008,7 +1065,7 @@ export class Interpreter {
     if (node.type === 'MemberExpression') {
       const { object, key } = await this.evalMemberTarget(node, scope);
       return {
-        get: () => (object as Record<string, unknown>)[key],
+        get: () => readProperty(object, key),
         set: (value) => this.writeMember(object, key, value),
       };
     }
@@ -1029,6 +1086,7 @@ export class Interpreter {
 
   private writeMember(object: unknown, key: string, value: unknown): void {
     this.assertChangeable(object);
+    assertKeyAllowed(key);
     if (Array.isArray(object)) {
       const grownTo = arrayLengthAfterWrite(object, key, value);
       if (grownTo > MAX_ARRAY_LENGTH) {
@@ -1081,7 +1139,7 @@ export class Interpreter {
     let member: (MemberTarget & { value: unknown }) | undefined;
     if (node.callee.type === 'MemberExpression') {
       const target = await this.evalMemberTarget(node.callee, scope);
-      member = { ...target, value: (target.object as Record<string, unknown>)[target.key] };
+      member = { ...target, value: readProperty(target.object, target.key) };
       fn = member.value;
       thisArg = member.object;
     } else if (node.callee.type === 'Super') {
@@ -1096,15 +1154,17 @@ export class Interpreter {
 
     const args = await this.evalArguments(node.arguments, scope);
     if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
-    return this.callFunction(fn, thisArg, args);
+    return this.callFunction(fn, thisArg, args, scope.depth);
   }
 
   /**
    * Call a function with a receiver and arguments: an interpreted function, or a built-in or host
    * function after the checks that apply to it. `call` and `apply` are resolved to the function
    * they invoke first, so those checks cannot be passed by the way a call is written.
+   *
+   * @param depth - How many calls deep the code that makes this call runs
    */
-  private async callFunction(fn: unknown, thisArg: unknown, args: unknown[]): Promise<unknown> {
+  private async callFunction(fn: unknown, thisArg: unknown, args: unknown[], depth: number): Promise<unknown> {
     for (let hops = 0; fn === FunctionProtoCall || fn === FunctionProtoApply || fn === FunctionProtoBind; hops++) {
       const name = fn === FunctionProtoCall ? 'call' : fn === FunctionProtoApply ? 'apply' : 'bind';
       if (typeof thisArg !== 'function' || hops >= 8) {
@@ -1124,24 +1184,26 @@ export class Interpreter {
     }
     if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
 
-    if (++this.callDepth > this.options.maxCallDepth) {
-      this.callDepth--;
-      throw new InterpreterError(`Max call depth exceeded (${this.options.maxCallDepth})`);
+    // A function of the script counts itself as it starts (see makeFunction): it is told the
+    // depth it is called from. What it returns was charged when it was made.
+    if (this.interpretedFunctions.has(fn)) {
+      const interpreted = fn as (...a: unknown[]) => unknown;
+      return await this.withCallerDepth(depth, () => interpreted.apply(thisArg, args));
     }
-    try {
-      // What an interpreted function returns was charged when it was made.
-      if (this.interpretedFunctions.has(fn)) {
-        return await (fn as (...a: unknown[]) => unknown).apply(thisArg, args);
-      }
 
+    const own = this.enterCall(depth);
+    try {
       args = this.checkBuiltinCall(fn, thisArg, args);
       // Higher-order array methods must AWAIT the (async) interpreter callbacks —
       // native Array.map/filter/sort don't await, so run our own implementations.
       const arrayMethod = ARRAY_METHODS.get(fn);
       if (arrayMethod !== undefined && HIGHER_ORDER_ARRAY_METHODS.has(arrayMethod) && typeof args[0] === 'function') {
-        return await this.callArrayMethod(thisArg as unknown[], arrayMethod, args);
+        return await this.callArrayMethod(thisArg as unknown[], arrayMethod, args, own);
       }
-      const result = await (fn as (...a: unknown[]) => unknown).apply(thisArg, args);
+      // A function of the script that the built-in invokes while it starts is its callee
+      const builtin = fn as (...a: unknown[]) => unknown;
+      const builtinArgs = args;
+      const result = await this.withCallerDepth(own, () => builtin.apply(thisArg, builtinArgs));
       if (arrayMethod === undefined && STRING_METHODS.get(fn) === 'split' && Array.isArray(result)) {
         if (result.length > MAX_ARRAY_LENGTH) {
           throw new InterpreterError(`An array cannot be longer than ${MAX_ARRAY_LENGTH} items`);
@@ -1150,7 +1212,38 @@ export class Interpreter {
       this.chargeValue(result);
       return result;
     } finally {
-      this.callDepth--;
+      this.pendingCalls--;
+    }
+  }
+
+  /**
+   * Count a call that starts `callerDepth` calls deep, until it returns.
+   *
+   * @returns The depth the call itself runs at
+   */
+  private enterCall(callerDepth: number): number {
+    const depth = callerDepth + 1;
+    if (depth > this.options.maxCallDepth) {
+      throw new InterpreterError(`Max call depth exceeded (${this.options.maxCallDepth})`);
+    }
+    if (this.pendingCalls >= this.maxPendingCalls) {
+      throw new InterpreterError(`Too many calls in progress at once (${this.maxPendingCalls})`);
+    }
+    this.pendingCalls++;
+    return depth;
+  }
+
+  /**
+   * Make a call with `depth` as the depth a function of the script is called from, if one starts
+   * during it. It covers the synchronous part of the call, which is where a function starts.
+   */
+  private withCallerDepth<T>(depth: number, call: () => T): T {
+    const previous = this.callerDepth;
+    this.callerDepth = depth;
+    try {
+      return call();
+    } finally {
+      this.callerDepth = previous;
     }
   }
 
@@ -1169,7 +1262,9 @@ export class Interpreter {
   private bindFunction(target: unknown, boundThis: unknown, boundArgs: unknown[]): (...rest: unknown[]) => unknown {
     this.charge((boundArgs.length + 2) * 8);
     return (...rest: unknown[]): Promise<unknown> => {
-      const result = this.callFunction(target, boundThis, [...boundArgs, ...rest]);
+      // The bound function is called as a built-in is: one call deep where it is called from,
+      // and the function it stands for one deeper.
+      const result = this.callFunction(target, boundThis, [...boundArgs, ...rest], this.callerDepth);
       // As for an interpreted function: a call nobody awaits must not become an unhandled rejection.
       result.then(undefined, ignoreRejection);
       return result;
@@ -1362,14 +1457,19 @@ export class Interpreter {
    * callbacks (which are async — they may `await` tool calls) are awaited. Each
    * iteration ticks the step budget.
    */
-  private async callArrayMethod(arr: unknown[], method: string, args: unknown[]): Promise<unknown> {
-    // A function of the script is called as it is. Anything else (a built-in such as `String`, a
-    // host function, a bound function) is called the way a call the script writes is: with the
-    // checks of {@link checkBuiltinCall}, and what it returns charged to the budget.
+  private async callArrayMethod(arr: unknown[], method: string, args: unknown[], depth: number): Promise<unknown> {
+    // The callback is a call the array method makes, `depth` calls deep: every iteration says
+    // so again, because the method waits for the callback in between. A function of the script
+    // is called as it is. Anything else (a built-in such as `String`, a host function, a bound
+    // function) is called the way a call the script writes is: with the checks of
+    // {@link checkBuiltinCall}, and what it returns charged to the budget.
     const callback: unknown = args[0];
-    const invoke: (...callbackArgs: unknown[]) => unknown = this.interpretedFunctions.has(callback as object)
+    const interpreted = this.interpretedFunctions.has(callback as object)
       ? (callback as (...callbackArgs: unknown[]) => unknown)
-      : (...callbackArgs: unknown[]) => this.callFunction(callback, undefined, callbackArgs);
+      : undefined;
+    const invoke: (...callbackArgs: unknown[]) => unknown = interpreted
+      ? (...callbackArgs: unknown[]) => this.withCallerDepth(depth, () => interpreted(...callbackArgs))
+      : (...callbackArgs: unknown[]) => this.callFunction(callback, undefined, callbackArgs, depth);
     const cb = invoke as (value: unknown, index: number, array: unknown[]) => Promise<unknown>;
     const each = (i: number): Promise<unknown> => {
       this.tick();
@@ -1561,7 +1661,7 @@ export class Interpreter {
           else throw new InterpreterError('Unsupported destructuring key');
           if (BLOCKED_KEYS.has(key)) throw new InterpreterError(`Forbidden destructured key: ${key}`);
           taken.add(key);
-          await this.applyPattern(prop.value, source[key], scope, mode);
+          await this.applyPattern(prop.value, readProperty(source, key), scope, mode);
         }
         return;
       }
@@ -1576,17 +1676,19 @@ export class Interpreter {
     // A named function expression can call itself by its name, which only its own body sees.
     const selfName = node.type === 'FunctionExpression' && node.id ? node.id.name : undefined;
     const outer = selfName === undefined ? closure : closure.child();
-    const call = async (args: unknown[]): Promise<unknown> => {
-      const fnScope = outer.child();
-      for (let i = 0; i < node.params.length; i++) {
-        const param = node.params[i];
-        if (param.type === 'RestElement') {
-          await this.applyPattern(param.argument, args.slice(i), fnScope, 'let');
-          break;
-        }
-        await this.applyPattern(param, args[i], fnScope, 'let');
-      }
+    const call = async (args: unknown[], callerDepth: number): Promise<unknown> => {
+      // Counted here, where the function starts, so that it holds whoever calls it: the
+      // interpreter for a call the script writes, or a built-in that was handed the function.
+      const fnScope = outer.activation(this.enterCall(callerDepth));
       try {
+        for (let i = 0; i < node.params.length; i++) {
+          const param = node.params[i];
+          if (param.type === 'RestElement') {
+            await this.applyPattern(param.argument, args.slice(i), fnScope, 'let');
+            break;
+          }
+          await this.applyPattern(param, args[i], fnScope, 'let');
+        }
         if (node.body.type === 'BlockStatement') {
           await this.execBlock(node.body.body, fnScope);
           return undefined;
@@ -1595,10 +1697,14 @@ export class Interpreter {
       } catch (e) {
         if (e instanceof ReturnSignal) return e.value;
         throw e;
+      } finally {
+        this.pendingCalls--;
       }
     };
+    // Read as the function is called, before anything of it is awaited
+    const depthOfCaller = (): number => this.callerDepth;
     const interpreted = function interpreted(...args: unknown[]): Promise<unknown> {
-      const result = call(args);
+      const result = call(args, depthOfCaller());
       // Whoever awaits this promise still sees a rejection. This handler only keeps a call that
       // nobody awaits (a callback a host built-in invoked and dropped) from becoming an unhandled
       // rejection, which by default ends the host process.
@@ -1624,7 +1730,8 @@ export class Interpreter {
   }
 
   private readGlobal(name: string): unknown {
-    if (Object.prototype.hasOwnProperty.call(this.globals, name)) return this.globals[name];
+    // `__proto__` is never a global, whatever the object that holds the globals was built from
+    if (name !== '__proto__' && Object.prototype.hasOwnProperty.call(this.globals, name)) return this.globals[name];
     throw new InterpreterError(`'${name}' is not defined`);
   }
 }
@@ -1640,8 +1747,13 @@ function isIterable(v: unknown): boolean {
 /**
  * Whether a value is data a script may change: an array, or an object whose prototype is
  * `Object.prototype` or nothing. That is what literals, `JSON.parse` and tool results are made of.
+ *
+ * The two prototypes themselves fit that description (`Array.prototype` is an array, and the
+ * prototype of `Object.prototype` is nothing) and are nobody's data: every object and array of the
+ * process inherits from them.
  */
 export function isScriptData(value: unknown): boolean {
+  if (value === Object.prototype || value === Array.prototype) return false;
   if (Array.isArray(value)) return true;
   if (value === null || typeof value !== 'object') return false;
   const prototype = Object.getPrototypeOf(value);

@@ -61,6 +61,68 @@ describe('InterpreterAdapter (SandboxAdapter)', () => {
     expect(res.value).toEqual([100, 198]);
   });
 
+  it('counts the call depth along each chain: the tasks of a batch do not add up', async () => {
+    // 100 tasks, each 12 calls deep while it waits for its tool: 1,200 calls in progress, with a
+    // call depth of 20. One chain that nests deeper than 20 is still refused.
+    const shallow = new InterpreterAdapter({ maxCallDepth: 20 });
+    const down = `const down = async (n, left) => {
+      if (left === 0) { const reply = await __safe_callTool('echo', { n }); return reply.value; }
+      return down(n, left - 1);
+    };`;
+    const toolHandler: ToolHandler = async (_name, args) => ({ value: args['n'] });
+
+    const batch = await shallow.execute(
+      main(`${down}
+        const items = [];
+        for (let i = 0; i < 100; i++) { items.push(i); }
+        const results = await __safe_parallel(items, (n) => down(n, 10));
+        return [results.length, results[99]];`),
+      makeContext({ maxToolCalls: 200, toolHandler }),
+    );
+    expect(batch.error).toBeUndefined();
+    expect(batch.value).toEqual([100, 99]);
+
+    const deep = await shallow.execute(main(`${down} return down(1, 30);`), makeContext({ toolHandler }));
+    expect(deep.success).toBe(false);
+    expect(deep.error?.message).toContain('Max call depth exceeded (20)');
+  });
+
+  it.each([
+    ['the callback of an array method', 'const rec = (n) => [n].map((m) => rec(m + 1))[0]; return rec(0);'],
+    ['a bound function', 'const rec = (n) => { const again = rec.bind(null, n + 1); return again(); }; return rec(0);'],
+    [
+      'a task of parallel',
+      'const rec = async (n) => (await __safe_parallel([n], (m) => rec(m + 1)))[0]; return rec(0);',
+    ],
+  ])('keeps one chain through %s: the recursion ends at the call depth', async (_name, body) => {
+    // A callback is a call of the function that invokes it, one call deeper
+    const res = await new InterpreterAdapter({ maxCallDepth: 20 }).execute(main(body), makeContext());
+
+    expect(res.success).toBe(false);
+    expect(res.error?.message).toContain('Max call depth exceeded (20)');
+  });
+
+  it('bounds the calls in progress over all chains with maxPendingCalls', async () => {
+    const script = main(`
+      const items = [];
+      for (let i = 0; i < 100; i++) { items.push(i); }
+      const results = await __safe_parallel(items, async (n) => (await __safe_callTool('echo', { n })).value);
+      return results.length;`);
+    const toolHandler: ToolHandler = async (_name, args) => ({ value: args['n'] });
+
+    // Each task is a call that waits for a tool call: about 200 calls in progress
+    const refused = await new InterpreterAdapter({ maxPendingCalls: 50 }).execute(
+      script,
+      makeContext({ maxToolCalls: 200, toolHandler }),
+    );
+    expect(refused.success).toBe(false);
+    expect(refused.error?.message).toContain('Too many calls in progress at once (50)');
+
+    const allowed = await new InterpreterAdapter().execute(script, makeContext({ maxToolCalls: 200, toolHandler }));
+    expect(allowed.error).toBeUndefined();
+    expect(allowed.value).toBe(100);
+  });
+
   it('accepts a Math function as the callback of map on a large array', async () => {
     // floor is handed (item, index, array) and reads the item only
     const res = await new InterpreterAdapter({ maxSteps: 10_000_000 }).execute(

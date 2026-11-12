@@ -120,6 +120,15 @@ All built-in prototypes are frozen after security patches are applied:
 
 Legacy accessor methods (`__lookupGetter__`, `__lookupSetter__`, `__defineGetter__`, `__defineSetter__`) are replaced with no-ops on `Object.prototype`. Error prototypes have `__proto__` shadowed to return `null`.
 
+#### Regular expressions
+
+AgentScript has no regular expressions: the validator refuses a literal, the `RegExp` name and the methods that run a pattern. When a script is validated with the `agentscript` preset (the default), its realm cannot run one either:
+
+- `exec`, `test`, `compile` and the `Symbol.match` / `matchAll` / `replace` / `search` / `split` methods of `RegExp.prototype` throw `TypeError: Regular expressions are not available in this sandbox`, and the prototype is frozen. Every regular expression of the realm reaches its matcher through these, including the one the engine builds from a string for `match`, `matchAll` and `search`.
+- The names `RegExp` and `URLPattern` are removed from the realm.
+
+String methods that take a plain string (`split(',')`, `replace('a', 'b')`, `includes`, `indexOf`) are not affected. With another preset, or with `validate: false`, regular expressions work as in any page. `@enclave-vm/core` applies the same rule with its realm allowlist.
+
 ### Layer 6: Secure Proxy
 
 Every global object exposed to user code is wrapped in a `Proxy` that blocks access to dangerous properties:
@@ -234,6 +243,7 @@ The limits that protect the host are enforced by the host as well as inside the 
 | Tool call flooding | Rate limiting in outer frame + per-execution call limits |
 | Data exfiltration | Suspicious pattern detection in outer frame |
 | Memory bombs | String/Array operation tracking with configurable limits |
+| Regular-expression backtracking | AgentScript has no regular expressions: refused by the validator, and the realm of a validated script cannot run one |
 | Storage access | `localStorage`, `sessionStorage`, `indexedDB`, `caches` removed |
 
 ## What's Available

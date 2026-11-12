@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Interpreter adapter, call depth.** `maxCallDepth` (default 256) is counted along each chain of calls, not over the whole execution. The tasks of a `parallel` batch each continue the chain that started the batch, so a batch whose tasks call helper functions no longer adds up to the limit. A callback counts as a call of the function that invokes it (an array method, `parallel`, a bound function), and a chain keeps its depth across what it awaits.
+- **Interpreter adapter, calls in progress.** New option `maxPendingCalls` (default 4096): how many calls of an execution may be unfinished at once, running or waiting, over all its chains. A script that goes over it gets `Too many calls in progress at once (4096)`. Before, the call depth was that bound too, at 256.
+
+### Security
+
+- **Interpreter adapter, property keys.** A property is read under a key of the script through one function that checks the key where the read happens, a write and a delete check it again, and `Object.prototype` and `Array.prototype` are never data a script may change (ATK-INTERP). These keys were refused before; nothing changes for a script. It closes the two code-scanning alerts on the interpreter.
+
+## [2.19.0] - 2026-11-12
+
 Draft for the maintainer: a security release. The invariants each item restores, and the tests that pin them, are listed by category in `SECURITY-TESTS.md`; nothing here says more than that file does.
 
 ### Security
