@@ -7,6 +7,7 @@ import {
   CallArgumentValidationRule,
   NoEvalRule,
   NoAsyncRule,
+  NoGlobalAccessRule,
 } from '../rules';
 import { ValidationSeverity } from '../interfaces';
 
@@ -281,6 +282,53 @@ describe('Validation Rules', () => {
         rules: { 'disallowed-identifier': true },
       });
       expect(result.issues[0].message).toBe('Cannot use eval here');
+    });
+  });
+
+  describe('NoGlobalAccessRule', () => {
+    const codes = async (rule: NoGlobalAccessRule, source: string) =>
+      (await new JSAstValidator([rule]).validate(source)).issues.map((issue) => issue.code);
+
+    it.each([
+      ['a call', 'const copy = Object.create(base);'],
+      ['a name in brackets', "const copy = Object['create'](base);"],
+      ['a method that is not called', 'const make = Object.create;'],
+      ['a method passed on', 'const copies = bases.map(Object.create);'],
+      ['another reflection static', 'const proto = Object.getPrototypeOf(value);'],
+    ])('should detect a reflection static of Object in %s', async (_name, source) => {
+      expect(await codes(new NoGlobalAccessRule(), source)).toEqual(['NO_META_PROGRAMMING']);
+    });
+
+    it('should accept the other statics of Object', async () => {
+      expect(await codes(new NoGlobalAccessRule(), 'const names = Object.keys(value);')).toEqual([]);
+    });
+
+    describe('with requireDirectObjectUse', () => {
+      const rule = new NoGlobalAccessRule({ requireDirectObjectUse: true });
+
+      it.each([
+        ['a static call', 'const names = Object.keys(value);'],
+        ['a static as a callback', 'const names = values.map(Object.keys);'],
+        ['a call and a construction', 'const a = Object(1); const b = new Object();'],
+        ['typeof and instanceof', "const known = typeof Object === 'function' && value instanceof Object;"],
+        ['a variable of the script called Object', 'const read = (Object) => Object;'],
+      ])('should accept %s', async (_name, source) => {
+        expect(await codes(rule, source)).toEqual([]);
+      });
+
+      it.each([
+        ['an alias', 'const O = Object;'],
+        ['an argument', 'use(Object);'],
+        ['destructuring', 'const { keys } = Object;'],
+        ['a member whose name is computed', 'const value = Object[name];'],
+        ['valueOf', 'const O = Object.valueOf();'],
+      ])('should detect %s', async (_name, source) => {
+        expect(await codes(rule, source)).toEqual(['OBJECT_INDIRECT_USE']);
+      });
+
+      it('should not apply without the option', async () => {
+        expect(await codes(new NoGlobalAccessRule(), 'const O = Object;')).toEqual([]);
+      });
     });
   });
 

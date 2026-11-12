@@ -567,6 +567,8 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
       blockedGlobals: ['window', 'globalThis', 'self', 'global', 'this'],
       blockMemberAccess: true,
       blockComputedAccess: true,
+      // The reflection statics are refused by name on `Object`, so `Object` may not go by another name
+      requireDirectObjectUse: true,
     }),
   );
 
