@@ -908,14 +908,14 @@ const custom = new PreScanner({ preset: 'secure', config: { maxInputSize: 200 * 
 
 Without a `preset` the scanner uses `standard`. A configuration object passed in the place of the options, as in `new PreScanner(createPreScannerConfig('agentscript'))`, has no `preset` key and therefore builds the `standard` preset as well.
 
-| Check                           | `agentscript` | `strict` | `secure` | `standard` | `permissive` |
-| ------------------------------- | ------------- | -------- | -------- | ---------- | ------------ |
-| Input size                      | 100KB         | 500KB    | 1MB      | 5MB        | 10MB         |
-| Nesting depth                   | 20            | 30       | 40       | 50         | 100          |
-| Regex literals                  | refused       | analyzed | analyzed | analyzed   | allowed      |
-| Bidirectional control characters | refused      | refused  | refused  | allowed    | allowed      |
-| Invisible characters            | refused       | refused  | allowed  | allowed    | allowed      |
-| Look-alike letters              | refused       | refused  | refused  | refused    | allowed      |
+| Check                            | `agentscript` | `strict` | `secure` | `standard` | `permissive` |
+| -------------------------------- | ------------- | -------- | -------- | ---------- | ------------ |
+| Input size                       | 100KB         | 500KB    | 1MB      | 5MB        | 10MB         |
+| Nesting depth                    | 20            | 30       | 40       | 50         | 100          |
+| Regex literals                   | refused       | analyzed | analyzed | analyzed   | allowed      |
+| Bidirectional control characters | refused       | refused  | refused  | allowed    | allowed      |
+| Invisible characters             | refused       | refused  | allowed  | allowed    | allowed      |
+| Look-alike letters               | refused       | refused  | refused  | refused    | allowed      |
 
 `@enclave-vm/core` validates without a `preScan` option, so an `Enclave` runs the `standard` pre-scanner whatever its AST preset is.
 

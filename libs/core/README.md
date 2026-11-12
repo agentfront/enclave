@@ -367,16 +367,16 @@ A worker runs one execution at a time. After its result it confirms that it is i
 
 An execution the pool ends itself ends its worker too, and the pool starts a new one. `run()` then returns `error.code` `EXECUTION_ERROR` with one of these in `error.name`:
 
-| `error.name`                          | When                                                                                                                         |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `WorkerTimeoutError`                  | The script was still running five seconds after its `timeout`                                                                |
-| `WorkerMemoryError`                   | The worker held more than its memory budget while it executed (see [The Worker Heap Limit](#the-worker-heap-limit))          |
-| `MessageFloodError`                   | The execution sent more than `maxMessagesPerSecond` messages                                                                 |
-| `MessageSizeError`                    | A message from the worker was larger than the limit                                                                          |
-| `TooManyPendingCallsError`            | More than `maxPendingToolCalls` tool calls were in flight                                                                    |
-| `MessageValidationError`              | A message from the worker did not pass the protocol schema                                                                   |
-| `ExecutionAbortedError`               | The pool was disposed while the execution was in flight, or the script's time had passed before it started (it is not run)   |
-| `QueueFullError`, `QueueTimeoutError` | No worker became free: the queue was full, or the wait exceeded `queueTimeoutMs`                                             |
+| `error.name`                          | When                                                                                                                       |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `WorkerTimeoutError`                  | The script was still running five seconds after its `timeout`                                                              |
+| `WorkerMemoryError`                   | The worker held more than its memory budget while it executed (see [The Worker Heap Limit](#the-worker-heap-limit))        |
+| `MessageFloodError`                   | The execution sent more than `maxMessagesPerSecond` messages                                                               |
+| `MessageSizeError`                    | A message from the worker was larger than the limit                                                                        |
+| `TooManyPendingCallsError`            | More than `maxPendingToolCalls` tool calls were in flight                                                                  |
+| `MessageValidationError`              | A message from the worker did not pass the protocol schema                                                                 |
+| `ExecutionAbortedError`               | The pool was disposed while the execution was in flight, or the script's time had passed before it started (it is not run) |
+| `QueueFullError`, `QueueTimeoutError` | No worker became free: the queue was full, or the wait exceeded `queueTimeoutMs`                                           |
 
 `dispose()` ends the executions in flight with `ExecutionAbortedError` and terminates every worker.
 
@@ -548,19 +548,19 @@ const enclave = new Enclave({
 });
 ```
 
-| Option           | Default                        | Description                                                                                    |
-| ---------------- | ------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `scorer`         | `'disabled'`                   | Which scorer answers                                                                           |
+| Option           | Default                        | Description                                                                                     |
+| ---------------- | ------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `scorer`         | `'disabled'`                   | Which scorer answers                                                                            |
 | `scoring`        | -                              | Progressive scoring: the rule-based scorer first, a detailed scorer for scripts that score high |
-| `blockThreshold` | 70                             | A script with a score at or above it is not run                                                |
-| `warnThreshold`  | 40                             | A script with a score at or above it runs, with `scoringResult.warned` set                     |
-| `failOpen`       | `true`                         | Whether a script runs when the scorer cannot give its answer                                   |
-| `customRules`    | -                              | Base scores of the rule-based scorer by rule id (0-100; 0 turns a rule off)                    |
-| `toolNamespaces` | the enclave's `toolNamespaces` | The namespaces whose method calls are scored as tool calls                                     |
-| `localLlm`       | -                              | Configuration of the `local-llm` scorer                                                        |
-| `externalApi`    | -                              | `endpoint`, `apiKey`, `timeoutMs`, `retries`, `headers` of the `external-api` scorer           |
-| `cache`          | enabled, 5 minutes, 1,000      | Cache of scoring results by the SHA-256 digest of the script                                   |
-| `verbose`        | `false`                        | Log scores and signals to the console                                                          |
+| `blockThreshold` | 70                             | A script with a score at or above it is not run                                                 |
+| `warnThreshold`  | 40                             | A script with a score at or above it runs, with `scoringResult.warned` set                      |
+| `failOpen`       | `true`                         | Whether a script runs when the scorer cannot give its answer                                    |
+| `customRules`    | -                              | Base scores of the rule-based scorer by rule id (0-100; 0 turns a rule off)                     |
+| `toolNamespaces` | the enclave's `toolNamespaces` | The namespaces whose method calls are scored as tool calls                                      |
+| `localLlm`       | -                              | Configuration of the `local-llm` scorer                                                         |
+| `externalApi`    | -                              | `endpoint`, `apiKey`, `timeoutMs`, `retries`, `headers` of the `external-api` scorer            |
+| `cache`          | enabled, 5 minutes, 1,000      | Cache of scoring results by the SHA-256 digest of the script                                    |
+| `verbose`        | `false`                        | Log scores and signals to the console                                                           |
 
 A scoring failure is anything that keeps the configured scorer from giving its answer: a script the feature extractor cannot parse (`FeatureExtractionError`), a scorer that throws, and in progressive mode a detailed scorer that fails or is missing once the fast score called for it. With `failOpen: false` each of these refuses the script; with `failOpen: true` the script runs.
 
@@ -570,12 +570,12 @@ A call through a tool namespace (`mail.send(args)`) is scored as the tool call i
 
 ### Scorer Types
 
-| Type           | What the score is computed from                                                                              |
-| -------------- | ------------------------------------------------------------------------------------------------------------ |
-| `disabled`     | No scoring                                                                                                   |
-| `rule-based`   | Eight TypeScript rules over the extracted features, zero dependencies                                        |
-| `local-llm`    | Your `customAnalyzer`, or a built-in keyword heuristic over the extracted features (no model computes it)   |
-| `external-api` | The answer of your scoring service, which receives the extracted features                                    |
+| Type           | What the score is computed from                                                                           |
+| -------------- | --------------------------------------------------------------------------------------------------------- |
+| `disabled`     | No scoring                                                                                                |
+| `rule-based`   | Eight TypeScript rules over the extracted features, zero dependencies                                     |
+| `local-llm`    | Your `customAnalyzer`, or a built-in keyword heuristic over the extracted features (no model computes it) |
+| `external-api` | The answer of your scoring service, which receives the extracted features                                 |
 
 The `local-llm` scorer loads a Hugging Face model at initialization when the optional dependency `@huggingface/transformers` is installed, but it never calls it: no score is computed from the model. Set `ENCLAVE_DISABLE_LOCAL_LLM_MODEL=1` to skip the load. Its `mode: 'similarity'` searches a VectoriaDB index that is created empty and that the configuration cannot fill, so it scores like the default mode.
 
@@ -669,16 +669,16 @@ const enclave = new Enclave({
 
 ### Sidecar Options
 
-| Option                 | Type      | Default              | Description                                                                |
-| ---------------------- | --------- | -------------------- | -------------------------------------------------------------------------- |
-| `enabled`              | `boolean` | `false`              | Enable the sidecar feature                                                 |
-| `maxTotalSize`         | `number`  | by level             | Maximum total size of all stored references                                |
-| `maxReferenceSize`     | `number`  | by level             | Maximum size of a single reference                                         |
-| `extractionThreshold`  | `number`  | by level             | Size in bytes from which a string is stored                                |
-| `maxResolvedSize`      | `number`  | by level             | Maximum size the references in the arguments of one tool call resolve to   |
-| `maxTotalResolvedSize` | `number`  | twice `maxTotalSize` | Maximum size of everything one execution resolves for its tool calls       |
-| `maxReferenceCount`    | `number`  | by level             | Maximum number of references in one execution                              |
-| `allowComposites`      | `boolean` | by level             | Allow string concatenation with reference tokens                           |
+| Option                 | Type      | Default              | Description                                                              |
+| ---------------------- | --------- | -------------------- | ------------------------------------------------------------------------ |
+| `enabled`              | `boolean` | `false`              | Enable the sidecar feature                                               |
+| `maxTotalSize`         | `number`  | by level             | Maximum total size of all stored references                              |
+| `maxReferenceSize`     | `number`  | by level             | Maximum size of a single reference                                       |
+| `extractionThreshold`  | `number`  | by level             | Size in bytes from which a string is stored                              |
+| `maxResolvedSize`      | `number`  | by level             | Maximum size the references in the arguments of one tool call resolve to |
+| `maxTotalResolvedSize` | `number`  | twice `maxTotalSize` | Maximum size of everything one execution resolves for its tool calls     |
+| `maxReferenceCount`    | `number`  | by level             | Maximum number of references in one execution                            |
+| `allowComposites`      | `boolean` | by level             | Allow string concatenation with reference tokens                         |
 
 | Default               | STRICT  | SECURE  | STANDARD | PERMISSIVE |
 | --------------------- | ------- | ------- | -------- | ---------- |
