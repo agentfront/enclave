@@ -271,6 +271,9 @@ export class WorkerSlot extends EventEmitter {
   /** The worker sent something the protocol does not allow: it is ended, not asked to leave */
   private protocolViolated = false;
 
+  /** Memory reports asked for and not answered yet: each entry ends its request */
+  private readonly pendingMemoryReports = new Set<(error: Error) => void>();
+
   /** Configuration */
   private readonly options: Required<WorkerSlotOptions>;
 
@@ -633,22 +636,36 @@ export class WorkerSlot extends EventEmitter {
    */
   async requestMemoryReport(timeoutMs = 1000): Promise<ResourceUsage> {
     return new Promise((resolve, reject) => {
+      const settle = () => {
+        clearTimeout(timeout);
+        this.off('message', handler);
+        this.pendingMemoryReports.delete(abandon);
+      };
       const handler = (msg: WorkerToMainMessage) => {
         if (msg.type === 'memory-report-result') {
-          clearTimeout(timeout);
-          this.off('message', handler);
+          settle();
           this._memoryUsage = msg.usage;
           resolve(msg.usage);
         }
       };
+      // The request ends without an answer: no answer in time, the request could not be sent,
+      // or the worker is gone (see cleanup). A worker whose script keeps it busy answers nothing.
+      const abandon = (error: Error) => {
+        settle();
+        reject(error);
+      };
 
-      const timeout = setTimeout(() => {
-        this.off('message', handler); // Remove listener on timeout to prevent memory leak
-        reject(new Error('Memory report timeout'));
-      }, timeoutMs);
+      const timeout = setTimeout(() => abandon(new Error('Memory report timeout')), timeoutMs);
+      // Waiting for an answer must not keep the host process alive
+      timeout.unref();
 
+      this.pendingMemoryReports.add(abandon);
       this.on('message', handler);
-      this.sendMessage({ type: 'memory-report' });
+      try {
+        this.sendMessage({ type: 'memory-report' });
+      } catch (error) {
+        abandon(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -721,6 +738,10 @@ export class WorkerSlot extends EventEmitter {
 
   private cleanup(): void {
     this.stopHeapWatchdog();
+    // Nobody will answer these any more. Left alone, each would wait out its own timeout.
+    for (const abandon of [...this.pendingMemoryReports]) {
+      abandon(new Error('Memory report abandoned: the worker is gone'));
+    }
     if (this._worker) {
       this._worker.off('message', this.boundMessageHandler);
       this._worker.off('error', this.boundErrorHandler);

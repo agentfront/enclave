@@ -32,6 +32,7 @@ import {
   type ConsoleMessage,
 } from '../adapters/worker-pool/protocol';
 import { MemoryMonitor } from '../adapters/worker-pool/memory-monitor';
+import { WorkerSlot } from '../adapters/worker-pool/worker-slot';
 import { buildWorkerPoolConfig, DEFAULT_WORKER_POOL_CONFIG, WORKER_POOL_PRESETS } from '../adapters/worker-pool/config';
 import {
   WorkerPoolError,
@@ -1160,6 +1161,16 @@ describe('worker-pool components', () => {
           ).not.toThrow();
         });
       });
+    });
+  });
+
+  describe('WorkerSlot (without a worker thread)', () => {
+    it('should reject a memory report request when there is no worker to ask', async () => {
+      const slot = new WorkerSlot('slot-1', { memoryLimitMB: 0 });
+
+      await expect(slot.requestMemoryReport(60000)).rejects.toThrow(/has no worker/);
+      // Nothing is left waiting for an answer
+      expect(slot.listenerCount('message')).toBe(0);
     });
   });
 });

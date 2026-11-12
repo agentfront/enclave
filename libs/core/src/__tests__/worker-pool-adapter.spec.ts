@@ -653,5 +653,36 @@ describe('WorkerPoolAdapter', () => {
         enclave.dispose();
       }
     });
+
+    it('should end an execution that is in flight when the pool is disposed', async () => {
+      let entered: () => void = () => undefined;
+      const inFlight = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      // The tool call does not return before the test is over
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const enclave = singleWorkerEnclave(async () => {
+        entered();
+        await held;
+        return { ok: true };
+      });
+
+      try {
+        const running = enclave.run(`const r = await callTool('slow:op', {}); return r.ok;`);
+        await inFlight;
+        enclave.dispose();
+        const result = await running;
+
+        expect(result.success).toBe(false);
+        expect(result.error?.name).toBe('ExecutionAbortedError');
+        expect(result.error?.message).toMatch(/worker pool was disposed/);
+      } finally {
+        release();
+        enclave.dispose();
+      }
+    });
   });
 });

@@ -276,9 +276,14 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     this.memoryMonitor.stop();
     this.executionQueue.clear();
 
-    // Terminate all workers
+    // Terminate all workers. An execution that is in flight is told first: a worker that is
+    // being terminated reports nothing, and the execution would be left to its watchdog, with
+    // its timers keeping the host process alive until then.
     const terminatePromises: Promise<void>[] = [];
     for (const slot of this.slots.values()) {
+      if (slot.isExecuting) {
+        slot.emit('error', new ExecutionAbortedError('Execution aborted: the worker pool was disposed'));
+      }
       terminatePromises.push(slot.terminate(false));
     }
 
