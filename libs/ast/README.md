@@ -447,7 +447,7 @@ const rules = createAgentScriptPreset({
 | `additionalDisallowedIdentifiers` | `string[]` | `[]`                       | Additional identifiers to block beyond the default set         |
 | `allowArrowFunctions`             | `boolean`  | `true`                     | Whether to allow arrow functions (for array methods)           |
 | `allowedLoops`                    | `object`   | `{ allowFor, allowForOf }` | Override default loop restrictions                             |
-| `reservedPrefixes`                | `string[]` | `['__ag_', '__safe_']`     | Reserved prefixes that user code cannot use                    |
+| `reservedPrefixes`                | `string[]` | `[]`                       | Prefixes to reserve in addition to `__ag_` and `__safe_`       |
 | `staticCallTarget`                | `object`   | `{ enabled: true }`        | Configuration for static call target validation                |
 | `callToolValidation`              | `object`   | -                          | Validation rules for callTool arguments                        |
 | `hostObjectGlobals`               | `string[]` | `[]`                       | Globals that are host objects (tool namespaces), not strings   |

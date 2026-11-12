@@ -7,6 +7,7 @@
 
 import { JSAstValidator } from '../validator';
 import { createAgentScriptPreset } from '../presets/agentscript.preset';
+import { transformAgentScript } from '../agentscript-transformer';
 import { ValidationSeverity } from '../interfaces';
 
 describe('AgentScript Preset', () => {
@@ -1002,7 +1003,53 @@ describe('AgentScript Preset', () => {
     });
   });
 
+  describe('Options that look at callTool', () => {
+    // A host validates a script as it was written or, like the enclave, after the transform that
+    // renames `callTool`. The options mean the same in both.
+    const asWritten = (body: string) => `async function __ag_main() { ${body} }`;
+    const transformed = (body: string) => transformAgentScript(body, { wrapInMain: true, transformCallTool: true });
+    const codesOf = async (options: Parameters<typeof createAgentScriptPreset>[0], code: string) =>
+      (await new JSAstValidator(createAgentScriptPreset(options)).validate(code)).issues
+        .filter((issue) => issue.severity === ValidationSeverity.ERROR)
+        .map((issue) => issue.code);
+
+    it.each([
+      ['as written', asWritten],
+      ['after the transform', transformed],
+    ])('requireCallTool accepts a script that calls a tool, %s', async (_name, form) => {
+      expect(await codesOf({ requireCallTool: true }, form("return await callTool('users:list', {});"))).toEqual([]);
+    });
+
+    it.each([
+      ['as written', asWritten],
+      ['after the transform', transformed],
+    ])('requireCallTool refuses a script that calls no tool, %s', async (_name, form) => {
+      expect(await codesOf({ requireCallTool: true }, form('return 1;'))).toEqual(['REQUIRED_FUNCTION_NOT_CALLED']);
+    });
+
+    it.each([
+      ['as written', asWritten],
+      ['after the transform', transformed],
+    ])('callToolValidation checks the arguments, %s', async (_name, form) => {
+      const options = { callToolValidation: { minArgs: 2, maxArgs: 2 } };
+
+      expect(await codesOf(options, form("return await callTool('users:list', {});"))).toEqual([]);
+      expect(await codesOf(options, form("return await callTool('users:list');"))).toEqual(['INVALID_ARGUMENT_COUNT']);
+    });
+  });
+
   describe('Custom Configuration', () => {
+    it('should add custom reserved prefixes to the built-in ones', async () => {
+      const validator = new JSAstValidator(createAgentScriptPreset({ reservedPrefixes: ['__custom_'] }));
+      const codesOf = async (body: string) =>
+        (await validator.validate(`async function __ag_main() { ${body} }`)).issues.map((issue) => issue.code);
+
+      expect(await codesOf('const __custom_value = 1; return __custom_value;')).toContain('RESERVED_PREFIX');
+      // The prefixes of the runtime stay reserved
+      expect(await codesOf('const __safe_value = 1; return __safe_value;')).toContain('RESERVED_PREFIX');
+      expect(await codesOf('const __ag_value = 1; return __ag_value;')).toContain('RESERVED_PREFIX');
+    });
+
     it('should allow custom allowed globals', async () => {
       const code = `
         

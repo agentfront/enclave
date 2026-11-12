@@ -385,8 +385,9 @@ export interface AgentScriptOptions {
   };
 
   /**
-   * Reserved prefixes that user code cannot use
-   * Default: ['__ag_', '__safe_']
+   * Further prefixes that user code cannot use, in addition to the two of the runtime
+   * (`__ag_` and `__safe_`), which are always reserved.
+   * Default: []
    */
   reservedPrefixes?: string[];
 
@@ -552,7 +553,8 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   // 2. Block reserved internal prefixes
   rules.push(
     new ReservedPrefixRule({
-      reservedPrefixes: options.reservedPrefixes || ['__ag_', '__safe_'],
+      // The prefixes of the runtime are reserved whatever a host adds to them
+      reservedPrefixes: [...new Set(['__ag_', '__safe_', ...(options.reservedPrefixes ?? [])])],
       allowedIdentifiers: ['__ag_main'], // Allow the compiler wrapper function
     }),
   );
@@ -627,16 +629,19 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   // better error messages and faster failure for obvious infinite loops.
   rules.push(new InfiniteLoopRule());
 
-  // 8. Validate callTool arguments (if configured)
+  // 8. Validate callTool arguments (if configured). Under both names: a host validates a script
+  // as written (`callTool`) or after the transform that renames the call (`__safe_callTool`).
   if (options.callToolValidation) {
+    const callToolArguments = {
+      minArgs: options.callToolValidation.minArgs || 2,
+      maxArgs: options.callToolValidation.maxArgs || 2,
+      expectedTypes: options.callToolValidation.expectedTypes || ['string', 'object'],
+    };
     rules.push(
       new CallArgumentValidationRule({
         functions: {
-          callTool: {
-            minArgs: options.callToolValidation.minArgs || 2,
-            maxArgs: options.callToolValidation.maxArgs || 2,
-            expectedTypes: options.callToolValidation.expectedTypes || ['string', 'object'],
-          },
+          callTool: callToolArguments,
+          __safe_callTool: callToolArguments,
         },
       }),
     );
@@ -661,7 +666,9 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   if (options.requireCallTool) {
     rules.push(
       new RequiredFunctionCallRule({
-        required: ['callTool'],
+        // Either name is the call: as written, or after the transform that renames it
+        required: ['callTool', '__safe_callTool'],
+        mode: 'any',
         minCalls: 1,
         messageTemplate: 'AgentScript code must contain at least one callTool invocation',
       }),
