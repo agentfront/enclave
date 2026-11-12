@@ -20,9 +20,11 @@ export {
   createNdjsonParseStream,
   createNdjsonSerializeStream,
   parseNdjsonStream,
+  DEFAULT_MAX_LINE_LENGTH,
+  NdjsonLineTooLongError,
 } from './ndjson.js';
 
-export type { ParseResult } from './ndjson.js';
+export type { ParseResult, NdjsonParseOptions } from './ndjson.js';
 
 // Crypto exports
 export {

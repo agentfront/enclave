@@ -1,4 +1,14 @@
-import { serializeEvent, serializeEvents, parseLine, parseLines, NdjsonStreamParser } from './ndjson';
+import {
+  serializeEvent,
+  serializeEvents,
+  parseLine,
+  parseLines,
+  NdjsonStreamParser,
+  NdjsonLineTooLongError,
+  DEFAULT_MAX_LINE_LENGTH,
+  createNdjsonParseStream,
+  parseNdjsonStream,
+} from './ndjson';
 import { PROTOCOL_VERSION, EventType } from '@enclave-vm/types';
 import type { StreamEvent } from '@enclave-vm/types';
 
@@ -193,6 +203,69 @@ describe('NDJSON', () => {
       parser.reset();
       expect(parser.hasPendingData()).toBe(false);
       expect(parser.getLineNumber()).toBe(0);
+    });
+  });
+
+  describe('maxLineLength', () => {
+    const streamOf = (text: string): ReadableStream<Uint8Array> =>
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(text));
+          controller.close();
+        },
+      });
+
+    it('should default to DEFAULT_MAX_LINE_LENGTH', () => {
+      expect(DEFAULT_MAX_LINE_LENGTH).toBe(8 * 1024 * 1024);
+    });
+
+    it('should report a line over the limit through onError and go on with the next line', () => {
+      const events: unknown[] = [];
+      const errors: Array<{ line: number; error: string }> = [];
+      const parser = new NdjsonStreamParser({
+        onEvent: (event) => events.push(event),
+        onError: (error) => errors.push(error),
+        maxLineLength: 200,
+      });
+
+      parser.feed(JSON.stringify(createStdoutEvent(1, 'x'.repeat(300))) + '\n');
+      parser.feed(JSON.stringify(createStdoutEvent(2, 'ok')) + '\n');
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0].line).toBe(1);
+      expect(errors[0].error).toContain('maximum line length of 200');
+      expect(events).toHaveLength(1);
+      expect(parser.getLineNumber()).toBe(2);
+    });
+
+    it('should end parseNdjsonStream with NdjsonLineTooLongError', async () => {
+      const stream = streamOf(JSON.stringify(createStdoutEvent(1, 'x'.repeat(300))) + '\n');
+      const read = async () => {
+        for await (const _event of parseNdjsonStream(stream, { maxLineLength: 200 })) {
+          // nothing is expected
+        }
+      };
+
+      await expect(read()).rejects.toBeInstanceOf(NdjsonLineTooLongError);
+    });
+
+    it('should accept the option in createNdjsonParseStream', async () => {
+      const line = JSON.stringify(createStdoutEvent(1, 'hello')) + '\n';
+      const source = new ReadableStream<string>({
+        start(controller) {
+          controller.enqueue(line);
+          controller.close();
+        },
+      });
+
+      const reader = source.pipeThrough(createNdjsonParseStream({ maxLineLength: 200 })).getReader();
+      const first = await reader.read();
+
+      expect(first.value?.type).toBe(EventType.Stdout);
+    });
+
+    it('should refuse a limit that is not a positive integer', () => {
+      expect(() => createNdjsonParseStream({ maxLineLength: 0 })).toThrow(RangeError);
     });
   });
 });
