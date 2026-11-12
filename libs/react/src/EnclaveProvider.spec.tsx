@@ -77,6 +77,50 @@ describe('EnclaveProvider', () => {
     // Client should only be created once
     expect(EnclaveClient).toHaveBeenCalledTimes(1);
   });
+
+  it('should keep the client when a re-render brings an equal config object', () => {
+    const { rerender } = render(
+      <EnclaveProvider config={{ baseUrl: 'https://api.example.com', headers: { Authorization: 'Bearer a' } }}>
+        <div>Test 1</div>
+      </EnclaveProvider>,
+    );
+
+    rerender(
+      <EnclaveProvider config={{ baseUrl: 'https://api.example.com', headers: { Authorization: 'Bearer a' } }}>
+        <div>Test 2</div>
+      </EnclaveProvider>,
+    );
+
+    expect(EnclaveClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('should create a new client when the config values change', () => {
+    const contexts: Array<{ client: unknown; config: unknown }> = [];
+    function Capture() {
+      contexts.push(useEnclaveContext());
+      return null;
+    }
+    const first = { baseUrl: 'https://api.example.com', headers: { Authorization: 'Bearer a' } };
+    const second = { baseUrl: 'https://api.example.com', headers: { Authorization: 'Bearer b' } };
+
+    const { rerender } = render(
+      <EnclaveProvider config={first}>
+        <Capture />
+      </EnclaveProvider>,
+    );
+    rerender(
+      <EnclaveProvider config={second}>
+        <Capture />
+      </EnclaveProvider>,
+    );
+
+    expect(EnclaveClient).toHaveBeenCalledTimes(2);
+    expect(EnclaveClient).toHaveBeenLastCalledWith(second);
+    const latest = contexts[contexts.length - 1];
+    expect(latest.config).toBe(second);
+    expect(latest.client).not.toBe(contexts[0].client);
+    expect((latest.client as { config: unknown }).config).toBe(second);
+  });
 });
 
 describe('useEnclaveClient', () => {
