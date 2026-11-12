@@ -72,6 +72,7 @@ import { createHostActivity, trackToolCalls } from './execution-deadline';
 import { assertNodeVmAvailable } from './node-vm';
 import { normalizeEnclaveOptions } from './enclave-options';
 import { describeThrown, normalizeErrorText } from './thrown-value';
+import { refuseDynamicImport } from './dynamic-import';
 
 /**
  * Default security level
@@ -581,6 +582,25 @@ export class Enclave {
       // etc. that static analysis cannot resolve.
       if (this.transformCode) {
         transformedCode = this.applyComputedKeyGuard(transformedCode);
+      }
+
+      // Step 2.3: no dynamic import reaches an adapter. Every preset refuses it; this holds with
+      // validation off as well (see ./dynamic-import).
+      const importRefusal = refuseDynamicImport(transformedCode);
+      if (importRefusal) {
+        return {
+          success: false,
+          error: {
+            name: 'SecurityError',
+            message: importRefusal,
+            code: 'SECURITY_VIOLATION',
+          },
+          stats: {
+            ...stats,
+            duration: Date.now() - startTime,
+            endTime: Date.now(),
+          },
+        };
       }
 
       // Step 2.5: AI Scoring Gate (if configured)
