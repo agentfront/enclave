@@ -3,7 +3,11 @@ title: '@enclave-vm/runtime'
 description: 'API reference for the EnclaveJS runtime package'
 ---
 
-API reference for the `@enclave-vm/runtime` package - the execution worker for distributed EnclaveJS deployments.
+API reference for the `@enclave-vm/runtime` package - building blocks of a runtime worker: session bookkeeping and the channels between a worker and a broker.
+
+<Warning>
+  This package is not a runnable service. It does not execute code, starts no server and opens no port. It has no authentication, no TLS, no CORS, no HTTP or WebSocket endpoints, no serverless entry points, and it reads no environment variables. An `execute` request never runs code: it ends with `RuntimeNotImplementedError`. To run scripts use [@enclave-vm/broker](/api-reference/enclavejs-broker) (sessions, tools and streaming over HTTP) or [@enclave-vm/core](/api-reference/enclave-vm) (the sandbox).
+</Warning>
 
 ## Installation
 
@@ -11,415 +15,381 @@ API reference for the `@enclave-vm/runtime` package - the execution worker for d
 npm install @enclave-vm/runtime
 ```
 
-## EnclaveRuntime Class
+## Runtime Worker
 
-The runtime worker that connects to a broker and executes code.
+A runtime worker keeps the sessions of the requests that the embedding application hands to it. It has no network interface of its own.
 
-### Constructor
+### createRuntimeWorker(config?)
+
+Create a runtime worker. The class of the returned object is exported as `RuntimeWorkerImpl`.
 
 ```ts
-new EnclaveRuntime(options: RuntimeOptions)
+function createRuntimeWorker(config?: RuntimeConfig): RuntimeWorkerImpl
 ```
 
-### RuntimeOptions
+**Example:**
+```ts
+import { createRuntimeWorker, createMemoryChannel, RuntimeNotImplementedError } from '@enclave-vm/runtime';
+
+const worker = createRuntimeWorker({ maxSessions: 10 });
+await worker.start(); // marks the worker as running; nothing is listening
+
+const channel = createMemoryChannel();
+
+try {
+  await worker.handleRequest({ type: 'execute', sessionId: 's_123', code: 'return 1 + 1' }, channel);
+} catch (error) {
+  if (error instanceof RuntimeNotImplementedError) {
+    console.log(error.code); // 'NOT_IMPLEMENTED'
+  }
+}
+
+console.log(channel.getEvents().map((event) => event.type)); // ['session_init', 'final']
+console.log(worker.getSessions()); // []
+
+await worker.stop();
+```
+
+### RuntimeConfig
 
 ```ts
-interface RuntimeOptions {
-  // Broker connection
-  brokerUrl: string;
-  brokerToken?: string;
-
-  // Worker configuration
-  workerPool?: WorkerPoolOptions;
-
-  // Enclave configuration
-  enclaveOptions?: EnclaveOptions;
-
-  // Heartbeat
-  heartbeatInterval?: number;
-
-  // Labels for routing
-  labels?: Record<string, string>;
-
-  // Logging
-  logger?: Logger;
+interface RuntimeConfig {
+  maxSessions?: number;
+  debug?: boolean;
+  defaultLimits?: Partial<SessionLimits>;
+  heartbeatIntervalMs?: number;
+  connectionTimeoutMs?: number;
+  port?: number;
+  host?: string;
+  wsPath?: string;
 }
 ```
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `brokerUrl` | `string` | Required | Broker WebSocket URL |
-| `brokerToken` | `string` | `undefined` | Authentication token |
-| `workerPool` | `WorkerPoolOptions` | `undefined` | Worker pool config |
-| `heartbeatInterval` | `number` | `5000` | Heartbeat interval in ms |
-| `labels` | `Record<string, string>` | `{}` | Routing labels |
+| `maxSessions` | `number` | `10` | Maximum number of sessions the worker holds. A value that is not a positive integer throws a `RangeError` |
+| `debug` | `boolean` | `false` | Log to the console |
+| `defaultLimits` | `Partial<SessionLimits>` | `{}` | Accepted, not read by the worker |
+| `heartbeatIntervalMs` | `number` | `15000` | Accepted, not read by the worker |
+| `connectionTimeoutMs` | `number` | `30000` | Accepted, not read by the worker |
+| `port` | `number` | `3001` | Not used: no server is started |
+| `host` | `string` | `'127.0.0.1'` | Not used: no server is started |
+| `wsPath` | `string` | `'/ws'` | Not used: no server is started |
 
-### WorkerPoolOptions
+### RuntimeWorkerImpl
 
 ```ts
-interface WorkerPoolOptions {
-  size: number;
-  maxMemory?: number;
-  maxExecutionsPerWorker?: number;
-  idleTimeout?: number;
+class RuntimeWorkerImpl {
+  constructor(config?: RuntimeConfig);
+
+  readonly isRunning: boolean;
+
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  getStats(): RuntimeStats;
+  getSessions(): RuntimeSession[];
+  handleRequest(request: RuntimeRequest, channel: RuntimeChannel): Promise<void>;
 }
 ```
 
-### Methods
+#### start()
 
-#### connect()
-
-Connect to the broker.
+Mark the worker as running, so that `handleRequest()` accepts `execute` requests. No server is started and no port is opened. Throws when the worker is neither idle nor stopped.
 
 ```ts
-async connect(): Promise<void>
+async start(): Promise<void>
 ```
+
+#### stop()
+
+Cancel and remove the sessions the worker holds.
+
+```ts
+async stop(): Promise<void>
+```
+
+#### getStats()
+
+Get the worker's statistics.
+
+```ts
+getStats(): RuntimeStats
+```
+
+```ts
+interface RuntimeStats {
+  state: RuntimeState;
+  activeSessions: number;
+  totalSessions: number;
+  startedAt: number;
+  uptimeMs: number;
+  memoryUsage: {
+    heapUsed: number;
+    heapTotal: number;
+    rss: number;
+  };
+}
+
+type RuntimeState = 'idle' | 'starting' | 'running' | 'stopping' | 'stopped';
+```
+
+#### getSessions()
+
+Get the sessions the worker holds.
+
+```ts
+getSessions(): RuntimeSession[]
+```
+
+```ts
+interface RuntimeSession {
+  sessionId: SessionId;
+  state: string;
+  createdAt: number;
+  expiresAt: number;
+}
+```
+
+#### handleRequest(request, channel)
+
+Handle one request from the embedding application. The caller is trusted: nothing authenticates a request or checks where it came from.
+
+```ts
+async handleRequest(request: RuntimeRequest, channel: RuntimeChannel): Promise<void>
+```
+
+```ts
+type RuntimeRequest = ExecuteRequest | CancelRequest | ToolResultRequest | PingRequest;
+
+interface ExecuteRequest {
+  type: 'execute';
+  sessionId: SessionId;
+  code: string;
+  limits?: Partial<SessionLimits>;
+}
+
+interface CancelRequest {
+  type: 'cancel';
+  sessionId: SessionId;
+  reason?: string;
+}
+
+interface ToolResultRequest {
+  type: 'tool_result';
+  sessionId: SessionId;
+  callId: string;
+  success: boolean;
+  value?: unknown;
+  error?: { code?: string; message: string };
+}
+
+interface PingRequest {
+  type: 'ping';
+  timestamp: number;
+}
+```
+
+| Request | What happens |
+|---------|--------------|
+| `execute` | The code is never run. A valid request rejects with `RuntimeNotImplementedError`: the channel receives `session_init`, then a `final` event with `ok: false` and `error.code: 'NOT_IMPLEMENTED'`, and the session is removed again. A request to a worker that is not running, or without a string `code`, rejects with another error |
+| `cancel` | Cancels the session with that id if the worker holds it. Otherwise the request is ignored |
+| `tool_result` | Passes the result to the session with that id if the worker holds it. Otherwise the request is ignored |
+| `ping` | Accepted. Nothing is sent back |
+
+## Session Executor
+
+### SessionExecutor
+
+Holds one session and forwards its events to a channel. It keeps the session's code and never runs it.
+
+```ts
+class SessionExecutor {
+  constructor(options: SessionExecutorOptions);
+
+  readonly sessionId: SessionId;
+  readonly state: string;
+  readonly isTerminal: boolean;
+
+  getInfo(): RuntimeSession;
+  execute(): Promise<void>;
+  submitToolResult(
+    callId: CallId,
+    success: boolean,
+    value?: unknown,
+    error?: { code?: string; message: string }
+  ): Promise<void>;
+  cancel(reason?: string): Promise<void>;
+  dispose(): void;
+}
+
+interface SessionExecutorOptions {
+  sessionId?: SessionId;
+  code: string;
+  limits?: Partial<SessionLimits>;
+  channel: RuntimeChannel;
+  debug?: boolean;
+}
+```
+
+`execute()` always rejects with `RuntimeNotImplementedError`. The first call ends the session: the channel receives `session_init`, then a `final` event with `ok: false` and `error.code: 'NOT_IMPLEMENTED'`. `dispose()` stops forwarding events to the channel.
+
+### createSessionExecutor(options)
+
+Create a session executor.
+
+```ts
+function createSessionExecutor(options: SessionExecutorOptions): SessionExecutor
+```
+
+### RuntimeNotImplementedError
+
+Thrown by the operations of this package that are not implemented.
+
+```ts
+class RuntimeNotImplementedError extends Error {
+  readonly code: 'NOT_IMPLEMENTED';
+  constructor(operation: string);
+}
+```
+
+## Channels
+
+### RuntimeChannel
+
+The interface between a worker and the other end of a session.
+
+```ts
+interface RuntimeChannel {
+  send(event: StreamEvent): void;
+  onMessage(handler: (message: RuntimeChannelMessage) => void): () => void;
+  close(): void;
+  readonly isOpen: boolean;
+}
+```
+
+### MemoryChannel
+
+In-process channel that keeps the events sent to it.
+
+```ts
+class MemoryChannel implements RuntimeChannel {
+  readonly isOpen: boolean;
+
+  send(event: StreamEvent): void;
+  getEvents(): StreamEvent[];
+  clearEvents(): void;
+  onMessage(handler: (message: RuntimeChannelMessage) => void): () => void;
+  injectMessage(message: RuntimeChannelMessage): void;
+  close(): void;
+}
+
+function createMemoryChannel(): MemoryChannel
+```
+
+`send()` and `injectMessage()` throw when the channel is closed.
+
+### createMemoryChannelPair()
+
+Create two connected memory channels: what one sends, the message handlers of the other receive.
+
+```ts
+function createMemoryChannelPair(): {
+  client: MemoryChannel;
+  server: MemoryChannel;
+}
+```
+
+### WebSocketChannel
+
+The client side of a WebSocket connection. It connects to a URL and nothing more: there is no WebSocket server in this package.
+
+```ts
+class WebSocketChannel implements RuntimeChannel {
+  constructor(config: WebSocketChannelConfig);
+
+  readonly isOpen: boolean;
+  readonly channelState: WebSocketChannelState;
+
+  connect(): Promise<void>;
+  send(event: StreamEvent): void;
+  onMessage(handler: (message: RuntimeChannelMessage) => void): () => void;
+  close(): void;
+}
+
+function createWebSocketChannel(config: WebSocketChannelConfig): WebSocketChannel
+
+interface WebSocketChannelConfig {
+  url: string;
+  reconnect?: {
+    enabled?: boolean;
+    maxRetries?: number;
+    initialDelayMs?: number;
+    maxDelayMs?: number;
+  };
+  connectionTimeoutMs?: number;
+  maxBufferedMessages?: number;
+  debug?: boolean;
+}
+
+type WebSocketChannelState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting' | 'closed';
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `url` | `string` | Required | WebSocket URL to connect to |
+| `reconnect.enabled` | `boolean` | `true` | Reconnect after the connection is lost |
+| `reconnect.maxRetries` | `number` | `5` | Reconnection attempts before the channel closes |
+| `reconnect.initialDelayMs` | `number` | `1000` | Delay before the first attempt; doubled for each further attempt |
+| `reconnect.maxDelayMs` | `number` | `30000` | Maximum delay between attempts |
+| `connectionTimeoutMs` | `number` | `10000` | Time allowed for a connection to open |
+| `maxBufferedMessages` | `number` | `1000` | Events kept while the channel is not connected. A value that is not a positive integer throws a `RangeError` |
+| `debug` | `boolean` | `false` | Log to the console |
+
+- The channel sends no credentials. Authenticate the connection in the server behind the URL.
+- Incoming messages are parsed as JSON and handed to the handlers without validation against a schema. Validate them in the handler.
+- While the channel is not connected, `send()` keeps at most `maxBufferedMessages` events and drops the rest. The kept events are sent when the channel connects.
+- Where there is no global `WebSocket`, the channel needs the `ws` package, which is not installed with this package.
 
 **Example:**
 ```ts
-const runtime = new EnclaveRuntime({
-  brokerUrl: 'ws://broker.example.com',
-  brokerToken: process.env.BROKER_TOKEN,
+import { createWebSocketChannel } from '@enclave-vm/runtime';
+
+const channel = createWebSocketChannel({
+  url: 'wss://worker.example.com/ws',
+  maxBufferedMessages: 100,
 });
 
-await runtime.connect();
-console.log('Connected to broker');
-```
-
-#### disconnect()
-
-Disconnect from the broker.
-
-```ts
-async disconnect(): Promise<void>
-```
-
-#### getStatus()
-
-Get runtime status.
-
-```ts
-getStatus(): RuntimeStatus
-```
-
-```ts
-interface RuntimeStatus {
-  connected: boolean;
-  activeExecutions: number;
-  totalExecutions: number;
-  uptime: number;
-  workers: {
-    total: number;
-    active: number;
-    idle: number;
-  };
-}
-```
-
-## Events
-
-### RuntimeEvents
-
-```ts
-runtime.on('connected', () => { });
-runtime.on('disconnected', () => { });
-runtime.on('reconnecting', (attempt: number) => { });
-runtime.on('execution:started', (sessionId: string) => { });
-runtime.on('execution:completed', (sessionId: string, stats: ExecutionStats) => { });
-runtime.on('execution:error', (sessionId: string, error: Error) => { });
-runtime.on('worker:created', (workerId: string) => { });
-runtime.on('worker:terminated', (workerId: string, reason: string) => { });
-```
-
-### Example
-
-```ts
-const runtime = new EnclaveRuntime({ /* options */ });
-
-runtime.on('connected', () => {
-  console.log('Runtime connected');
+channel.onMessage((message) => {
+  // Validate the message before using it
 });
 
-runtime.on('disconnected', () => {
-  console.log('Runtime disconnected');
-});
-
-runtime.on('execution:started', (sessionId) => {
-  console.log('Execution started:', sessionId);
-});
-
-runtime.on('execution:completed', (sessionId, stats) => {
-  console.log('Execution completed:', sessionId, stats);
-});
-
-runtime.on('execution:error', (sessionId, error) => {
-  console.error('Execution error:', sessionId, error);
-});
+await channel.connect();
 ```
 
-## Configuration Examples
+## Command Line
 
-### Basic Runtime
+The package installs an `enclave-runtime` program. It does not start a worker: it checks its arguments, prints that a standalone worker is not implemented, and exits with code 1.
 
-```ts
-import { EnclaveRuntime } from '@enclave-vm/runtime';
-
-const runtime = new EnclaveRuntime({
-  brokerUrl: 'ws://localhost:3001',
-});
-
-await runtime.connect();
+```bash
+npx enclave-runtime --help
 ```
 
-### With Worker Pool
+| Option | Description |
+|--------|-------------|
+| `--port <port>` | Checked (a whole number), not used |
+| `--host <host>` | Checked, not used |
+| `--max-sessions <n>` | Checked (a whole number of 1 or more), not used |
+| `--debug` | Not used |
+| `--help`, `-h` | Print the help and exit with code 0 |
 
-```ts
-import { EnclaveRuntime } from '@enclave-vm/runtime';
+An unknown option or an invalid value prints a message and exits with code 1.
 
-const runtime = new EnclaveRuntime({
-  brokerUrl: 'ws://localhost:3001',
-  workerPool: {
-    size: 4,
-    maxMemory: 128 * 1024 * 1024, // 128MB per worker
-    maxExecutionsPerWorker: 1000,
-    idleTimeout: 60000,
-  },
-});
+## Other Types
 
-await runtime.connect();
-```
-
-### With Labels for Routing
-
-```ts
-import { EnclaveRuntime } from '@enclave-vm/runtime';
-
-const runtime = new EnclaveRuntime({
-  brokerUrl: 'ws://localhost:3001',
-  labels: {
-    region: 'us-east-1',
-    tier: 'premium',
-    version: '2.0.0',
-  },
-});
-
-await runtime.connect();
-```
-
-### With Custom Enclave Options
-
-```ts
-import { EnclaveRuntime } from '@enclave-vm/runtime';
-
-const runtime = new EnclaveRuntime({
-  brokerUrl: 'ws://localhost:3001',
-  enclaveOptions: {
-    securityLevel: 'STRICT',
-    timeout: 30000,
-    maxToolCalls: 100,
-    maxIterations: 10000,
-    memoryLimit: 64 * 1024 * 1024,
-    scoringGate: {
-      scorer: 'rule-based',
-      blockThreshold: 70,
-    },
-  },
-});
-
-await runtime.connect();
-```
-
-## Docker Deployment
-
-### Dockerfile
-
-```dockerfile
-FROM node:20-slim
-
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --production
-COPY . .
-
-USER node
-CMD ["node", "dist/runtime.js"]
-```
-
-### docker-compose.yml
-
-```yaml
-version: '3.8'
-
-services:
-  runtime:
-    build: .
-    environment:
-      - BROKER_URL=ws://broker:3001
-      - BROKER_TOKEN=${BROKER_TOKEN}
-      - WORKER_POOL_SIZE=4
-    deploy:
-      replicas: 3
-      resources:
-        limits:
-          memory: 512M
-        reservations:
-          memory: 256M
-```
-
-## Kubernetes Deployment
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: enclave-runtime
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: enclave-runtime
-  template:
-    metadata:
-      labels:
-        app: enclave-runtime
-    spec:
-      containers:
-        - name: runtime
-          image: enclave-runtime:latest
-          env:
-            - name: BROKER_URL
-              value: "ws://enclave-broker:3001"
-            - name: BROKER_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: enclave-secrets
-                  key: broker-token
-          resources:
-            requests:
-              memory: "256Mi"
-              cpu: "250m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
-```
-
-## Complete Example
-
-```ts
-// runtime.ts
-import { EnclaveRuntime } from '@enclave-vm/runtime';
-import pino from 'pino';
-
-const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
-
-async function main() {
-  const runtime = new EnclaveRuntime({
-    brokerUrl: process.env.BROKER_URL || 'ws://localhost:3001',
-    brokerToken: process.env.BROKER_TOKEN,
-
-    workerPool: {
-      size: parseInt(process.env.WORKER_POOL_SIZE || '4'),
-      maxMemory: 128 * 1024 * 1024,
-      maxExecutionsPerWorker: 1000,
-    },
-
-    enclaveOptions: {
-      securityLevel: 'STRICT',
-      timeout: 30000,
-      maxToolCalls: 100,
-    },
-
-    labels: {
-      region: process.env.REGION || 'default',
-      tier: process.env.TIER || 'standard',
-    },
-
-    heartbeatInterval: 5000,
-    logger,
-  });
-
-  // Event handlers
-  runtime.on('connected', () => {
-    logger.info('Runtime connected to broker');
-  });
-
-  runtime.on('disconnected', () => {
-    logger.warn('Runtime disconnected from broker');
-  });
-
-  runtime.on('execution:started', (sessionId) => {
-    logger.info({ sessionId }, 'Execution started');
-  });
-
-  runtime.on('execution:completed', (sessionId, stats) => {
-    logger.info({ sessionId, stats }, 'Execution completed');
-  });
-
-  runtime.on('execution:error', (sessionId, error) => {
-    logger.error({ sessionId, error: error.message }, 'Execution error');
-  });
-
-  // Connect
-  await runtime.connect();
-
-  // Graceful shutdown
-  process.on('SIGTERM', async () => {
-    logger.info('Shutting down...');
-    await runtime.disconnect();
-    process.exit(0);
-  });
-
-  // Status logging
-  setInterval(() => {
-    const status = runtime.getStatus();
-    logger.info({
-      activeExecutions: status.activeExecutions,
-      totalExecutions: status.totalExecutions,
-      workers: status.workers,
-    }, 'Runtime status');
-  }, 60000);
-}
-
-main().catch((error) => {
-  console.error('Failed to start runtime:', error);
-  process.exit(1);
-});
-```
-
-## Health Check
-
-```ts
-import express from 'express';
-import { EnclaveRuntime } from '@enclave-vm/runtime';
-
-const app = express();
-let runtime: EnclaveRuntime;
-
-app.get('/health', (req, res) => {
-  const status = runtime.getStatus();
-
-  if (status.connected) {
-    res.json({ status: 'ok', ...status });
-  } else {
-    res.status(503).json({ status: 'disconnected' });
-  }
-});
-
-app.get('/ready', (req, res) => {
-  const status = runtime.getStatus();
-
-  if (status.connected && status.workers.idle > 0) {
-    res.json({ status: 'ready' });
-  } else {
-    res.status(503).json({ status: 'not ready' });
-  }
-});
-
-app.listen(8080);
-```
+`RuntimeWorker` is the interface of a worker without `handleRequest()`. `WebSocketServer` and `ConnectionHandler` are exported as types only: the package has no implementation of them.
 
 ## Related
 
-- [Runtime Overview](/enclavejs/runtime) - Architecture guide
+- [Runtime Overview](/enclavejs/runtime) - What the package contains
 - [@enclave-vm/broker](/api-reference/enclavejs-broker) - Broker API
-- [Scaling Guide](/guides/scaling) - Scaling runtimes
+- [@enclave-vm/core](/api-reference/enclave-vm) - Sandbox API
