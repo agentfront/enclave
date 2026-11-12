@@ -273,6 +273,8 @@ export class SessionManager {
     this.cleanupInterval = setInterval(() => {
       this.cleanup();
     }, this.config.cleanupIntervalMs);
+    // Housekeeping does not keep a process alive
+    this.cleanupInterval.unref?.();
   }
 
   /**

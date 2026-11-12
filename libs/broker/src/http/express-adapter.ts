@@ -36,7 +36,9 @@ interface ExpressResponse {
   flushHeaders?(): void;
   flush?(): void;
   writableLength?: number;
+  writableFinished?: boolean;
   destroy?(): void;
+  on?(event: string, handler: () => void): void;
 }
 
 /**
@@ -52,12 +54,19 @@ interface ExpressRouter {
 /**
  * Adapt Express request to BrokerRequest
  */
-function adaptRequest(req: ExpressRequest): BrokerRequest {
+function adaptRequest(req: ExpressRequest, res?: ExpressResponse): BrokerRequest {
   // Create abort controller for client disconnect handling
   const abortController = new AbortController();
 
-  // Listen for client disconnect
-  if (req.on && req.socket) {
+  // Listen for client disconnect: the response is closed before it was finished. (The close
+  // event of the request says that the request was read, not that the caller is gone.)
+  if (res?.on) {
+    res.on('close', () => {
+      if (!res.writableFinished) {
+        abortController.abort();
+      }
+    });
+  } else if (req.on && req.socket) {
     req.on('close', () => {
       if (req.socket?.destroyed) {
         abortController.abort();
@@ -123,18 +132,9 @@ function adaptResponse(res: ExpressResponse): BrokerResponse {
 /**
  * Create an Express router from SessionHandler
  *
- * @example
- * ```ts
- * import express from 'express';
- * import { createBroker, createSessionHandler, createExpressRouter } from '@enclave-vm/broker';
- *
- * const broker = createBroker();
- * const handler = createSessionHandler({ broker });
- * const router = createExpressRouter(handler);
- *
- * const app = express();
- * app.use('/api', router);
- * ```
+ * @deprecated The object this function returns registers no route: mounting it serves
+ * nothing. Use `registerExpressRoutes(app, handler)`, which registers the handler's routes on
+ * an Express application or router. The function is kept so that existing imports resolve.
  */
 export function createExpressRouter(handler: SessionHandler): ExpressRouter {
   // We return a minimal router interface that can be used with Express
@@ -151,7 +151,7 @@ export function createExpressRouter(handler: SessionHandler): ExpressRouter {
       method,
       path: route.path,
       handler: (req: ExpressRequest, res: ExpressResponse) => {
-        const brokerReq = adaptRequest(req);
+        const brokerReq = adaptRequest(req, res);
         const brokerRes = adaptResponse(res);
         route.handler(brokerReq, brokerRes).catch((error) => {
           console.error('Route handler error:', error);
@@ -208,7 +208,7 @@ export function registerExpressRoutes(router: ExpressRouter, handler: SessionHan
   for (const route of handler.getRoutes()) {
     const method = route.method.toLowerCase() as 'get' | 'post' | 'delete' | 'options';
     const expressHandler = (req: ExpressRequest, res: ExpressResponse) => {
-      const brokerReq = adaptRequest(req);
+      const brokerReq = adaptRequest(req, res);
       const brokerRes = adaptResponse(res);
       route.handler(brokerReq, brokerRes).catch((error) => {
         console.error('Route handler error:', error);
