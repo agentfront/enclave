@@ -116,7 +116,9 @@ jobs:
 
   security-tests:
     name: Security tests
-    runs-on: ubuntu-latest
+    # Playwright 1.58 has no Chromium build for Ubuntu 26.04 (ubuntu-latest);
+    # go back to ubuntu-latest when @playwright/test is upgraded.
+    runs-on: ubuntu-24.04
     needs: build
     timeout-minutes: 45
     # The security tests are in a private repository (agentfront/enclave-security-tests) and are
@@ -220,7 +222,9 @@ jobs:
 
   browser-e2e:
     name: Browser E2E
-    runs-on: ubuntu-latest
+    # Playwright 1.58 has no Chromium build for Ubuntu 26.04 (ubuntu-latest);
+    # go back to ubuntu-latest when @playwright/test is upgraded.
+    runs-on: ubuntu-24.04
     needs: build
     env:
       NX_DAEMON: "false"
