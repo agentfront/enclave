@@ -51,6 +51,7 @@ const validator = new JSAstValidator(createAgentScriptPreset({
 | --------------------------------- | ---------- | --------------------- | -------------------------------------------------------- |
 | `requireCallTool`                 | `boolean`  | `false`               | Require at least one `callTool()` invocation in the code |
 | `allowedGlobals`                  | `string[]` | Standard safe globals | Identifiers that can be referenced without declaration   |
+| `hostObjectGlobals` | `string[]` | `[]` | The names in `allowedGlobals` that are objects of the host and not strings (tool namespaces, object globals). A method called `match`, `matchAll` or `search` on one of them is accepted with any argument; on every other value those three are refused |
 | `allowArrowFunctions`             | `boolean`  | `true`                | Allow arrow functions for array methods                  |
 | `allowedLoops`                    | `object`   | `for` and `for-of`    | Configure which loop types are allowed                   |
 | `additionalDisallowedIdentifiers` | `string[]` | `[]`                  | Additional identifiers to block                          |

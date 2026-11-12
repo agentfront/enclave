@@ -422,6 +422,26 @@ describe('Enclave', () => {
         enclave.dispose();
       });
 
+      it('tells a global that is an object from one that is a string, for a method called search', async () => {
+        const enclave = new Enclave({
+          ...sandbox,
+          toolNamespaces: { docs: ['search'] },
+          toolHandler: async (name, args) => ({ tool: name, q: args['q'] }),
+          globals: { text: 'some text' },
+        });
+
+        // On a tool namespace it is the host's method, with any argument
+        const tool = await enclave.run("const args = { q: 'needle' }; return await docs.search(args);");
+        expect(tool.error).toBeUndefined();
+        expect(tool.value).toEqual({ tool: 'docs.search', q: 'needle' });
+
+        // On a string it is the string method, which takes its argument as a pattern
+        const text = await enclave.run("const pattern = 'some'; return text.search(pattern);");
+        expect(text.success).toBe(false);
+        expect(text.error?.message).toContain('NO_REGEX_METHOD');
+        enclave.dispose();
+      });
+
       it('refuses a custom global named Object', () => {
         expect(() => new Enclave({ ...sandbox, globals: { Object: { marker: 1 } } })).toThrow(
           'A custom global cannot be named "Object": the sandbox provides its own Object',

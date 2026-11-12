@@ -349,7 +349,13 @@ export class BrowserEnclave {
       );
     }
 
-    this.validator = this.createValidator(presetName, customAllowedGlobals);
+    // The globals that are objects of the host: the tool namespaces, and every custom global
+    // that is not a string (see `hostObjectGlobals` of the AgentScript preset)
+    const hostObjectGlobals = [
+      ...globalNames.filter((name) => typeof this.config.globals[name] !== 'string'),
+      ...this.toolNamespaces.map((ns) => ns.name),
+    ];
+    this.validator = this.createValidator(presetName, customAllowedGlobals, hostObjectGlobals);
 
     // Config flags
     this.validateCode = options.validate !== false;
@@ -500,7 +506,11 @@ export class BrowserEnclave {
   /**
    * Create a validator based on the selected preset
    */
-  private createValidator(presetName: AstPreset, customAllowedGlobals: string[]): JSAstValidator {
+  private createValidator(
+    presetName: AstPreset,
+    customAllowedGlobals: string[],
+    hostObjectGlobals: string[],
+  ): JSAstValidator {
     const securityLevelGlobals = getAgentScriptGlobals(this.securityLevel);
     const enclaveSpecificGlobals = [
       'parallel',
@@ -518,6 +528,7 @@ export class BrowserEnclave {
           createAgentScriptPreset({
             securityLevel: this.securityLevel,
             allowedGlobals: allAllowedGlobals,
+            hostObjectGlobals,
             allowDynamicArrayFill: this.config.memoryLimit > 0,
           }),
         );

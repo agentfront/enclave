@@ -310,6 +310,18 @@ export interface AgentScriptOptions {
   allowedGlobals?: string[];
 
   /**
+   * Names of the globals in `allowedGlobals` that are objects of the host and not strings: tool
+   * namespaces, custom globals that hold an object or a function. A method called `match`,
+   * `matchAll` or `search` on one of them (`docs.search(args)`) is the host's method, not the
+   * string method that compiles its argument into a regular expression, and is accepted with any
+   * argument. On every other value those three are refused. Each name is accepted with and
+   * without the `__safe_` prefix the transformer adds.
+   *
+   * Default: []
+   */
+  hostObjectGlobals?: string[];
+
+  /**
    * Additional identifiers to block beyond the default dangerous set.
    *
    * These always take precedence over `allowedGlobals`. If an identifier
@@ -649,6 +661,7 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   rules.push(
     new NoRegexMethodsRule({
       allowStringArguments: false, // Block even string arguments for maximum security
+      hostObjectNames: (options.hostObjectGlobals ?? []).flatMap((name) => [name, `__safe_${name}`]),
     }),
   );
 

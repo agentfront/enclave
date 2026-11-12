@@ -25,11 +25,11 @@ import { checkSerializedSize } from '../value-sanitizer';
 /** The longest text `JSON.stringify` may produce */
 const MAX_JSON_TEXT_BYTES = 32 * 1024 * 1024;
 
-/** `JSON.stringify` indents by at most this many chars per level, whatever `space` says */
+/** `JSON.stringify` indents by at most this many spaces or chars per level, whatever `space` says */
 const MAX_JSON_INDENT = 10;
 
 /**
- * The chars an indentation of `indent` adds to the JSON text of `value`: for every array item and
+ * The bytes an indentation of `indent` bytes per level adds to the JSON text of `value`: for every array item and
  * object member a line break and its indent, for a member the space after its colon, and for
  * every array or object that is not empty the line of its closing bracket. Counted the way the
  * text is written (a value that is reached twice is written twice); stops once past `limit`.
@@ -53,10 +53,32 @@ function indentationSize(value: unknown, indent: number, limit: number, depth: n
   return size;
 }
 
-/** How many chars `JSON.stringify` indents by for this `space` argument. */
+/** The length of a text in UTF-8 bytes, the unit the size limit of a JSON text is in. */
+function utf8Length(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index++;
+      } else bytes += 3;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+/**
+ * How many bytes `JSON.stringify` indents by, per level, for this `space` argument: that many
+ * spaces for a number, the first ten chars of a text. A text need not be spaces, and a char of
+ * it can take up to three bytes.
+ */
 function indentOf(space: unknown): number {
   if (typeof space === 'number') return Math.max(0, Math.min(MAX_JSON_INDENT, Math.floor(space) || 0));
-  if (typeof space === 'string') return Math.min(MAX_JSON_INDENT, space.length);
+  if (typeof space === 'string') return utf8Length(space.slice(0, MAX_JSON_INDENT));
   return 0;
 }
 

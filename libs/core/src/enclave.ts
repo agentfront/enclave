@@ -370,9 +370,17 @@ export class Enclave {
     // 2. The transformed name (__safe_customValue)
     const customAllowedGlobals = this.customGlobalNames.flatMap((name) => [name, `__safe_${name}`]);
 
+    // The globals that are objects of the host: the tool namespaces, and every custom global
+    // that is not a string. A method named `search` or `match` on one of those is the host's; on
+    // a string global it would be the string method that compiles its argument into a pattern.
+    const hostObjectGlobals = [
+      ...Object.keys(initialGlobals).filter((name) => typeof initialGlobals[name] !== 'string'),
+      ...this.toolNamespaces.map((ns) => ns.name),
+    ];
+
     // Create validator based on selected preset
     // Note: presetName is defined earlier (before config) for Babel global injection
-    this.validator = this.createValidator(presetName, customAllowedGlobals);
+    this.validator = this.createValidator(presetName, customAllowedGlobals, hostObjectGlobals);
 
     // Configuration flags
     this.validateCode = options.validate !== false; // Default: true
@@ -1045,7 +1053,11 @@ export class Enclave {
    * @param customAllowedGlobals Custom globals to whitelist
    * @returns A configured JSAstValidator
    */
-  private createValidator(presetName: AstPreset, customAllowedGlobals: string[]): JSAstValidator {
+  private createValidator(
+    presetName: AstPreset,
+    customAllowedGlobals: string[],
+    hostObjectGlobals: string[],
+  ): JSAstValidator {
     const allAllowedGlobals = this.buildAllowedGlobals(customAllowedGlobals);
 
     switch (presetName) {
@@ -1057,6 +1069,7 @@ export class Enclave {
           createAgentScriptPreset({
             securityLevel: this.securityLevel,
             allowedGlobals: allAllowedGlobals,
+            hostObjectGlobals,
             allowDynamicArrayFill: this.config.memoryLimit > 0,
           }),
         );

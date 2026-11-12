@@ -29,6 +29,17 @@ export interface NoRegexMethodsOptions {
   allowStringArguments?: boolean;
 
   /**
+   * Names of globals that are objects of the host and not strings: tool namespaces, custom
+   * globals that hold an object or a function. A method called `match`, `matchAll` or `search`
+   * on one of them (`docs.search(args)`) is not a string method, so with
+   * `allowStringArguments: false` a call with a non-literal argument keeps the warning instead
+   * of being refused. A global that is not listed is treated like any other value: it may be a
+   * string the host passed in.
+   * Default: []
+   */
+  hostObjectNames?: string[];
+
+  /**
    * Custom error message template.
    * Placeholders: {method}
    */
@@ -110,9 +121,11 @@ export class NoRegexMethodsRule implements ValidationRule {
   private readonly blockedStringMethods: Set<string>;
   private readonly blockedRegexMethods: Set<string>;
   private readonly allowStringArguments: boolean;
+  private readonly hostObjectNames: ReadonlySet<string>;
   private readonly messageTemplate: string;
 
   constructor(options: NoRegexMethodsOptions = {}) {
+    this.hostObjectNames = new Set(options.hostObjectNames ?? []);
     this.blockedStringMethods = new Set(options.blockedStringMethods ?? DEFAULT_STRING_METHODS);
     this.blockedRegexMethods = new Set(options.blockedRegexMethods ?? DEFAULT_REGEX_METHODS);
     this.allowStringArguments = options.allowStringArguments ?? true;
@@ -120,10 +133,13 @@ export class NoRegexMethodsRule implements ValidationRule {
   }
 
   validate(context: ValidationContext): void {
-    // The identifiers that name a global (what the host provides), not a variable of the script
+    // The identifiers that name a global the host declared as an object (a tool namespace, say),
+    // not a variable of the script that happens to have the same name
     const freeReferences = new Set<unknown>();
-    if (!this.allowStringArguments) {
-      for (const ref of analyzeScopes(context.ast).freeReferences) freeReferences.add(ref.node);
+    if (!this.allowStringArguments && this.hostObjectNames.size > 0) {
+      for (const ref of analyzeScopes(context.ast).freeReferences) {
+        if (this.hostObjectNames.has(ref.name)) freeReferences.add(ref.node);
+      }
     }
 
     walk.simple(context.ast as any, {
@@ -195,9 +211,9 @@ export class NoRegexMethodsRule implements ValidationRule {
 
       // The same three methods with an argument that is not a literal: on a string, whatever it
       // evaluates to (a string, a regular expression) is run as a regular expression. A method of
-      // that name on an object of the host (`docs.search(args)`, a tool namespace) is not a
-      // string method, and neither is a call whose argument is an object literal: those stay
-      // with the warning below.
+      // that name on a global the host declared as an object (`docs.search(args)`, a tool
+      // namespace) is not a string method, and neither is a call whose argument is an object
+      // literal: those stay with the warning below.
       if (
         !this.allowStringArguments &&
         PATTERN_COMPILING_STRING_METHODS.has(methodName) &&
@@ -253,8 +269,8 @@ export class NoRegexMethodsRule implements ValidationRule {
   /**
    * Whether `receiver.match(arg)` / `matchAll` / `search` with a non-literal argument could be a
    * string turning that argument into a regular expression. It could not when:
-   * - the receiver names a global: a value of the host (a tool namespace, a custom global), not
-   *   a string the script made;
+   * - the receiver names a global that `hostObjectNames` lists: an object of the host (a tool
+   *   namespace), not a string;
    * - the argument is an object literal that defines no conversion of its own: as a pattern it
    *   is the text `[object Object]`;
    * - the argument is a number, boolean or null literal.

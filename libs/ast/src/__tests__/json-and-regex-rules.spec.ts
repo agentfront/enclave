@@ -58,10 +58,22 @@ describe('NoRegexMethodsRule with allowStringArguments: false', () => {
     expect(await issues(validator, source)).toEqual(['error:NO_REGEX_METHOD']);
   });
 
-  it('keeps the warning for a method of that name on a global, such as a tool namespace', async () => {
-    expect(await issues(validator, 'let args; const hits = docs.search(args);')).toEqual([
+  it('keeps the warning for a method of that name on a global listed in hostObjectNames', async () => {
+    const withNamespace = new JSAstValidator([
+      new NoRegexMethodsRule({ allowStringArguments: false, hostObjectNames: ['docs'] }),
+    ]);
+
+    expect(await issues(withNamespace, 'let args; const hits = docs.search(args);')).toEqual([
       'warning:REGEX_METHOD_DYNAMIC',
     ]);
+    // A variable of the script with that name is not the global
+    expect(await issues(withNamespace, 'let args; const docs = text; const hits = docs.search(args);')).toEqual([
+      'error:NO_REGEX_METHOD',
+    ]);
+  });
+
+  it('flags the same call on a global that is not listed: it may be a string', async () => {
+    expect(await issues(validator, 'let args; const hits = docs.search(args);')).toEqual(['error:NO_REGEX_METHOD']);
   });
 
   it('keeps the warning when the argument is an object literal of data', async () => {

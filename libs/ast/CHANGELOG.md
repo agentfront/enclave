@@ -18,7 +18,7 @@ A security release of the static layer. The invariants behind each item, and the
 - **Direct use only (ATK-CTGT, ATK-JSONCB).** `callTool` and `JSON` may only appear as direct calls. An alias, `.call` / `.apply` / `.bind`, a tagged template, a spread, a sequence callee, a computed method name or passing the function as a value is refused, since each takes the call out of sight of the argument checks.
 - **JSON methods (ATK-JSONCB).** Of `JSON`, only `parse` and `stringify` may be called, and the callback check resolves the method name in every static spelling the direct-use check accepts. The direct-use check follows lexical scope: it applies to the global, not to a variable of the script that has the same name.
 - **Method names in every static spelling (ATK-RXSTR, ATK-RSRC).** `NoRegexMethodsRule` and the `repeat` / `join` / `fill` checks of `ResourceExhaustionRule` resolve a method name written as `x.name`, `x['name']` or a template literal without substitutions; they read only the first form, or the first two.
-- **Regular expressions from strings (ATK-RXSTR).** A string passed to `match`, `matchAll` or `search` is treated as the regular expression it becomes, also in the tagged-template form and when the argument is not a literal. A method of that name on a global (a tool namespace) and a call with an object literal of data keep the warning.
+- **Regular expressions from strings (ATK-RXSTR).** A string passed to `match`, `matchAll` or `search` is treated as the regular expression it becomes, also in the tagged-template form and when the argument is not a literal. A method of that name on a global the host declared as an object (`hostObjectGlobals` of the preset: a tool namespace, say) and a call with an object literal of data keep the warning. A global that is not declared may be a string, and is treated as one.
 - **Loop counters (ATK-LCTR).** The loop transform never hands out a counter name that the script mentions anywhere.
 
 ### Added
@@ -27,6 +27,7 @@ A security release of the static layer. The invariants behind each item, and the
 - AgentScript preset option `additionalAllowedSyntax`, which re-enables a node type for a host that does not run untrusted code.
 - Rule options, all off by default outside the AgentScript preset: `disallowedProperties` and `blockProtoInObjectLiterals` (`DisallowedIdentifierRule`), `requireDirectCall` (`StaticCallTargetRule`), `requireDirectUse` (`NoJsonCallbacksRule`), `additionalDangerousKeys` (`NoComputedDestructuringRule`) and `allowGlobalAssignment` (`UnknownGlobalRule`).
 - `NoComputedDestructuringRule` and `NoJsonCallbacksRule`, with their option types, are exported from the package entry.
+- AgentScript preset option `hostObjectGlobals`, and `hostObjectNames` of `NoRegexMethodsRule`: the globals that are objects of the host, on which a method called `match`, `matchAll` or `search` is the host's own.
 
 ### Changed
 
