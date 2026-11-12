@@ -37,7 +37,7 @@ A script that fails while it runs has the code `DOUBLE_VM_EXECUTION_ERROR` (or `
 
 #### Timeout
 
-**Message:** `Script execution timed out after 5000ms`
+**Message:** starts with `Script execution timed out`, for example `Script execution timed out after 5000ms`
 
 **Cause:** Execution exceeded the configured timeout.
 
@@ -77,7 +77,7 @@ await callTool('users:getMany', { ids });
 
 #### Iteration limit
 
-**Message:** `Maximum iteration limit exceeded (10000). This limit prevents infinite loops.`
+**Message:** starts with `Maximum iteration limit exceeded`
 
 **Cause:** Loop iterations exceeded the limit.
 
