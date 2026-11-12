@@ -457,8 +457,13 @@ export class Interpreter {
    * For a host helper that is handed a callback (`parallel(items, fn)`): `fn` may be a function
    * of the script, or a built-in or host function the script passed along.
    */
-  call(fn: unknown, args: unknown[]): Promise<unknown> {
+  call(fn: unknown, args: unknown[]): unknown {
     if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
+    // A function of the script is called as it is, as the array methods call their callbacks:
+    // the calls it makes are counted where they are made. The call depth is one count for the
+    // whole execution (it also bounds how many calls a script can have waiting at once), and a
+    // batch of parallel tasks must not use it up by being a batch.
+    if (this.interpretedFunctions.has(fn)) return (fn as (...a: unknown[]) => unknown)(...args);
     return this.callFunction(fn, undefined, args);
   }
 

@@ -388,6 +388,48 @@ for (const [name, count] of [
 }
 for (const [, type] of SAFE_ERRORS) convertsArguments(type.facade, 1);
 
+// The Math functions with a fixed number of parameters read only those: `numbers.map(Math.floor)`
+// hands `floor` the array as its third argument, which it never looks at. `max`, `min` and
+// `hypot` take any number of arguments and convert every one of them, so they are not listed.
+const MATH_PARAMETERS: Readonly<Record<string, number>> = {
+  abs: 1,
+  acos: 1,
+  acosh: 1,
+  asin: 1,
+  asinh: 1,
+  atan: 1,
+  atanh: 1,
+  atan2: 2,
+  cbrt: 1,
+  ceil: 1,
+  clz32: 1,
+  cos: 1,
+  cosh: 1,
+  exp: 1,
+  expm1: 1,
+  floor: 1,
+  fround: 1,
+  imul: 2,
+  log: 1,
+  log1p: 1,
+  log10: 1,
+  log2: 1,
+  pow: 2,
+  random: 0,
+  round: 1,
+  sign: 1,
+  sin: 1,
+  sinh: 1,
+  sqrt: 1,
+  tan: 1,
+  tanh: 1,
+  trunc: 1,
+};
+for (const name of Object.keys(MATH_PARAMETERS)) {
+  const fn: unknown = SafeMath[name];
+  if (typeof fn === 'function') convertsArguments(fn, MATH_PARAMETERS[name]);
+}
+
 /**
  * The standard globals for one interpreter. The values are shared between interpreters: all of
  * them are frozen and none of them keeps state.

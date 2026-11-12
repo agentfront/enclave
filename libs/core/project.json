@@ -31,7 +31,7 @@
         "default",
         "^production",
         "{workspaceRoot}/jest.preset.js",
-        { "externalDependencies": ["jest", "@nx/jest", "ts-jest"] },
+        { "externalDependencies": ["jest", "@nx/jest", "ts-jest", "esbuild", "@nx/esbuild"] },
         { "dependentTasksOutputFiles": "**/*.d.ts", "transitive": true },
         "securitySpecs"
       ]
