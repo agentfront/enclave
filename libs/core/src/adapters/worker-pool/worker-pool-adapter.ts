@@ -350,8 +350,8 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       }
     });
 
-    // The slot's own heap check (used when the engine does not apply the worker's heap limit)
-    // ended an execution: the slot fails it and terminates the worker; the pool keeps count.
+    // The slot's own memory check ended an execution: the slot fails it and terminates the
+    // worker; the pool keeps count.
     slot.on('heapLimitExceeded', () => {
       this.countHeapLimitKill(slot);
       this._forcedTerminations++;

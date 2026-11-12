@@ -56,7 +56,7 @@ const WORKER_SCRIPT_RELATIVE_PATH = path.join('src', 'adapters', 'worker-pool', 
 
 const MB = 1024 * 1024;
 
-/** How often this thread reads the heap of an executing worker whose limit the engine does not apply */
+/** How often this thread reads what an executing worker holds */
 const HEAP_WATCHDOG_INTERVAL_MS = 100;
 
 /** How long spawn() waits for a new worker's heap statistics before going on without them */
@@ -270,7 +270,7 @@ export class WorkerSlot extends EventEmitter {
   /** What this worker may hold: its limit plus the young generation, in bytes. 0 without a limit. */
   private _memoryBudgetBytes = 0;
 
-  /** The host-side heap check of the running execution (only with `host` enforcement) */
+  /** The host-side memory check of the running execution */
   private heapWatchdog: ReturnType<typeof setInterval> | null = null;
 
   /** Largest message the worker may send right now, in bytes (see limitMessageSize) */
@@ -446,13 +446,23 @@ export class WorkerSlot extends EventEmitter {
   }
 
   /**
-   * With `host` enforcement: read the worker's heap while it executes, and end the execution
-   * when the worker holds more than its budget. The engine would have done the same at the old
-   * generation limit; from outside only the total is visible, so the young generation is part
-   * of the budget and the limit is approximate (a script can also allocate between two reads).
+   * Read what the worker holds while it executes (its heap plus its external memory), and end
+   * the execution when that is more than the worker's budget.
+   *
+   * With `host` enforcement this is the heap limit itself: the engine would have ended the worker
+   * at the old generation limit; from outside only the total is visible, so the young generation
+   * is part of the budget and the limit is approximate (a script can also allocate between two
+   * reads).
+   *
+   * With `engine` enforcement the engine bounds the heap, and this bounds what the engine does
+   * not count: memory outside the heap. The memory monitor counts it too, but it asks the worker
+   * by message, and a worker answers messages only when its script lets it. This read needs no
+   * answer from the script.
+   *
+   * Not on a Node.js that cannot read a worker's heap from outside (before 22.16).
    */
   private startHeapWatchdog(): void {
-    if (this._heapLimitEnforcement !== 'host' || this.heapWatchdog) {
+    if (this.heapWatchdog || this._memoryBudgetBytes <= 0 || !this._worker || !heapStatisticsReader(this._worker)) {
       return;
     }
 
