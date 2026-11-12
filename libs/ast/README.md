@@ -412,6 +412,7 @@ The AgentScript preset uses security-level-aware globals for defense-in-depth:
 `normalizeToolNamespaces(spec, { reservedNames })` validates the `toolNamespaces` option of `@enclave-vm/core`
 and `@enclave-vm/browser` (`{ mail: ['list', 'send'] }` or `{ users: { get: 'users:get' } }`) and returns it as
 plain data, so every runtime refuses the same names: non-identifiers, prototype keys, names starting with `__`,
+names the language calls on an object by itself (`then`, `toString`, `valueOf`, `toLocaleString`, `toJSON`),
 reserved words and sandbox globals as namespaces, identifiers AgentScript refuses (as namespaces or method
 names), collisions with `reservedNames`, duplicated methods, and tool names that are empty, oversized or not
 valid tool names (`TOOL_NAMESPACE_TOOL_NAME_PATTERN`: letters, digits, `:`, `.`, `_` and `-`, starting with a
