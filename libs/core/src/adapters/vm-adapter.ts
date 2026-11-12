@@ -26,6 +26,10 @@ import { createGlobalFunctionGate, type SandboxRealmBridge } from '../global-fun
 import { realmTickSource } from '../deadline-guard';
 import { guardSandboxRejections } from '../sandbox-rejections';
 import { createRealmAirlock, type RealmMembrane } from '../realm-airlock';
+import { numericLiteral } from '../enclave-options';
+import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
+import { realmArrayAccountingSource } from '../realm-memory';
+import { describeThrown, isMemoryLimitPayload, THROWN_WITHOUT_MESSAGE } from '../thrown-value';
 import {
   INNER_REALM_GUARD_SOURCE,
   INNER_REALM_SYMBOL_REGISTRY_SOURCE,
@@ -147,6 +151,9 @@ const STACK_TRACE_HARDENING_CODE = `
 
 const STACK_TRACE_HARDENING_SCRIPT = new ReusableSandboxScript(STACK_TRACE_HARDENING_CODE);
 
+/** Run first in the sandbox realm, at every security level: it captures no stack traces (see ../realm-stack). */
+const STACK_CAPTURE_OFF_SCRIPT = new ReusableSandboxScript(STACK_CAPTURE_OFF_SOURCE, { filename: 'realm-stack.js' });
+
 /**
  * Detect and report code-generation attempts (Function/eval) even if user code catches the thrown error.
  *
@@ -224,6 +231,25 @@ const INTRINSIC_OBJECT_NEUTRALIZATION_CODE = `
 })();
 `;
 const INTRINSIC_OBJECT_NEUTRALIZATION_SCRIPT = new ReusableSandboxScript(INTRINSIC_OBJECT_NEUTRALIZATION_CODE);
+
+/**
+ * Closes the prototype of the realm's plain objects: it takes no new property. Not only a
+ * script's objects inherit from it. So do the objects the host's own machinery makes in the
+ * realm, and what those are read as must not depend on a property a script added. The members
+ * it has stay as they are, so an object can still override one of them for itself (the double VM
+ * freezes this prototype, and the other built-in ones, outright).
+ *
+ * It throws where the prototype is still open afterwards: the realm is then not set up.
+ */
+const CLOSE_OBJECT_PROTOTYPE_SCRIPT = new ReusableSandboxScript(
+  `(function () {
+    'use strict';
+    var root = Object.getPrototypeOf({});
+    Object.preventExtensions(root);
+    if (Object.isExtensible(root)) throw new TypeError('The prototype of plain objects could not be closed');
+  })()`,
+  { filename: 'close-object-prototype.js' },
+);
 
 /**
  * Evaluated in a pristine sandbox realm, returns a function that gives the realm's global object a
@@ -827,6 +853,9 @@ export class VmAdapter implements SandboxAdapter {
     // Start tracking before execution
     memoryTracker?.start();
 
+    // Set once the realm has its deadline check (see ../deadline-guard)
+    let endDeadlineChecks: (() => void) | undefined;
+
     try {
       // Create sandbox context with safe globals only
       // IMPORTANT: Use empty object to get NEW isolated prototypes
@@ -839,6 +868,9 @@ export class VmAdapter implements SandboxAdapter {
       const baseSandbox = vm.createContext(Object.create(null) as Record<string, unknown>, {
         codeGeneration: { strings: false, wasm: false },
       });
+
+      // Before anything else runs in the realm: no stack traces for the errors made there.
+      STACK_CAPTURE_OFF_SCRIPT.runInContext(baseSandbox);
 
       // Capture sandbox-realm helpers before any sanitization touches the realm's globals:
       // - the realm bridge re-creates host-function results as sandbox-realm values;
@@ -897,7 +929,12 @@ export class VmAdapter implements SandboxAdapter {
       }
       // The script's cooperative deadline (see ../deadline-guard): vm's timeout below only covers
       // the script up to its first await.
-      compileSandboxScript(realmTickSource(config.timeout), { filename: 'deadline.js' }).runInContext(baseSandbox);
+      // What it evaluates to ends the checks: called when the execution is over (see `finally`
+      // below), it makes whatever the script left behind stop at its next function entry or loop
+      // iteration instead of going on until the deadline.
+      endDeadlineChecks = compileSandboxScript(realmTickSource(config.timeout), {
+        filename: 'deadline.js',
+      }).runInContext(baseSandbox) as () => void;
       const installToolNamespaces = executionContext.toolNamespaces?.length
         ? (TOOL_NAMESPACE_FACTORY_SCRIPT.runInContext(baseSandbox) as unknown)
         : undefined;
@@ -910,7 +947,12 @@ export class VmAdapter implements SandboxAdapter {
 
       // Every call into a host function passed in `globals` goes through this gate
       // (abort check, maxGlobalFunctionCalls, result sanitization, safe errors).
-      const globalFunctionGate = createGlobalFunctionGate(executionContext, realmBridge, unwrapHostValue);
+      const globalFunctionGate = createGlobalFunctionGate(
+        executionContext,
+        realmBridge,
+        unwrapHostValue,
+        airlock.isRealmValue,
+      );
 
       // The host side of the runtime: only the direct-mode tool call function and the value
       // globals. The sandbox realm has intrinsics of its own; it is given none of the host's.
@@ -922,6 +964,7 @@ export class VmAdapter implements SandboxAdapter {
         globalFunctionGate,
         exposeToSandbox: airlock.toRealm,
         ownedBySandbox: airlock.isRealmValue,
+        heldBySandbox: airlock.isAirlockProxy,
         hostObjects: false,
       });
 
@@ -966,7 +1009,10 @@ export class VmAdapter implements SandboxAdapter {
             // "this". In sloppy mode "this" was coerced to the realm's global object, and fill
             // RETURNED it.
             'use strict';
-            var memoryLimit = ${config.memoryLimit};
+            // The functions of Math, not the object: a script can assign to its members, and a
+            // replaced Math.max would decide what a fill is charged.
+            var Math = (function (M) { return { max: M.max, min: M.min, round: M.round }; })(globalThis.Math);
+            var memoryLimit = ${numericLiteral('memoryLimit', config.memoryLimit)};
             var trackMemory = __host_memory_track__;
 
             // A size is only usable when it is a positive number. NaN (a missing or non-numeric
@@ -1050,29 +1096,8 @@ export class VmAdapter implements SandboxAdapter {
               return chargeActual(originalPadEnd.call(this, targetLength, padString), estimatedSize, 'String.padEnd');
             };
 
-            // Patch array fill - converts sparse arrays to dense (allocates memory)
-            // Vector 1110/1170: Array(dynamicSize).fill() can exhaust memory
-            // Estimate: each element uses ~8 bytes (pointer) for objects/primitives
-            var originalFill = arrayProto.fill;
-            arrayProto.fill = function(value, start, end) {
-              // Calculate actual fill range
-              var len = this.length >>> 0;
-              var relativeStart = start === undefined ? 0 : (start >> 0);
-              var relativeEnd = end === undefined ? len : (end >> 0);
-              var k = relativeStart < 0 ? Math.max(len + relativeStart, 0) : Math.min(relativeStart, len);
-              var finalEnd = relativeEnd < 0 ? Math.max(len + relativeEnd, 0) : Math.min(relativeEnd, len);
-              var fillCount = Math.max(0, finalEnd - k);
-
-              // Estimate memory: 8 bytes per element (pointer size)
-              var estimatedSize = fillCount * 8;
-              if (estimatedSize > memoryLimit) {
-                throw new RangeError('Array.fill would exceed memory limit: ' +
-                  Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
-                  Math.round(memoryLimit / 1024 / 1024) + 'MB');
-              }
-              trackMemory(estimatedSize);
-              return originalFill.call(this, value, start, end);
-            };
+            // Array.prototype.fill is accounted for with the other array operations (see
+            // ../realm-memory), where its range is worked out by the built-in's own rules.
 
             // Array.from and Array.of build an array of any size in one call: charged for what
             // they built (8 bytes per element), on the realm's own Array, so that the constructor
@@ -1095,6 +1120,16 @@ export class VmAdapter implements SandboxAdapter {
         `);
         patchScript.runInContext(baseSandbox);
       }
+
+      // Arrays that grow are accounted for like strings that grow (see ../realm-memory), and the
+      // helpers the transformed code calls around an array literal with spreads are defined.
+      // Always: without a memory limit the helpers count nothing.
+      compileSandboxScript(
+        realmArrayAccountingSource(
+          memoryTracker && config.memoryLimit && config.memoryLimit > 0 ? config.memoryLimit : 0,
+        ),
+        { filename: 'array-accounting.js' },
+      ).runInContext(baseSandbox);
 
       // __safe_concat and __safe_template, defined inside the realm by the same code as in the
       // double VM (they read __host_memory_track__, which is why it is still there).
@@ -1150,19 +1185,6 @@ export class VmAdapter implements SandboxAdapter {
         } catch {
           // Best-effort only; codeGeneration.strings=false still blocks execution.
         }
-      }
-
-      // The Reflect global of a level that has one: the realm's own namespace without the
-      // methods the level does not get. (STRICT has none; removeDangerousGlobals deletes it.)
-      if (this.securityLevel !== 'STRICT') {
-        Object.defineProperty(baseSandbox, 'Reflect', {
-          value: realmRuntime.createSafeReflect(
-            this.securityLevel === 'SECURE' ? 'setPrototypeOf,apply,defineProperty' : 'setPrototypeOf',
-          ),
-          writable: false,
-          configurable: false,
-          enumerable: true,
-        });
       }
 
       // TOOL BRIDGE (string mode): define __safe_callTool inside the VM realm and
@@ -1222,7 +1244,7 @@ export class VmAdapter implements SandboxAdapter {
             var promiseThen = Promise.prototype.then;
             var settled = Promise.resolve();
             var reflectApply = Reflect.apply;
-            var maxBytes = ${maxPayloadBytes};
+            var maxBytes = ${numericLiteral('toolBridge.maxPayloadBytes', maxPayloadBytes)};
             var limitMessage = ${JSON.stringify(limitMessage)};
 
             // Tool calls whose host bridge has not been started yet.
@@ -1390,17 +1412,23 @@ export class VmAdapter implements SandboxAdapter {
           })()
         `);
 
-        const vmSafeCallTool = bridgeInitScript.runInContext(baseSandbox) as unknown as object;
-        const proxiedVmSafeCallTool = createSecureProxy(vmSafeCallTool, {
-          levelConfig: executionContext.secureProxyConfig,
-        });
-
-        // The secure proxy decides what a script may read off the function and off the promise
-        // it returns, but it is a HOST Proxy: handed to the script as it is, its traps were host
-        // functions entered straight from script code, and a call at a full stack gave the script
-        // a host RangeError. Like every other secure proxy, it goes behind the airlock.
+        // The script gets a function of its own realm, frozen, like the other runtime helpers
+        // above; it returns a promise of that realm. Nothing of the host is in it to keep behind
+        // a membrane (the two host functions it closes over are wrapped by the realm's half),
+        // and a membrane around it would treat a function of the script's realm, and every
+        // method read off it or off its promise, as host code.
+        //
+        // The realm's half wraps it for the stack reserve: a call with the stack nearly full
+        // fails where it is made, with a RangeError of the realm, before the bridge has counted
+        // or queued anything.
+        const realmCallTool = realmMembrane.wrap(
+          bridgeInitScript.runInContext(baseSandbox) as (...args: unknown[]) => unknown,
+          true,
+        );
+        Object.defineProperty(realmCallTool, 'name', { value: '__safe_callTool', configurable: true });
+        Object.defineProperty(realmCallTool, 'length', { value: 3, configurable: true });
         Object.defineProperty(baseSandbox, '__safe_callTool', {
-          value: airlock.toRealm(proxiedVmSafeCallTool),
+          value: Object.freeze(realmCallTool),
           writable: false,
           configurable: false,
           enumerable: true,
@@ -1413,6 +1441,21 @@ export class VmAdapter implements SandboxAdapter {
         } catch {
           // ignore
         }
+      }
+
+      // The Reflect global of a level that has one: the realm's own namespace without the
+      // methods the level does not get. (STRICT has none; removeDangerousGlobals deletes it.)
+      // Installed after the tool bridge above: that script captures the realm's own
+      // Reflect.apply, which the namespace of SECURE does not have.
+      if (this.securityLevel !== 'STRICT') {
+        Object.defineProperty(baseSandbox, 'Reflect', {
+          value: realmRuntime.createSafeReflect(
+            this.securityLevel === 'SECURE' ? 'setPrototypeOf,apply,defineProperty' : 'setPrototypeOf',
+          ),
+          writable: false,
+          configurable: false,
+          enumerable: true,
+        });
       }
 
       // Add safe runtime functions to the isolated context as non-writable, non-configurable
@@ -1451,6 +1494,7 @@ export class VmAdapter implements SandboxAdapter {
                     callGate: globalFunctionGate,
                     exposeToSandbox: airlock.toRealm,
                     ownedBySandbox: airlock.isRealmValue,
+                    heldBySandbox: airlock.isAirlockProxy,
                   }),
                 )
               : value;
@@ -1524,6 +1568,11 @@ export class VmAdapter implements SandboxAdapter {
       } catch {
         /* defense-in-depth */
       }
+
+      // The prototype of plain objects takes no new property from here on (see the script). After
+      // everything above, which may still have had something to put there, and not optional: a
+      // failure ends the execution.
+      CLOSE_OBJECT_PROTOTYPE_SCRIPT.runInContext(baseSandbox);
 
       // The last setup steps, once the trusted scripts above have captured the intrinsics they need
       // and before any script code runs.
@@ -1650,7 +1699,9 @@ export class VmAdapter implements SandboxAdapter {
         stats,
       };
     } catch (error: unknown) {
-      const err = error as Error;
+      // What the script threw, as text (see ../thrown-value): nothing below reads the thrown
+      // value itself, which may be any object of the sandbox.
+      const thrown = describeThrown(error);
 
       // Update stats
       stats.duration = Date.now() - startTime;
@@ -1662,22 +1713,24 @@ export class VmAdapter implements SandboxAdapter {
         stats.memoryUsage = memSnapshot.peakTrackedBytes;
       }
 
-      // Handle memory limit errors specially: the host error itself, or the safe error that
-      // replaces it wherever it would otherwise have reached the sandbox realm.
+      // The memory limit: the host error itself, or the safe error that replaces it wherever it
+      // would otherwise have reached the sandbox realm. The safe error only counts where the
+      // tracker did refuse an allocation: a script can throw an object that says the same about
+      // itself. The figures are the tracker's.
       const isMemoryLimit =
-        err instanceof MemoryLimitError ||
-        (typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'MEMORY_LIMIT_EXCEEDED');
+        error instanceof MemoryLimitError ||
+        (memoryTracker?.hasExceededLimit() === true && isMemoryLimitPayload(error));
       if (isMemoryLimit) {
         const snapshot = memoryTracker?.getSnapshot();
         return {
           success: false,
           error: {
             name: 'MemoryLimitError',
-            message: typeof err.message === 'string' ? err.message : 'Memory limit exceeded',
+            message: thrown.message ?? 'Memory limit exceeded',
             code: 'MEMORY_LIMIT_EXCEEDED',
             data: {
-              usedBytes: err instanceof MemoryLimitError ? err.usedBytes : (snapshot?.trackedBytes ?? 0),
-              limitBytes: err instanceof MemoryLimitError ? err.limitBytes : (config.memoryLimit ?? 0),
+              usedBytes: error instanceof MemoryLimitError ? error.usedBytes : (snapshot?.trackedBytes ?? 0),
+              limitBytes: error instanceof MemoryLimitError ? error.limitBytes : (config.memoryLimit ?? 0),
             },
           },
           stats,
@@ -1691,7 +1744,7 @@ export class VmAdapter implements SandboxAdapter {
           success: false,
           error: {
             name: 'VMExecutionError',
-            message: error,
+            message: thrown.message ?? '',
             code: 'VM_EXECUTION_ERROR',
           },
           stats,
@@ -1705,13 +1758,20 @@ export class VmAdapter implements SandboxAdapter {
       return {
         success: false,
         error: {
-          name: err.name || 'VMExecutionError',
-          message: err.message || 'Unknown VM execution error',
-          stack: sanitizeStackTrace(err.stack, shouldSanitize),
+          name: thrown.name || 'VMExecutionError',
+          message: thrown.message || THROWN_WITHOUT_MESSAGE,
+          stack: sanitizeStackTrace(thrown.stack, shouldSanitize),
           code: 'VM_EXECUTION_ERROR',
         },
         stats,
       };
+    } finally {
+      // The execution is over, whichever way: nothing the script left behind runs on from here
+      try {
+        endDeadlineChecks?.();
+      } catch {
+        // The realm is gone
+      }
     }
   }
 

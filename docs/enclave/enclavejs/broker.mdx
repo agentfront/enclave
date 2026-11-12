@@ -5,7 +5,9 @@ description: 'Tool broker with session management and HTTP API for EnclaveJS'
 
 # @enclave-vm/broker
 
-Tool broker and session management for the EnclaveJS streaming runtime. Orchestrates code execution, tool handling, and session lifecycle.
+Tool broker and session management for the EnclaveJS streaming runtime. It runs scripts in an `@enclave-vm/core` sandbox on your server, gives them the tools you register, and streams what happens as events, in process or over HTTP.
+
+The broker does not authenticate callers, limit request rates or encrypt sessions. Put authentication in front of its routes, and tell the routes who the caller is (see [Who may see a session](#who-may-see-a-session)).
 
 ## Installation
 
@@ -20,35 +22,43 @@ import { createBroker } from '@enclave-vm/broker';
 import { z } from 'zod';
 
 const broker = createBroker({
-  securityLevel: 'SECURE',
+  // Options of the sandbox go under `enclave`
+  enclave: { securityLevel: 'SECURE' },
 });
 
 // Register a tool
 broker.tool('fetchData', {
-  description: 'Fetch data from a URL',
-  argsSchema: z.object({
-    url: z.string().url(),
-    method: z.enum(['GET', 'POST']).default('GET'),
-  }),
-  handler: async ({ url, method }) => {
-    const response = await fetch(url, { method });
+  description: 'Fetch a record by id',
+  argsSchema: z.object({ id: z.string() }),
+  handler: async ({ id }, { signal }) => {
+    const response = await fetch(`https://api.example.com/data/${encodeURIComponent(id)}`, { signal });
     return response.json();
   },
 });
 
-// Execute code
-const stream = broker.execute(`
-  const data = await tools.fetchData({ url: 'https://api.example.com/data' });
-  console.log('Fetched:', data.length, 'items');
+// Execute code and wait for the result
+const result = await broker.execute(
+  `
+  const data = await callTool('fetchData', { id: '42' });
   return data;
-`);
+`,
+  {
+    onEvent: (event) => {
+      if (event.type === 'tool_call') console.log('calling', event.payload.toolName);
+    },
+  },
+);
 
-for await (const event of stream) {
-  if (event.type === 'stdout') {
-    process.stdout.write(event.payload.chunk);
-  }
+if (result.success) {
+  console.log(result.value);
+} else {
+  console.error(result.error);
 }
+
+await broker.dispose();
 ```
+
+A script calls a tool with `callTool(name, args)`. `broker.execute()` resolves with the final result; the events of the run are handed to `onEvent`.
 
 ## Broker Configuration
 
@@ -56,173 +66,122 @@ for await (const event of stream) {
 import { createBroker, type BrokerConfig } from '@enclave-vm/broker';
 
 const config: BrokerConfig = {
-  // Security level for enclave-vm
-  securityLevel: 'SECURE',  // 'STRICT' | 'SECURE' | 'STANDARD' | 'PERMISSIVE'
-
-  // Default session limits
-  defaultLimits: {
-    timeout: 30000,
-    memoryLimit: 128 * 1024 * 1024,
-    maxToolCalls: 100,
-    maxConsoleBytes: 1024 * 1024,
+  // Options of the sandbox (CreateEnclaveOptions of @enclave-vm/core)
+  enclave: {
+    securityLevel: 'SECURE', // 'STRICT' | 'SECURE' | 'STANDARD' | 'PERMISSIVE'
   },
 
-  // Heartbeat interval (ms)
-  heartbeatInterval: 30000,
+  // Limits of every session (SessionLimits of @enclave-vm/types)
+  limits: {
+    maxToolCalls: 20,
+    toolTimeoutMs: 10_000, // run time of the script
+    perToolDeadlineMs: 5_000, // one tool call
+    sessionTtlMs: 60_000,
+  },
 
-  // Enable debug logging
-  debug: false,
+  // What a session keeps for a replay
+  history: { maxEvents: 10_000, maxBytes: 4 * 1024 * 1024 },
+
+  // The session registry
+  sessions: {
+    maxSessions: 100,
+    cleanupIntervalMs: 60_000,
+  },
 };
 
 const broker = createBroker(config);
 ```
 
-## Tool Registry
+<Warning>
+`createBroker` reads `sessions`, `enclave`, `limits` and `history`. Any other key is ignored and reported with a warning. In particular, `securityLevel` at the top level has no effect: write `enclave: { securityLevel }`.
+</Warning>
 
-### Defining Tools
+### Limits
+
+| Limit | Default | What it bounds |
+|-------|---------|----------------|
+| `maxToolCalls` | 50 | Tool calls of one session |
+| `toolTimeoutMs` | 30000 | The run time of the script (the sandbox timeout) |
+| `perToolDeadlineMs` | 30000 | One tool call: the handler's `signal` is aborted. A tool's own `config.timeout` applies when it is lower |
+| `deadlineMs` | 0 (none) | The whole session, counted from its creation |
+| `sessionTtlMs` | 60000 | How long a session stays registered; a session past it is cancelled at the next cleanup |
+| `maxToolResultBytes` | 5 MB | A tool result as serialized JSON; a larger one fails the call |
+| `heartbeatIntervalMs` | 15000 | Interval of `heartbeat` events |
+| `cancelOnFirstError` | false | Whether the first failed tool call cancels the session |
+
+The limits of the broker bound every session. A session created in process can name its own value for a limit (the other limits keep the broker's values); a session created over HTTP can only lower `maxToolCalls` and its lifetime.
+
+## Tools and Secrets
 
 ```typescript
-import { createToolRegistry, type ToolDefinition } from '@enclave-vm/broker';
 import { z } from 'zod';
 
-const registry = createToolRegistry();
+broker.secret('MAIL_API_KEY', process.env.MAIL_API_KEY!);
 
-// Define a tool
-const tool: ToolDefinition = {
-  name: 'sendEmail',
+broker.tool('sendEmail', {
   description: 'Send an email to a recipient',
   argsSchema: z.object({
     to: z.string().email(),
     subject: z.string().max(100),
     body: z.string(),
   }),
+  secrets: ['MAIL_API_KEY'],
+  config: { timeout: 10_000 }, // this tool's own timeout
   handler: async (args, context) => {
-    // context provides session info
-    console.log(`Session ${context.sessionId} sending email`);
+    context.sessionId; // session the call belongs to
+    context.callId; // id of this call
+    context.secrets.MAIL_API_KEY; // the secrets the tool asked for
+    context.signal; // aborted on timeout and when the session is cancelled
 
-    await emailService.send(args);
-    return { sent: true, timestamp: Date.now() };
+    await mail.send(args, { apiKey: context.secrets.MAIL_API_KEY, signal: context.signal });
+    return { sent: true };
   },
-  timeout: 10000,  // Tool-specific timeout
-};
-
-registry.register(tool);
-
-// Or use the broker's shorthand
-broker.tool('sendEmail', {
-  argsSchema: z.object({ to: z.string().email() }),
-  handler: async ({ to }) => { /* ... */ },
-});
-```
-
-### Tool Context
-
-```typescript
-import type { ToolContext } from '@enclave-vm/broker';
-
-// The handler receives context about the execution
-const handler = async (args: Args, context: ToolContext) => {
-  context.sessionId;   // Current session ID
-  context.callId;      // Unique call ID
-  context.timestamp;   // When the call was made
-};
-```
-
-### Tool Validation
-
-```typescript
-const registry = createToolRegistry();
-
-// Validate tool arguments
-const result = registry.validate('sendEmail', {
-  to: 'invalid-email',
 });
 
-if (!result.success) {
-  console.log('Validation errors:', result.errors);
-}
-
-// Get tool info
-const tool = registry.get('sendEmail');
-console.log(tool?.description);
-
-// List all tools
-const tools = registry.list();
+broker.hasTool('sendEmail'); // true
+broker.listTools(); // ['sendEmail']
+broker.removeTool('sendEmail');
 ```
 
-## Session Management
+Arguments are validated against `argsSchema` before the handler runs. Secrets are handed to the handler only and are not part of any event. Tool arguments and the result of a script are part of the events: keep secrets out of them.
 
-### Session Manager
+## Sessions
+
+`broker.execute()` creates a session, runs the script and removes the session. To keep a session around, create it yourself:
 
 ```typescript
-import { createSessionManager, type SessionManagerConfig } from '@enclave-vm/broker';
-
-const manager = createSessionManager({
-  maxConcurrentSessions: 100,
-  sessionTimeout: 300000,  // 5 minutes
-  cleanupInterval: 60000,  // 1 minute
+const session = broker.createSession({
+  limits: { maxToolCalls: 5 }, // the other limits stay the broker's
 });
 
-// Create a session
-const { sessionId, stream } = await manager.create({
-  code: 'return 1 + 1',
-  limits: { timeout: 5000 },
+const unsubscribe = session.onEvent((event) => {
+  console.log(event.seq, event.type);
 });
 
-// Get session info
-const info = manager.get(sessionId);
-console.log(info?.state);  // 'running' | 'waiting_for_tool' | 'completed' | ...
+const result = await session.execute(`return await callTool('fetchData', { id: '42' });`);
 
-// List all sessions
-const sessions = manager.list();
+session.state; // 'completed' | 'failed' | 'cancelled' | ...
+session.getEvents(); // the kept events
+await session.cancel('no longer needed'); // no effect on a finished session
 
-// Cancel a session
-await manager.cancel(sessionId, 'User requested cancellation');
+broker.getSession(session.sessionId);
+broker.listSessions();
+await broker.terminateSession(session.sessionId);
 ```
 
-### Session Info
+A session id names one session: `createSession({ sessionId })` throws for an id that is in use, and when `sessions.maxSessions` sessions are registered. A finished session stays registered, so that it can be replayed, until the next cleanup.
 
-```typescript
-import type { SessionInfo } from '@enclave-vm/broker';
+### What a session keeps
 
-const info: SessionInfo = {
-  sessionId: 'ses_...',
-  state: 'running',
-  createdAt: Date.now(),
-  limits: {
-    timeout: 30000,
-    memoryLimit: 128 * 1024 * 1024,
-  },
-  stats: {
-    executionTime: 1234,
-    toolCalls: 3,
-    memoryUsage: 1024 * 1024,
-  },
-};
-```
+A session keeps its most recent events for replays, up to `history.maxEvents` events and `history.maxBytes` bytes. When a bound is reached the oldest events are dropped; `session.firstReplayableSeq` is the lowest sequence number from which everything is still kept.
 
-### Broker Session
+### Cancelling
 
-```typescript
-import { createBrokerSession, type BrokerSessionConfig } from '@enclave-vm/broker';
+A session runs in the broker's process, on its thread. Cancelling a session aborts the tool call in flight and refuses every later one. It does not interrupt a script that is computing: such a script holds the thread until it ends or reaches `toolTimeoutMs`.
 
-// Lower-level session wrapper
-const session = createBrokerSession({
-  enclave,          // Enclave instance
-  toolRegistry,     // Tool registry
-  sessionId,        // Session ID
-  limits,           // Session limits
-});
-
-// Execute code
-const stream = session.execute(code);
-
-// Submit tool result
-await session.submitToolResult(callId, result);
-
-// Cancel execution
-await session.cancel('Timeout exceeded');
-```
+<Warning>
+One script that computes without calling a tool blocks every other session of the broker for up to `toolTimeoutMs`. Keep that limit low, and run the broker in a process of its own when you serve callers you do not trust.
+</Warning>
 
 ## HTTP API
 
@@ -230,202 +189,223 @@ await session.cancel('Timeout exceeded');
 
 ```typescript
 import express from 'express';
-import { createBroker, createExpressRouter } from '@enclave-vm/broker';
+import { createBroker, createSessionHandler, registerExpressRoutes } from '@enclave-vm/broker';
+
+const broker = createBroker();
+const handler = createSessionHandler({
+  broker,
+  identify: (request) => (request.raw as { user?: { id: string } }).user?.id,
+  allowedOrigins: ['https://app.example.com'],
+});
 
 const app = express();
-const broker = createBroker();
-
-// Mount the broker routes
-const router = createExpressRouter(broker);
-app.use('/api/enclave', router);
-
-// Routes created:
-// POST /api/enclave/sessions - Create session
-// GET  /api/enclave/sessions - List sessions
-// GET  /api/enclave/sessions/:id - Get session info
-// POST /api/enclave/sessions/:id/cancel - Cancel session
+app.use(express.json({ limit: '1mb' }));
+app.use(authenticate); // your authentication middleware
+registerExpressRoutes(app, handler);
 
 app.listen(3000);
 ```
 
-### Manual Route Registration
+| Route | What it does |
+|-------|--------------|
+| `POST /sessions` | Creates a session, runs `code`, answers with the events as NDJSON until the `final` event |
+| `GET /sessions` | Lists sessions |
+| `GET /sessions/:sessionId` | State of one session |
+| `GET /sessions/:sessionId/stream` | Replays the kept events from `?fromSeq=N` on and follows the session until it ends |
+| `DELETE /sessions/:sessionId` | Ends a session |
+| `POST /sessions/:sessionId/cancel` | Ends a session (the `cancelUrl` of the `session_init` event) |
+
+To mount the routes under a prefix, register them on an Express router and mount the router:
 
 ```typescript
-import { registerExpressRoutes } from '@enclave-vm/broker';
+const router = express.Router();
+registerExpressRoutes(router, handler);
+app.use('/api/enclave', authenticate, router);
+```
 
-const app = express();
-const broker = createBroker();
+`createExpressRouter` is deprecated: it registers no route. For another framework, adapt its request and response to `BrokerRequest` and `BrokerResponse` and call the handlers of `handler.getRoutes()`.
 
-registerExpressRoutes(app, broker, {
-  prefix: '/api/v1',
-  middleware: [authMiddleware],
+### Who may see a session
+
+<Warning>
+Without an `identify` hook the routes do not tell callers apart. Whoever can reach them can list every session, read its state, replay its events (tool arguments and the final result included) and end it. Authentication in front of the routes does not change that: an authenticated caller still reaches the sessions of every other caller.
+</Warning>
+
+With `identify`, every session belongs to the caller that created it:
+
+```typescript
+const handler = createSessionHandler({
+  broker,
+  identify: (request) => {
+    // request.raw: the framework's request; request.headers: its headers
+    const user = (request.raw as { user?: { id: string } }).user;
+    return user?.id; // a stable, non-empty string per caller, or nothing
+  },
 });
 ```
 
-### Session Handler
+- `GET /sessions` lists the caller's own sessions.
+- Reading, replaying and ending a session is answered only for its owner. Another caller gets `404`, the answer of an id that does not exist.
+- A request for which the hook returns nothing, or throws, is answered with `401`.
+- A session created in process has no owner and is not reachable over the routes, unless you create it with `owner`.
+
+The hook identifies a caller; it does not verify a credential. Do that in your own middleware or inside the hook.
+
+It separates sessions, not data: a tool handler receives its arguments and a context with the id of its session, not the caller. A tool that reads data restricted per caller applies that restriction itself, with the owner of its session (`broker.getSession(context.sessionId as SessionId)?.owner`, the caller the hook returned), or leaves it to the data store.
+
+### Handler Options
 
 ```typescript
 import { createSessionHandler, type SessionHandlerConfig } from '@enclave-vm/broker';
 
-const handler = createSessionHandler({
+const config: SessionHandlerConfig = {
   broker,
-  onError: (error, req) => {
-    console.error('Handler error:', error);
-  },
-});
-
-// Use with any HTTP framework
-app.post('/sessions', async (req, res) => {
-  const result = await handler.createSession(req.body);
-  res.json(result);
-});
+  identify: (request) => undefined, // see above
+  cors: true, // default
+  allowedOrigins: ['https://app.example.com'], // default ['*']
+  allowedHeaders: ['X-API-Key'], // besides Content-Type, Accept, Last-Event-ID, Authorization
+  sessionList: true, // serve GET /sessions (default)
+  maxStreamsPerSession: 8, // default
+  maxBufferedBytes: 8 * 1024 * 1024, // default
+};
 ```
 
-### API Types
+<Warning>
+CORS is on by default for every origin: a page of any origin can call a broker its visitor's browser can reach. Set `allowedOrigins`, or `cors: false`, for anything but a public demo.
+</Warning>
+
+The routes answer the preflight (`OPTIONS`) themselves, and a browser sends it without the credential: authentication in front of the routes has to let `OPTIONS` requests through to them.
+
+- `maxStreamsPerSession` bounds the streams one session has open (the request that created it and the replay streams). A further one is answered with `429`.
+- `maxBufferedBytes`: a reader that falls behind by more is disconnected. When it is the creator of the session, the session is cancelled.
+
+### The Request Body of POST /sessions
 
 ```typescript
-import type {
-  CreateSessionRequest,
-  SessionInfoResponse,
-  ListSessionsResponse,
-  ErrorResponse,
-  StreamOptions,
-} from '@enclave-vm/broker';
+import type { CreateSessionRequest } from '@enclave-vm/broker';
 
-// Create session request
 const request: CreateSessionRequest = {
-  code: 'console.log("Hello")',
-  limits: {
-    timeout: 30000,
+  code: 'return 1;',
+  sessionId: 's_3f0e2f6e-1c1b-4c57-9a55-0a8b5a3d2c11', // optional
+  config: {
+    maxExecutionMs: 30_000, // lifetime of the session
+    maxToolCalls: 10,
+    heartbeatIntervalMs: 15_000,
   },
-  streamOptions: {
-    includeHeartbeats: false,
-  },
-};
-
-// Session info response
-const response: SessionInfoResponse = {
-  sessionId: 'ses_...',
-  state: 'completed',
-  createdAt: 1234567890,
-  stats: {
-    executionTime: 100,
-    toolCalls: 0,
-  },
+  filter: { mode: 'exclude', rules: [{ types: { types: ['heartbeat'] } }] },
 };
 ```
+
+The body is validated as a whole; a request that does not pass is answered with `400` and creates no session.
+
+- `config` values are positive integers. `maxToolCalls` and `maxExecutionMs` cannot exceed the broker's limits (a larger value is lowered to them), and `heartbeatIntervalMs` is kept between 1 second and 5 minutes.
+- `sessionId` is `s_` followed by 1 to 128 characters of `A-Z a-z 0-9 . _ : ~ -`. An id in use is answered with `409`.
+- `filter` has bounds: 16 rules, 32 patterns, 256 characters per pattern.
+- `encryption: { mode: 'required' }` is refused: the broker does not encrypt sessions.
+
+### Answers
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `INVALID_REQUEST`, `INVALID_FILTER`, `ENCRYPTION_NOT_SUPPORTED` | The request did not pass validation |
+| 401 | `UNAUTHORIZED` | `identify` gave no caller |
+| 404 | `NOT_FOUND` | No such session for this caller |
+| 409 | `SESSION_EXISTS` | The session id is in use |
+| 410 | `EVENTS_GONE` | A replay would start below the kept events |
+| 429 | `TOO_MANY_STREAMS` | The session has `maxStreamsPerSession` streams open |
+| 503 | `MAX_SESSIONS_REACHED` | `sessions.maxSessions` sessions are registered |
+| 500 | `SESSION_CREATE_ERROR` | The session could not be created |
+
+An error answer is `{ code, message }` with a fixed message.
 
 ## Event Filtering
 
-Filter which events are streamed to clients.
+Filter which events are sent to a client.
 
 ### Type-Based Filtering
 
 ```typescript
 import { createEventFilter, createTypeFilter } from '@enclave-vm/broker';
-import { FilterMode } from '@enclave-vm/types';
 
-// Exclude heartbeats and debug logs
+// Do not send heartbeats and tool progress
 const filter = createEventFilter({
-  typeFilter: createTypeFilter({
-    mode: FilterMode.EXCLUDE,
-    types: ['heartbeat'],
-  }),
+  config: createTypeFilter('exclude', ['heartbeat', 'tool_progress']),
 });
 
-// Filter events
-const shouldInclude = filter.matches(event);
-
-// Filter a stream
-const filteredStream = filter.filterStream(eventStream);
+session.onEvent((event) => {
+  if (filter.shouldSend(event)) sendToClient(event);
+});
 ```
 
 ### Content-Based Filtering
 
 ```typescript
-import { createContentFilter } from '@enclave-vm/broker';
-import { FilterMode, PatternType } from '@enclave-vm/types';
+import { createEventFilter } from '@enclave-vm/broker';
 
-// Filter out events containing sensitive data
 const filter = createEventFilter({
-  contentFilter: createContentFilter({
-    mode: FilterMode.EXCLUDE,
-    patterns: [
-      { type: PatternType.REGEX, content: 'password|secret|token' },
-      { type: PatternType.PREFIX, content: 'DEBUG:' },
+  config: {
+    mode: 'include',
+    rules: [
+      {
+        types: { types: ['tool_call'] },
+        content: {
+          patterns: [
+            { type: 'prefix', pattern: 'users_', field: 'payload.toolName' },
+            { type: 'glob', pattern: 'report-*', field: 'payload.toolName' },
+            { type: 'regex', pattern: '^(get|list)', field: 'payload.toolName', caseInsensitive: true },
+          ],
+          match: 'any',
+        },
+      },
     ],
-  }),
+    regexTimeoutMs: 100,
+  },
 });
 ```
 
-### Combined Filtering
+A rule matches when its type filter and its content filter both match; a filter matches when one of its rules does. Without `field`, a pattern is matched against the payload as JSON text.
 
-```typescript
-const filter = createEventFilter({
-  typeFilter: {
-    mode: FilterMode.INCLUDE,
-    types: ['stdout', 'log', 'final', 'error'],
-  },
-  contentFilter: {
-    mode: FilterMode.EXCLUDE,
-    patterns: [
-      { type: PatternType.GLOB, content: '*internal*' },
-    ],
-  },
-});
-
-// Use with streaming
-const stream = broker.execute(code);
-for await (const event of stream) {
-  if (filter.matches(event)) {
-    sendToClient(event);
-  }
-}
-```
+- Evaluating one event takes a bounded time: regular expressions and globs run under `regexTimeoutMs` (100 ms by default). The `budgetMs` option of `createEventFilter` bounds all evaluations of one filter together.
+- An event the filter could not evaluate (a pattern that does not compile, an evaluation that ran out of time) is not sent, in either mode.
+- In exclude mode a glob is matched as text: `*` also matches `/` and a leading dot. In include mode a glob follows path rules.
+- A filter that arrives in a request gets at most 100 ms per event and 500 ms per stream, and its globs are matched without brace and extglob expansion.
 
 ### Always-Allowed Events
 
-Some events are always included regardless of filters to ensure protocol correctness:
+`session_init` and `final` are sent whatever the filter says, unless the configuration sets its own `alwaysAllow` list.
+
+<Warning>
+A filter is a convenience for the client, not a confidentiality control. Data that a client must not see has to stay out of the events: out of tool arguments and out of the result of the script.
+</Warning>
+
+## Tools from OpenAPI
 
 ```typescript
-import { DEFAULT_ALWAYS_ALLOW } from '@enclave-vm/types';
+const source = broker.openapi({
+  name: 'users',
+  url: 'https://api.example.com/openapi.json',
+  baseUrl: 'https://api.example.com',
+  auth: { type: 'bearer', token: process.env.API_TOKEN! },
+  intervalMs: 60_000,
+  loaderOptions: { includeOperations: ['listUsers', 'getUser'] },
+});
 
-// These events bypass filters:
-// - session_init
-// - final
-// - error
+source.on('error', (error) => console.error('users API:', error.message));
+source.on('toolsUpdated', ({ added, removed }) => console.log({ added, removed }));
+
+await source.start(); // loads the specification, registers users_listUsers, users_getUser, and polls
+source.getStats(); // { toolCount, lastUpdate, specHash, pollHealth, lastError? }
 ```
 
-## Execution Options
+- A failure while polling is reported with the `error` event when it has a listener, and in `getStats()` either way. The tools of the last specification that was applied stay registered; tools are replaced in one step, and a source never replaces a tool it does not manage.
+- A path parameter fills its own segment of the path. A value that would leave the segment empty or turn it into `.` or `..` fails the call.
+- `auth` and `loaderOptions.headers` go to the origin of `baseUrl` only: not to a specification on another origin (the source's `headers` are for the specification host), and not along a redirect to another origin. A header parameter of the specification cannot replace them.
+- Upstream responses are read up to `loaderOptions.maxResponseBytes` (10 MB by default), specifications up to `maxSpecBytes` (32 MB), and fetching a specification is bounded by `fetchTimeoutMs`.
 
-```typescript
-import type { ExecuteOptions } from '@enclave-vm/broker';
-
-const options: ExecuteOptions = {
-  // Override default limits
-  limits: {
-    timeout: 60000,
-    maxToolCalls: 50,
-  },
-
-  // Pre-defined globals
-  globals: {
-    config: { apiKey: 'xxx' },
-  },
-
-  // Event filter
-  filter: createEventFilter({ /* ... */ }),
-
-  // Reference sidecar for large data
-  references: new Map([
-    ['ref_data', largeDataset],
-  ]),
-};
-
-const stream = broker.execute(code, options);
-```
+Generate tools only for the operations a script may call: a script decides their arguments.
 
 ## Links
 
+- [API reference](/api-reference/enclavejs-broker)
 - [GitHub](https://github.com/agentfront/enclave/tree/main/libs/broker)
 - [npm](https://www.npmjs.com/package/@enclave-vm/broker)

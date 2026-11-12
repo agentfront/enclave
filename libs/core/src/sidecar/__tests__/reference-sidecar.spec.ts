@@ -1,4 +1,11 @@
-import { ReferenceSidecar, SidecarLimitError, REFERENCE_CONFIGS, REF_ID_PATTERN, isReferenceId } from '../index';
+import {
+  ReferenceSidecar,
+  SidecarLimitError,
+  REFERENCE_CONFIGS,
+  REF_ID_PATTERN,
+  isReferenceId,
+  getMaxTotalResolvedSize,
+} from '../index';
 
 describe('ReferenceSidecar', () => {
   describe('store and retrieve', () => {
@@ -170,6 +177,88 @@ describe('ReferenceSidecar', () => {
         expect(e).toBeInstanceOf(SidecarLimitError);
         expect((e as SidecarLimitError).code).toBe('MAX_REFERENCE_COUNT');
       }
+    });
+  });
+
+  describe('resolving for tool calls', () => {
+    const config = { ...REFERENCE_CONFIGS.STRICT, maxTotalSize: 1000, maxReferenceSize: 1000 };
+
+    it('should resolve a stored value to its string', () => {
+      const sidecar = new ReferenceSidecar(config);
+      const refId = sidecar.store('héllo wörld', 'tool-result');
+
+      expect(sidecar.resolveString(refId)).toBe('héllo wörld');
+      expect(sidecar.isResolved(refId)).toBe(true);
+    });
+
+    it('should return undefined for an unknown reference and count nothing', () => {
+      const sidecar = new ReferenceSidecar(config);
+
+      expect(sidecar.resolveString('__REF_00000000-0000-0000-0000-000000000000__')).toBeUndefined();
+      expect(sidecar.getResolvedSize()).toBe(0);
+    });
+
+    it('should count a stored value once, in bytes', () => {
+      const sidecar = new ReferenceSidecar(config);
+      const refId = sidecar.store('héllo', 'tool-result');
+
+      expect(sidecar.isResolved(refId)).toBe(false);
+      sidecar.resolveString(refId);
+      sidecar.resolveString(refId);
+
+      expect(sidecar.getResolvedSize()).toBe(Buffer.byteLength('héllo'));
+    });
+
+    it('should leave retrieveString uncounted', () => {
+      const sidecar = new ReferenceSidecar(config);
+      const refId = sidecar.store('data', 'tool-result');
+
+      expect(sidecar.retrieveString(refId)).toBe('data');
+      expect(sidecar.getResolvedSize()).toBe(0);
+      expect(sidecar.isResolved(refId)).toBe(false);
+    });
+
+    it('should allow twice the storage limit in total by default', () => {
+      expect(getMaxTotalResolvedSize(config)).toBe(2000);
+      expect(getMaxTotalResolvedSize(REFERENCE_CONFIGS.STRICT)).toBe(2 * REFERENCE_CONFIGS.STRICT.maxTotalSize);
+      expect(getMaxTotalResolvedSize({ ...config, maxTotalResolvedSize: 300 })).toBe(300);
+      expect(getMaxTotalResolvedSize({ ...config, maxTotalResolvedSize: Number.NaN })).toBe(2000);
+    });
+
+    it('should refuse to count beyond the total and count nothing then', () => {
+      const sidecar = new ReferenceSidecar({ ...config, maxTotalResolvedSize: 100 });
+
+      sidecar.countResolved(60);
+      expect(sidecar.canResolve(40)).toBe(true);
+      expect(sidecar.canResolve(41)).toBe(false);
+      expect(() => sidecar.countResolved(41)).toThrow(SidecarLimitError);
+      expect(sidecar.getResolvedSize()).toBe(60);
+
+      try {
+        sidecar.countResolved(41);
+      } catch (error) {
+        expect((error as SidecarLimitError).code).toBe('MAX_TOTAL_RESOLVED_SIZE');
+        expect((error as SidecarLimitError).limit).toBe(100);
+      }
+    });
+
+    it('should refuse a stored value that does not fit in the total', () => {
+      const sidecar = new ReferenceSidecar({ ...config, maxTotalResolvedSize: 10 });
+      const refId = sidecar.store('x'.repeat(11), 'tool-result');
+
+      expect(() => sidecar.resolveString(refId)).toThrow(SidecarLimitError);
+      expect(sidecar.isResolved(refId)).toBe(false);
+    });
+
+    it('should resolve nothing after dispose', () => {
+      const sidecar = new ReferenceSidecar(config);
+      const refId = sidecar.store('data', 'tool-result');
+      sidecar.resolveString(refId);
+
+      sidecar.dispose();
+
+      expect(sidecar.resolveString(refId)).toBeUndefined();
+      expect(sidecar.isResolved(refId)).toBe(false);
     });
   });
 

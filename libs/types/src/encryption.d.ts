@@ -2,7 +2,10 @@
  * @enclave-vm/types - Encryption types
  *
  * Types for per-hop encryption using ECDH + AES-GCM.
- * Encryption is optional but recommended to prevent intermediaries from reading payloads.
+ *
+ * These are the message shapes only. `@enclave-vm/stream` has the primitives that produce and
+ * read them; the client and the broker of this repository do not use them, so a session
+ * between the two is protected by its transport (TLS) alone.
  */
 import type { ProtocolVersion, SessionId } from './protocol.js';
 import type { EventType } from './events.js';
@@ -88,8 +91,9 @@ export interface ServerHello {
   /** Key ID for the derived session key */
   keyId: string;
   /**
-   * Signature over the handshake transcript (base64 encoded).
-   * Allows client to verify server identity if server has a pinned key.
+   * Reserved for a signature over the handshake transcript (base64 encoded).
+   * Nothing in this repository creates or verifies it: the key exchange of
+   * `@enclave-vm/stream` is not authenticated.
    */
   signatureB64?: string;
 }

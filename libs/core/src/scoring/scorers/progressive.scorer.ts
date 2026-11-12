@@ -8,6 +8,10 @@
  * This provides optimal latency for benign code while still catching
  * sophisticated attacks through ML analysis.
  *
+ * When the detailed stage is called for and cannot answer (it throws, or it was not
+ * configured), the scorer either answers with the fast score alone or fails, depending on
+ * `requireDetailed` (see `ProgressiveScorerOptions`).
+ *
  * @packageDocumentation
  */
 
@@ -17,6 +21,33 @@ import { ExternalApiScorer } from './external-api.scorer';
 import { LocalLlmScorer } from './local-llm.scorer';
 import type { ExtractedFeatures, ScoringResult, RiskSignal, ProgressiveScoringConfig } from '../types';
 import { DEFAULT_PROGRESSIVE_CONFIG } from '../types';
+
+/**
+ * Options of the progressive scorer
+ */
+export interface ProgressiveScorerOptions {
+  /**
+   * What happens when the fast score reaches the escalation threshold and the detailed stage
+   * cannot answer (it throws, or none is configured):
+   *
+   * - false: the fast result is the answer
+   * - true: `score()` throws a `ProgressiveScorerError`, so that whoever asked decides. The
+   *   scoring gate sets this when it is configured with `failOpen: false`.
+   *
+   * @default false
+   */
+  requireDetailed?: boolean;
+}
+
+/**
+ * Error thrown when the detailed stage is required and cannot answer
+ */
+export class ProgressiveScorerError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProgressiveScorerError';
+  }
+}
 
 /**
  * Progressive Scorer - fast check first, escalate if suspicious
@@ -44,10 +75,12 @@ export class ProgressiveScorer extends BaseScorer {
   private readonly escalationThreshold: number;
   private readonly combination: 'replace' | 'max' | 'avg';
   private readonly config: ProgressiveScoringConfig;
+  private readonly requireDetailed: boolean;
 
-  constructor(config: ProgressiveScoringConfig) {
+  constructor(config: ProgressiveScoringConfig, options: ProgressiveScorerOptions = {}) {
     super();
     this.config = config;
+    this.requireDetailed = options.requireDetailed === true;
     this.escalationThreshold = config.escalationThreshold ?? DEFAULT_PROGRESSIVE_CONFIG.escalationThreshold;
     this.combination = config.combination ?? DEFAULT_PROGRESSIVE_CONFIG.combination;
 
@@ -119,6 +152,12 @@ export class ProgressiveScorer extends BaseScorer {
 
     // Step 3: Escalate to detailed scoring
     if (!this.detailedScorer) {
+      if (this.requireDetailed) {
+        throw new ProgressiveScorerError(
+          `Detailed scoring is required at a fast score of ${fastResult.totalScore} ` +
+            `(escalation threshold ${this.escalationThreshold}), and no detailed scorer is configured`,
+        );
+      }
       // No detailed scorer available - return fast result with note
       return {
         ...fastResult,
@@ -142,6 +181,12 @@ export class ProgressiveScorer extends BaseScorer {
         scorerType: 'progressive',
       };
     } catch (error) {
+      if (this.requireDetailed) {
+        throw new ProgressiveScorerError(
+          `Detailed scoring failed at a fast score of ${fastResult.totalScore} ` +
+            `(escalation threshold ${this.escalationThreshold}): ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       // Detailed scoring failed - use fast result
       console.warn(`[ProgressiveScorer] Detailed scoring failed: ${error}`);
       return {

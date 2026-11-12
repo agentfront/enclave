@@ -8,6 +8,8 @@
  * @packageDocumentation
  */
 
+import { MAX_TIMER_DELAY_MS } from '../utils/numeric-option';
+
 export class PausableTimer {
   private remainingMs: number;
   private resumedAt = 0;
@@ -25,7 +27,8 @@ export class PausableTimer {
   resume(): void {
     if (this.stopped || this.handle !== null) return;
     this.resumedAt = performance.now();
-    this.handle = setTimeout(() => this.expire(), Math.max(0, this.remainingMs));
+    // A timer does not take a delay beyond MAX_TIMER_DELAY_MS: it would fire at once
+    this.handle = setTimeout(() => this.expire(), Math.min(Math.max(0, this.remainingMs), MAX_TIMER_DELAY_MS));
   }
 
   /** Pause the countdown, keeping the time left. */

@@ -9,6 +9,8 @@
 
 import { EventEmitter } from 'events';
 import { sha256Hex } from './hash-utils';
+import { readBodyText } from './http-utils';
+import { DEFAULT_MAX_SPEC_BYTES } from './openapi-tool-loader';
 
 /**
  * Change detection strategy.
@@ -47,6 +49,8 @@ export interface OpenApiPollerConfig {
   unhealthyThreshold?: number;
   /** Additional headers for fetch requests */
   headers?: Record<string, string>;
+  /** Largest specification that is read, in bytes @default 33554432 (32MB) */
+  maxSpecBytes?: number;
 }
 
 /**
@@ -98,6 +102,10 @@ export class OpenApiSpecPoller extends EventEmitter {
       unhealthyThreshold: config.unhealthyThreshold ?? 3,
       retry: { ...DEFAULT_RETRY, ...config.retry },
       headers: config.headers ?? {},
+      maxSpecBytes:
+        typeof config.maxSpecBytes === 'number' && config.maxSpecBytes > 0
+          ? config.maxSpecBytes
+          : DEFAULT_MAX_SPEC_BYTES,
     };
   }
 
@@ -265,7 +273,7 @@ export class OpenApiSpecPoller extends EventEmitter {
       const etag = response.headers.get('etag');
       const lastModified = response.headers.get('last-modified');
 
-      const body = await response.text();
+      const body = await readBodyText(response, this.config.maxSpecBytes);
 
       if (runSignal.aborted) return;
 

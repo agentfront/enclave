@@ -7,6 +7,13 @@ import { walkAll } from '../utils/ast-walk';
 import { tryGetStaticComputedKeys } from './coercion-utils';
 
 /**
+ * Names of the runtime that have no reserved prefix. The loop instrumentation compares a loop's
+ * counter with `__maxIterations`: a script that could declare or assign that name would decide
+ * its own iteration limit. Reserved whatever prefixes a preset configures.
+ */
+export const RUNTIME_RESERVED_NAMES: ReadonlySet<string> = new Set(['__maxIterations']);
+
+/**
  * Configuration options for ReservedPrefixRule
  */
 export interface ReservedPrefixOptions {
@@ -223,6 +230,17 @@ export class ReservedPrefixRule implements ValidationRule {
   }
 
   /**
+   * The reserved prefix a name starts with, or the name itself if it is one of the runtime's own
+   * (see RUNTIME_RESERVED_NAMES); undefined for a name a script may use.
+   */
+  private reservedMatch(name: string): string | undefined {
+    for (const prefix of this.reservedPrefixes) {
+      if (name.startsWith(prefix)) return prefix;
+    }
+    return RUNTIME_RESERVED_NAMES.has(name) ? name : undefined;
+  }
+
+  /**
    * Check if an identifier starts with a reserved prefix
    */
   private checkIdentifier(node: acorn.Node & { name: string }, context: ValidationContext): void {
@@ -233,8 +251,9 @@ export class ReservedPrefixRule implements ValidationRule {
       return; // Allow internal identifiers like __ag_main
     }
 
-    for (const prefix of this.reservedPrefixes) {
-      if (identifierName.startsWith(prefix)) {
+    {
+      const prefix = this.reservedMatch(identifierName);
+      if (prefix !== undefined) {
         if (this.reported.has(node)) return;
         this.reported.add(node);
         context.report({
@@ -306,8 +325,9 @@ export class ReservedPrefixRule implements ValidationRule {
       return;
     }
 
-    for (const prefix of this.reservedPrefixes) {
-      if (identifierName.startsWith(prefix)) {
+    {
+      const prefix = this.reservedMatch(identifierName);
+      if (prefix !== undefined) {
         if (this.reported.has(node)) return;
         this.reported.add(node);
         context.report({
@@ -356,7 +376,7 @@ export class ReservedPrefixRule implements ValidationRule {
     } else if (node.computed) {
       // obj[`__safe_foo`] = ..., obj[['__safe_foo']] = ...: every statically resolvable key form
       const staticKeys = tryGetStaticComputedKeys(node.property);
-      propName = staticKeys.find((k) => this.reservedPrefixes.some((prefix) => k.startsWith(prefix))) ?? null;
+      propName = staticKeys.find((k) => this.reservedMatch(k) !== undefined) ?? null;
     } else if (node.property.type === 'Identifier') {
       // obj.__safe_foo = ...
       propName = node.property.name;
@@ -364,8 +384,9 @@ export class ReservedPrefixRule implements ValidationRule {
 
     if (!propName) return;
 
-    for (const prefix of this.reservedPrefixes) {
-      if (propName.startsWith(prefix)) {
+    {
+      const prefix = this.reservedMatch(propName);
+      if (prefix !== undefined) {
         if (this.reported.has(node)) return;
         this.reported.add(node);
         context.report({

@@ -122,7 +122,9 @@ export interface SessionLimits {
   maxToolResultBytes?: number;
 
   /**
-   * Individual tool execution timeout in milliseconds.
+   * How long the session's script may run, in milliseconds: the broker passes it to the enclave
+   * as its `timeout`. The name is historical; the time one tool call may take is
+   * `perToolDeadlineMs` and the tool's own `ToolConfig.timeout`.
    * @default 30000 (30 seconds)
    */
   toolTimeoutMs?: number;
@@ -191,30 +193,33 @@ export const SessionState = {
 export type SessionState = (typeof SessionState)[keyof typeof SessionState];
 
 /**
- * Tool configuration for timeout and retry behavior.
+ * Tool configuration. Only `timeout` has an effect; the other fields are part of the protocol's
+ * design and no package acts on them yet.
  */
 export interface ToolConfig {
   /**
-   * Tool execution timeout in milliseconds.
-   * Overrides session-level toolTimeoutMs.
+   * Tool execution timeout in milliseconds. The broker applies the lower of this and the
+   * session's `perToolDeadlineMs`.
    */
   timeout?: number;
 
   /**
    * Whether the tool can be retried on failure.
+   * Not implemented: no package retries a tool call.
    * @default false
    */
   retryable?: boolean;
 
   /**
    * Maximum number of retries if retryable is true.
+   * Not implemented (see `retryable`).
    * @default 3
    */
   maxRetries?: number;
 
   /**
    * Whether the tool result can be read by runtime code.
-   * If false, result is always stored as a reference.
+   * Not implemented: a tool result is always delivered to the script.
    * @default true
    */
   runtimeReadable?: boolean;

@@ -26,6 +26,7 @@ export interface RunOptions {
   transform?: boolean;
   toolNamespaces?: Record<string, string[] | Record<string, string>>;
   sanitizeStackTraces?: boolean;
+  preScan?: { preset?: string; config?: Record<string, unknown> };
   maxSanitizeDepth?: number;
   maxSanitizeProperties?: number;
 }

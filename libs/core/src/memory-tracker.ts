@@ -127,6 +127,8 @@ export class MemoryTracker {
   private trackedBytes = 0;
   private peakTrackedBytes = 0;
   private allocationCount = 0;
+  /** Whether this tracker has refused an allocation since it was started */
+  private limitExceeded = false;
   private readonly config: MemoryTrackerConfig;
 
   constructor(config: Partial<MemoryTrackerConfig> = {}) {
@@ -145,6 +147,15 @@ export class MemoryTracker {
     this.trackedBytes = 0;
     this.peakTrackedBytes = 0;
     this.allocationCount = 0;
+    this.limitExceeded = false;
+  }
+
+  /**
+   * Whether the limit was exceeded since tracking started: the tracker itself refused an
+   * allocation. An error that only says so about itself is not evidence of that.
+   */
+  hasExceededLimit(): boolean {
+    return this.limitExceeded;
   }
 
   /**
@@ -161,6 +172,7 @@ export class MemoryTracker {
     // (fail closed) and ignored otherwise.
     if (typeof bytes !== 'number' || Number.isNaN(bytes)) {
       if (this.config.memoryLimit > 0) {
+        this.limitExceeded = true;
         throw new MemoryLimitError(
           'Memory limit exceeded: allocation size is not a number',
           this.trackedBytes,
@@ -180,6 +192,7 @@ export class MemoryTracker {
 
     // Check limit (0 = unlimited)
     if (this.config.memoryLimit > 0 && this.trackedBytes > this.config.memoryLimit) {
+      this.limitExceeded = true;
       throw new MemoryLimitError(
         `Memory limit exceeded: ${this.formatBytes(this.trackedBytes)} used > ${this.formatBytes(
           this.config.memoryLimit,

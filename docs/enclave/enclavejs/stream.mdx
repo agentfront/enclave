@@ -1,11 +1,15 @@
 ---
 title: '@enclave-vm/stream'
-description: 'NDJSON streaming, encryption, and reconnection handling for EnclaveJS'
+description: 'NDJSON streaming, reconnection helpers, and encryption primitives for EnclaveJS'
 ---
 
 # @enclave-vm/stream
 
-Streaming protocol implementation for the EnclaveJS runtime. Provides NDJSON parsing, end-to-end encryption, and automatic reconnection with event buffering.
+Streaming protocol building blocks for the EnclaveJS runtime. Provides NDJSON serialization and parsing, reconnection helpers, and encryption primitives.
+
+<Warning>
+  No EnclaveJS package uses the encryption primitives. `@enclave-vm/client`, `@enclave-vm/react`, `@enclave-vm/broker` and `@enclave-vm/runtime` do not encrypt, perform no handshake and have no encryption option. A session between the client and the broker is plain JSON protected only by the transport, so serve it over HTTPS. See [Encryption Primitives](#encryption-primitives).
+</Warning>
 
 ## Installation
 
@@ -20,63 +24,54 @@ EnclaveJS uses NDJSON (Newline-Delimited JSON) for streaming events. Each line i
 ### Serialization
 
 ```typescript
-import {
-  serializeEvent,
-  serializeEvents,
-} from '@enclave-vm/stream';
+import { serializeEvent, serializeEvents, type StreamEvent } from '@enclave-vm/stream';
 
-// Serialize a single event
-const line = serializeEvent({
-  type: 'stdout',
-  sessionId: 'ses_...',
-  seq: 1,
-  timestamp: Date.now(),
-  payload: { chunk: 'Hello\n' },
-});
-// '{"type":"stdout",...}\n'
+const events: StreamEvent[] = [
+  { protocolVersion: 2, sessionId: 's_abc123', seq: 1, type: 'stdout', payload: { chunk: 'Hello\n' } },
+  { protocolVersion: 2, sessionId: 's_abc123', seq: 2, type: 'final', payload: { ok: true, result: 42 } },
+];
 
-// Serialize multiple events
-const lines = serializeEvents([event1, event2, event3]);
-// '{"type":"stdout",...}\n{"type":"log",...}\n{"type":"final",...}\n'
+// Serialize a single event (one line, no trailing newline)
+const line = serializeEvent(events[0]);
+// '{"protocolVersion":2,"sessionId":"s_abc123","seq":1,"type":"stdout","payload":{"chunk":"Hello\\n"}}'
+
+// Serialize multiple events, joined with '\n'
+const lines = serializeEvents(events);
 ```
 
 ### Parsing
 
+Lines are validated against the event schemas of `@enclave-vm/types`.
+
 ```typescript
-import {
-  parseLine,
-  parseLines,
-  NdjsonStreamParser,
-} from '@enclave-vm/stream';
+import { parseLine, parseLines, NdjsonStreamParser } from '@enclave-vm/stream';
 
 // Parse a single line
-const result = parseLine('{"type":"stdout",...}');
+const result = parseLine(line);
 if (result.success) {
-  console.log(result.data);  // Typed StreamEvent
+  console.log(result.data.type); // 'stdout'
+} else {
+  console.error(result.error);
 }
 
 // Parse multiple lines
-const events = parseLines(ndjsonString);
-// Returns array of parse results
+const { events, errors } = parseLines(ndjsonString);
 
 // Incremental stream parsing
-const parser = new NdjsonStreamParser();
-
-parser.on('event', (event) => {
-  console.log('Received event:', event.type);
+const parser = new NdjsonStreamParser({
+  onEvent: (event) => console.log('Received event:', event.type),
+  onError: (error) => console.error(`Line ${error.line}: ${error.error}`),
 });
 
-parser.on('error', (error) => {
-  console.error('Parse error:', error);
-});
+// Feed chunks as they arrive; a chunk may end in the middle of a line
+parser.feed('{"protocolVersion":2,"sessionId":"s_abc123",');
+parser.feed('"seq":1,"type":"stdout","payload":{"chunk":"Hello\\n"}}\n');
 
-// Feed chunks as they arrive
-parser.write('{"type":"stdout"');
-parser.write(',...}\n{"type":');
-parser.write('"log",...}\n');
+// Flush what is left when the stream ends
+parser.flush();
 ```
 
-### Node.js Streams
+### Web Streams
 
 ```typescript
 import {
@@ -85,117 +80,143 @@ import {
   parseNdjsonStream,
 } from '@enclave-vm/stream';
 
-// Create a transform stream for parsing
+// TransformStream from text chunks to events
 const parseStream = createNdjsonParseStream();
 
-// Create a transform stream for serialization
+// TransformStream from events to lines
 const serializeStream = createNdjsonSerializeStream();
 
-// Parse an async iterable of chunks
+// Async generator over a ReadableStream<Uint8Array>, such as a fetch() response body
 const events = parseNdjsonStream(responseBody);
 for await (const event of events) {
   console.log(event.type, event.payload);
 }
 ```
 
-## End-to-End Encryption
+`createNdjsonParseStream` and `parseNdjsonStream` skip a line that is not a valid event. Use `NdjsonStreamParser` to be told about such lines.
 
-EnclaveJS supports optional encryption using ECDH key exchange and AES-256-GCM.
+### Line Length Limit
+
+The incremental parsers never hold more than `maxLineLength` characters of a line that has not ended. The default is `DEFAULT_MAX_LINE_LENGTH` (8 MiB).
+
+```typescript
+import {
+  NdjsonStreamParser,
+  NdjsonLineTooLongError,
+  createNdjsonParseStream,
+  parseNdjsonStream,
+  DEFAULT_MAX_LINE_LENGTH, // 8 * 1024 * 1024
+} from '@enclave-vm/stream';
+
+const options = { maxLineLength: 1024 * 1024 };
+
+// Reports the line once through onError, then skips it
+const parser = new NdjsonStreamParser({ onEvent, onError, ...options });
+
+// Both end with an NdjsonLineTooLongError
+const parseStream = createNdjsonParseStream(options);
+const events = parseNdjsonStream(responseBody, options);
+```
+
+A `maxLineLength` that is not a positive integer throws a `RangeError`.
+
+## Encryption Primitives
+
+The package exports the pieces of an encrypted channel: ECDH P-256 key exchange helpers, HKDF-SHA-256 key derivation, AES-256-GCM, and the `enc` envelope of the protocol.
+
+<Warning>
+  Nothing in EnclaveJS calls these functions, and `new EnclaveClient({ encryption })` throws. An application that wants payload encryption has to implement both ends itself, exchange the hello messages and the envelopes over its own endpoints, and keep using TLS. The [Encrypted Sessions](/examples/encrypted-sessions) example shows the wiring.
+</Warning>
 
 ### Key Exchange (ECDH)
 
 ```typescript
 import {
   generateKeyPair,
-  exportPublicKey,
-  importPublicKey,
-  deriveSharedSecret,
   createClientHello,
-  createServerHello,
   processClientHello,
   processServerHello,
+  deriveSharedSecret,
 } from '@enclave-vm/stream';
 
-// Client: Generate key pair and create hello
-const clientKeys = await generateKeyPair('P-256');
-const clientHello = createClientHello(clientKeys);
+// Client: generate an ephemeral P-256 key pair and create the hello
+const clientKeys = await generateKeyPair();
+const clientHello = await createClientHello(clientKeys);
 
-// Server: Process client hello and respond
-const serverKeys = await generateKeyPair('P-256');
-const { sharedSecret } = await processClientHello(clientHello, serverKeys);
-const serverHello = createServerHello(serverKeys, sessionId);
+// Server: process the client hello. This generates the server's key pair,
+// a key id, and the server hello to send back.
+const { serverKeyPair, peerPublicKey: clientPublicKey, serverHello, keyId } = await processClientHello(clientHello);
+const serverSecret = await deriveSharedSecret(serverKeyPair.privateKey, clientPublicKey);
 
-// Client: Process server hello
-const { sharedSecret: clientSecret } = await processServerHello(
-  serverHello,
-  clientKeys
-);
+// Client: process the server hello
+const { peerPublicKey: serverPublicKey } = await processServerHello(serverHello);
+const clientSecret = await deriveSharedSecret(clientKeys.privateKey, serverPublicKey);
 
 // Both now have the same shared secret
 ```
 
+`generateKeyPair` returns a private key that cannot be exported. `processClientHello` and `processServerHello` throw `EcdhError` for a protocol version, curve, algorithm or key derivation that is not implemented. `exportPublicKey`, `importPublicKey` and `createServerHello` are available for a handshake with its own message format.
+
+<Warning>
+  The key exchange is not authenticated. `ServerHello.signatureB64` is neither created nor verified, and there is no key confirmation. The exchange protects against a party that can only read the connection. A party that can change messages can replace both public keys. An application that needs more has to authenticate the hello messages itself (for example by signing them with a key the client pins) or rely on TLS for the identity of the server.
+</Warning>
+
 ### Key Derivation (HKDF)
 
 ```typescript
-import {
-  deriveKey,
-  deriveSessionKeys,
-  deriveSessionCryptoKeys,
-} from '@enclave-vm/stream';
+import { deriveKey, deriveSessionKeys, deriveSessionCryptoKeys } from '@enclave-vm/stream';
 
-// Derive encryption key from shared secret
-const key = await deriveKey(sharedSecret, {
-  info: 'enclavejs-session',
-  length: 32,  // AES-256
-});
+// Two keys, one per direction, as raw bytes
+const { clientToServerKey, serverToClientKey } = await deriveSessionKeys(sharedSecret, sessionId);
 
-// Derive both client and server keys
-const { clientKey, serverKey } = await deriveSessionKeys(
-  sharedSecret,
-  sessionId
-);
-
-// Derive as CryptoKey objects for Web Crypto API
+// The same two keys as non-extractable CryptoKey objects
 const cryptoKeys = await deriveSessionCryptoKeys(sharedSecret, sessionId);
+
+// HKDF-SHA-256 with your own salt and info string (32 bytes by default)
+const key = await deriveKey(sharedSecret, salt, 'my-application-key');
 ```
+
+Use each key for one direction only.
 
 ### Encryption/Decryption (AES-GCM)
 
 ```typescript
 import {
-  encrypt,
-  decrypt,
+  SessionEncryptionContext,
+  createEncryptedEnvelope,
+  openEncryptedEnvelope,
   encryptJson,
   decryptJson,
-  createEncryptedEnvelope,
-  generateNonce,
-  generateCounterNonce,
-  toBase64,
-  fromBase64,
-  SessionEncryptionContext,
 } from '@enclave-vm/stream';
 
-// Low-level encryption
-const nonce = generateNonce();
-const encrypted = await encrypt(key, nonce, plaintext);
-const decrypted = await decrypt(key, nonce, encrypted);
+// One context per direction: the sender of a direction and its receiver
+// each create a context from the key of that direction
+const sender = await SessionEncryptionContext.fromKeyBytes(serverToClientKey, keyId);
+const receiver = await SessionEncryptionContext.fromKeyBytes(serverToClientKey, keyId);
 
-// JSON encryption helpers
-const encryptedJson = await encryptJson(key, { data: 'secret' });
-const decryptedJson = await decryptJson(key, encryptedJson);
+// Wrap an event in an `enc` envelope
+const envelope = await sender.createEnvelope(sessionId, seq, event);
 
-// Create encrypted envelope for transmission
-const envelope = await createEncryptedEnvelope(key, event, nonceCounter);
+// Open it. Throws AesGcmError when the ciphertext or a header field of the
+// envelope (protocol version, session id, sequence number, key id) differs.
+const inner = await receiver.openEnvelope(envelope);
 
-// High-level session encryption context
-const ctx = new SessionEncryptionContext(key);
+// The same with the CryptoKey objects of deriveSessionCryptoKeys()
+const envelope2 = await createEncryptedEnvelope(cryptoKeys.serverToClientKey, keyId, sessionId, seq, event);
+const inner2 = await openEncryptedEnvelope(cryptoKeys.serverToClientKey, envelope2);
 
-// Encrypt outgoing events
-const encrypted = await ctx.encrypt(event);
-
-// Decrypt incoming events
-const decrypted = await ctx.decrypt(envelope);
+// Payloads without an envelope, with optional additional authenticated data
+const payload = await encryptJson(cryptoKeys.serverToClientKey, keyId, { data: 'secret' }, undefined, aad);
+const data = await decryptJson(cryptoKeys.serverToClientKey, payload, aad);
 ```
+
+- **Envelopes authenticate their header.** `createEncryptedEnvelope` and `context.createEnvelope` authenticate the protocol version, session id, sequence number and key id together with the event. Read envelopes with `openEncryptedEnvelope` or `context.openEnvelope`.
+- **`decryptJson` does not open an envelope.** `decryptJson(key, payload)` and `context.decryptJson(payload)` read payloads made by `encryptJson`. Both forms of `encryptJson` and `decryptJson` take optional additional authenticated data.
+- **Replays are for the receiver to detect.** Opening an envelope does not tell whether its sequence number was seen before. Compare it with the last one received, for example with [`SequenceTracker`](#sequence-tracking).
+- **A context has a message limit.** `SessionEncryptionContext` uses a counter nonce (8 random bytes per context and a 32-bit counter) and refuses to encrypt after 2^30 messages; `needsRotation()` then returns `true`. There is no rotation: exchange keys again.
+- **`toKeyInfo()` returns the raw key bytes.** Treat its result as the key itself.
+
+The lower-level functions `encrypt`, `decrypt`, `generateNonce`, `generateCounterNonce`, `toBase64`, `fromBase64` and `encodeEnvelopeHeader` are exported as well. `generateCounterNonce` throws for a counter outside 0 to 2^32 - 1, and `fromBase64` throws `AesGcmError` on malformed input.
 
 ### Encryption Constants
 
@@ -204,13 +225,13 @@ import {
   AES_GCM_NONCE_SIZE,   // 12 bytes
   AES_GCM_TAG_SIZE,     // 16 bytes
   AES_256_KEY_SIZE,     // 32 bytes
-  MAX_MESSAGES_PER_KEY, // Max messages before key rotation
+  MAX_MESSAGES_PER_KEY, // 2^30 messages (a bigint)
 } from '@enclave-vm/stream';
 ```
 
 ## Reconnection Handling
 
-Built-in support for automatic reconnection with event buffering and sequence tracking.
+Helpers for a connection that the application opens itself: a state machine with exponential backoff, sequence tracking, an event buffer and a heartbeat monitor. They keep state and compute delays; they do not open connections.
 
 ### Connection State Machine
 
@@ -218,33 +239,40 @@ Built-in support for automatic reconnection with event buffering and sequence tr
 import { ConnectionState, ReconnectionStateMachine } from '@enclave-vm/stream';
 
 // Connection states
-ConnectionState.DISCONNECTED  // Not connected
-ConnectionState.CONNECTING    // Connection in progress
-ConnectionState.CONNECTED     // Active connection
-ConnectionState.RECONNECTING  // Attempting reconnection
+ConnectionState.Disconnected  // Not connected
+ConnectionState.Connecting    // Connection in progress
+ConnectionState.Connected     // Active connection
+ConnectionState.Reconnecting  // Connection lost, a retry is scheduled
+ConnectionState.Failed        // Retries exhausted, or a fatal error
+ConnectionState.Closed        // Closed on purpose
 
 // State machine
 const stateMachine = new ReconnectionStateMachine({
-  maxAttempts: 5,
-  initialDelay: 1000,
-  maxDelay: 30000,
-  backoffMultiplier: 2,
+  config: { maxRetries: 5, initialDelayMs: 1000, maxDelayMs: 30000, backoffMultiplier: 2 },
+  onEvent: (event) => {
+    switch (event.type) {
+      case 'state_change':
+        console.log(`Connection: ${event.previousState} -> ${event.state}`);
+        break;
+      case 'retry_scheduled':
+        console.log(`Reconnection attempt ${event.attempt} in ${event.delayMs}ms`);
+        break;
+      case 'failed':
+        console.error('Connection failed:', event.reason);
+        break;
+    }
+  },
 });
 
-stateMachine.on('stateChange', (newState, oldState) => {
-  console.log(`Connection: ${oldState} -> ${newState}`);
-});
-
-stateMachine.on('reconnect', (attempt) => {
-  console.log(`Reconnection attempt ${attempt}`);
-});
-
-// Trigger state transitions
-stateMachine.connect();
-stateMachine.disconnect();
-stateMachine.connectionFailed();
-stateMachine.connectionSucceeded();
+// Report what happens to the connection
+stateMachine.connect();                       // -> Connecting
+stateMachine.onConnected();                   // -> Connected
+stateMachine.onDisconnected('socket closed'); // -> Reconnecting, then Connecting after the delay
+stateMachine.onFatalError('unauthorized');    // -> Failed
+stateMachine.close();                         // -> Closed
 ```
+
+Open the connection when the state changes to `Connecting`.
 
 ### Reconnection Configuration
 
@@ -255,15 +283,15 @@ import {
 } from '@enclave-vm/stream';
 
 const config: ReconnectionConfig = {
-  enabled: true,           // Enable auto-reconnection
-  maxAttempts: 5,          // Max reconnection attempts
-  initialDelay: 1000,      // Initial delay (ms)
-  maxDelay: 30000,         // Max delay between attempts (ms)
+  maxRetries: 5,           // Max reconnection attempts
+  initialDelayMs: 1000,    // Initial delay (ms)
+  maxDelayMs: 30000,       // Max delay between attempts (ms)
   backoffMultiplier: 2,    // Exponential backoff multiplier
-  jitter: 0.1,             // Random jitter (0-1)
+  jitter: true,            // Add random jitter to the delay
+  jitterFactor: 0.3,       // Jitter factor (0-1)
 };
 
-console.log(DEFAULT_RECONNECTION_CONFIG);
+console.log(DEFAULT_RECONNECTION_CONFIG); // The values above
 ```
 
 ### Sequence Tracking
@@ -273,40 +301,39 @@ import { SequenceTracker } from '@enclave-vm/stream';
 
 const tracker = new SequenceTracker();
 
-// Track received events
-tracker.received(event);
+// Track the sequence number of each received event
+const { gap, missingStart, missingEnd } = tracker.receive(event.seq);
+if (gap) {
+  console.log(`Missing events ${missingStart} to ${missingEnd}`);
+}
 
-// Check for gaps
-if (tracker.hasGap()) {
-  console.log('Missing events:', tracker.getMissingSequences());
+// Gaps seen so far
+if (tracker.hasGaps()) {
+  console.log('Missing events:', tracker.getGaps()); // [{ start, end }, ...]
 }
 
 // Get last received sequence
-const lastSeq = tracker.getLastSequence();
-
-// Request replay from sequence
-const replayFrom = tracker.getReplaySequence();
+const lastSeq = tracker.getLastSeq();
 ```
+
+`receive()` takes the first sequence number as the starting point, and answers `{ gap: false }` for a number at or below the last one. To detect a duplicate, compare the number with `getLastSeq()` before calling `receive()`.
 
 ### Event Buffering
 
 ```typescript
 import { EventBuffer } from '@enclave-vm/stream';
 
-const buffer = new EventBuffer({
-  maxSize: 1000,       // Max events to buffer
-  maxAge: 60000,       // Max age in ms
-});
+const buffer = new EventBuffer(1000); // Max events to buffer (default 1000)
 
-// Buffer events during disconnection
-buffer.add(event);
+// Buffer events during disconnection; returns false when the buffer is full
+const stored = buffer.add(event);
 
 // Get buffered events for replay
 const events = buffer.drain();
 
 // Check buffer status
-console.log(buffer.size);
-console.log(buffer.isEmpty);
+console.log(buffer.size());
+console.log(buffer.isFull());
 ```
 
 ### Heartbeat Monitoring
@@ -315,16 +342,14 @@ console.log(buffer.isEmpty);
 import { HeartbeatMonitor } from '@enclave-vm/stream';
 
 const monitor = new HeartbeatMonitor({
-  interval: 30000,   // Expected interval (ms)
-  timeout: 45000,    // Timeout before considered dead (ms)
-});
-
-monitor.on('timeout', () => {
-  console.log('Connection appears dead, reconnecting...');
+  timeoutMs: 45000, // Silence before the connection is considered dead (ms)
+  onTimeout: () => {
+    console.log('Connection appears dead, reconnecting...');
+  },
 });
 
 // Call when heartbeat received
-monitor.heartbeatReceived();
+monitor.onHeartbeat();
 
 // Start/stop monitoring
 monitor.start();

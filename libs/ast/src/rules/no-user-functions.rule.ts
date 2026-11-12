@@ -20,8 +20,13 @@ export interface NoUserDefinedFunctionsOptions {
   allowFunctionExpressions?: boolean;
 
   /**
-   * List of allowed function names (for internal/compiler use)
+   * Names of the wrapper function a compiler puts around the script.
    * Default: ['__ag_main'] (the main wrapper function)
+   *
+   * A name on this list allows ONE declaration: the first one at the top level of the program
+   * that has the shape of the wrapper (`async function name() { ... }`: async, not a generator,
+   * no parameters). Every other function declaration is refused whatever its name, including a
+   * nested one, a second one, or one of another shape that carries the wrapper's name.
    */
   allowedFunctionNames?: string[];
 
@@ -96,15 +101,37 @@ export class NoUserDefinedFunctionsRule implements ValidationRule {
     this.customMessage = options.message;
   }
 
+  /**
+   * The compiler's wrapper: the first declaration at the top level of the program that carries an
+   * allowed name and has the wrapper's shape. The name by itself allows nothing: a script can
+   * write that name too.
+   */
+  private findWrapper(ast: acorn.Node): unknown {
+    const program = ast as unknown as { type?: string; body?: unknown };
+    if (program.type !== 'Program' || !Array.isArray(program.body)) return undefined;
+
+    return program.body.find(
+      (node: any) =>
+        node?.type === 'FunctionDeclaration' &&
+        node.id?.type === 'Identifier' &&
+        this.allowedFunctionNames.has(node.id.name) &&
+        node.async === true &&
+        !node.generator &&
+        Array.isArray(node.params) &&
+        node.params.length === 0,
+    );
+  }
+
   validate(context: ValidationContext): void {
     const { ast } = context;
+    const wrapper = this.findWrapper(ast);
 
     walk.simple(ast, {
       // Function declarations: function foo() {}
       FunctionDeclaration: (node: any) => {
-        // Check if this function name is whitelisted (e.g., __ag_main)
-        if (node.id && this.allowedFunctionNames.has(node.id.name)) {
-          return; // Allow internal compiler functions
+        // The one declaration the compiler wrote (e.g., __ag_main)
+        if (wrapper !== undefined && node === wrapper) {
+          return;
         }
 
         context.report({

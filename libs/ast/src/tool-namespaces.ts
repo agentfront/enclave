@@ -93,6 +93,15 @@ const DISALLOWED: ReadonlySet<string> = new Set(AGENTSCRIPT_DISALLOWED_IDENTIFIE
 /** Property names the AgentScript validator refuses: a method with one of them could never be called. */
 const DISALLOWED_PROPERTIES: ReadonlySet<string> = new Set(AGENTSCRIPT_DISALLOWED_PROPERTIES);
 
+/**
+ * Names the language looks up on an object by itself, without the script calling them: `then`
+ * when a value is awaited or returned from an async function, `toString` / `valueOf` /
+ * `toLocaleString` when it is converted to a string or a number, `toJSON` when it is serialized.
+ * A namespace method (or a namespace) of such a name would turn those operations into tool calls
+ * with arguments nobody wrote.
+ */
+const PROTOCOL_NAMES: ReadonlySet<string> = new Set(['then', 'toString', 'valueOf', 'toLocaleString', 'toJSON']);
+
 function fail(message: string): never {
   throw new TypeError(`Invalid toolNamespaces: ${message}`);
 }
@@ -106,6 +115,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function checkNamespaceName(name: string, reserved: ReadonlySet<string>): void {
   if (!IDENTIFIER.test(name)) fail(`namespace "${name}" is not a valid identifier`);
   if (name.startsWith('__') || PROTOTYPE_KEYS.has(name)) fail(`namespace "${name}" is a reserved name`);
+  if (PROTOCOL_NAMES.has(name)) fail(`namespace "${name}" is a name the language calls by itself`);
   if (RESERVED_WORDS.has(name)) fail(`namespace "${name}" is a reserved word`);
   if (SANDBOX_NAMES.has(name)) fail(`namespace "${name}" would shadow a sandbox global`);
   if (DISALLOWED.has(name)) fail(`namespace "${name}" is an identifier AgentScript refuses`);
@@ -117,6 +127,12 @@ function checkMethodName(namespace: string, method: unknown): string {
   const qualified = `${namespace}.${method}`;
   if (!IDENTIFIER.test(method)) fail(`method "${qualified}" is not a valid identifier`);
   if (method.startsWith('__') || PROTOTYPE_KEYS.has(method)) fail(`method "${qualified}" is a reserved name`);
+  if (PROTOCOL_NAMES.has(method)) {
+    fail(
+      `method "${qualified}" has a name the language calls by itself ` +
+        '(when a value is awaited, converted or serialized); give the method another name',
+    );
+  }
   if (DISALLOWED.has(method) || DISALLOWED_PROPERTIES.has(method)) {
     fail(`method "${qualified}" is a property name AgentScript refuses`);
   }
@@ -144,7 +160,8 @@ function checkToolName(qualified: string, toolName: unknown): string {
  *
  * Refuses (with a `TypeError` naming the offending entry): names that are not identifiers,
  * prototype keys (`__proto__`, `constructor`, `prototype`), names starting with `__` (reserved for
- * the runtime), reserved words and sandbox globals as namespaces, identifiers the AgentScript
+ * the runtime), names the language calls on an object by itself (`then`, `toString`, `valueOf`,
+ * `toLocaleString`, `toJSON`), reserved words and sandbox globals as namespaces, identifiers the AgentScript
  * validator refuses, namespaces that collide with `reservedNames`, duplicated methods, and tool
  * names that are empty, oversized or outside {@link TOOL_NAMESPACE_TOOL_NAME_PATTERN} (whether
  * generated as `<namespace>.<method>` or mapped explicitly).

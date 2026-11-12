@@ -2,11 +2,22 @@
  * Event Filter
  *
  * Filters stream events based on configurable rules.
- * Includes ReDoS (Regular Expression Denial of Service) protection.
+ *
+ * Two properties hold for every filter, whatever its patterns and whatever the event:
+ *
+ * - Evaluating one event takes a bounded time. Patterns that can take long (regular expressions
+ *   and globs) run under a time limit (`regexTimeoutMs`, 100 ms by default), and a filter can be
+ *   given a budget for all of its evaluations together.
+ * - An event the filter could not evaluate is not sent. In exclude mode a pattern that cannot
+ *   be evaluated counts as matching; in include mode it counts as not matching.
+ *
+ * A filter decides what a client is sent, for the client's convenience. It is not a
+ * confidentiality control: keep data that a client must not see out of the events.
  *
  * @packageDocumentation
  */
 
+import { Script, createContext } from 'node:vm';
 import type {
   StreamEvent,
   EventType,
@@ -16,52 +27,34 @@ import type {
   ContentFilter,
 } from '@enclave-vm/types';
 import { FilterMode, PatternType, DEFAULT_ALWAYS_ALLOW } from '@enclave-vm/types';
-import { minimatch } from 'minimatch';
+import { Minimatch } from 'minimatch';
 
 /**
- * Maximum input length for regex matching (ReDoS protection).
- * Inputs longer than this are rejected before regex evaluation.
+ * Time limit for the evaluation of one event when the configuration names none.
  */
-const MAX_REGEX_INPUT_LENGTH = 10000;
+const DEFAULT_EVALUATION_TIMEOUT_MS = 100;
 
 /**
- * Maximum pattern length to analyze for ReDoS detection.
+ * The longest time limit a configuration can ask for.
  */
-const MAX_PATTERN_LENGTH_FOR_REDOS_CHECK = 500;
+const MAX_EVALUATION_TIMEOUT_MS = 10_000;
 
 /**
- * Pre-compiled patterns for ReDoS detection.
- * Uses bounded quantifiers to prevent catastrophic backtracking in detection.
+ * How often the evaluation of one event is tried when the time limit was reached while the
+ * evaluating thread got less than STARVED_CPU_SHARE of that time on a processor.
  */
-const REDOS_DETECTION_PATTERNS = {
-  /** Check for nested quantifiers: (a+)+ or (a*)* */
-  nestedQuantifiers: /\([^)]{0,100}[*+{][^)]{0,100}\)[*+{]/,
-  /** Check for alternation with overlapping patterns: (a|ab)* */
-  alternationOverlap: /\([^|]{0,100}\|[^)]{0,100}\)[*+{]/,
-  /** Check for repeated groups with quantifiers: (a+)+ */
-  repeatedGroups: /\([^)]{0,100}[*+][^)]{0,100}\)[*+]/,
-} as const;
+const MAX_EVALUATION_ATTEMPTS = 5;
+const STARVED_CPU_SHARE = 0.5;
 
 /**
- * Detects potentially vulnerable regex patterns.
- * @param pattern - The regex pattern to check
- * @returns true if the pattern is potentially vulnerable to ReDoS
+ * Processor time this thread has used, in milliseconds. A runtime that does not report it per
+ * thread reports it for the process; that is never less, so an evaluation is never taken for
+ * one that got too little processor time when it did not.
  */
-function isPotentiallyVulnerableRegex(pattern: string): boolean {
-  // Limit pattern length for safe detection
-  const safePattern =
-    pattern.length > MAX_PATTERN_LENGTH_FOR_REDOS_CHECK
-      ? pattern.slice(0, MAX_PATTERN_LENGTH_FOR_REDOS_CHECK)
-      : pattern;
-
-  try {
-    if (REDOS_DETECTION_PATTERNS.nestedQuantifiers.test(safePattern)) return true;
-    if (REDOS_DETECTION_PATTERNS.alternationOverlap.test(safePattern)) return true;
-    if (REDOS_DETECTION_PATTERNS.repeatedGroups.test(safePattern)) return true;
-  } catch {
-    return false;
-  }
-  return false;
+function cpuTimeMs(): number {
+  const perThread = (process as { threadCpuUsage?: () => NodeJS.CpuUsage }).threadCpuUsage;
+  const usage = typeof perThread === 'function' ? perThread.call(process) : process.cpuUsage();
+  return (usage.user + usage.system) / 1000;
 }
 
 /**
@@ -74,40 +67,150 @@ export interface EventFilterOptions {
   config: EventFilterConfig;
 
   /**
-   * Callback for filter errors (e.g., regex errors).
+   * Callback for filter errors (a pattern that could not be evaluated, an evaluation that ran
+   * out of time).
    */
   onError?: (error: Error, event: StreamEvent) => void;
+
+  /**
+   * Total processor time, in milliseconds, this filter may spend evaluating regular
+   * expressions and globs over its whole life. When it is used up, those patterns count as not
+   * evaluable for every later event. Set it for a filter that lives as long as one stream and whose patterns
+   * were not written by the embedder.
+   *
+   * @default no budget
+   */
+  budgetMs?: number;
+
+  /**
+   * Expand brace sets (`{a,b}`) and extended globs (`+(a|b)`) in glob patterns. When false,
+   * those characters are matched as text.
+   *
+   * @default true
+   */
+  expandGlobs?: boolean;
 }
 
 /**
- * Compiled regex with metadata.
+ * Outcome of matching one pattern or rule: yes, no, or (while slow patterns are being put
+ * off) not known yet.
  */
-interface CompiledRegex {
-  regex: RegExp;
+type Match = boolean | undefined;
+
+interface CompiledPattern {
+  type: string;
+  /** Path of the field to read, or undefined for the whole payload */
+  path?: string[];
+  /** Key of the field in the per-event cache */
+  key: string;
+  caseInsensitive: boolean;
+  /** Pattern text for exact and prefix matching (lower-cased when case-insensitive) */
+  text: string;
+  /** Compiled regular expression; null when the pattern does not compile */
+  regex?: RegExp | null;
+  /** Compiled glob; null when the pattern does not compile */
+  glob?: Minimatch | null;
+  /** Source of the glob, to compile it again */
+  source: string;
+  /** The glob as a text wildcard (exclude mode only) */
+  wildcard?: Wildcard;
+}
+
+interface CompiledRule {
+  types?: Set<string>;
+  patterns?: CompiledPattern[];
+  matchAll: boolean;
+}
+
+/** A glob read as a wildcard over text: `*` is any run of characters, `?` any one character. */
+type Wildcard = { contains: string } | { tokens: Array<string | typeof ANY | typeof ONE> };
+const ANY = 0;
+const ONE = 1;
+
+/** The text of one field of an event, as patterns see it. */
+interface Subject {
+  /** undefined: the event has no such field */
+  text?: string;
+  lower?: string;
+  /** The field exists and could not be turned into text */
+  failed: boolean;
+  /** Why it could not, until it has been reported */
+  error?: Error;
+}
+
+// One realm for the time limit: the runtime can stop code that was started through it.
+const boundedRealm: { run?: () => unknown } = {};
+let boundedScript: Script | undefined;
+let insideBounded = false;
+
+/**
+ * Run `fn` and stop it when it takes longer than `timeoutMs`.
+ */
+function runBounded<T>(fn: () => T, timeoutMs: number): { done: true; value: T } | { done: false } {
+  if (insideBounded) {
+    // Already under a time limit: the outer one applies.
+    return { done: true, value: fn() };
+  }
+  if (!boundedScript) {
+    createContext(boundedRealm);
+    boundedScript = new Script('run()');
+  }
+  boundedRealm.run = fn;
+  insideBounded = true;
+  try {
+    return { done: true, value: boundedScript.runInContext(boundedRealm, { timeout: timeoutMs }) as T };
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
+      return { done: false };
+    }
+    throw error;
+  } finally {
+    insideBounded = false;
+    boundedRealm.run = undefined;
+  }
 }
 
 /**
  * Event Filter
  *
- * Provides efficient event filtering with:
+ * Provides event filtering with:
  * - Type-based filtering
  * - Content pattern matching (exact, prefix, regex, glob)
- * - Compiled and cached regex patterns
+ * - Patterns compiled once per filter
+ * - A time limit per evaluated event and an optional budget per filter
  */
 export class EventFilter {
-  private readonly config: EventFilterConfig;
+  private readonly exclude: boolean;
   private readonly alwaysAllow: Set<EventType>;
-  private readonly compiledRegexes: Map<string, CompiledRegex>;
+  private readonly rules: CompiledRule[];
+  private readonly timeoutMs: number;
+  private readonly budgetMs?: number;
+  private readonly expandGlobs: boolean;
   private readonly onError?: (error: Error, event: StreamEvent) => void;
+  private spentMs = 0;
 
   constructor(options: EventFilterOptions) {
-    this.config = options.config;
-    this.onError = options.onError;
-    this.alwaysAllow = new Set((options.config.alwaysAllow ?? DEFAULT_ALWAYS_ALLOW) as EventType[]);
-    this.compiledRegexes = new Map();
+    const config = options.config;
+    if (typeof config !== 'object' || config === null || !Array.isArray(config.rules)) {
+      throw new TypeError('EventFilter: the configuration needs a "rules" array');
+    }
 
-    // Pre-compile all regex patterns
-    this.compilePatterns();
+    this.onError = options.onError;
+    this.exclude = config.mode !== FilterMode.Include;
+    this.alwaysAllow = new Set((config.alwaysAllow ?? DEFAULT_ALWAYS_ALLOW) as EventType[]);
+    this.expandGlobs = options.expandGlobs ?? true;
+
+    const timeout = config.regexTimeoutMs;
+    this.timeoutMs =
+      typeof timeout === 'number' && timeout > 0
+        ? Math.min(Math.max(Math.ceil(timeout), 1), MAX_EVALUATION_TIMEOUT_MS)
+        : DEFAULT_EVALUATION_TIMEOUT_MS;
+
+    const budget = options.budgetMs;
+    this.budgetMs = typeof budget === 'number' && budget >= 0 ? budget : undefined;
+
+    // Compile every pattern once
+    this.rules = config.rules.map((rule) => this.compileRule(rule));
   }
 
   /**
@@ -119,17 +222,40 @@ export class EventFilter {
       return true;
     }
 
-    // Check if any rule matches
-    const matches = this.matchesAnyRule(event);
+    const subjects = new Map<string, Subject>();
+    const send = this.decide(event, subjects);
 
-    // Apply filter mode
-    if (this.config.mode === FilterMode.Include) {
-      // Whitelist: send only if matches
-      return matches;
-    } else {
-      // Blacklist: send only if doesn't match
-      return !matches;
+    if (this.onError) {
+      for (const subject of subjects.values()) {
+        if (subject.error) this.onError(subject.error, event);
+      }
     }
+    return send;
+  }
+
+  /**
+   * Decide one event that is not always allowed.
+   */
+  private decide(event: StreamEvent, subjects: Map<string, Subject>): boolean {
+    // First everything that is cheap: types, exact and prefix patterns. A rule that matches
+    // on those alone decides the event without a slow pattern being run.
+    let matches = this.matchesAnyRule(event, subjects, false);
+
+    if (matches === undefined) {
+      // The decision needs a regular expression or a glob: run them under the time limit.
+      // Without time left, or when the evaluation does not finish, the event is not sent,
+      // in either mode.
+      if (this.budgetUsedUp()) {
+        return false;
+      }
+      matches = this.evaluateWithinLimit(event, subjects);
+      if (matches === undefined) {
+        return false;
+      }
+    }
+
+    // Include: send only what matches. Exclude: send only what does not match.
+    return this.exclude ? !matches : matches;
   }
 
   /**
@@ -140,191 +266,348 @@ export class EventFilter {
   }
 
   /**
-   * Check if event matches any filter rule.
+   * Whether the budget of this filter is used up.
    */
-  private matchesAnyRule(event: StreamEvent): boolean {
-    return this.config.rules.some((rule) => this.matchesRule(event, rule));
+  private budgetUsedUp(): boolean {
+    return this.budgetMs !== undefined && this.spentMs >= this.budgetMs;
   }
 
   /**
-   * Check if event matches a specific rule.
+   * Evaluate all rules, slow patterns included, under the time limit. Returns undefined when
+   * the evaluation did not finish.
+   *
+   * The limit is a limit on elapsed time. When it is reached although the thread got little
+   * processor time meanwhile (the machine was busy with something else), the evaluation is
+   * tried again, a bounded number of times, so that a busy machine does not drop events. An
+   * evaluation that used its time on a processor is not tried again.
    */
-  private matchesRule(event: StreamEvent, rule: FilterRule): boolean {
-    // If both type and content filters exist, both must match
-    const typeMatch = rule.types ? this.matchesTypeFilter(event, rule.types) : true;
-    const contentMatch = rule.content ? this.matchesContentFilter(event, rule.content) : true;
+  private evaluateWithinLimit(event: StreamEvent, subjects: Map<string, Subject>): boolean | undefined {
+    for (let attempt = 1; ; attempt++) {
+      let limit = this.timeoutMs;
+      if (this.budgetMs !== undefined) {
+        limit = Math.max(1, Math.min(limit, Math.ceil(this.budgetMs - this.spentMs)));
+      }
 
-    // If rule has both, require both to match
-    if (rule.types && rule.content) {
-      return typeMatch && contentMatch;
+      const cpuBefore = cpuTimeMs();
+      const outcome = runBounded(() => {
+        const started = cpuTimeMs();
+        const matches = this.matchesAnyRule(event, subjects, true) === true;
+        return { matches, used: cpuTimeMs() - started };
+      }, limit);
+
+      if (outcome.done) {
+        this.spentMs += outcome.value.used;
+        return outcome.value.matches;
+      }
+
+      // The matchers were stopped in the middle of their work: build them again.
+      this.recompileGlobs();
+
+      const cpuMs = cpuTimeMs() - cpuBefore;
+      const starved = cpuMs < limit * STARVED_CPU_SHARE;
+      this.spentMs += starved ? cpuMs : limit;
+      if (starved && attempt < MAX_EVALUATION_ATTEMPTS && !this.budgetUsedUp()) {
+        continue;
+      }
+
+      this.onError?.(new Error('Event filter evaluation exceeded its time limit'), event);
+      return undefined;
+    }
+  }
+
+  /**
+   * Check if event matches any filter rule. With `slow` false, patterns that need the time
+   * limit are put off and the answer is undefined when it depends on one of them.
+   */
+  private matchesAnyRule(event: StreamEvent, subjects: Map<string, Subject>, slow: boolean): Match {
+    let putOff = false;
+    for (const rule of this.rules) {
+      const match = this.matchesRule(event, rule, subjects, slow);
+      if (match === true) return true;
+      if (match === undefined) putOff = true;
+    }
+    return putOff ? undefined : false;
+  }
+
+  /**
+   * Check if event matches a specific rule. If the rule has both a type filter and a content
+   * filter, both must match.
+   */
+  private matchesRule(event: StreamEvent, rule: CompiledRule, subjects: Map<string, Subject>, slow: boolean): Match {
+    if (rule.types && !rule.types.has(event.type)) {
+      return false;
+    }
+    if (!rule.patterns) {
+      return true;
     }
 
-    // If only one filter type, return its result
-    return rule.types ? typeMatch : contentMatch;
-  }
-
-  /**
-   * Check if event type matches filter.
-   */
-  private matchesTypeFilter(event: StreamEvent, filter: { types: EventType[] }): boolean {
-    return filter.types.includes(event.type);
-  }
-
-  /**
-   * Check if event content matches filter.
-   */
-  private matchesContentFilter(event: StreamEvent, filter: ContentFilter): boolean {
-    const matchMode = filter.match ?? 'any';
-
-    if (matchMode === 'all') {
-      return filter.patterns.every((pattern) => this.matchesPattern(event, pattern));
-    } else {
-      return filter.patterns.some((pattern) => this.matchesPattern(event, pattern));
+    let putOff = false;
+    for (const pattern of rule.patterns) {
+      const match = this.matchesPattern(event, pattern, subjects, slow);
+      if (match === undefined) {
+        putOff = true;
+      } else if (match !== rule.matchAll) {
+        // 'any': the first match decides. 'all': the first miss decides.
+        return match;
+      }
     }
+    return putOff ? undefined : rule.matchAll;
   }
 
   /**
    * Check if event matches a content pattern.
    */
-  private matchesPattern(event: StreamEvent, pattern: ContentPattern): boolean {
-    // Get the value to match against
-    const value = this.getFieldValue(event, pattern.field);
-    if (value === undefined) {
+  private matchesPattern(
+    event: StreamEvent,
+    pattern: CompiledPattern,
+    subjects: Map<string, Subject>,
+    slow: boolean,
+  ): Match {
+    const subject = this.subjectOf(event, pattern, subjects);
+    if (subject.failed) {
+      return this.notEvaluable();
+    }
+    if (subject.text === undefined) {
       return false;
     }
 
-    // Convert to string for matching
-    const stringValue = this.stringify(value);
-    const patternValue = pattern.caseInsensitive ? pattern.pattern.toLowerCase() : pattern.pattern;
-    const matchValue = pattern.caseInsensitive ? stringValue.toLowerCase() : stringValue;
+    switch (pattern.type) {
+      case PatternType.Exact:
+        return this.textOf(subject, pattern) === pattern.text;
 
-    try {
-      switch (pattern.type) {
-        case PatternType.Exact:
-          return matchValue === patternValue;
+      case PatternType.Prefix:
+        return this.textOf(subject, pattern).startsWith(pattern.text);
 
-        case PatternType.Prefix:
-          return matchValue.startsWith(patternValue);
+      case PatternType.Regex:
+        if (!pattern.regex) return this.notEvaluable();
+        if (!slow) return undefined;
+        return pattern.regex.test(subject.text);
 
-        case PatternType.Regex:
-          return this.matchRegex(pattern.pattern, matchValue, pattern.caseInsensitive);
+      case PatternType.Glob:
+        if (!pattern.glob) return this.notEvaluable();
+        if (!slow) return undefined;
+        if (pattern.glob.match(subject.text)) return true;
+        return pattern.wildcard ? matchesWildcard(this.textOf(subject, pattern), pattern.wildcard) : false;
 
-        case PatternType.Glob:
-          return minimatch(matchValue, patternValue, {
-            nocase: pattern.caseInsensitive,
-          });
-
-        default:
-          return false;
-      }
-    } catch (error) {
-      this.onError?.(error as Error, event);
-      return false;
+      default:
+        return this.notEvaluable();
     }
   }
 
   /**
-   * Get field value from event using dot notation.
+   * What a pattern that cannot be evaluated counts as: a match when matching keeps an event
+   * back (exclude), no match when matching lets it through (include).
    */
-  private getFieldValue(event: StreamEvent, field?: string): unknown {
-    if (!field) {
-      // Default: stringify entire payload
-      return event.payload;
-    }
-
-    const parts = field.split('.');
-    let value: unknown = event;
-
-    for (const part of parts) {
-      if (value === null || value === undefined) {
-        return undefined;
-      }
-      if (typeof value !== 'object') {
-        return undefined;
-      }
-      value = (value as Record<string, unknown>)[part];
-    }
-
-    return value;
+  private notEvaluable(): boolean {
+    return this.exclude;
   }
 
   /**
-   * Stringify a value for matching.
+   * The subject text in the case the pattern compares in.
    */
-  private stringify(value: unknown): string {
+  private textOf(subject: Subject, pattern: CompiledPattern): string {
+    if (!pattern.caseInsensitive) return subject.text as string;
+    if (subject.lower === undefined) subject.lower = (subject.text as string).toLowerCase();
+    return subject.lower;
+  }
+
+  /**
+   * The text of the field a pattern reads, computed once per event.
+   */
+  private subjectOf(event: StreamEvent, pattern: CompiledPattern, subjects: Map<string, Subject>): Subject {
+    let subject = subjects.get(pattern.key);
+    if (subject) return subject;
+
+    subject = { failed: false };
+    const value = pattern.path ? readField(event, pattern.path) : event.payload;
     if (typeof value === 'string') {
-      return value;
-    }
-    if (value === null || value === undefined) {
-      return '';
-    }
-    return JSON.stringify(value);
-  }
-
-  /**
-   * Match against a compiled regex with ReDoS protection.
-   * Enforces input length limits to prevent catastrophic backtracking.
-   */
-  private matchRegex(pattern: string, value: string, caseInsensitive?: boolean): boolean {
-    // ReDoS protection: reject oversized inputs before regex evaluation
-    if (value.length > MAX_REGEX_INPUT_LENGTH) {
-      return false;
-    }
-
-    const cacheKey = `${pattern}:${caseInsensitive ? 'i' : ''}`;
-    const compiled = this.compiledRegexes.get(cacheKey);
-
-    if (!compiled) {
-      // Pattern wasn't pre-compiled (shouldn't happen, but handle gracefully)
-      // Still apply length limit for safety
+      subject.text = value;
+    } else if (value === null) {
+      subject.text = '';
+    } else if (value !== undefined) {
       try {
-        const flags = caseInsensitive ? 'i' : '';
-        return new RegExp(pattern, flags).test(value);
-      } catch {
-        return false;
+        subject.text = JSON.stringify(value) ?? '';
+      } catch (error) {
+        subject.failed = true;
+        subject.error = error as Error;
       }
     }
+    subjects.set(pattern.key, subject);
+    return subject;
+  }
 
+  /**
+   * Compile one rule.
+   */
+  private compileRule(rule: FilterRule): CompiledRule {
+    const compiled: CompiledRule = { matchAll: false };
+    if (typeof rule !== 'object' || rule === null) {
+      throw new TypeError('EventFilter: a rule must be an object');
+    }
+    if (rule.types) {
+      if (!Array.isArray(rule.types.types)) {
+        throw new TypeError('EventFilter: a type filter needs a "types" array');
+      }
+      compiled.types = new Set(rule.types.types as string[]);
+    }
+    if (rule.content) {
+      const content: ContentFilter = rule.content;
+      if (!Array.isArray(content.patterns)) {
+        throw new TypeError('EventFilter: a content filter needs a "patterns" array');
+      }
+      compiled.patterns = content.patterns.map((pattern) => this.compilePattern(pattern));
+      compiled.matchAll = content.match === 'all';
+    }
+    return compiled;
+  }
+
+  /**
+   * Compile a glob. Returns null when the pattern does not compile.
+   */
+  private compileGlob(source: string, caseInsensitive: boolean): Minimatch | null {
     try {
-      return compiled.regex.test(value);
+      return new Minimatch(source, {
+        nocase: caseInsensitive,
+        nobrace: !this.expandGlobs,
+        noext: !this.expandGlobs,
+        // An exclude glob is matched as text: also against a leading dot.
+        dot: this.exclude,
+      });
     } catch {
-      return false;
+      return null;
     }
   }
 
   /**
-   * Pre-compile all regex patterns for efficiency.
-   * Includes ReDoS vulnerability detection and logging.
+   * Compile every glob of this filter again.
    */
-  private compilePatterns(): void {
-    for (const rule of this.config.rules) {
-      if (!rule.content?.patterns) continue;
-
-      for (const pattern of rule.content.patterns) {
-        if (pattern.type !== PatternType.Regex) continue;
-
-        const cacheKey = `${pattern.pattern}:${pattern.caseInsensitive ? 'i' : ''}`;
-        if (this.compiledRegexes.has(cacheKey)) continue;
-
-        // Check for potentially vulnerable patterns
-        if (isPotentiallyVulnerableRegex(pattern.pattern)) {
-          console.warn(
-            `[EventFilter] Potentially vulnerable regex pattern detected: ${pattern.pattern}. ` +
-              `Input length will be limited to ${MAX_REGEX_INPUT_LENGTH} characters for protection.`,
-          );
-        }
-
-        try {
-          const flags = pattern.caseInsensitive ? 'i' : '';
-          const regex = new RegExp(pattern.pattern, flags);
-          this.compiledRegexes.set(cacheKey, { regex });
-        } catch (error) {
-          // Invalid regex - will be caught during matching
-          console.error(`Invalid regex pattern: ${pattern.pattern}`, error);
+  private recompileGlobs(): void {
+    for (const rule of this.rules) {
+      for (const pattern of rule.patterns ?? []) {
+        if (pattern.glob) {
+          pattern.glob = this.compileGlob(pattern.source, pattern.caseInsensitive);
         }
       }
     }
   }
+
+  /**
+   * Compile one content pattern. A pattern that does not compile is kept as "cannot be
+   * evaluated"; its text is not logged.
+   */
+  private compilePattern(pattern: ContentPattern): CompiledPattern {
+    if (typeof pattern !== 'object' || pattern === null || typeof pattern.pattern !== 'string') {
+      throw new TypeError('EventFilter: a content pattern needs a "pattern" string');
+    }
+    const caseInsensitive = pattern.caseInsensitive === true;
+    const field = typeof pattern.field === 'string' && pattern.field.length > 0 ? pattern.field : undefined;
+    const compiled: CompiledPattern = {
+      type: pattern.type,
+      path: field?.split('.'),
+      key: field ?? '',
+      caseInsensitive,
+      text: caseInsensitive ? pattern.pattern.toLowerCase() : pattern.pattern,
+      source: pattern.pattern,
+    };
+
+    if (pattern.type === PatternType.Regex) {
+      try {
+        compiled.regex = new RegExp(pattern.pattern, caseInsensitive ? 'i' : '');
+      } catch {
+        compiled.regex = null;
+      }
+    } else if (pattern.type === PatternType.Glob) {
+      compiled.glob = this.compileGlob(pattern.pattern, caseInsensitive);
+      if (this.exclude) {
+        // An exclude glob is matched as text: `*` also matches a path separator.
+        compiled.wildcard = compileWildcard(compiled.text);
+      }
+    }
+
+    return compiled;
+  }
+}
+
+/**
+ * Read a field of an event by path. Only own properties are followed.
+ */
+function readField(event: StreamEvent, path: string[]): unknown {
+  let value: unknown = event;
+  for (const part of path) {
+    if (value === null || typeof value !== 'object') {
+      return undefined;
+    }
+    if (!Object.prototype.hasOwnProperty.call(value, part)) {
+      return undefined;
+    }
+    value = (value as Record<string, unknown>)[part];
+  }
+  return value;
+}
+
+/**
+ * Read a glob as a wildcard over text.
+ */
+function compileWildcard(pattern: string): Wildcard {
+  const tokens: Array<string | typeof ANY | typeof ONE> = [];
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i] as string;
+    if (char === '*') {
+      if (tokens[tokens.length - 1] !== ANY) tokens.push(ANY);
+    } else if (char === '?') {
+      tokens.push(ONE);
+    } else if (char === '\\' && i + 1 < pattern.length) {
+      tokens.push(pattern[++i] as string);
+    } else {
+      tokens.push(char);
+    }
+  }
+
+  // `*text*` is a search for the text
+  const inner = tokens.slice(1, -1);
+  if (
+    tokens.length >= 3 &&
+    tokens[0] === ANY &&
+    tokens[tokens.length - 1] === ANY &&
+    inner.every((token) => typeof token === 'string')
+  ) {
+    return { contains: inner.join('') };
+  }
+  return { tokens };
+}
+
+/**
+ * Match text against a wildcard.
+ */
+function matchesWildcard(text: string, wildcard: Wildcard): boolean {
+  if ('contains' in wildcard) {
+    return text.includes(wildcard.contains);
+  }
+
+  const tokens = wildcard.tokens;
+  let t = 0;
+  let p = 0;
+  let star = -1;
+  let mark = 0;
+  while (t < text.length) {
+    const token = tokens[p];
+    if (p < tokens.length && (token === ONE || token === text[t])) {
+      t++;
+      p++;
+    } else if (p < tokens.length && token === ANY) {
+      star = p;
+      mark = t;
+      p++;
+    } else if (star !== -1) {
+      p = star + 1;
+      mark++;
+      t = mark;
+    } else {
+      return false;
+    }
+  }
+  while (p < tokens.length && tokens[p] === ANY) p++;
+  return p === tokens.length;
 }
 
 /**

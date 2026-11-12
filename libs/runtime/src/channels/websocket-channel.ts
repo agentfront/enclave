@@ -3,6 +3,10 @@
  *
  * WebSocket-based channel for remote runtime communication.
  *
+ * The channel connects to a URL and nothing more: it sends no credentials, and it hands every
+ * JSON message it receives to its handlers without checking the message against a schema.
+ * Authenticate the connection in the URL's server and validate messages in the handler.
+ *
  * @packageDocumentation
  */
 
@@ -36,10 +40,22 @@ export interface WebSocketChannelConfig {
   connectionTimeoutMs?: number;
 
   /**
+   * Events kept while the channel is not connected. Events sent beyond that are dropped
+   * until the channel is connected again. A positive integer.
+   * @default 1000
+   */
+  maxBufferedMessages?: number;
+
+  /**
    * Debug mode
    */
   debug?: boolean;
 }
+
+/**
+ * Default number of events kept while the channel is not connected
+ */
+const DEFAULT_MAX_BUFFERED_MESSAGES = 1000;
 
 /**
  * Internal resolved configuration type
@@ -53,6 +69,7 @@ interface ResolvedConfig {
     maxDelayMs: number;
   };
   connectionTimeoutMs: number;
+  maxBufferedMessages: number;
   debug: boolean;
 }
 
@@ -76,6 +93,15 @@ export class WebSocketChannel implements RuntimeChannel {
   private messageBuffer: string[] = [];
 
   constructor(config: WebSocketChannelConfig) {
+    const maxBufferedMessages = config.maxBufferedMessages ?? DEFAULT_MAX_BUFFERED_MESSAGES;
+    if (
+      typeof maxBufferedMessages !== 'number' ||
+      !Number.isSafeInteger(maxBufferedMessages) ||
+      maxBufferedMessages < 1
+    ) {
+      throw new RangeError('maxBufferedMessages must be a positive integer');
+    }
+
     this.config = {
       url: config.url,
       reconnect: {
@@ -85,6 +111,7 @@ export class WebSocketChannel implements RuntimeChannel {
         maxDelayMs: config.reconnect?.maxDelayMs ?? 30000,
       },
       connectionTimeoutMs: config.connectionTimeoutMs ?? 10000,
+      maxBufferedMessages,
       debug: config.debug ?? false,
     };
   }
@@ -173,9 +200,12 @@ export class WebSocketChannel implements RuntimeChannel {
 
     if (this.isOpen && this.ws) {
       this.ws.send(data);
-    } else {
+    } else if (this.messageBuffer.length < this.config.maxBufferedMessages) {
       // Buffer message for later
       this.messageBuffer.push(data);
+    } else {
+      // The buffer is bounded: what does not fit while disconnected is not kept
+      this.log('Message buffer is full, dropping event');
     }
   }
 

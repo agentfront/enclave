@@ -10,28 +10,31 @@ import type { SessionId, SessionLimits, StreamEvent, RuntimeChannelMessage } fro
 
 /**
  * Runtime configuration
+ *
+ * `port`, `host` and `wsPath` are kept for compatibility and are not used: this package
+ * starts no server and opens no port.
  */
 export interface RuntimeConfig {
   /**
-   * Port to listen on
+   * Not used (no server is started)
    * @default 3001
    */
   port?: number;
 
   /**
-   * Host to bind to
-   * @default '0.0.0.0'
+   * Not used (no server is started)
+   * @default '127.0.0.1'
    */
   host?: string;
 
   /**
-   * Path for WebSocket connections
+   * Not used (no server is started)
    * @default '/ws'
    */
   wsPath?: string;
 
   /**
-   * Maximum concurrent sessions per runtime
+   * Maximum concurrent sessions per runtime. A positive integer.
    * @default 10
    */
   maxSessions?: number;

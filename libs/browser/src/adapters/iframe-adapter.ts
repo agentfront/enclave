@@ -16,6 +16,8 @@ import type {
   ToolHandler,
   SerializedIframeConfig,
   SerializableSuspiciousPattern,
+  SuspiciousPattern,
+  OperationHistory,
   DoubleIframeConfig,
   SecureProxyLevelConfig,
 } from '../types';
@@ -34,6 +36,13 @@ import {
 import { generateOuterIframeHtml } from './outer-iframe-bootstrap';
 import { IFRAME_SANDBOX } from './iframe-html-builder';
 import { PausableTimer } from './pausable-timer';
+import { MAX_TIMER_DELAY_MS } from '../utils/numeric-option';
+
+/**
+ * Most earlier tool calls a function-based suspicious pattern is shown. An execution makes at
+ * most `maxToolCalls` calls; this bounds the list when that limit is very large.
+ */
+const MAX_OPERATION_HISTORY = 10_000;
 
 /**
  * Execution context passed to the adapter
@@ -51,6 +60,12 @@ export interface IframeExecutionContext {
   secureProxyConfig: SecureProxyLevelConfig;
   blockedProperties: string[];
   suspiciousPatterns: SerializableSuspiciousPattern[];
+  /**
+   * Function-based patterns (`doubleIframe.parentValidation.suspiciousPatterns`). A function
+   * cannot be sent into a frame, so the host page asks them itself, for every tool call that
+   * passed its other checks, when `blockSuspiciousSequences` is on.
+   */
+  hostSuspiciousPatterns?: readonly SuspiciousPattern[];
   validationConfig: {
     validateOperationNames: boolean;
     allowedOperationPatternSource?: string;
@@ -154,6 +169,11 @@ export class IframeAdapter {
       const consoleBudget = new ConsoleBudget(context.config.maxConsoleCalls, context.config.maxConsoleOutputBytes);
       const maxToolCalls = context.config.maxToolCalls;
       let toolCallsReceived = 0;
+      const hostPatterns = context.validationConfig.blockSuspiciousSequences
+        ? (context.hostSuspiciousPatterns ?? [])
+        : [];
+      // The calls of this execution that reached a handler, for those patterns
+      const operationHistory: OperationHistory[] = [];
 
       const refuseToolCall = (callId: string, message: string) => {
         this.sendToOuter({
@@ -205,6 +225,26 @@ export class IframeAdapter {
             return;
           }
           throw error;
+        }
+
+        // The host's own detectors see the call as the handler would: its name, the copy of its
+        // arguments, and the calls before it. One that detects the call refuses it, and so does
+        // one that throws: a detector that cannot judge a call does not let it through.
+        for (const pattern of hostPatterns) {
+          let detected: boolean;
+          try {
+            detected = !!pattern.detect(data.toolName, args, operationHistory.slice());
+          } catch {
+            detected = true;
+          }
+          if (detected) {
+            refuseToolCall(callId, `Suspicious pattern detected: ${pattern.description} [${pattern.id}]`);
+            return;
+          }
+        }
+        if (hostPatterns.length > 0) {
+          operationHistory.push({ operationName: data.toolName, timestamp: Date.now(), argKeys: Object.keys(args) });
+          if (operationHistory.length > MAX_OPERATION_HISTORY) operationHistory.shift();
         }
 
         // Execute tool handler and relay result/error. The timeout does not run while the host
@@ -322,9 +362,11 @@ export class IframeAdapter {
               });
             }
           } else if (message.type === 'console') {
-            // Console output - relay to the host console, within the limits of the execution
-            if (consoleBudget.admit(message.args)) {
-              console[message.level]('[Enclave]', ...message.args);
+            // Console output - relay to the host console, within the limits of the execution.
+            // What is printed is the copy the limit was counted on, never the value that arrived.
+            const printed = consoleBudget.admit(message.args);
+            if (printed) {
+              console[message.level]('[Enclave]', ...printed);
             }
           }
           // 'ready': the outer iframe is up; the inner one starts by itself
@@ -366,10 +408,14 @@ export class IframeAdapter {
       // ends with the timeout error, as in @enclave-vm/core. No call starts after the hard stop
       // (see handleToolCall), so nothing can be in progress later than this.
       if (Number.isFinite(context.toolCallGraceMs)) {
-        toolCallCap = setTimeout(() => {
-          toolCallCap = null;
-          if (pendingToolCalls > 0) endForTimeout();
-        }, totalTimeout + context.toolCallGraceMs);
+        toolCallCap = setTimeout(
+          () => {
+            toolCallCap = null;
+            if (pendingToolCalls > 0) endForTimeout();
+          },
+          // A timer does not take a longer delay: it would fire at once, and never again
+          Math.min(totalTimeout + context.toolCallGraceMs, MAX_TIMER_DELAY_MS),
+        );
       }
 
       // Generate outer iframe HTML

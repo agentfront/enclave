@@ -10,6 +10,9 @@
 export { Broker, createBroker } from './broker';
 export type { BrokerConfig, ExecuteOptions } from './broker';
 
+// Errors
+export { BrokerError, BrokerErrorCode } from './errors';
+
 // Tool Registry
 export { ToolRegistry, createToolRegistry } from './tool-registry';
 export type {
@@ -24,6 +27,10 @@ export type {
 export { BrokerSession, createBrokerSession } from './broker-session';
 export type { BrokerSessionConfig } from './broker-session';
 
+// Session History
+export { DEFAULT_SESSION_HISTORY_LIMITS } from './session-history';
+export type { SessionHistoryLimits } from './session-history';
+
 // Session Manager
 export { SessionManager, createSessionManager } from './session-manager';
 export type { SessionManagerConfig, SessionInfo, CreateSessionResult } from './session-manager';
@@ -32,6 +39,7 @@ export type { SessionManagerConfig, SessionInfo, CreateSessionResult } from './s
 export { SessionHandler, createSessionHandler, registerExpressRoutes, createExpressRouter } from './http';
 export type {
   SessionHandlerConfig,
+  CallerIdentifier,
   RouteHandler,
   BrokerRequest,
   BrokerResponse,

@@ -57,6 +57,12 @@ export interface HostActivity {
   readonly inFlight: number;
   /** The execution has settled by itself: stop watching */
   close(): void;
+  /**
+   * Runs a callback of the host (a tool handler, a function from `globals`) in the async context
+   * of the caller of `run()`. The script itself runs in another one (see ./async-context); where
+   * this is absent the callback is called as it is.
+   */
+  inHostContext?<R>(fn: () => R): R;
 }
 
 /**
@@ -167,7 +173,7 @@ export function trackToolCalls<A extends unknown[], R>(
     const end = activity.begin();
     let outcome: Promise<R> | R;
     try {
-      outcome = handler(...args);
+      outcome = activity.inHostContext ? activity.inHostContext(() => handler(...args)) : handler(...args);
     } catch (error: unknown) {
       end();
       return Promise.reject(error);

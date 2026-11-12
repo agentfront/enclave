@@ -54,6 +54,15 @@
     },
     "test": {
       "executor": "@nx/jest:jest",
+      "dependsOn": ["^build", { "projects": ["core"], "target": "build" }],
+      "inputs": [
+        "default",
+        "^production",
+        "{workspaceRoot}/jest.preset.js",
+        { "externalDependencies": ["jest", "@nx/jest", "ts-jest"] },
+        { "dependentTasksOutputFiles": "**/*.d.ts", "transitive": true },
+        "securitySpecs"
+      ],
       "outputs": ["{workspaceRoot}/coverage/libs/client"],
       "options": {
         "jestConfig": "libs/client/jest.config.ts"

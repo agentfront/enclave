@@ -10,11 +10,24 @@
  * @packageDocumentation
  */
 
-import { buildIframeHtml, safeJsonStringify } from './iframe-html-builder';
+import { buildIframeDocument, escapeScriptText, safeJsonStringify, type IframeDocument } from './iframe-html-builder';
+import { MAX_TOOL_NAME_LENGTH } from './iframe-protocol';
+import { MAX_TOOL_ARGUMENT_DEPTH } from './host-boundary';
+import { isBindableName } from '../utils/global-names';
+import { numberLiteral } from '../utils/numeric-option';
 import type { SerializedIframeConfig } from '../types';
 
 /** What a script gets when it runs a regular expression in a realm that has none. */
 export const REGEXP_REFUSED_MESSAGE = 'Regular expressions are not available in this sandbox';
+
+/** What a script gets when it uses a connection object of a realm that has none. */
+export const CONNECTION_REFUSED_MESSAGE = 'Network connections are not available in this sandbox';
+
+/** What a script gets when it uses the document of the frame it runs in. */
+export const DOCUMENT_REFUSED_MESSAGE = 'The document of this sandbox frame is not available';
+
+/** Error code of a run whose sandbox could not be set up; the script was not started. */
+export const SANDBOX_SETUP_FAILED_CODE = 'SANDBOX_SETUP_FAILED';
 
 export interface InnerIframeBootstrapOptions {
   userCode: string;
@@ -23,25 +36,37 @@ export interface InnerIframeBootstrapOptions {
 }
 
 /**
- * Generate the inner iframe HTML content
+ * Generate the inner iframe document: its HTML, and the hash that names its script in a policy
  */
-export function generateInnerIframeHtml(options: InnerIframeBootstrapOptions): string {
+export function generateInnerIframeDocument(options: InnerIframeBootstrapOptions): IframeDocument {
   const { userCode, config, requestId } = options;
 
   const script = generateInnerIframeScript(userCode, config, requestId);
-  return buildIframeHtml(script, { title: 'Enclave Inner Sandbox' });
+  return buildIframeDocument(script, { title: 'Enclave Inner Sandbox' });
+}
+
+/**
+ * The names the host configured for the script (custom globals and tool namespaces) that become
+ * parameters of the function the script runs in. See the "Execute User Code" section.
+ */
+function scriptBindingNames(config: SerializedIframeConfig): string[] {
+  const names = [...Object.keys(config.globals ?? {}), ...(config.toolNamespaces ?? []).map((ns) => ns.name)];
+  return names.filter((name, index) => isBindableName(name) && names.indexOf(name) === index);
 }
 
 function generateInnerIframeScript(userCode: string, config: SerializedIframeConfig, requestId: string): string {
   const blockedProperties = safeJsonStringify(config.blockedProperties);
   const throwOnBlocked = config.throwOnBlocked;
-  const maxIterations = config.maxIterations;
-  const maxToolCalls = config.maxToolCalls;
-  const memoryLimit = config.memoryLimit;
-  const maxConsoleCalls = config.maxConsoleCalls;
-  const maxConsoleOutputBytes = config.maxConsoleOutputBytes;
-  const maxSanitizeDepth = config.maxSanitizeDepth;
-  const maxSanitizeProperties = config.maxSanitizeProperties;
+  // Every limit is written as the text of a number, or not at all: see numberLiteral
+  const timeout = numberLiteral('timeout', config.timeout);
+  const maxIterations = numberLiteral('maxIterations', config.maxIterations);
+  const maxToolCalls = numberLiteral('maxToolCalls', config.maxToolCalls);
+  const memoryLimit = numberLiteral('memoryLimit', config.memoryLimit);
+  const maxConsoleCalls = numberLiteral('maxConsoleCalls', config.maxConsoleCalls);
+  const maxConsoleOutputBytes = numberLiteral('maxConsoleOutputBytes', config.maxConsoleOutputBytes);
+  const maxSanitizeDepth = numberLiteral('maxSanitizeDepth', config.maxSanitizeDepth);
+  const maxSanitizeProperties = numberLiteral('maxSanitizeProperties', config.maxSanitizeProperties);
+  const bindingNames = scriptBindingNames(config);
 
   return `
 "use strict";
@@ -53,7 +78,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   // system clock change during a tool call cannot move it.
   var _monotonicNow = performance.now.bind(performance);
   var deadlineStart = _monotonicNow();
-  var timeout = ${config.timeout};
+  var timeout = ${timeout};
   var toolCallCount = 0;
   var iterationCount = 0;
   var consoleCalls = 0;
@@ -62,22 +87,39 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   // Pending tool call resolvers: callId -> { resolve, reject }
   var pendingToolCalls = {};
 
+  // The window this frame reports to, and the built-ins this code calls while a script runs:
+  // taken now, before the realm is reduced and before anything the host configured has a name.
+  var outerWindow = window.parent;
+  var _defineProperty = Object.defineProperty;
+  var _freeze = Object.freeze;
+  var _hasOwnProperty = Object.prototype.hasOwnProperty;
+  var _ReflectOwnKeys = Reflect.ownKeys;
+  var _ErrorConstructor = Error;
+
+  // A step of the setup that did not take effect. The script is not started then: a sandbox
+  // that is missing one of its measures is not the sandbox the host asked for.
+  var setupFailure = null;
+  function failSetup(what) {
+    if (setupFailure === null) setupFailure = what;
+  }
+
   // ============================================================
   // Safe Error
   // ============================================================
+  // An error of the sandbox: frozen, without a stack, and with own "constructor" and "__proto__"
+  // properties that are null. Making one costs the same whatever the script has done: it uses
+  // only built-ins taken above, never one the script's realm has had replaced.
   function createSafeError(message, name) {
-    var error = new Error(message);
-    // Use _defineProperty (saved before neutralization) to set name as own property,
-    // since Error.prototype.name is frozen and direct assignment throws in strict mode.
+    var error = new _ErrorConstructor(message);
+    // An own property: Error.prototype is frozen, so plain assignment would throw in strict mode.
     try { _defineProperty(error, 'name', { value: name || 'Error', writable: false, configurable: false, enumerable: false }); }
     catch(e) { try { error.name = name || 'Error'; } catch(e2) {} }
-    try { Object.setPrototypeOf(error, null); } catch(e) {}
     try {
       _defineProperty(error, 'constructor', { value: null, writable: false, configurable: false, enumerable: false });
       _defineProperty(error, '__proto__', { value: null, writable: false, configurable: false, enumerable: false });
       _defineProperty(error, 'stack', { value: undefined, writable: false, configurable: false, enumerable: false });
     } catch(e) {}
-    try { Object.freeze(error); } catch(e) {}
+    try { _freeze(error); } catch(e) {}
     return error;
   }
 
@@ -265,6 +307,13 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     if (!isPlain && hasBrand(_dateGetTime, value)) return new _Date(_ReflectApply(_dateGetTime, value, []));
 
     if (value instanceof _Error) {
+      // Copied into { name, message }: two properties, one level down. Counted here as the host
+      // page counts them, so that a result this frame accepts is one the host accepts.
+      if (depth + 1 > maxSanitizeDepth) {
+        throw createSafeError('Script result exceeds maximum depth (' + maxSanitizeDepth + ').');
+      }
+      context.propertyCount += 2;
+      checkResultProperties(context);
       var errorName = _ReflectGet(value, 'name');
       var errorMessage = _ReflectGet(value, 'message');
       return {
@@ -321,13 +370,13 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     msg.__enclave_msg__ = true;
     msg.requestId = requestId;
     try {
-      window.parent.postMessage(msg, '*');
+      outerWindow.postMessage(msg, '*');
     } catch(e) { /* ignore */ }
   }
 
   // Listen for messages from outer iframe
   window.addEventListener('message', function(event) {
-    if (event.source !== window.parent) return;
+    if (event.source !== outerWindow) return;
     var data = event.data;
     if (!data || data.__enclave_msg__ !== true) return;
     if (data.requestId !== requestId) return;
@@ -378,6 +427,24 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     return 'c-' + (++callIdCounter) + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   }
 
+  // Whether JSON data holds a value more than max levels down, counted as the host page counts
+  // tool arguments: the arguments object is level 0, and a value of any kind has a level.
+  function nestedDeeperThan(value, depth, max) {
+    if (depth > max) return true;
+    if (value === null || typeof value !== 'object') return false;
+    if (_isArray(value)) {
+      for (var i = 0; i < value.length; i++) {
+        if (nestedDeeperThan(value[i], depth + 1, max)) return true;
+      }
+      return false;
+    }
+    var keys = _objectKeys(value);
+    for (var k = 0; k < keys.length; k++) {
+      if (nestedDeeperThan(value[keys[k]], depth + 1, max)) return true;
+    }
+    return false;
+  }
+
   // callTool(name, args, options): only { throwOnError: false } changes behavior. Tool failures
   // then resolve to { success: false, error }; refusals by the enclave still throw.
   function __safe_callTool(toolName, args, options) {
@@ -396,10 +463,16 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
       throw createSafeError('Maximum tool call limit exceeded (${maxToolCalls}).');
     }
 
+    // What the host page would refuse as a broken protocol is refused here first, as an error of
+    // the call: a script that passes a bad name or bad arguments has made a mistake it can
+    // catch, and the sandbox has not misbehaved.
     if (typeof toolName !== 'string' || !toolName) {
       throw createSafeError('Tool name must be a non-empty string', 'TypeError');
     }
-    if (typeof args !== 'object' || args === null || Array.isArray(args)) {
+    if (toolName.length > ${MAX_TOOL_NAME_LENGTH}) {
+      throw createSafeError('Tool name must be at most ${MAX_TOOL_NAME_LENGTH} characters', 'TypeError');
+    }
+    if (typeof args !== 'object' || args === null || _isArray(args)) {
       throw createSafeError('Tool arguments must be an object', 'TypeError');
     }
 
@@ -407,6 +480,13 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     var sanitizedArgs;
     try { sanitizedArgs = JSON.parse(JSON.stringify(args)); }
     catch(e) { throw createSafeError('Tool arguments must be JSON-serializable'); }
+    // The copy is what is sent, so it is the copy that has to be an object.
+    if (typeof sanitizedArgs !== 'object' || sanitizedArgs === null || _isArray(sanitizedArgs)) {
+      throw createSafeError('Tool arguments must be an object', 'TypeError');
+    }
+    if (nestedDeeperThan(sanitizedArgs, 0, ${MAX_TOOL_ARGUMENT_DEPTH})) {
+      throw createSafeError('Tool arguments are nested more than ${MAX_TOOL_ARGUMENT_DEPTH} levels deep');
+    }
 
     var callId = generateCallId();
 
@@ -616,9 +696,26 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     var ml = ${memoryLimit};
     if (ml <= 0) return;
     var totalTracked = 0;
+
+    // A size is only usable when it is a positive number. Anything else (a missing or
+    // non-numeric count, a receiver without a numeric length, a negative value) counts as
+    // nothing, so the running total stays a number and only ever grows.
+    function saneSize(n) { return (typeof n === 'number' && n > 0) ? n : 0; }
+
     function track(bytes) {
-      totalTracked += bytes;
+      totalTracked += saneSize(bytes);
       if (totalTracked > ml) throw new RangeError('Memory limit exceeded');
+    }
+
+    // Charge what was really built when it is more than the estimate (a receiver or an argument
+    // that reports one size and then produces another).
+    function chargeActual(result, estimated, label) {
+      var actual = (typeof result === 'string') ? result.length * 2 : 0;
+      if (actual > estimated) {
+        if (actual > ml) throw new RangeError(label + ' would exceed memory limit');
+        track(actual - estimated);
+      }
+      return result;
     }
 
     var stringProto = Object.getPrototypeOf('');
@@ -627,14 +724,12 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     try {
       var origRepeat = stringProto.repeat;
       Object.defineProperty(stringProto, 'repeat', { value: function(count) {
-        var est = this.length * count * 2;
+        var est = saneSize(this.length * saneSize(+count) * 2);
         if (est > ml) throw new RangeError('String.repeat would exceed memory limit');
         track(est);
-        return origRepeat.call(this, count);
+        return chargeActual(origRepeat.call(this, count), est, 'String.repeat');
       }, writable: false, configurable: false });
-    } catch(e) {}
 
-    try {
       var origJoin = arrayProto.join;
       Object.defineProperty(arrayProto, 'join', { value: function(sep) {
         var s = sep === undefined ? ',' : String(sep);
@@ -644,14 +739,28 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
           est += (item === null || item === undefined) ? 0 : String(item).length;
           if (i > 0) est += s.length;
         }
-        est *= 2;
+        est = saneSize(est * 2);
         if (est > ml) throw new RangeError('Array.join would exceed memory limit');
         track(est);
-        return origJoin.call(this, sep);
+        return chargeActual(origJoin.call(this, sep), est, 'Array.join');
       }, writable: false, configurable: false });
-    } catch(e) {}
 
-    try {
+      var origPadStart = stringProto.padStart;
+      Object.defineProperty(stringProto, 'padStart', { value: function(targetLength, padString) {
+        var est = saneSize(Math.max(saneSize(this.length), saneSize(+targetLength)) * 2);
+        if (est > ml) throw new RangeError('String.padStart would exceed memory limit');
+        track(est);
+        return chargeActual(origPadStart.call(this, targetLength, padString), est, 'String.padStart');
+      }, writable: false, configurable: false });
+
+      var origPadEnd = stringProto.padEnd;
+      Object.defineProperty(stringProto, 'padEnd', { value: function(targetLength, padString) {
+        var est = saneSize(Math.max(saneSize(this.length), saneSize(+targetLength)) * 2);
+        if (est > ml) throw new RangeError('String.padEnd would exceed memory limit');
+        track(est);
+        return chargeActual(origPadEnd.call(this, targetLength, padString), est, 'String.padEnd');
+      }, writable: false, configurable: false });
+
       var origFill = arrayProto.fill;
       Object.defineProperty(arrayProto, 'fill', { value: function(value, start, end) {
         var len = this.length >>> 0;
@@ -665,7 +774,9 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
         track(est);
         return origFill.call(this, value, start, end);
       }, writable: false, configurable: false });
-    } catch(e) {}
+    } catch(e) {
+      failSetup('memory accounting could not be installed');
+    }
   })();
 
   // Freeze all prototypes
@@ -700,7 +811,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     'fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource',
     'Worker', 'SharedWorker', 'ServiceWorker',
     'importScripts', 'localStorage', 'sessionStorage',
-    'indexedDB', 'caches', 'navigator',
+    'indexedDB', 'caches', 'navigator', 'clientInformation',
     'open', 'close', 'alert', 'confirm', 'prompt'
   ];
   for (var bd = 0; bd < browserDangerous.length; bd++) {
@@ -712,6 +823,8 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   // Note: window.document is a non-configurable accessor property that cannot be
   // deleted or redefined. It is shadowed via 'var document = undefined' in the
   // user code execution scope below.
+
+${CONNECTION_BACKSTOP_SOURCE}
 
   // ============================================================
   // Inject Safe Globals
@@ -743,10 +856,8 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     })(blockedObjMethods[bm]);
   }
 
-  // Save reference to Object.defineProperty before neutralizing it
-  var _defineProperty = Object.defineProperty;
-
-  // Neutralize dangerous static methods on intrinsic Object
+  // Neutralize dangerous static methods on intrinsic Object (this code keeps the references it
+  // took at the top)
   (function() {
     var RealObject = Object.getPrototypeOf({}).constructor;
     var dangerous = ['getOwnPropertyDescriptors', 'getOwnPropertyDescriptor', 'defineProperty', 'defineProperties', 'setPrototypeOf'];
@@ -794,13 +905,30 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     decodeURIComponent: decodeURIComponent
   };
 
+  // What the host configured for the script, by name: its custom globals and tool namespaces.
+  // The script reaches them as parameters of the function it runs in (see "Execute User Code"),
+  // so a configured name means the host's value whatever else has that name here: a property
+  // of this window, or a variable of this code.
+  var scriptBindings = { __proto__: null };
+
+  // A configured name is also defined on the window, with its prefixed twin, where that takes
+  // nothing away: never over a property the window has, and never over a name of the runtime.
+  function addConfiguredGlobal(name, value) {
+    scriptBindings[name] = value;
+    if (!(name in window) && !_ReflectApply(_hasOwnProperty, safeGlobals, [name])) {
+      safeGlobals[name] = value;
+    }
+    var twin = '__safe_' + name;
+    if (!_ReflectApply(_hasOwnProperty, safeGlobals, [twin])) {
+      safeGlobals[twin] = value;
+    }
+  }
+
   // Inject custom globals if provided
   var customGlobals = ${safeJsonStringify(config.globals || {})};
-  for (var cgKey in customGlobals) {
-    if (customGlobals.hasOwnProperty(cgKey)) {
-      safeGlobals[cgKey] = createSecureProxy(customGlobals[cgKey]);
-      safeGlobals['__safe_' + cgKey] = createSecureProxy(customGlobals[cgKey]);
-    }
+  var customGlobalNames = _objectKeys(customGlobals);
+  for (var cg = 0; cg < customGlobalNames.length; cg++) {
+    addConfiguredGlobal(customGlobalNames[cg], createSecureProxy(customGlobals[customGlobalNames[cg]]));
   }
 
   // Tool namespaces (mail.list(args)): frozen, null-prototype objects built in this realm whose
@@ -827,40 +955,66 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
         target[method.name] = bind(method.toolName);
       }
       Object.freeze(target);
-      safeGlobals[ns.name] = target;
-      safeGlobals['__safe_' + ns.name] = target;
+      addConfiguredGlobal(ns.name, target);
     }
   })();
 
-  for (var gKey in safeGlobals) {
-    if (safeGlobals.hasOwnProperty(gKey)) {
-      try {
-        _defineProperty(window, gKey, {
-          value: safeGlobals[gKey],
-          writable: false,
-          configurable: false,
-          enumerable: false
-        });
-      } catch(e) {}
+  var safeGlobalNames = _objectKeys(safeGlobals);
+  for (var sg = 0; sg < safeGlobalNames.length; sg++) {
+    var gKey = safeGlobalNames[sg];
+    try {
+      _defineProperty(window, gKey, {
+        value: safeGlobals[gKey],
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+    } catch(e) {
+      // A script must not run with one of its globals missing or still the browser's
+      failSetup('the global "' + gKey + '" could not be defined');
     }
   }
 
 ${config.blockRegExp ? REGEXP_BACKSTOP_SOURCE : ''}
 
+${DOCUMENT_BACKSTOP_SOURCE}
+
   // ============================================================
   // Execute User Code
   // ============================================================
   (async function() {
-    // Shadow non-deletable browser globals so user code sees undefined
+    // Shadow non-deletable browser globals so user code sees undefined (the document itself is
+    // closed above: this is about the name)
     var document = undefined;
 
-    try {
-      // The transformed code defines __ag_main as a function declaration.
-      // We embed it directly — CSP 'unsafe-inline' allows inline scripts
-      // but blocks eval/new Function.
-      ${generateUserCodeExecution(userCode)}
+    if (setupFailure !== null) {
+      sendToOuter({
+        type: 'result',
+        success: false,
+        error: {
+          name: 'SandboxSetupError',
+          message: 'The sandbox could not be set up (' + setupFailure + '); the script was not started.',
+          code: ${JSON.stringify(SANDBOX_SETUP_FAILED_CODE)}
+        },
+        stats: { duration: Date.now() - startTime, toolCallCount: 0, iterationCount: 0, startTime: startTime, endTime: Date.now() }
+      });
+      return;
+    }
 
-      var result = typeof __ag_main === 'function' ? await __ag_main() : undefined;
+    try {
+      // The script is the body of a function of its own, embedded as text (the document's policy
+      // allows this one script and no code made from a string). The function's parameters are the
+      // names the host configured: custom globals and tool namespaces. A parameter is the
+      // innermost binding of its name, so it is what the script reaches, not a property of this
+      // window or a variable of this code that has the same name. The transformed code defines
+      // __ag_main as a function declaration; that function is what is run.
+      var __ag_entry = await (async function(${bindingNames.join(', ')}) {
+        ${generateUserCodeExecution(userCode)}
+
+        return typeof __ag_main === 'function' ? __ag_main : undefined;
+      })(${bindingNames.map((name) => `scriptBindings[${safeJsonStringify(name)}]`).join(', ')});
+
+      var result = typeof __ag_entry === 'function' ? await __ag_entry() : undefined;
 
       sendToOuter({
         type: 'result',
@@ -938,6 +1092,109 @@ const REGEXP_BACKSTOP_SOURCE = `
   })();`;
 
 /**
+ * Statements of the inner iframe script that make the realm unable to open a connection the
+ * document policy has no say over. The policy (`default-src 'none'`) governs every request source
+ * it knows; a peer connection is not one of them, so the names that create one are removed from
+ * the realm, at every security level and for every preset.
+ *
+ * As for regular expressions, the object behind the name is made unusable as well: every member
+ * of the constructor and of its prototype is replaced by a function that throws, and both are
+ * frozen. If a name is still there afterwards, the script is not started.
+ */
+const CONNECTION_BACKSTOP_SOURCE = `
+  // ============================================================
+  // Connections Outside The Document Policy
+  // ============================================================
+  (function() {
+    var refuse = () => {
+      throw createSafeError(${JSON.stringify(CONNECTION_REFUSED_MESSAGE)}, 'TypeError');
+    };
+    _freeze(refuse);
+    var names = ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection'];
+    for (var n = 0; n < names.length; n++) {
+      var name = names[n];
+      try {
+        var connection = window[name];
+        var parts = typeof connection === 'function' ? [connection.prototype, connection] : [];
+        for (var p = 0; p < parts.length; p++) {
+          var part = parts[p];
+          if (part === null || (typeof part !== 'object' && typeof part !== 'function')) continue;
+          var keys = _ReflectOwnKeys(part);
+          for (var k = 0; k < keys.length; k++) {
+            var descriptor = _getOwnPropertyDescriptor(part, keys[k]);
+            if (descriptor && descriptor.configurable) {
+              _defineProperty(part, keys[k], { value: refuse, writable: false, configurable: false, enumerable: false });
+            }
+          }
+          _freeze(part);
+        }
+      } catch(e) {
+        failSetup('"' + name + '" could not be made unusable');
+      }
+      try { delete window[name]; } catch(e) {}
+      if (name in window) {
+        try { _defineProperty(window, name, { value: undefined, writable: false, configurable: false, enumerable: false }); } catch(e2) {}
+      }
+      if (typeof window[name] !== 'undefined') failSetup('"' + name + '" could not be removed');
+    }
+  })();`;
+
+/**
+ * Statements of the inner iframe script that close the frame's document: it holds nothing, and
+ * nothing can be put into it.
+ *
+ * A node that is part of a document can make the browser load something, and not every such load
+ * is a request the document policy governs. A script has no use for the document of the frame it
+ * runs in (the frame is never shown), and a page cannot remove `window.document`. So the document
+ * is emptied, and every member of the prototypes a document gets its behaviour from, and of
+ * `Range`, which can place a node relative to a document, is replaced by a function that throws;
+ * the prototypes are frozen. With no node in the document and no way to add one to it, nothing a
+ * script builds is ever part of a document: no element loads, and no frame is created.
+ *
+ * It runs last, when the script element this code came from has done its work, at every security
+ * level and for every preset. If the document is not empty afterwards, the script is not started.
+ */
+const DOCUMENT_BACKSTOP_SOURCE = `
+  // ============================================================
+  // The Frame's Document
+  // ============================================================
+  (function() {
+    var refuse = () => {
+      throw createSafeError(${JSON.stringify(DOCUMENT_REFUSED_MESSAGE)}, 'TypeError');
+    };
+    _freeze(refuse);
+    function makeUnusable(target) {
+      var keys = _ReflectOwnKeys(target);
+      for (var k = 0; k < keys.length; k++) {
+        var descriptor = _getOwnPropertyDescriptor(target, keys[k]);
+        if (descriptor && descriptor.configurable) {
+          _defineProperty(target, keys[k], { value: refuse, writable: false, configurable: false, enumerable: false });
+        }
+      }
+      _freeze(target);
+    }
+    try {
+      var frameDocument = window.document;
+      while (frameDocument.firstChild) frameDocument.removeChild(frameDocument.firstChild);
+      if (frameDocument.firstChild !== null) failSetup('the document of the frame could not be emptied');
+      // From the document's own prototype down to the one all nodes share; what is below that
+      // (events) has no part in what a document holds.
+      var prototype = _objectGetPrototypeOf(frameDocument);
+      var closed = 0;
+      while (prototype !== null && 'nodeType' in prototype) {
+        var next = _objectGetPrototypeOf(prototype);
+        makeUnusable(prototype);
+        closed++;
+        prototype = next;
+      }
+      if (closed === 0) failSetup('the document of the frame could not be closed');
+      if (typeof window.Range === 'function') makeUnusable(window.Range.prototype);
+    } catch(e) {
+      failSetup('the document of the frame could not be closed');
+    }
+  })();`;
+
+/**
  * Generate the user code execution block.
  * Since we can't use new Function() (CSP blocks eval),
  * we embed the code directly in the script.
@@ -946,9 +1203,9 @@ function generateUserCodeExecution(userCode: string): string {
   // The user code has already been transformed by @enclave-vm/ast
   // and contains __ag_main() function definition.
   // We embed it directly - it runs in the same script context.
-  // Escape closing script tags to prevent HTML parser breakout
-  // when embedded via buildIframeHtml's <script>${content}</script>
-  return userCode.replace(/<\//g, '<\\/');
+  // What means something to the HTML parser inside a script element is escaped, so that the
+  // code is read as it was written: the end tag, and the start of an HTML comment.
+  return escapeScriptText(userCode);
 }
 
 /**

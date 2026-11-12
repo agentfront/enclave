@@ -31,14 +31,16 @@ description: 'Secure JavaScript execution in the browser using double iframe iso
 |---------|--------------------|-----------------------|
 | **Runtime** | Node.js (`vm` module) | Browser (iframe `srcdoc`) |
 | **Isolation** | Double VM nesting | Double iframe nesting |
-| **Network blocking** | VM context restriction | CSP `default-src 'none'` |
-| **Eval blocking** | `codeGeneration: { strings: false }` | CSP blocks `eval`/`Function` |
+| **Network blocking** | VM context restriction | CSP `default-src 'none'`; peer-connection constructors removed from the inner frame, and its document closed |
+| **Eval blocking** | `codeGeneration: { strings: false }` | CSP blocks `eval`/`Function`, and names the only script each frame may run by its hash |
 | **Worker pool** | `worker_threads` adapter | Not available |
 | **AI scoring gate** | Supported | Not available |
 | **Reference sidecar** | Supported | Not available |
 | **Memory tracking** | V8 heap stats | Soft estimation (String/Array hooks) |
 | **AST validation** | Same (`@enclave-vm/ast`) | Same (`@enclave-vm/ast`) |
-| **Code transformation** | Same (AgentScript) | Same (AgentScript) |
+| **Code transformation** | AgentScript transform, then the run-time key guard, deadline checks and concatenation tracking | AgentScript transform only |
+| **Stopping a busy script** | Deadline checks in the script, and the VM's own timeout | Timers: only where the browser runs the sandbox frames in another process than the page ([details](/core-libraries/enclave-browser/security-architecture#timeouts-and-the-browsers-process-model)) |
+| **What separates a script from its runtime** | A realm that holds only the allowed globals, behind the validator | The validator: the script runs in the inner frame's document ([details](/core-libraries/enclave-browser/security-architecture#what-each-guarantee-rests-on)) |
 | **Security levels** | Same 4 levels | Same 4 levels |
 | **Tool system** | Same `callTool()` API | Same `callTool()` API |
 | **Timeout and tool calls** | A call in progress at the deadline may still deliver within `toolCallGraceMs`; the next call after `timeout` is refused | Same |
@@ -121,8 +123,9 @@ The value a script returns is copied out of the sandbox the same way as in `@enc
 | `EXECUTION_TIMEOUT` | Execution exceeded timeout | Optimize or increase timeout |
 | (none) | Tool call limit exceeded: `error.message` starts with `Maximum tool call limit exceeded` | Reduce tool calls or increase `maxToolCalls` |
 | (none) | Loop iteration limit exceeded: `error.message` starts with `Maximum iteration limit exceeded` | Reduce loops or increase `maxIterations` |
-| `PROTOCOL_VIOLATION` | The sandbox sent the host page a message the protocol does not allow; the execution was ended | Should not happen with the iframes this package creates: report it |
-| `IFRAME_CREATE_FAILED` | Failed to create sandbox iframe | Check browser compatibility |
+| `PROTOCOL_VIOLATION` | The sandbox sent the host page a message the protocol does not allow; the execution was ended | Should not happen with the iframes this package creates and a validated script: report it |
+| `SANDBOX_SETUP_FAILED` | The inner iframe could not put one of its measures in place (a name it must remove is still there, a global could not be defined); the script was not started | Check browser compatibility; report it |
+| `IFRAME_CREATE_FAILED` | Failed to create sandbox iframe (also when `IframeAdapter` is used directly with a limit that is not a number) | Check browser compatibility |
 | `EXECUTION_ABORTED` | Execution was manually aborted | Expected when calling `abort()` |
 | `ADAPTER_DISPOSED` | Adapter was disposed during execution | Avoid disposing during execution |
 | `ENCLAVE_ERROR` | Unexpected internal error | Check error message for details |

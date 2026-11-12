@@ -1,7 +1,7 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
 import { walkAll, staticPropertyName, type AnyNode } from '../utils/ast-walk';
-import { analyzeScopes } from '../utils/scope-analysis';
+import { analyzeScopes, type ScopeReference } from '../utils/scope-analysis';
 
 /**
  * Options for the NoJsonCallbacksRule
@@ -100,14 +100,23 @@ export class NoJsonCallbacksRule implements ValidationRule {
   }
 
   validate(context: ValidationContext): void {
+    const { freeReferences } = analyzeScopes(context.ast);
+
+    // "No callback" is the value `undefined`, which only the global of that name is sure to hold.
+    // A variable of the script may be called `undefined` and hold a function.
+    const globalUndefined = new Set<AnyNode>();
+    for (const ref of freeReferences) {
+      if (ref.name === 'undefined') globalUndefined.add(ref.node);
+    }
+
     walk.simple(context.ast as any, {
       CallExpression: (node: any) => {
-        this.checkJsonCall(node, context);
+        this.checkJsonCall(node, context, globalUndefined);
       },
     });
 
     if (this.requireDirectUse) {
-      this.checkDirectUse(context);
+      this.checkDirectUse(context, freeReferences);
     }
   }
 
@@ -115,12 +124,12 @@ export class NoJsonCallbacksRule implements ValidationRule {
    * Refuse every use of the `JSON` object other than a direct `JSON.parse(...)` or
    * `JSON.stringify(...)` call with a statically-known method name.
    */
-  private checkDirectUse(context: ValidationContext): void {
+  private checkDirectUse(context: ValidationContext, freeReferences: readonly ScopeReference[]): void {
     // Only a reference that reaches the global is the JSON object. A local variable of that name
     // (`const JSON = {...}`) is the script's own value: it can only hold the JSON object through a
     // free reference, and that reference is refused here.
     const free = new Set<AnyNode>();
-    for (const ref of analyzeScopes(context.ast).freeReferences) {
+    for (const ref of freeReferences) {
       if (ref.name === 'JSON') free.add(ref.node);
     }
 
@@ -170,7 +179,7 @@ export class NoJsonCallbacksRule implements ValidationRule {
     });
   }
 
-  private checkJsonCall(node: any, context: ValidationContext): void {
+  private checkJsonCall(node: any, context: ValidationContext, globalUndefined: ReadonlySet<AnyNode>): void {
     const callee = node.callee;
 
     // Normalize callee: handle both MemberExpression and ChainExpression (optional chaining)
@@ -197,16 +206,16 @@ export class NoJsonCallbacksRule implements ValidationRule {
 
     // Check JSON.stringify with replacer
     if (this.blockStringifyReplacer && methodName === 'stringify') {
-      this.checkStringifyReplacer(node, context);
+      this.checkStringifyReplacer(node, context, globalUndefined);
     }
 
     // Check JSON.parse with reviver
     if (this.blockParseReviver && methodName === 'parse') {
-      this.checkParseReviver(node, context);
+      this.checkParseReviver(node, context, globalUndefined);
     }
   }
 
-  private checkStringifyReplacer(node: any, context: ValidationContext): void {
+  private checkStringifyReplacer(node: any, context: ValidationContext, globalUndefined: ReadonlySet<AnyNode>): void {
     // JSON.stringify(value, replacer?, space?)
     // A spread hides which argument lands in the replacer position: JSON.stringify(...[v, fn]).
     if (this.hasSpreadArgument(node, 2)) {
@@ -222,7 +231,7 @@ export class NoJsonCallbacksRule implements ValidationRule {
     const replacerArg = node.arguments[1];
 
     // Allow null or undefined replacer
-    if (this.isNullOrUndefined(replacerArg)) {
+    if (this.isNullOrUndefined(replacerArg, globalUndefined)) {
       return;
     }
 
@@ -232,12 +241,12 @@ export class NoJsonCallbacksRule implements ValidationRule {
     }
 
     // Anything that is not provably a non-function is refused.
-    if (!this.isProvablyNotAFunction(replacerArg)) {
+    if (!this.isProvablyNotAFunction(replacerArg, globalUndefined)) {
       this.report(node, 'stringify', 'replacer', context);
     }
   }
 
-  private checkParseReviver(node: any, context: ValidationContext): void {
+  private checkParseReviver(node: any, context: ValidationContext, globalUndefined: ReadonlySet<AnyNode>): void {
     // JSON.parse(text, reviver?)
     // A spread hides which argument lands in the reviver position: JSON.parse(...[text, fn]).
     if (this.hasSpreadArgument(node, 2)) {
@@ -253,12 +262,12 @@ export class NoJsonCallbacksRule implements ValidationRule {
     const reviverArg = node.arguments[1];
 
     // Allow null or undefined reviver
-    if (this.isNullOrUndefined(reviverArg)) {
+    if (this.isNullOrUndefined(reviverArg, globalUndefined)) {
       return;
     }
 
     // Anything that is not provably a non-function is refused.
-    if (!this.isProvablyNotAFunction(reviverArg)) {
+    if (!this.isProvablyNotAFunction(reviverArg, globalUndefined)) {
       this.report(node, 'parse', 'reviver', context);
     }
   }
@@ -277,11 +286,11 @@ export class NoJsonCallbacksRule implements ValidationRule {
    * shapes are harmless. Every other expression (a variable, a call, `(0, fn)`, `await fn`,
    * `a = fn`, ...) could evaluate to a function and is refused.
    */
-  private isProvablyNotAFunction(node: any): boolean {
+  private isProvablyNotAFunction(node: any, globalUndefined: ReadonlySet<AnyNode>): boolean {
     if (node.type === 'Literal') return true; // string, number, boolean, null, bigint
     if (node.type === 'TemplateLiteral') return true; // always a string
     if (node.type === 'ObjectExpression' || node.type === 'ArrayExpression') return true;
-    return this.isNullOrUndefined(node);
+    return this.isNullOrUndefined(node, globalUndefined);
   }
 
   private isJsonObject(node: any): boolean {
@@ -313,14 +322,15 @@ export class NoJsonCallbacksRule implements ValidationRule {
     return null;
   }
 
-  private isNullOrUndefined(node: any): boolean {
+  private isNullOrUndefined(node: any, globalUndefined: ReadonlySet<AnyNode>): boolean {
     // null literal
     if (node.type === 'Literal' && node.value === null) {
       return true;
     }
 
-    // undefined identifier
-    if (node.type === 'Identifier' && node.name === 'undefined') {
+    // The global `undefined`. The same word naming a variable of the script (a declaration, a
+    // parameter, a catch binding) is that variable, with whatever value the script gave it.
+    if (node.type === 'Identifier' && node.name === 'undefined' && globalUndefined.has(node)) {
       return true;
     }
 

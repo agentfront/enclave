@@ -80,8 +80,9 @@ interface ExecutionResult<T> {
   error?: {               // Error details (if failed)
     name: string;
     message: string;
-    code: string;
-    stack?: string;
+    code?: string;
+    stack?: string;       // Only for errors made outside the sandbox
+    data?: Record<string, unknown>;
   };
   stats: {
     duration: number;      // Execution time in ms
@@ -95,11 +96,13 @@ interface ExecutionResult<T> {
 
 | Code               | Meaning                    | Action                                |
 | ------------------ | -------------------------- | ------------------------------------- |
-| `VALIDATION_ERROR` | AST validation failed      | Fix the code - blocked construct used |
-| `EXECUTION_ERROR`  | Runtime error in script    | Fix script logic                      |
-| `TIMEOUT`          | Execution exceeded timeout | Optimize or increase timeout          |
-| `TOOL_ERROR`       | Tool call failed           | Check tool input/availability         |
+| `VALIDATION_ERROR` | AST validation failed, or the script is too large | Fix the code - blocked construct used |
+| `DOUBLE_VM_EXECUTION_ERROR` | The script failed in the sandbox: an error it did not catch, a failed tool call, the tool-call or iteration limit, a timeout (`error.message` says which) | Fix script logic, check the tool, or raise the limit |
 | `MEMORY_LIMIT_EXCEEDED` | Memory limit exceeded | Reduce memory usage or increase limit |
+| `SECURITY_VIOLATION` | A dynamic import, or a blocked operation at `STRICT` or `SECURE` | Fix the code |
+| `ENCLAVE_ERROR` | A failure outside the sandbox, such as a syntax error in the script | Fix the code |
+
+See [Configuration](/core-libraries/enclave-vm/configuration#error-codes) for the complete list. `name` and `message` are strings of bounded length whatever a script threw, and an error made inside the sandbox has no `stack`.
 
 ## Related
 

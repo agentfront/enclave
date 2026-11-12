@@ -3,7 +3,7 @@ title: '@enclave-vm/types'
 description: 'Type definitions and Zod schemas for EnclaveJS'
 ---
 
-Type definitions and Zod schemas for the EnclaveJS streaming protocol.
+Type definitions and Zod schemas for the EnclaveJS streaming protocol. The package holds types, constants, schemas and type guards; it sends and receives nothing.
 
 ## Installation
 
@@ -11,7 +11,44 @@ Type definitions and Zod schemas for the EnclaveJS streaming protocol.
 npm install @enclave-vm/types
 ```
 
+## Protocol Constants and Identifiers
+
+| Export | Value | Description |
+|--------|-------|-------------|
+| `PROTOCOL_VERSION` | `2` | Current protocol version |
+| `PROTOCOL_VERSION_V1` | `1` | Previous version, still accepted by the schemas |
+| `SESSION_ID_PREFIX` | `'s_'` | Prefix of a session id |
+| `CALL_ID_PREFIX` | `'c_'` | Prefix of a tool call id |
+| `REF_ID_PREFIX` | `'ref_'` | Prefix of a reference id |
+
+```ts
+type ProtocolVersion = 2 | 1;
+type SessionId = `s_${string}`;
+type CallId = `c_${string}`;
+type RefId = `ref_${string}`;
+
+function generateSessionId(): SessionId; // 's_' + a UUID
+function generateCallId(): CallId;
+function generateRefId(): RefId;
+
+function isSessionId(value: string): value is SessionId; // checks the prefix
+function isCallId(value: string): value is CallId;
+function isRefId(value: string): value is RefId;
+```
+
 ## Stream Events
+
+### BaseEvent
+
+Every event has these fields. There is no timestamp field.
+
+```ts
+interface BaseEvent {
+  protocolVersion: ProtocolVersion;
+  sessionId: SessionId;
+  seq: number; // Sequence number, for ordering and reconnection
+}
+```
 
 ### StreamEvent
 
@@ -24,25 +61,29 @@ type StreamEvent =
   | LogEvent
   | ToolCallEvent
   | ToolResultAppliedEvent
-  | HeartbeatEvent
   | FinalEvent
-  | ErrorEvent;
+  | HeartbeatEvent
+  | ErrorEvent
+  | PartialResultEvent
+  | ToolProgressEvent
+  | DeadlineExceededEvent
+  | CatalogChangedEvent;
 ```
+
+`EventType` holds the `type` values: `SessionInit` (`'session_init'`), `Stdout`, `Log`, `ToolCall` (`'tool_call'`), `ToolResultApplied` (`'tool_result_applied'`), `Final`, `Heartbeat`, `Error`, `PartialResult` (`'partial_result'`), `ToolProgress` (`'tool_progress'`), `DeadlineExceeded` (`'deadline_exceeded'`), `CatalogChanged` (`'catalog_changed'`) and `Encrypted` (`'enc'`).
 
 ### SessionInitEvent
 
 Session initialization event.
 
 ```ts
-interface SessionInitEvent {
+interface SessionInitEvent extends BaseEvent {
   type: 'session_init';
-  sessionId: string;
-  timestamp: number;
   payload: {
-    limits: {
-      maxDurationMs: number;
-      maxToolCalls: number;
-    };
+    cancelUrl: string;
+    expiresAt: string; // ISO date
+    encryption: { enabled: boolean; keyId?: string };
+    replayUrl?: string;
   };
 }
 ```
@@ -52,12 +93,10 @@ interface SessionInitEvent {
 Console output event.
 
 ```ts
-interface StdoutEvent {
+interface StdoutEvent extends BaseEvent {
   type: 'stdout';
-  sessionId: string;
-  timestamp: number;
   payload: {
-    data: string;
+    chunk: string;
   };
 }
 ```
@@ -67,10 +106,8 @@ interface StdoutEvent {
 Structured log event.
 
 ```ts
-interface LogEvent {
+interface LogEvent extends BaseEvent {
   type: 'log';
-  sessionId: string;
-  timestamp: number;
   payload: {
     level: 'debug' | 'info' | 'warn' | 'error';
     message: string;
@@ -81,17 +118,15 @@ interface LogEvent {
 
 ### ToolCallEvent
 
-Tool execution request event.
+Tool call event.
 
 ```ts
-interface ToolCallEvent {
+interface ToolCallEvent extends BaseEvent {
   type: 'tool_call';
-  sessionId: string;
-  timestamp: number;
   payload: {
-    callId: string;
-    tool: string;
-    args: Record<string, unknown>;
+    callId: CallId;
+    toolName: string;
+    args: unknown;
   };
 }
 ```
@@ -101,12 +136,10 @@ interface ToolCallEvent {
 Tool result confirmation event.
 
 ```ts
-interface ToolResultAppliedEvent {
+interface ToolResultAppliedEvent extends BaseEvent {
   type: 'tool_result_applied';
-  sessionId: string;
-  timestamp: number;
   payload: {
-    callId: string;
+    callId: CallId;
   };
 }
 ```
@@ -116,339 +149,330 @@ interface ToolResultAppliedEvent {
 Keep-alive event.
 
 ```ts
-interface HeartbeatEvent {
+interface HeartbeatEvent extends BaseEvent {
   type: 'heartbeat';
-  sessionId: string;
-  timestamp: number;
-  payload: Record<string, never>;
+  payload: {
+    ts: string; // ISO date
+  };
 }
 ```
 
 ### FinalEvent
 
-Execution completion event.
+The last event of a session.
 
 ```ts
-interface FinalEvent {
+interface FinalEvent extends BaseEvent {
   type: 'final';
-  sessionId: string;
-  timestamp: number;
   payload: {
-    result: unknown;
-    stats: ExecutionStats;
+    ok: boolean;
+    result?: unknown;
+    error?: ErrorInfo; // { message, code?, stack? }
+    errors?: ErrorPayload[];
+    stats?: SessionStats;
   };
+}
+
+interface SessionStats {
+  durationMs: number;
+  toolCallCount: number;
+  stdoutBytes: number;
 }
 ```
 
 ### ErrorEvent
 
-Execution error event.
+An error during a session that does not end it.
 
 ```ts
-interface ErrorEvent {
+interface ErrorEvent extends BaseEvent {
   type: 'error';
-  sessionId: string;
-  timestamp: number;
   payload: {
-    code: ErrorCode;
-    message: string;
-    data?: Record<string, unknown>;
-  };
-}
-```
-
-## Execution Types
-
-### ExecutionStats
-
-```ts
-interface ExecutionStats {
-  duration: number;
-  toolCallCount: number;
-  iterationCount: number;
-  memoryUsage?: number;
-}
-```
-
-### ErrorCode
-
-```ts
-type ErrorCode =
-  | 'VALIDATION_ERROR'
-  | 'TIMEOUT'
-  | 'MAX_TOOL_CALLS'
-  | 'MAX_ITERATIONS'
-  | 'TOOL_ERROR'
-  | 'MEMORY_LIMIT_EXCEEDED'
-  | 'SCORING_BLOCKED'
-  | 'RUNTIME_ERROR'
-  | 'CONNECTION_ERROR'
-  | 'SESSION_NOT_FOUND';
-```
-
-## Request Types
-
-### ExecuteRequest
-
-```ts
-interface ExecuteRequest {
-  code: string;
-  timeout?: number;
-  maxToolCalls?: number;
-  context?: Record<string, unknown>;
-  filter?: EventFilter;
-}
-```
-
-### ToolResultRequest
-
-```ts
-interface ToolResultRequest {
-  callId: string;
-  result: unknown;
-  error?: {
     message: string;
     code?: string;
+    recoverable?: boolean;
   };
 }
 ```
 
-### EventFilter
+### Events of protocol version 2
 
 ```ts
-interface EventFilter {
-  types?: EventType[];
-  blockedTypes?: EventType[];
+interface PartialResultEvent extends BaseEvent {
+  type: 'partial_result';
+  payload: { path: string[]; data?: unknown; error?: ErrorPayload; hasNext: boolean };
 }
 
-type EventType =
-  | 'session_init'
-  | 'stdout'
-  | 'log'
-  | 'tool_call'
-  | 'tool_result_applied'
-  | 'heartbeat'
-  | 'final'
-  | 'error';
-```
-
-## Session Types
-
-### Session
-
-```ts
-interface Session {
-  id: string;
-  status: SessionStatus;
-  createdAt: number;
-  expiresAt: number;
-  lastActivity: number;
-  metadata?: Record<string, unknown>;
+interface ToolProgressEvent extends BaseEvent {
+  type: 'tool_progress';
+  payload: {
+    callId: CallId;
+    phase: 'connecting' | 'sending' | 'receiving' | 'processing';
+    bytesReceived?: number;
+    totalBytes?: number;
+    elapsedMs: number;
+  };
 }
 
-type SessionStatus =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'error'
-  | 'timeout';
-```
-
-## Encryption Types
-
-### EncryptedPayload
-
-```ts
-interface EncryptedPayload {
-  encrypted: true;
-  iv: string;
-  ciphertext: string;
-  tag?: string;
-}
-```
-
-### KeyExchange
-
-```ts
-interface ClientHello {
-  type: 'ClientHello';
-  publicKey: string;
-  nonce?: string;
+interface DeadlineExceededEvent extends BaseEvent {
+  type: 'deadline_exceeded';
+  payload: { elapsedMs: number; budgetMs: number };
 }
 
-interface ServerHello {
-  type: 'ServerHello';
-  publicKey: string;
-  sessionId: string;
-  nonce?: string;
+interface CatalogChangedEvent extends BaseEvent {
+  type: 'catalog_changed';
+  payload: { version: string; addedActions: string[]; removedActions: string[] };
+}
+
+interface ErrorPayload {
+  code: string;
+  message: string;
+  path?: string[];
+  details?: ErrorDetail[];
 }
 ```
 
 ## Zod Schemas
 
-All types have corresponding Zod schemas for runtime validation.
+### Event Schemas
 
 ```ts
 import {
   StreamEventSchema,
-  ExecuteRequestSchema,
-  ToolResultRequestSchema,
-  SessionSchema,
-} from '@enclave-vm/types';
-
-// Validate incoming event
-const event = StreamEventSchema.parse(rawData);
-
-// Validate request body
-const request = ExecuteRequestSchema.parse(req.body);
-```
-
-### Schema Examples
-
-```ts
-import { z } from 'zod';
-import {
-  StreamEventSchema,
+  SessionInitEventSchema,
   StdoutEventSchema,
+  LogEventSchema,
   ToolCallEventSchema,
+  ToolResultAppliedEventSchema,
+  HeartbeatEventSchema,
   FinalEventSchema,
   ErrorEventSchema,
 } from '@enclave-vm/types';
+```
 
-// Parse and type-narrow
-function handleEvent(raw: unknown) {
-  const event = StreamEventSchema.parse(raw);
+Each event type has a schema (`PartialResultEventSchema`, `ToolProgressEventSchema`, `DeadlineExceededEventSchema` and `CatalogChangedEventSchema` for the version 2 events), and each payload has one (`SessionInitPayloadSchema`, `FinalPayloadSchema`, ...).
 
-  switch (event.type) {
-    case 'stdout':
-      // event is StdoutEvent
-      console.log(event.payload.data);
-      break;
-    case 'tool_call':
-      // event is ToolCallEvent
-      handleToolCall(event.payload.callId, event.payload.tool);
-      break;
-    case 'final':
-      // event is FinalEvent
-      console.log('Result:', event.payload.result);
-      break;
-    case 'error':
-      // event is ErrorEvent
-      console.error(event.payload.message);
-      break;
-  }
+### Usage
+
+```ts
+import { StreamEventSchema, parseStreamEvent } from '@enclave-vm/types';
+
+// Validate an event
+const result = StreamEventSchema.safeParse(data);
+if (result.success) {
+  const event = result.data;
+  // event is typed as StreamEvent
+}
+
+// The same, as a helper
+const parsed = parseStreamEvent(data);
+
+// Throws on a value that is not an event
+const event = StreamEventSchema.parse(data);
+```
+
+| Helper | Validates |
+|--------|-----------|
+| `parseStreamEvent(data)` | A stream event |
+| `parseEncryptedEnvelope(data)` | An encrypted envelope |
+| `parseStreamEventOrEncrypted(data)` | Either of the two |
+| `parseRuntimeChannelMessage(data)` | A runtime channel message |
+| `parseCreateSessionRequest(data)` | `CreateSessionRequestSchema`: `{ protocolVersion, code, limits?, encryption? }` |
+
+Each returns the result of `safeParse`. The schemas describe the wire format; a component may accept less. The body the broker accepts for `POST /sessions` is described with the [broker](/enclavejs/broker#the-request-body-of-post-sessions).
+
+## Session Types
+
+### SessionLimits
+
+```ts
+interface SessionLimits {
+  sessionTtlMs?: number;        // Default 60000
+  maxToolCalls?: number;        // Default 50
+  maxStdoutBytes?: number;      // Default 262144
+  maxToolResultBytes?: number;  // Default 5242880
+  toolTimeoutMs?: number;       // Default 30000
+  heartbeatIntervalMs?: number; // Default 15000
+  deadlineMs?: number;          // Default 0 (none)
+  perToolDeadlineMs?: number;   // Default 30000
+  cancelOnFirstError?: boolean; // Default false
 }
 ```
+
+`DEFAULT_SESSION_LIMITS` holds the defaults, and `SessionLimitsSchema` validates the type. What each limit bounds is decided by the component that applies it: see the [limits of the broker](/enclavejs/broker#limits).
+
+### SessionState
+
+```ts
+const SessionState = {
+  Starting: 'starting',
+  Running: 'running',
+  WaitingForTool: 'waiting_for_tool',
+  Completed: 'completed',
+  Cancelled: 'cancelled',
+  Failed: 'failed',
+} as const;
+
+type SessionState = 'starting' | 'running' | 'waiting_for_tool' | 'completed' | 'cancelled' | 'failed';
+```
+
+### ToolConfig
+
+```ts
+interface ToolConfig {
+  timeout?: number;          // This tool's own timeout in milliseconds
+  retryable?: boolean;
+  maxRetries?: number;
+  runtimeReadable?: boolean;
+}
+```
+
+The broker applies `timeout`. It does not retry tools and does not read `runtimeReadable`.
+
+## Encryption Types
+
+These are type definitions for an optional encryption layer. `@enclave-vm/client`, `@enclave-vm/react`, `@enclave-vm/broker` and `@enclave-vm/runtime` do not encrypt: sessions are plain JSON protected by the transport. `@enclave-vm/stream` exports primitives for these types; its key exchange is not authenticated, and no package uses it.
+
+### EncryptedEnvelope
+
+```ts
+interface EncryptedEnvelope {
+  protocolVersion: ProtocolVersion;
+  sessionId: SessionId;
+  seq: number;
+  type: 'enc';
+  payload: {
+    kid: string;           // Key id
+    nonceB64: string;
+    ciphertextB64: string;
+    tagB64?: string;
+  };
+}
+```
+
+### Key Exchange
+
+```ts
+interface ClientHello {
+  protocolVersion: ProtocolVersion;
+  clientEphemeralPubKeyB64: string;
+  curve: 'P-256';
+  supportedAlgorithms: 'AES-GCM-256'[];
+}
+
+interface ServerHello {
+  protocolVersion: ProtocolVersion;
+  serverEphemeralPubKeyB64: string;
+  curve: 'P-256';
+  selectedAlgorithm: 'AES-GCM-256';
+  kdf: 'HKDF-SHA-256';
+  keyId: string;
+  signatureB64?: string; // Reserved: nothing creates or verifies it
+}
+
+interface EncryptionRequest {
+  mode: 'disabled' | 'optional' | 'required';
+  clientHello?: ClientHello;
+}
+```
+
+`SupportedCurve`, `EncryptionAlgorithm`, `KeyDerivation`, `EncryptionMode`, `EncryptionErrorCode` and `HkdfInfo` hold the constants, next to `AES_GCM_NONCE_SIZE` (12), `AES_GCM_TAG_SIZE` (16), `AES_256_KEY_SIZE` (32) and `MAX_MESSAGES_PER_KEY` (2^30). `isEncryptedEnvelope(value)` is the type guard.
+
+## Filter Types
+
+### EventFilterConfig
+
+```ts
+interface EventFilterConfig {
+  mode: 'include' | 'exclude';
+  rules: FilterRule[];       // A filter matches when one of its rules does
+  alwaysAllow?: EventType[]; // Default: ['session_init', 'final']
+  regexTimeoutMs?: number;   // Default: 100
+}
+
+interface FilterRule {
+  types?: { types: EventType[] };
+  content?: {
+    patterns: ContentPattern[];
+    match?: 'any' | 'all';   // Default: 'any'
+  };
+}
+
+interface ContentPattern {
+  type: 'exact' | 'prefix' | 'regex' | 'glob';
+  pattern: string;
+  field?: string;
+  caseInsensitive?: boolean;
+}
+```
+
+`FilterMode` and `PatternType` hold the constants, and `DEFAULT_ALWAYS_ALLOW` the default of `alwaysAllow`. The broker applies a filter; see [Event Filtering](/enclavejs/broker#event-filtering).
+
+## Runtime Channel Messages
+
+```ts
+interface ToolResultSubmitMessage {
+  protocolVersion: ProtocolVersion;
+  sessionId: SessionId;
+  type: 'tool_result_submit';
+  payload: { callId: CallId; ok: boolean; result?: unknown; error?: ErrorInfo };
+}
+
+interface CancelMessage {
+  protocolVersion: ProtocolVersion;
+  sessionId: SessionId;
+  type: 'cancel';
+  payload: { reason?: string };
+}
+
+type RuntimeChannelMessage = ToolResultSubmitMessage | CancelMessage;
+```
+
+## Reference Tokens
+
+```ts
+interface RefToken {
+  $ref: { id: RefId };
+}
+
+function isRefToken(value: unknown): value is RefToken;
+function createRefToken(id: RefId): RefToken;
+```
+
+The reference sidecar of `@enclave-vm/core` does not use this type: there a reference is a string of the form `__REF_<uuid>__`.
 
 ## Type Guards
 
 ```ts
 import {
+  isSessionInitEvent,
   isStdoutEvent,
+  isLogEvent,
   isToolCallEvent,
+  isToolResultAppliedEvent,
+  isHeartbeatEvent,
   isFinalEvent,
   isErrorEvent,
+  isPartialResultEvent,
+  isToolProgressEvent,
+  isDeadlineExceededEvent,
+  isCatalogChangedEvent,
 } from '@enclave-vm/types';
 
-function processEvent(event: StreamEvent) {
+function handleEvent(event: StreamEvent) {
   if (isStdoutEvent(event)) {
-    // event is StdoutEvent
-    console.log(event.payload.data);
-  }
-
-  if (isToolCallEvent(event)) {
-    // event is ToolCallEvent
-    return executeToolCall(event.payload);
-  }
-
-  if (isFinalEvent(event)) {
-    // event is FinalEvent
-    return event.payload.result;
-  }
-
-  if (isErrorEvent(event)) {
-    // event is ErrorEvent
-    throw new Error(event.payload.message);
+    console.log(event.payload.chunk);
+  } else if (isToolCallEvent(event)) {
+    console.log('Tool:', event.payload.toolName);
+  } else if (isFinalEvent(event)) {
+    console.log('Result:', event.payload.result);
   }
 }
-```
-
-## Constants
-
-```ts
-import {
-  PROTOCOL_VERSION,
-  HEARTBEAT_INTERVAL,
-  DEFAULT_TIMEOUT,
-  MAX_CODE_SIZE,
-  EVENT_TYPES,
-  ERROR_CODES,
-} from '@enclave-vm/types';
-
-console.log(PROTOCOL_VERSION); // "1.0"
-console.log(HEARTBEAT_INTERVAL); // 5000
-console.log(DEFAULT_TIMEOUT); // 30000
-console.log(MAX_CODE_SIZE); // 100000
-```
-
-## Complete Example
-
-```ts
-import {
-  StreamEvent,
-  StdoutEvent,
-  ToolCallEvent,
-  FinalEvent,
-  ErrorEvent,
-  ExecuteRequest,
-  ToolResultRequest,
-  StreamEventSchema,
-  ExecuteRequestSchema,
-  isToolCallEvent,
-  isFinalEvent,
-  isErrorEvent,
-} from '@enclave-vm/types';
-
-// Validate request
-function validateExecuteRequest(body: unknown): ExecuteRequest {
-  return ExecuteRequestSchema.parse(body);
-}
-
-// Process stream events
-async function processStream(
-  stream: AsyncIterable<unknown>,
-  onToolCall: (call: ToolCallEvent['payload']) => Promise<unknown>
-): Promise<unknown> {
-  for await (const raw of stream) {
-    const event = StreamEventSchema.parse(raw);
-
-    if (isToolCallEvent(event)) {
-      const result = await onToolCall(event.payload);
-      // Send result back...
-    }
-
-    if (isFinalEvent(event)) {
-      return event.payload.result;
-    }
-
-    if (isErrorEvent(event)) {
-      throw new Error(`${event.payload.code}: ${event.payload.message}`);
-    }
-  }
-}
-
-// Create typed request
-const request: ExecuteRequest = {
-  code: `return await callTool('test', {});`,
-  timeout: 30000,
-  filter: {
-    blockedTypes: ['heartbeat'],
-  },
-};
 ```
 
 ## Related
 
-- [Streaming Protocol](/concepts/streaming-protocol) - Protocol overview
+- [@enclave-vm/types](/enclavejs/types) - Usage examples
+- [Streaming Protocol](/concepts/streaming-protocol) - Protocol details
 - [@enclave-vm/stream](/api-reference/enclavejs-stream) - Stream utilities
 - [@enclave-vm/client](/api-reference/enclavejs-client) - Client SDK

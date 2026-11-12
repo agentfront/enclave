@@ -11,6 +11,13 @@ import type { SessionFinalResult } from '@enclave-vm/core';
 import { BrokerSession, createBrokerSession } from './broker-session';
 import type { BrokerSessionConfig } from './broker-session';
 import type { ToolRegistry } from './tool-registry';
+import { mergeSessionLimits } from './limits';
+import { BrokerError, BrokerErrorCode } from './errors';
+
+/**
+ * The longest session id the manager registers.
+ */
+const MAX_SESSION_ID_LENGTH = 256;
 
 /**
  * Session manager configuration
@@ -43,6 +50,10 @@ export interface SessionInfo {
   createdAt: number;
   expiresAt: number;
   isExpired: boolean;
+  /**
+   * The caller the session belongs to, if any
+   */
+  owner?: string;
 }
 
 /**
@@ -85,24 +96,45 @@ export class SessionManager {
   /**
    * Create a new session
    *
-   * @throws Error if max sessions reached or manager is disposed
+   * A session id names one session for as long as that session is registered: an id that is in
+   * use is refused.
+   *
+   * @throws BrokerError if the id is not usable or is in use, or if max sessions is reached
+   * @throws Error if the manager is disposed
    */
   create(config?: BrokerSessionConfig): CreateSessionResult {
     if (this.disposed) {
       throw new Error('Session manager is disposed');
     }
 
+    const requestedId: unknown = config?.sessionId;
+    if (requestedId !== undefined) {
+      if (typeof requestedId !== 'string' || requestedId.length === 0 || requestedId.length > MAX_SESSION_ID_LENGTH) {
+        throw new BrokerError(BrokerErrorCode.InvalidSessionId, 'Session id must be a non-empty string');
+      }
+      if (this.sessions.has(requestedId as SessionId)) {
+        throw new BrokerError(BrokerErrorCode.SessionExists, 'A session with this id already exists');
+      }
+    }
+
     if (this.sessions.size >= this.config.maxSessions) {
-      throw new Error(
+      throw new BrokerError(
+        BrokerErrorCode.MaxSessionsReached,
         `Maximum sessions reached (${this.config.maxSessions}). ` +
           'Wait for existing sessions to complete or increase maxSessions.',
       );
     }
 
-    const sessionConfig = {
-      ...this.config.defaultSessionConfig,
-      ...config,
-    };
+    // The session's configuration over the default one. A key the session does not define keeps
+    // the default, and limits are merged field by field: naming one limit does not drop the others.
+    const defaults = this.config.defaultSessionConfig;
+    const sessionConfig: BrokerSessionConfig = { ...defaults };
+    for (const [key, value] of Object.entries(config ?? {})) {
+      if (value !== undefined) {
+        (sessionConfig as Record<string, unknown>)[key] = value;
+      }
+    }
+    sessionConfig.limits = mergeSessionLimits(defaults.limits, config?.limits);
 
     const session = createBrokerSession(this.toolRegistry, sessionConfig);
     this.sessions.set(session.sessionId, session);
@@ -137,6 +169,7 @@ export class SessionManager {
       createdAt: session.createdAt,
       expiresAt: session.expiresAt,
       isExpired: session.isExpired(),
+      ...(session.owner !== undefined && { owner: session.owner }),
     }));
   }
 
@@ -213,6 +246,13 @@ export class SessionManager {
 
     for (const [sessionId, session] of this.sessions) {
       if (session.isExpired() || session.isTerminal()) {
+        if (!session.isTerminal()) {
+          // Past its lifetime and still running: end it, so that it is not left running
+          // where no id reaches it any more.
+          session.cancel('Session expired').catch(() => {
+            // Ignore cancel errors during cleanup
+          });
+        }
         session.dispose();
         this.sessions.delete(sessionId);
         cleaned++;
@@ -233,6 +273,8 @@ export class SessionManager {
     this.cleanupInterval = setInterval(() => {
       this.cleanup();
     }, this.config.cleanupIntervalMs);
+    // Housekeeping does not keep a process alive
+    this.cleanupInterval.unref?.();
   }
 
   /**

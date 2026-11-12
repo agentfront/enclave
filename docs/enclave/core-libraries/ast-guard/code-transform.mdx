@@ -21,7 +21,8 @@ const code = `
 const transformed = transformAgentScript(code, {
   wrapInMain: true,       // Wrap in async function __ag_main()
   transformCallTool: true, // callTool -> __safe_callTool
-  transformLoops: true,    // for/for-of -> __safe_for/__safe_forOf
+  transformLoops: true,    // Guard loops with the iteration limit
+  maxIterations: 10000,    // The limit, written into each loop check as a number
   prefix: '__safe_',      // Prefix for safe runtime functions
 });
 ```
@@ -40,7 +41,7 @@ return users.length;
 async function __ag_main() {
   const users = await __safe_callTool('users:list', {});
   for (const user of __safe_forOf(users)) {
-    console.log(user.name);
+    __safe_console.log(user.name);
   }
   return users.length;
 }
@@ -51,10 +52,12 @@ async function __ag_main() {
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `wrapInMain` | boolean | true | Wrap code in `async function __ag_main()` |
-| `transformCallTool` | boolean | true | Transform `callTool` to safe proxy |
-| `transformLoops` | boolean | true | Transform loops with iteration limits |
-| `transformConsole` | boolean | true | Transform `console` to rate-limited proxy |
+| `transformCallTool` | boolean | true | Give every global the script names that is not a standard safe global the prefix: `callTool` becomes `__safe_callTool`, `console` becomes `__safe_console` |
+| `transformLoops` | boolean | true | Guard loops with the iteration limit |
+| `maxIterations` | number | - | The iteration limit of `for`, `while` and `do...while` loops, written into each loop check as a number. Without it the check compares with the runtime's `__maxIterations`, and a script that uses that name is refused |
+| `additionalIdentifiers` | string[] | `[]` | Names that keep their name: custom globals and tool namespaces of the host |
 | `prefix` | string | `'__safe_'` | Prefix for safe runtime functions |
+| `parseOptions` | object | - | Options passed to the parser |
 
 ## Main Wrapper
 
@@ -111,11 +114,18 @@ for (let i = 0; i < 100; i++) {
   process(i);
 }
 
-// for loop after (iteration counting injected)
-for (let i = 0, __iter = 0; i < 100 && __iter++ < __maxIterations; i++) {
+// for loop after (a counter before the loop, a check at the start of its body)
+let __iter_0 = 0;
+for (let i = 0; i < 100; i++) {
+  if (++__iter_0 > 10000) throw 'Maximum iteration limit exceeded. This limit prevents infinite loops.';
   process(i);
 }
 ```
+
+`while` and `do...while` loops get the same counter and check. Two things keep a script from switching the limit off:
+
+- The counter has a name the script does not mention anywhere: the transformer never hands out a counter name that appears in the script.
+- The limit is a number in the loop's own code when `maxIterations` is given, as `@enclave-vm/core` does. Without `maxIterations` the check compares with the runtime's `__maxIterations`; that name is reserved, and a script that uses it fails the transform.
 
 ## Safe Console
 
@@ -132,7 +142,7 @@ __safe_console.log('Hello');
 The `__safe_console` proxy:
 - Counts calls against `maxConsoleCalls`
 - Tracks output bytes against `maxConsoleOutputBytes`
-- Captures output for streaming to clients
+- Hands each line to the enclave's `consoleHandler`, or to the host console at `PERMISSIVE`
 
 ## Reserved Prefixes
 
@@ -143,33 +153,37 @@ The transformation reserves these prefixes that user code cannot use:
 
 Any attempt to declare identifiers with these prefixes is blocked by the `ReservedPrefixRule`.
 
-## Custom Transformation
+## Other Transforms
 
-For advanced use cases, you can customize transformations:
+The package exports the transforms `@enclave-vm/core` applies after validation. Each one changes an AST in place:
+
+| Function | What it does |
+|----------|--------------|
+| `transformConcatenation(ast, options)` | Rewrites `a + b` to `__safe_concat(a, b)`, so that a runtime can count what a concatenation makes. `compoundAssignment` (default `true`) rewrites `x += y` the same way, so that it is charged like `x + y`; `arraySpread` (default `false`) wraps array literals that contain a spread, for a runtime that defines the helpers for it |
+| `transformTemplateLiterals(ast)` | Rewrites a template literal with substitutions to a `__safe_template(...)` call |
+| `extractLargeStrings(ast, { threshold, onExtract })` | Replaces string literals of at least `threshold` bytes with the reference id `onExtract` returns |
+| `guardComputedMemberKeys(ast, parse, options)` | Wraps computed member keys so that the resolved key is checked at run time |
+| `guardArrayWrites(ast, options?)` | Hands every write that can change the size of an array to the runtime: `X[K] = V` and `X.length = V` become `__safe_set(X, K, V)`, and in every other write through such a member (a compound or logical assignment, `++`, a target in a destructuring pattern or in the head of a loop) the target becomes `__safe_slot(X, K).v`. Apply it after `guardComputedMemberKeys`. `@enclave-vm/core` uses it when `memoryLimit` is set. A write to a literal index below 64 is left as it is; `options.unguardedBelow` lowers that number for a runtime whose limit holds fewer slots. The statement that binds the two runtime functions goes after the directive prologue of the program. |
+| `rewriteImports(code, config)` | Rewrites imports of npm packages to CDN URLs (see below) |
+
+The validator's own `transform` option (`validate(code, { transform: { enabled: true, ... } })`) can prefix identifiers and rewrite computed keys. A computed key it rewrites is printed as one string literal, whatever characters the key holds.
+
+### rewriteImports
 
 ```ts
-import { transformAgentScript } from '@enclave-vm/ast';
+import { rewriteImports } from '@enclave-vm/ast';
 
-const transformed = transformAgentScript(code, {
-  wrapInMain: true,
-  transformCallTool: true,
-  transformLoops: true,
-  transformConsole: true,
-  prefix: '__custom_', // Custom prefix
-
-  // Additional custom transforms (advanced)
-  additionalTransforms: [
-    {
-      name: 'customTransform',
-      visitor: {
-        CallExpression(path) {
-          // Custom AST transformation logic
-        },
-      },
-    },
-  ],
+const { code, rewrittenImports } = rewriteImports(source, {
+  enabled: true,
+  cdnBaseUrl: 'https://esm.example.com',
+  packageVersions: { react: '18.2.0' },
 });
 ```
+
+- Only allowed packages can be imported: the ones in `allowedPackages` when it is given, otherwise the keys of `packageVersions`. An import of another package throws. This holds for import declarations, re-exports and dynamic `import()`.
+- A dynamic `import('react')` of an allowed package is rewritten. One whose specifier is not written as a string cannot be checked and throws.
+- A version is a version number, range or tag without path or URL characters; `cdnBaseUrl` is an HTTPS URL without credentials, query or fragment. Anything else throws.
+- The allowlist is the configuration's. Where the configuration comes from the same party as the code, the rewrite restricts nothing.
 
 ## Integration with enclave-vm
 

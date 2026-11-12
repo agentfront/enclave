@@ -19,10 +19,12 @@ import {
   isMemoryReportResultMessage,
   isConsoleMessage,
   isWorkerReadyMessage,
+  isWorkerIdleMessage,
   toolCallMessageSchema,
   executionResultMessageSchema,
   consoleMessageSchema,
   workerReadyMessageSchema,
+  workerIdleMessageSchema,
   workerToMainMessageSchema,
   type WorkerToMainMessage,
   type ToolCallMessage,
@@ -30,6 +32,7 @@ import {
   type ConsoleMessage,
 } from '../adapters/worker-pool/protocol';
 import { MemoryMonitor } from '../adapters/worker-pool/memory-monitor';
+import { WorkerSlot } from '../adapters/worker-pool/worker-slot';
 import { buildWorkerPoolConfig, DEFAULT_WORKER_POOL_CONFIG, WORKER_POOL_PRESETS } from '../adapters/worker-pool/config';
 import {
   WorkerPoolError,
@@ -1115,9 +1118,24 @@ describe('worker-pool components', () => {
         });
       });
 
+      describe('workerIdleMessageSchema', () => {
+        it('should validate idle message', () => {
+          const msg = { type: 'idle', requestId: 'exec-1-abc' };
+          expect(() => workerIdleMessageSchema.parse(msg)).not.toThrow();
+          expect(isWorkerIdleMessage(msg as WorkerToMainMessage)).toBe(true);
+          expect(isWorkerIdleMessage({ type: 'ready' })).toBe(false);
+        });
+
+        it('should reject an idle message without a request id, or with extra fields', () => {
+          expect(() => workerIdleMessageSchema.parse({ type: 'idle' })).toThrow();
+          expect(() => workerIdleMessageSchema.parse({ type: 'idle', requestId: 'r1', extra: 1 })).toThrow();
+        });
+      });
+
       describe('workerToMainMessageSchema', () => {
         it('should validate all message types', () => {
           expect(() => workerToMainMessageSchema.parse({ type: 'ready' })).not.toThrow();
+          expect(() => workerToMainMessageSchema.parse({ type: 'idle', requestId: 'r1' })).not.toThrow();
           expect(() =>
             workerToMainMessageSchema.parse({
               type: 'tool-call',
@@ -1143,6 +1161,85 @@ describe('worker-pool components', () => {
           ).not.toThrow();
         });
       });
+    });
+  });
+
+  describe('WorkerSlot (without a worker thread)', () => {
+    /** Hands a slot one message as its worker would post it */
+    function post(slot: WorkerSlot, raw: unknown) {
+      const messages: WorkerToMainMessage[] = [];
+      const errors: Error[] = [];
+      slot.on('message', (message) => messages.push(message));
+      slot.on('error', (error) => errors.push(error));
+      (slot as unknown as { handleMessage(raw: unknown): void }).handleMessage(raw);
+      return { messages, errors };
+    }
+
+    const result = (value: string) =>
+      JSON.stringify({
+        type: 'result',
+        requestId: 'exec-1-abc',
+        success: true,
+        value,
+        stats: { duration: 0, toolCallCount: 0, iterationCount: 0, startTime: 0, endTime: 0 },
+      });
+
+    it('should accept a message within maxMessageSizeBytes', () => {
+      const slot = new WorkerSlot('slot-1', { memoryLimitMB: 0, maxMessageSizeBytes: 4096 });
+      const { messages, errors } = post(slot, result('x'.repeat(1024)));
+
+      expect(errors).toEqual([]);
+      expect(messages).toHaveLength(1);
+    });
+
+    it('should refuse a message larger than maxMessageSizeBytes', () => {
+      const slot = new WorkerSlot('slot-1', { memoryLimitMB: 0, maxMessageSizeBytes: 4096 });
+      const { messages, errors } = post(slot, result('x'.repeat(8192)));
+
+      expect(messages).toEqual([]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeInstanceOf(MessageSizeError);
+      expect(slot.status).toBe('recycling');
+    });
+
+    it('should count the size in bytes, not in characters', () => {
+      const slot = new WorkerSlot('slot-1', { memoryLimitMB: 0, maxMessageSizeBytes: 4096 });
+      // 2000 characters of three bytes each
+      const { errors } = post(slot, result('\u20ac'.repeat(2000)));
+
+      expect(errors[0]).toBeInstanceOf(MessageSizeError);
+    });
+
+    it('should use the default limit when none is given', () => {
+      const slot = new WorkerSlot('slot-1', { memoryLimitMB: 0 });
+      const { errors } = post(slot, result('x'.repeat(DEFAULT_WORKER_POOL_CONFIG.maxMessageSizeBytes)));
+
+      expect(errors[0]).toBeInstanceOf(MessageSizeError);
+    });
+
+    it('should apply the limit set for an execution until the slot is released', () => {
+      const slot = new WorkerSlot('slot-1', { memoryLimitMB: 0, maxMessageSizeBytes: 4096 });
+      slot.limitMessageSize(64 * 1024);
+      expect(post(slot, result('x'.repeat(8192))).errors).toEqual([]);
+
+      slot.release();
+      expect(post(slot, result('x'.repeat(8192))).errors[0]).toBeInstanceOf(MessageSizeError);
+    });
+
+    it('should refuse a message that is not text', () => {
+      const slot = new WorkerSlot('slot-1', { memoryLimitMB: 0 });
+      const { messages, errors } = post(slot, { type: 'ready' });
+
+      expect(messages).toEqual([]);
+      expect(errors[0]).toBeInstanceOf(MessageValidationError);
+    });
+
+    it('should reject a memory report request when there is no worker to ask', async () => {
+      const slot = new WorkerSlot('slot-1', { memoryLimitMB: 0 });
+
+      await expect(slot.requestMemoryReport(60000)).rejects.toThrow(/has no worker/);
+      // Nothing is left waiting for an answer
+      expect(slot.listenerCount('message')).toBe(0);
     });
   });
 });

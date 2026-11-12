@@ -2,23 +2,67 @@
 /**
  * Enclave Runtime CLI
  *
- * Standalone runtime worker that can be deployed independently.
+ * A standalone runtime worker is not implemented: `@enclave-vm/runtime` does not execute code
+ * and starts no server. This program checks its arguments, says so, and exits with an error,
+ * so that nothing takes it for a running service.
  *
  * Usage:
  *   npx enclave-runtime [options]
  *
  * Options:
- *   --port <port>          Port to listen on (default: 3001)
- *   --host <host>          Host to bind to (default: 0.0.0.0)
- *   --max-sessions <n>     Maximum concurrent sessions (default: 10)
- *   --debug                Enable debug logging
+ *   --port <port>          Reserved (nothing listens)
+ *   --host <host>          Reserved (nothing listens)
+ *   --max-sessions <n>     Reserved
+ *   --debug                Reserved
  *   --help                 Show help
  *
  * @packageDocumentation
  */
 
-import { createRuntimeWorker } from './runtime-worker';
 import type { RuntimeConfig } from './types';
+
+/**
+ * Exit code of a run that did what was asked.
+ */
+const EXIT_OK = 0;
+
+/**
+ * Exit code for wrong arguments, and for the fact that there is nothing to start.
+ */
+const EXIT_ERROR = 1;
+
+const NOT_IMPLEMENTED =
+  'enclave-runtime: not implemented. @enclave-vm/runtime does not execute code and does not ' +
+  'listen on a port, so there is no worker to start.\n' +
+  'Run scripts with @enclave-vm/broker (sessions, tools and streaming over HTTP) or ' +
+  '@enclave-vm/core (the sandbox).';
+
+function fail(message: string): never {
+  console.error(message);
+  process.exit(EXIT_ERROR);
+}
+
+/**
+ * The value of an option that takes one
+ */
+function valueOf(option: string, value: string | undefined): string {
+  if (value === undefined || value.startsWith('--')) {
+    fail(`Option ${option} needs a value`);
+  }
+  return value;
+}
+
+/**
+ * An option value that has to be a whole number of at least `minimum`
+ */
+function integerOf(option: string, value: string | undefined, minimum: number): number {
+  const text = valueOf(option, value);
+  const parsed = Number(text);
+  if (!/^\d+$/.test(text) || !Number.isSafeInteger(parsed) || parsed < minimum) {
+    fail(`Option ${option} needs a whole number of ${minimum} or more, got "${text}"`);
+  }
+  return parsed;
+}
 
 /**
  * Parse command line arguments
@@ -31,15 +75,15 @@ function parseArgs(args: string[]): RuntimeConfig {
 
     switch (arg) {
       case '--port':
-        config.port = parseInt(args[++i], 10);
+        config.port = integerOf(arg, args[++i], 0);
         break;
 
       case '--host':
-        config.host = args[++i];
+        config.host = valueOf(arg, args[++i]);
         break;
 
       case '--max-sessions':
-        config.maxSessions = parseInt(args[++i], 10);
+        config.maxSessions = integerOf(arg, args[++i], 1);
         break;
 
       case '--debug':
@@ -49,14 +93,11 @@ function parseArgs(args: string[]): RuntimeConfig {
       case '--help':
       case '-h':
         printHelp();
-        process.exit(0);
+        process.exit(EXIT_OK);
         break;
 
       default:
-        if (arg.startsWith('-')) {
-          console.error(`Unknown option: ${arg}`);
-          process.exit(1);
-        }
+        fail(`Unknown option: ${arg}`);
     }
   }
 
@@ -70,70 +111,27 @@ function printHelp(): void {
   console.log(`
 Enclave Runtime Worker
 
+${NOT_IMPLEMENTED}
+
 Usage:
   npx enclave-runtime [options]
 
-Options:
-  --port <port>          Port to listen on (default: 3001)
-  --host <host>          Host to bind to (default: 0.0.0.0)
-  --max-sessions <n>     Maximum concurrent sessions (default: 10)
-  --debug                Enable debug logging
+Options (accepted and checked; none of them starts anything):
+  --port <port>          Reserved (nothing listens)
+  --host <host>          Reserved (nothing listens)
+  --max-sessions <n>     Reserved
+  --debug                Reserved
   --help, -h             Show this help message
-
-Examples:
-  npx enclave-runtime --port 3001
-  npx enclave-runtime --port 8080 --max-sessions 20 --debug
 `);
 }
 
 /**
  * Main entry point
  */
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const config = parseArgs(args);
+function main(): void {
+  parseArgs(process.argv.slice(2));
 
-  console.log('Starting Enclave Runtime Worker...');
-  console.log(`  Port: ${config.port ?? 3001}`);
-  console.log(`  Host: ${config.host ?? '0.0.0.0'}`);
-  console.log(`  Max Sessions: ${config.maxSessions ?? 10}`);
-  console.log(`  Debug: ${config.debug ?? false}`);
-
-  const worker = createRuntimeWorker(config);
-
-  // Handle shutdown signals
-  const shutdown = async (signal: string) => {
-    console.log(`\nReceived ${signal}, shutting down...`);
-    await worker.stop();
-    console.log('Runtime stopped');
-    process.exit(0);
-  };
-
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-
-  // Start the worker
-  await worker.start();
-
-  console.log('Runtime worker is running');
-  console.log(`  PID: ${process.pid}`);
-
-  // Print stats periodically
-  if (config.debug) {
-    setInterval(() => {
-      const stats = worker.getStats();
-      console.log('Stats:', {
-        activeSessions: stats.activeSessions,
-        totalSessions: stats.totalSessions,
-        uptimeMs: stats.uptimeMs,
-        memoryMB: Math.round(stats.memoryUsage.heapUsed / 1024 / 1024),
-      });
-    }, 30000);
-  }
+  fail(NOT_IMPLEMENTED);
 }
 
-// Run main
-main().catch((error) => {
-  console.error('Failed to start runtime:', error);
-  process.exit(1);
-});
+main();

@@ -3,7 +3,11 @@ title: '@enclave-vm/stream'
 description: 'API reference for the EnclaveJS streaming protocol implementation'
 ---
 
-API reference for the `@enclave-vm/stream` package - streaming protocol implementation including NDJSON parsing, encryption, and reconnection handling.
+API reference for the `@enclave-vm/stream` package - streaming protocol building blocks: NDJSON parsing, reconnection helpers, and encryption primitives.
+
+<Warning>
+  No EnclaveJS package uses the encryption primitives of this package. `@enclave-vm/client`, `@enclave-vm/react`, `@enclave-vm/broker` and `@enclave-vm/runtime` do not encrypt, perform no handshake and have no encryption option. A session between the client and the broker is plain JSON protected only by the transport, so serve it over HTTPS.
+</Warning>
 
 ## Installation
 
@@ -15,7 +19,7 @@ npm install @enclave-vm/stream
 
 ### serializeEvent(event)
 
-Serialize an event to NDJSON format (single line).
+Serialize an event to NDJSON format (single line, no trailing newline).
 
 ```ts
 function serializeEvent(event: MaybeEncrypted<StreamEvent>): string
@@ -26,12 +30,13 @@ function serializeEvent(event: MaybeEncrypted<StreamEvent>): string
 import { serializeEvent } from '@enclave-vm/stream';
 
 const line = serializeEvent({
-  type: 'stdout',
-  sessionId: 'sess_123',
+  protocolVersion: 2,
+  sessionId: 's_123',
   seq: 1,
-  payload: { data: 'Hello' }
+  type: 'stdout',
+  payload: { chunk: 'Hello' }
 });
-// '{"type":"stdout","sessionId":"sess_123","seq":1,"payload":{"data":"Hello"}}'
+// '{"protocolVersion":2,"sessionId":"s_123","seq":1,"type":"stdout","payload":{"chunk":"Hello"}}'
 ```
 
 ### serializeEvents(events)
@@ -52,7 +57,7 @@ const ndjson = serializeEvents([event1, event2, event3]);
 
 ### parseLine(line)
 
-Parse a single NDJSON line into an event.
+Parse a single NDJSON line into an event. The line is validated against the event schemas of `@enclave-vm/types`.
 
 ```ts
 function parseLine(line: string): ParseResult<ParsedStreamEvent | ParsedEncryptedEnvelope>
@@ -66,7 +71,7 @@ type ParseResult<T> =
 ```ts
 import { parseLine } from '@enclave-vm/stream';
 
-const result = parseLine('{"type":"stdout","sessionId":"sess_123","seq":1,"payload":{"data":"Hi"}}');
+const result = parseLine('{"protocolVersion":2,"sessionId":"s_123","seq":1,"type":"stdout","payload":{"chunk":"Hi"}}');
 if (result.success) {
   console.log(result.data.type); // 'stdout'
 }
@@ -91,6 +96,22 @@ const { events, errors } = parseLines(ndjsonData);
 console.log(`Parsed ${events.length} events, ${errors.length} errors`);
 ```
 
+### NdjsonParseOptions
+
+Options of the incremental parsers (`NdjsonStreamParser`, `createNdjsonParseStream`, `parseNdjsonStream`).
+
+```ts
+interface NdjsonParseOptions {
+  maxLineLength?: number;
+}
+
+const DEFAULT_MAX_LINE_LENGTH = 8 * 1024 * 1024; // 8 MiB
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `maxLineLength` | `number` | `DEFAULT_MAX_LINE_LENGTH` | Maximum length of one line, in characters. A parser never holds more than this of a line that has not ended. A value that is not a positive integer throws a `RangeError` |
+
 ### NdjsonStreamParser
 
 Incremental NDJSON parser for streaming data. Handles partial lines across chunks.
@@ -100,7 +121,7 @@ class NdjsonStreamParser {
   constructor(options: {
     onEvent: (event: ParsedStreamEvent | ParsedEncryptedEnvelope) => void;
     onError: (error: { line: number; error: string; content: string }) => void;
-  });
+  } & NdjsonParseOptions);
 
   feed(chunk: string): void;
   flush(): void;
@@ -109,6 +130,8 @@ class NdjsonStreamParser {
   hasPendingData(): boolean;
 }
 ```
+
+A line that is not a valid event is reported through `onError`. A line longer than `maxLineLength` is reported through `onError` once and skipped.
 
 **Example:**
 ```ts
@@ -120,26 +143,32 @@ const parser = new NdjsonStreamParser({
 });
 
 // Feed chunks as they arrive
-parser.feed('{"type":"stdout"');
-parser.feed(',"sessionId":"sess_123","seq":1,"payload":{"data":"Hi"}}\n');
+parser.feed('{"protocolVersion":2,"sessionId":"s_123"');
+parser.feed(',"seq":1,"type":"stdout","payload":{"chunk":"Hi"}}\n');
 
 // Flush any remaining data when stream ends
 parser.flush();
 ```
 
-### createNdjsonParseStream()
+### createNdjsonParseStream(options?)
 
 Create a transform stream that parses NDJSON. Works with browser `fetch()` and Node.js streams.
 
 ```ts
-function createNdjsonParseStream(): TransformStream<string, ParsedStreamEvent | ParsedEncryptedEnvelope>
+function createNdjsonParseStream(
+  options?: NdjsonParseOptions
+): TransformStream<string, ParsedStreamEvent | ParsedEncryptedEnvelope>
 ```
+
+A line that is not a valid event is dropped. A line longer than `maxLineLength` ends the stream with an `NdjsonLineTooLongError`.
 
 **Example:**
 ```ts
 import { createNdjsonParseStream } from '@enclave-vm/stream';
 
 const response = await fetch('/api/stream');
+if (!response.body) throw new Error('No response body');
+
 const reader = response.body
   .pipeThrough(new TextDecoderStream())
   .pipeThrough(createNdjsonParseStream())
@@ -160,32 +189,51 @@ Create a transform stream that serializes events to NDJSON.
 function createNdjsonSerializeStream(): TransformStream<MaybeEncrypted<StreamEvent>, string>
 ```
 
-### parseNdjsonStream(stream)
+### parseNdjsonStream(stream, options?)
 
 Async generator that parses NDJSON from a ReadableStream.
 
 ```ts
-async function* parseNdjsonStream(
-  stream: ReadableStream<Uint8Array>
+function parseNdjsonStream(
+  stream: ReadableStream<Uint8Array>,
+  options?: NdjsonParseOptions
 ): AsyncGenerator<ParsedStreamEvent | ParsedEncryptedEnvelope>
 ```
+
+A line that is not a valid event is skipped. A line longer than `maxLineLength` ends the iteration with an `NdjsonLineTooLongError` and cancels the stream.
 
 **Example:**
 ```ts
 import { parseNdjsonStream } from '@enclave-vm/stream';
 
 const response = await fetch('/api/stream');
+if (!response.body) throw new Error('No response body');
 
 for await (const event of parseNdjsonStream(response.body)) {
   console.log('Event:', event.type);
 }
 ```
 
+### NdjsonLineTooLongError
+
+A line of the stream is longer than the parser's `maxLineLength`.
+
+```ts
+class NdjsonLineTooLongError extends Error {
+  readonly maxLineLength: number;
+  constructor(maxLineLength: number);
+}
+```
+
 ## ECDH Key Exchange
+
+<Warning>
+  The key exchange is not authenticated. `ServerHello.signatureB64` is neither created nor verified, and there is no key confirmation. The exchange protects against a party that can only read the connection. A party that can change messages can replace both public keys. An application that needs more has to authenticate the hello messages itself (for example by signing them with a key the client pins) or rely on TLS for the identity of the server.
+</Warning>
 
 ### generateKeyPair(curve?)
 
-Generate an ephemeral ECDH key pair.
+Generate an ephemeral ECDH key pair. The private key cannot be exported.
 
 ```ts
 async function generateKeyPair(curve?: SupportedCurve): Promise<EcdhKeyPair>
@@ -198,15 +246,13 @@ interface EcdhKeyPair {
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `curve` | `SupportedCurve` | `'P-256'` | Elliptic curve to use |
+| `curve` | `SupportedCurve` | `'P-256'` | Elliptic curve to use. `SupportedCurve` has one value, `'P-256'`, and the hello functions refuse any other curve |
 
 **Example:**
 ```ts
 import { generateKeyPair } from '@enclave-vm/stream';
 
 const keyPair = await generateKeyPair();
-// Or with specific curve
-const keyPair384 = await generateKeyPair('P-384');
 ```
 
 ### exportPublicKey(publicKey)
@@ -264,7 +310,7 @@ async function createClientHello(keyPair: EcdhKeyPair): Promise<ClientHello>
 
 ### createServerHello(keyPair, keyId)
 
-Create a server hello message for the encryption handshake.
+Create a server hello message for the encryption handshake. The message has no `signatureB64`.
 
 ```ts
 async function createServerHello(keyPair: EcdhKeyPair, keyId: string): Promise<ServerHello>
@@ -272,7 +318,9 @@ async function createServerHello(keyPair: EcdhKeyPair, keyId: string): Promise<S
 
 ### processClientHello(clientHello)
 
-Process a client hello and generate server response.
+Process a client hello and generate server response: the server's ephemeral key pair, a key id, and the server hello. Nothing here proves who sent the hello.
+
+Throws `EcdhError` when the hello names a protocol version, curve or algorithm that is not implemented.
 
 ```ts
 async function processClientHello(clientHello: ClientHello): Promise<{
@@ -285,7 +333,9 @@ async function processClientHello(clientHello: ClientHello): Promise<{
 
 ### processServerHello(serverHello)
 
-Process a server hello and extract peer's public key.
+Process a server hello and extract peer's public key. `signatureB64` is not verified: the public key is only as trustworthy as the connection it arrived on.
+
+Throws `EcdhError` when the hello names a protocol version, curve, algorithm or key derivation that is not implemented, or has no key id.
 
 ```ts
 async function processServerHello(serverHello: ServerHello): Promise<{
@@ -323,13 +373,13 @@ async function deriveKey(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `sharedSecret` | `Uint8Array` | Required | Shared secret from ECDH |
-| `salt` | `Uint8Array \| null` | `null` | Optional salt (defaults to zeros) |
+| `salt` | `Uint8Array \| null` | Required | Salt (`null` uses 32 zero bytes) |
 | `info` | `string` | Required | Context info string |
 | `keyLength` | `number` | `32` | Output key length in bytes |
 
 ### deriveSessionKeys(sharedSecret, sessionId)
 
-Derive session keys for bidirectional communication.
+Derive session keys for bidirectional communication: two keys, one per direction. The result holds raw key bytes.
 
 ```ts
 async function deriveSessionKeys(
@@ -343,7 +393,7 @@ async function deriveSessionKeys(
 
 ### importAesGcmKey(keyBytes)
 
-Import raw key bytes as a CryptoKey for AES-GCM.
+Import raw key bytes as a non-extractable CryptoKey for AES-GCM.
 
 ```ts
 async function importAesGcmKey(keyBytes: Uint8Array): Promise<CryptoKey>
@@ -370,7 +420,7 @@ import { deriveSessionCryptoKeys, deriveSharedSecret } from '@enclave-vm/stream'
 const sharedSecret = await deriveSharedSecret(privateKey, peerPublicKey);
 const { clientToServerKey, serverToClientKey } = await deriveSessionCryptoKeys(
   sharedSecret,
-  'sess_123'
+  's_123'
 );
 ```
 
@@ -389,7 +439,7 @@ class HkdfError extends Error {
 
 ### encrypt(key, plaintext, nonce, additionalData?)
 
-Encrypt data using AES-GCM.
+Encrypt data using AES-GCM. Returns the ciphertext with the authentication tag appended.
 
 ```ts
 async function encrypt(
@@ -413,33 +463,37 @@ async function decrypt(
 ): Promise<Uint8Array>
 ```
 
-### encryptJson(key, keyId, data, nonce?)
+### encryptJson(key, keyId, data, nonce?, additionalData?)
 
-Encrypt a JSON object and create an encrypted envelope payload.
+Encrypt a JSON object and create an encrypted envelope payload. A random nonce is generated when none is given.
 
 ```ts
 async function encryptJson(
   key: CryptoKey,
   keyId: string,
   data: unknown,
-  nonce?: Uint8Array
+  nonce?: Uint8Array,
+  additionalData?: Uint8Array
 ): Promise<EncryptedEnvelopePayload>
 ```
 
-### decryptJson(key, payload)
+### decryptJson(key, payload, additionalData?)
 
-Decrypt an encrypted envelope payload and parse as JSON.
+Decrypt a payload made by `encryptJson` and parse it as JSON. Pass the additional authenticated data that was given to `encryptJson`, if any.
+
+This does not open an envelope: the payload of an envelope is read with `openEncryptedEnvelope`, which also checks the envelope's header.
 
 ```ts
 async function decryptJson<T>(
   key: CryptoKey,
-  payload: EncryptedEnvelopePayload
+  payload: EncryptedEnvelopePayload,
+  additionalData?: Uint8Array
 ): Promise<T>
 ```
 
 ### createEncryptedEnvelope(key, keyId, sessionId, seq, innerEvent, nonce?)
 
-Create an encrypted envelope from an event.
+Create an encrypted envelope from an event. The envelope's header (protocol version, session id, sequence number, key id) is authenticated together with the event.
 
 ```ts
 async function createEncryptedEnvelope(
@@ -452,6 +506,52 @@ async function createEncryptedEnvelope(
 ): Promise<EncryptedEnvelope>
 ```
 
+### openEncryptedEnvelope(key, envelope)
+
+Decrypt an encrypted envelope and parse the event inside it.
+
+Throws `AesGcmError` when the ciphertext or any header field of the envelope (protocol version, session id, sequence number, key id) is not what the sender encrypted. Whether a sequence number was seen before is for the caller to check, for example with `SequenceTracker`.
+
+```ts
+async function openEncryptedEnvelope<T>(key: CryptoKey, envelope: EnvelopeLike): Promise<T>
+
+interface EnvelopeLike {
+  protocolVersion: number;
+  sessionId: string;
+  seq: number;
+  payload: EncryptedEnvelopePayload;
+}
+```
+
+**Example:**
+```ts
+import { deriveSessionCryptoKeys, createEncryptedEnvelope, openEncryptedEnvelope } from '@enclave-vm/stream';
+
+const { serverToClientKey } = await deriveSessionCryptoKeys(sharedSecret, 's_123');
+
+const envelope = await createEncryptedEnvelope(serverToClientKey, keyId, 's_123', 1, {
+  type: 'stdout',
+  payload: { chunk: 'Hello' }
+});
+
+const event = await openEncryptedEnvelope(serverToClientKey, envelope);
+```
+
+### encodeEnvelopeHeader(header)
+
+Encode an envelope header as the additional authenticated data that the envelope functions pass to AES-GCM. Throws `AesGcmError` when a field is not of its type.
+
+```ts
+function encodeEnvelopeHeader(header: EnvelopeHeader): Uint8Array
+
+interface EnvelopeHeader {
+  protocolVersion: number;
+  sessionId: string;
+  seq: number;
+  kid: string;
+}
+```
+
 ### generateNonce()
 
 Generate a random 12-byte nonce for AES-GCM.
@@ -462,7 +562,7 @@ function generateNonce(): Uint8Array
 
 ### generateCounterNonce(prefix, counter)
 
-Generate a counter-based nonce (8 bytes prefix + 4 bytes counter).
+Generate a counter-based nonce (8 bytes prefix + 4 bytes counter). Throws `AesGcmError` when the prefix is not 8 bytes or the counter is outside 0 to 2^32 - 1.
 
 ```ts
 function generateCounterNonce(prefix: Uint8Array, counter: bigint): Uint8Array
@@ -478,7 +578,7 @@ function toBase64(bytes: Uint8Array): string
 
 ### fromBase64(base64)
 
-Decode base64 to bytes.
+Decode base64 to bytes. Throws `AesGcmError` when the input is not base64.
 
 ```ts
 function fromBase64(base64: string): Uint8Array
@@ -497,7 +597,7 @@ class AesGcmError extends Error {
 
 ## SessionEncryptionContext
 
-Manages encryption key state for a session.
+Manages encryption key state for one direction of a session. `deriveSessionKeys` gives two keys, one per direction: use one context per direction, never one context for both.
 
 ```ts
 class SessionEncryptionContext {
@@ -508,11 +608,12 @@ class SessionEncryptionContext {
 
   // Methods
   needsRotation(): boolean;
-  encrypt(plaintext: Uint8Array): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array }>;
-  encryptJson(data: unknown): Promise<EncryptedEnvelopePayload>;
+  encrypt(plaintext: Uint8Array, additionalData?: Uint8Array): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array }>;
+  encryptJson(data: unknown, additionalData?: Uint8Array): Promise<EncryptedEnvelopePayload>;
   createEnvelope(sessionId: SessionId, seq: number, innerEvent: unknown): Promise<EncryptedEnvelope>;
-  decrypt(payload: EncryptedEnvelopePayload): Promise<Uint8Array>;
-  decryptJson<T>(payload: EncryptedEnvelopePayload): Promise<T>;
+  decrypt(payload: EncryptedEnvelopePayload, additionalData?: Uint8Array): Promise<Uint8Array>;
+  decryptJson<T>(payload: EncryptedEnvelopePayload, additionalData?: Uint8Array): Promise<T>;
+  openEnvelope<T>(envelope: EnvelopeLike): Promise<T>;
   getNonceCounter(): bigint;
   toKeyInfo(): SessionKeyInfo;
 
@@ -521,26 +622,35 @@ class SessionEncryptionContext {
 }
 ```
 
+- `createEnvelope` authenticates the envelope's header (protocol version, session id, sequence number, key id) together with the event. Read envelopes with `openEnvelope`, which throws `AesGcmError` when the ciphertext or a header field differs. Whether a sequence number was seen before is for the caller to check.
+- `decrypt` and `decryptJson` read payloads made by `encrypt` and `encryptJson`. They do not open an envelope.
+- The nonce is 8 random bytes chosen per context followed by a 32-bit counter.
+- A context made by `fromKeyBytes` refuses to encrypt after 2^30 messages (`MAX_MESSAGES_PER_KEY`): `needsRotation()` returns `true` and `encrypt` throws `AesGcmError`. There is no rotation: exchange keys again.
+- `toKeyInfo()` returns the raw key bytes. Treat its result as the key itself.
+
 **Example:**
 ```ts
-import { SessionEncryptionContext } from '@enclave-vm/stream';
+import { SessionEncryptionContext, deriveSessionKeys } from '@enclave-vm/stream';
 
-// Create from key bytes
-const ctx = await SessionEncryptionContext.fromKeyBytes(keyBytes, 'key_123');
+const { serverToClientKey } = await deriveSessionKeys(sharedSecret, 's_123');
+
+// One context on each side of a direction, from that direction's key
+const sender = await SessionEncryptionContext.fromKeyBytes(serverToClientKey, 'key_123');
+const receiver = await SessionEncryptionContext.fromKeyBytes(serverToClientKey, 'key_123');
 
 // Encrypt an event
-const envelope = await ctx.createEnvelope('sess_123', 1, {
+const envelope = await sender.createEnvelope('s_123', 1, {
   type: 'stdout',
-  payload: { data: 'Hello' }
+  payload: { chunk: 'Hello' }
 });
 
-// Check if key rotation is needed
-if (ctx.needsRotation()) {
-  // Perform key rotation
+// Check if the message limit of the key is reached
+if (sender.needsRotation()) {
+  // Exchange keys again
 }
 
 // Decrypt
-const decrypted = await ctx.decryptJson(envelope.payload);
+const decrypted = await receiver.openEnvelope(envelope);
 ```
 
 ## Reconnection
@@ -664,6 +774,8 @@ class SequenceTracker {
   reset(): void;
 }
 ```
+
+`receive()` answers `{ gap: false }` for a sequence number at or below the last one. To detect a duplicate, compare the number with `getLastSeq()` before calling `receive()`.
 
 **Example:**
 ```ts

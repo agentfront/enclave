@@ -29,7 +29,7 @@ jobs:
           node-version-file: ".nvmrc"
 
       - name: Set Nx SHAs
-        uses: nrwl/nx-set-shas@v4
+        uses: nrwl/nx-set-shas@3e9ad7370203c1e93d109be57f3b72eb0eb511b1 # v4.4.0
 
       - name: Run linter
         run: npx nx affected -t lint
@@ -92,7 +92,7 @@ jobs:
         run: yarn install --immutable
 
       - name: Set Nx SHAs
-        uses: nrwl/nx-set-shas@v4
+        uses: nrwl/nx-set-shas@3e9ad7370203c1e93d109be57f3b72eb0eb511b1 # v4.4.0
 
       - name: Test libraries
         id: test
@@ -183,15 +183,15 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
-      # The build job builds what a push affects; these tests always run, and the worker specs load
-      # the built package.
+      # The build job builds what a push affects; these tests always run, and some specs load the
+      # built packages (the worker specs, the client specs, the runtime specs).
       - name: Build the libraries under test
-        run: npx nx run-many -t build --projects=ast,core
+        run: npx nx run-many -t build --projects=ast,core,broker,client,stream,react,runtime
 
       - name: Run the security case suite
         run: node scripts/security-tests.mjs --suite --summary
 
-      - name: Run the security specs (ast, core)
+      - name: Run the security specs
         if: success() || failure()
         run: node scripts/security-tests.mjs --specs --summary
 
@@ -253,7 +253,7 @@ jobs:
         run: yarn install --immutable
 
       - name: Set Nx SHAs
-        uses: nrwl/nx-set-shas@v4
+        uses: nrwl/nx-set-shas@3e9ad7370203c1e93d109be57f3b72eb0eb511b1 # v4.4.0
 
       # The Playwright suites run in Chromium; skip the browser download when no project with an
       # e2e target (today only @enclave-vm/browser, and through it @enclave-vm/ast) is affected.

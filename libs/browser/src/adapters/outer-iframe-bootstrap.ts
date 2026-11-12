@@ -17,8 +17,10 @@
  * @packageDocumentation
  */
 
-import { buildIframeHtml, safeJsonStringify } from './iframe-html-builder';
-import { generateInnerIframeHtml } from './inner-iframe-bootstrap';
+import { buildIframeDocument, safeJsonStringify } from './iframe-html-builder';
+import { generateInnerIframeDocument } from './inner-iframe-bootstrap';
+import { MAX_TOOL_NAME_LENGTH } from './iframe-protocol';
+import { MAX_TIMER_DELAY_MS, numberLiteral } from '../utils/numeric-option';
 import type { SerializedIframeConfig, SerializableSuspiciousPattern } from '../types';
 
 export interface OuterIframeBootstrapOptions {
@@ -43,19 +45,19 @@ export interface OuterIframeBootstrapOptions {
  * Generate the outer iframe HTML content
  */
 export function generateOuterIframeHtml(options: OuterIframeBootstrapOptions): string {
-  const script = generateOuterIframeScript(options);
-  return buildIframeHtml(script, { title: 'Enclave Outer Sandbox' });
+  // The inner document first: the outer document carries it as text, and names its script in
+  // its own policy, which the inner document inherits.
+  const inner = generateInnerIframeDocument({
+    userCode: options.userCode,
+    config: options.config,
+    requestId: options.requestId,
+  });
+  const script = generateOuterIframeScript(options, inner.html);
+  return buildIframeDocument(script, { title: 'Enclave Outer Sandbox', childScriptHashes: [inner.scriptHash] }).html;
 }
 
-function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string {
-  const { userCode, config, requestId, suspiciousPatterns, validationConfig } = options;
-
-  // Pre-generate the inner iframe HTML
-  const innerHtml = generateInnerIframeHtml({
-    userCode,
-    config,
-    requestId,
-  });
+function generateOuterIframeScript(options: OuterIframeBootstrapOptions, innerHtml: string): string {
+  const { config, requestId, suspiciousPatterns, validationConfig } = options;
 
   const patternDetectorsCode = generatePatternDetectors(suspiciousPatterns);
 
@@ -137,6 +139,9 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
     // Name validation
     if (typeof operationName !== 'string' || !operationName) {
       throw createSafeError('Operation name must be a non-empty string', 'TypeError');
+    }
+    if (operationName.length > ${MAX_TOOL_NAME_LENGTH}) {
+      throw createSafeError('Tool name must be at most ${MAX_TOOL_NAME_LENGTH} characters', 'TypeError');
     }
 
     // Whitelist check
@@ -295,7 +300,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
   // ============================================================
   // Create Inner Iframe
   // ============================================================
-  var innerHtml = ${JSON.stringify(innerHtml).replace(/<\//g, '<\\/')};
+  var innerHtml = ${safeJsonStringify(innerHtml)};
 
   innerFrame = document.createElement('iframe');
   innerFrame.sandbox = 'allow-scripts';
@@ -312,7 +317,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
   // Bounds the script's own running time: paused while a tool call waits for the host, as
   // @enclave-vm/core never cuts off a tool call in progress. Measured on the monotonic clock, so
   // a system clock change cannot stretch or cut the budget; Date.now() is only for the stats.
-  var timeout = ${config.timeout};
+  var timeout = ${numberLiteral('timeout', config.timeout)};
   var startTime = Date.now();
   var remainingTime = timeout;
   var timeoutResumedAt = 0;
@@ -321,7 +326,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions): string
   function resumeTimeout() {
     if (completed || timeoutTimer !== null) return;
     timeoutResumedAt = performance.now();
-    timeoutTimer = setTimeout(onTimeout, Math.max(0, remainingTime));
+    timeoutTimer = setTimeout(onTimeout, Math.min(Math.max(0, remainingTime), ${MAX_TIMER_DELAY_MS}));
   }
 
   function pauseTimeout() {

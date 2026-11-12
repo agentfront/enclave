@@ -103,18 +103,27 @@ export function isBuiltinPrototype(prototype: unknown): boolean {
   return typeof prototype === 'object' && prototype !== null && BUILTIN_PROTOTYPE_SET.has(prototype);
 }
 
-const BUILTIN_METHODS: WeakSet<object> = (() => {
-  const methods = new WeakSet<object>();
+/**
+ * Each built-in method with the prototypes it is an own property of: one as a rule, two for a
+ * function the language shares (`toString` of arrays and of typed arrays is one function).
+ */
+const BUILTIN_METHOD_HOMES: WeakMap<object, object[]> = (() => {
+  const homes = new WeakMap<object, object[]>();
   for (const prototype of BUILTIN_PROTOTYPES) {
     for (const key of ReflectOwnKeys(prototype)) {
       if (key === 'constructor') continue;
       const descriptor = ObjectGetOwnPropertyDescriptor(prototype, key);
       if (descriptor && typeof descriptor.value === 'function') {
-        methods.add(descriptor.value);
+        const known = homes.get(descriptor.value);
+        if (!known) {
+          homes.set(descriptor.value, [prototype]);
+        } else if (!known.includes(prototype)) {
+          known.push(prototype);
+        }
       }
     }
   }
-  return methods;
+  return homes;
 })();
 
 /**
@@ -122,7 +131,20 @@ const BUILTIN_METHODS: WeakSet<object> = (() => {
  * operate on data and are not gated; every other host function is.
  */
 export function isBuiltinMethod(fn: unknown): boolean {
-  return (typeof fn === 'function' || (typeof fn === 'object' && fn !== null)) && BUILTIN_METHODS.has(fn as object);
+  return (
+    (typeof fn === 'function' || (typeof fn === 'object' && fn !== null)) && BUILTIN_METHOD_HOMES.has(fn as object)
+  );
+}
+
+/**
+ * The built-in prototypes `fn` is a method of, or undefined when it is not a built-in method
+ * (see {@link isBuiltinMethod}). The membrane of the single VM runs such a method on a value of
+ * the host that has one of them in its prototype chain.
+ */
+export function builtinMethodHomes(fn: unknown): readonly object[] | undefined {
+  return typeof fn === 'function' || (typeof fn === 'object' && fn !== null)
+    ? BUILTIN_METHOD_HOMES.get(fn as object)
+    : undefined;
 }
 
 /**
@@ -209,6 +231,75 @@ export function isRegExpMatchMethod(fn: unknown): boolean {
   );
 }
 
+const FunctionPrototypeToString = Function.prototype.toString;
+const ObjectPrototypeToLocaleString = Object.prototype.toLocaleString;
+
+/**
+ * Whether `fn` is a built-in method that answers with the source text of the function it is
+ * called on: `Function.prototype.toString`, and `Object.prototype.toLocaleString`, which calls
+ * the `toString` of its receiver.
+ */
+export function isFunctionTextMethod(fn: unknown): boolean {
+  return fn === FunctionPrototypeToString || fn === ObjectPrototypeToLocaleString;
+}
+
+/** The longest function name {@link hostFunctionText} repeats */
+const MAX_FUNCTION_NAME_LENGTH = 64;
+
+/** Whether `name` is an identifier of letters, digits, `_` and `$` that a function text can carry. */
+function isPlainIdentifier(name: string): boolean {
+  if (name.length === 0 || name.length > MAX_FUNCTION_NAME_LENGTH) return false;
+  for (let i = 0; i < name.length; i++) {
+    const c = name.charCodeAt(i);
+    const letter = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 36;
+    const digit = c >= 48 && c <= 57;
+    if (!letter && !(digit && i > 0)) return false;
+  }
+  return true;
+}
+
+/**
+ * What a script gets for the text of a host function: the form the engine gives a function
+ * without source, `function name() { [native code] }`.
+ *
+ * The source text of a function passed in `globals` is the host's code. A script may call the
+ * function; no conversion of it to a string (`toString()`, `String()`, a template literal,
+ * concatenation) gives that text. The name is the function's own `name` when that is a data
+ * property holding a plain identifier (no getter of the host runs for it); otherwise the form
+ * has no name.
+ */
+export function hostFunctionText(fn: unknown): string {
+  let name = '';
+  try {
+    if (typeof fn === 'function') {
+      const descriptor = ObjectGetOwnPropertyDescriptor(fn, 'name');
+      const value: unknown = descriptor && 'value' in descriptor ? descriptor.value : undefined;
+      if (typeof value === 'string' && isPlainIdentifier(value)) {
+        name = value;
+      }
+    }
+  } catch {
+    // A function that cannot be asked has no name here
+  }
+  return `function ${name}() { [native code] }`;
+}
+
+/**
+ * `text` without the source of the function `fn`: each occurrence is replaced by the fixed text.
+ * For the message of an error a host function raised while it ran on `fn`: such a message may
+ * quote the value the function ran on.
+ */
+export function withoutFunctionSource(text: string, fn: unknown): string {
+  if (typeof fn !== 'function') return text;
+  let source: string;
+  try {
+    source = ReflectApply(FunctionPrototypeToString, fn, []) as string;
+  } catch {
+    return text;
+  }
+  return source.length > 0 && text.includes(source) ? text.split(source).join(hostFunctionText(fn)) : text;
+}
+
 /** What a script is told when it runs a regular expression of the host */
 export const HOST_REGEXP_MESSAGE =
   'A regular expression passed in globals cannot be run in the sandbox, ' +
@@ -272,8 +363,13 @@ function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max)}…`;
 }
 
-/** Name and message of a host error, as strings only. */
-function failure(error: unknown): GlobalCallOutcome {
+/**
+ * Name and message of a host error, as strings only.
+ *
+ * @param receiver What the function ran on: when that is a function, its source is taken out of
+ *   the message (see {@link withoutFunctionSource}).
+ */
+function failure(error: unknown, receiver?: unknown): GlobalCallOutcome {
   let name = 'Error';
   let message = 'Global function call failed';
   try {
@@ -290,8 +386,8 @@ function failure(error: unknown): GlobalCallOutcome {
   }
   return {
     ok: false,
-    name: truncate(name, MAX_ERROR_NAME_LENGTH),
-    message: truncate(message, MAX_ERROR_MESSAGE_LENGTH),
+    name: truncate(withoutFunctionSource(name, receiver), MAX_ERROR_NAME_LENGTH),
+    message: truncate(withoutFunctionSource(message, receiver), MAX_ERROR_MESSAGE_LENGTH),
   };
 }
 
@@ -405,9 +501,12 @@ function invokeGlobalFunction(
 
   let result: unknown;
   try {
-    result = ReflectApply(fn, thisArg, safeArgs);
+    // In the async context of the caller of run(), not in the script's (see ./async-context)
+    result = activity?.inHostContext
+      ? activity.inHostContext(() => ReflectApply(fn, thisArg, safeArgs))
+      : ReflectApply(fn, thisArg, safeArgs);
   } catch (error: unknown) {
-    return failure(error);
+    return failure(error, thisArg);
   }
 
   if (isThenable(result)) {
@@ -420,7 +519,7 @@ function invokeGlobalFunction(
       },
       (error: unknown) => {
         end?.();
-        return failure(error);
+        return failure(error, thisArg);
       },
     );
   }
@@ -477,11 +576,16 @@ export interface GlobalFunctionCallGate {
  * Refuses calls once the execution is aborted or `maxGlobalFunctionCalls` is spent, sanitizes the
  * return value like a tool result and re-creates it in the sandbox realm (a promise becomes a
  * sandbox-realm promise), and turns host errors into safe errors.
+ *
+ * @param ownedBySandbox Whether a function was made in the sandbox realm. Such a function is the
+ *   script's own, not a host function: the gate does not take a call to it (it would run it on
+ *   copies of its arguments made for the host).
  */
 export function createGlobalFunctionGate(
   context: ExecutionContext,
   realm: SandboxRealmBridge,
   unwrap?: UnwrapSandboxValue,
+  ownedBySandbox?: (value: object) => boolean,
 ): GlobalFunctionCallGate {
   const limits = resultLimits(context);
   const max = resolveMaxGlobalFunctionCalls(context.config);
@@ -495,7 +599,9 @@ export function createGlobalFunctionGate(
   };
 
   return {
-    gates: (target) => !isBuiltinMethod(target),
+    gates: (target) =>
+      !isBuiltinMethod(target) &&
+      !(ownedBySandbox !== undefined && typeof target === 'function' && ownedBySandbox(target)),
     call: (target, thisArg, args) => {
       if (context.aborted) {
         throw createSafeError('Execution aborted');

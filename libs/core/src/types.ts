@@ -139,19 +139,20 @@ export interface SecurityLevelConfig {
   sanitizeStackTraces: boolean;
 
   /**
-   * Whether to block Date.now() and performance timing APIs
-   * (prevents timing attacks)
+   * Descriptive only: nothing in the runtime reads this value, and setting it changes nothing.
+   * What a script can reach of `Date` and timing APIs follows from the realm's globals.
    */
   blockTimingAPIs: boolean;
 
   /**
-   * Whether to allow while/do-while loops
-   * (false = only bounded for/for-of loops allowed)
+   * Descriptive only: nothing in the runtime reads this value, and setting it changes nothing.
+   * Which loops a script may use is decided by the AST preset (`preset`).
    */
   allowUnboundedLoops: boolean;
 
   /**
-   * Whether to check for Unicode security attacks in code
+   * Descriptive only: nothing in the runtime reads this value, and setting it changes nothing.
+   * The Unicode checks are those of the pre-scanner preset the validation runs with.
    */
   unicodeSecurityCheck: boolean;
 
@@ -197,9 +198,6 @@ export const SECURITY_LEVEL_CONFIGS: Record<SecurityLevel, SecurityLevelConfig> 
    * - Limited tool calls (10)
    * - Deep value sanitization
    * - Full stack trace sanitization
-   * - Timing API blocking
-   * - No unbounded loops
-   * - Unicode security checks
    */
   STRICT: {
     timeout: 5000,
@@ -237,8 +235,6 @@ export const SECURITY_LEVEL_CONFIGS: Record<SecurityLevel, SecurityLevelConfig> 
    * - Moderate tool calls (50)
    * - Standard value sanitization
    * - Stack trace sanitization
-   * - No timing API blocking
-   * - No unbounded loops
    */
   SECURE: {
     timeout: 15000,
@@ -276,7 +272,6 @@ export const SECURITY_LEVEL_CONFIGS: Record<SecurityLevel, SecurityLevelConfig> 
    * - Standard tool calls (100)
    * - Basic value sanitization
    * - Minimal stack trace sanitization
-   * - Unbounded loops allowed
    */
   STANDARD: {
     timeout: 30000,
@@ -417,7 +412,9 @@ export interface ExecutionStats {
    * tracked during execution. Tracking monitors String and Array allocations.
    *
    * Note: This is an estimate based on allocation tracking, not actual V8 heap usage.
-   * For precise memory isolation, use the worker_threads adapter with `--max-old-space-size`.
+   * Where the engine's own bound is needed, use the `worker_threads` adapter: each worker has a
+   * heap limit of the engine (`workerPoolConfig.memoryLimitPerWorker`). Do not set the process
+   * flag `--max-old-space-size` for that: it replaces the limits of the workers.
    */
   memoryUsage?: number;
 
@@ -496,10 +493,11 @@ export interface EnclaveConfig {
    * When set, the VM adapter tracks String and Array allocations and throws
    * a MemoryLimitError if the limit is exceeded. Tracking adds ~5-10% overhead.
    *
-   * Note: This is enforced via allocation tracking, not V8 heap limits.
-   * For precise memory isolation, use the worker_threads adapter.
+   * Note: This is enforced via allocation tracking, not V8 heap limits. It counts the
+   * operations that make text and arrays grow; a copy is not charged, and objects, Maps and
+   * Sets are not counted. For the engine's own limit, use the worker_threads adapter.
    *
-   * Default: 128 * 1024 * 1024 (128MB)
+   * Default: 1 * 1024 * 1024 (1 MB); 0 switches the tracking off
    */
   memoryLimit?: number;
 
@@ -687,7 +685,12 @@ import type { ReferenceConfig } from './sidecar/reference-config';
 import type { ScoringGateConfig, ScoringGateResult } from './scoring/types';
 import type { WorkerPoolConfig } from './adapters/worker-pool/config';
 import type { DoubleVmConfig, PartialDoubleVmConfig, ParentValidationConfig } from './double-vm/types';
-import type { NormalizedToolNamespace, ToolNamespaces } from '@enclave-vm/ast';
+import type {
+  NormalizedToolNamespace,
+  PartialPreScannerConfig,
+  PreScannerPresetLevel,
+  ToolNamespaces,
+} from '@enclave-vm/ast';
 import type { ConsoleHandler, ConsoleLevel } from './console-handler';
 import type { HostActivity } from './execution-deadline';
 
@@ -838,6 +841,13 @@ export interface ReferenceSidecarOptions {
   maxResolvedSize?: number;
 
   /**
+   * Maximum size, in bytes, of everything one execution resolves for its tool calls in total.
+   * A stored value counts once, a concatenation of references every time it is built.
+   * @default Twice `maxTotalSize`
+   */
+  maxTotalResolvedSize?: number;
+
+  /**
    * Whether to allow composite handles from string concatenation
    * If false, concatenating references throws an error
    * @default Determined by securityLevel (false for STRICT/SECURE)
@@ -908,6 +918,50 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * ```
    */
   preset?: AstPreset;
+
+  /**
+   * The pre-scanner (layer 0): what is checked in the text of a script before anything parses
+   * it. Its size, the length and number of its lines, how deep it nests, its regular-expression
+   * and string literals, and Unicode that hides code.
+   *
+   * By default it runs with the pre-scanner preset named like the AST preset (`preset`):
+   * `agentscript`, `strict`, `secure`, `standard` or `permissive`. The `babel` preset runs with
+   * `standard`. The `agentscript` pre-scanner takes scripts of up to 100 KB in at most 1,000
+   * lines of at most 2,000 characters, string literals of up to 10 KB each, no
+   * regular-expression literal, and no bidirectional or invisible control character.
+   *
+   * - `preset` picks another pre-scanner preset.
+   * - `config` changes single limits of the preset in force (see `PreScannerConfig` of
+   *   `@enclave-vm/ast`); the pre-scanner's own absolute maximums still hold.
+   *
+   * A host that stores large string literals in the reference sidecar, or that runs scripts
+   * above these sizes, sets the limits it needs here. With `validate: false` the pre-scanner
+   * does not run; the maximum size of a script (5,242,880 characters) holds in any case.
+   *
+   * @example
+   * ```typescript
+   * // The limits enclaves had before 2.19.2, whatever the AST preset
+   * const enclave = new Enclave({ preScan: { preset: 'standard' } });
+   *
+   * // The agentscript pre-scanner with room for larger string literals. The limit on one
+   * // literal and the limit on all literals together are separate: raise both. (A line is at
+   * // most 100,000 characters under any configuration.)
+   * const enclave = new Enclave({
+   *   preScan: {
+   *     config: {
+   *       maxInputSize: 1024 * 1024,
+   *       maxLineLength: 100000,
+   *       maxStringLength: 512 * 1024,
+   *       maxTotalStringContent: 1024 * 1024,
+   *     },
+   *   },
+   * });
+   * ```
+   */
+  preScan?: {
+    preset?: PreScannerPresetLevel;
+    config?: PartialPreScannerConfig;
+  };
 
   /**
    * Whether to validate AgentScript code before execution
@@ -1036,7 +1090,7 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    *
    * Supported by the double VM (default), the `vm` adapter and the `worker_threads` adapter. A
    * `sandboxAdapter` receives the handler as `ExecutionContext.consoleHandler`; the built-in
-   * `InterpreterAdapter` has no `console`, so a script that uses it fails there.
+   * `InterpreterAdapter` gives the script a `console` when a handler is set, and none without one.
    *
    * @example
    * ```typescript
@@ -1078,10 +1132,12 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * - Extracts large strings from code and stores them in a sidecar
    * - Transforms concatenation to detect reference IDs
    * - Resolves references at the callTool boundary
-   * - Lifts large tool results back to the sidecar
+   * - Stores a tool result that is one large string in the sidecar and hands the script its
+   *   reference (a string inside an object or an array is not stored)
    *
-   * This enables scripts to manipulate large data (videos, PDFs, images)
-   * without loading them into the JavaScript sandbox.
+   * A script can pass such data (videos, PDFs, images) from one tool to another, and concatenate
+   * references where the level allows it, without the data entering the JavaScript sandbox. It
+   * cannot read or change the data: nothing is resolved for the script itself.
    *
    * @example
    * ```typescript
@@ -1099,11 +1155,11 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
   /**
    * AI Scoring Gate configuration
    *
-   * Adds semantic security analysis that detects attack patterns
-   * beyond what static AST validation can catch:
+   * A heuristic that scores what a script's tool calls look like, as a signal on top of the
+   * AST validation, not a boundary:
    * - Data exfiltration patterns (list→send)
    * - Excessive access (high limits, wildcards)
-   * - Fan-out attacks (tool calls in loops)
+   * - Fan-out (tool calls in loops)
    * - Sensitive data access (passwords, tokens)
    *
    * Runs AFTER AST validation but BEFORE code execution.
@@ -1118,7 +1174,7 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    *   },
    * });
    *
-   * // External API scorer (best detection)
+   * // External API scorer (the score is whatever the service returns)
    * const enclave = new Enclave({
    *   scoringGate: {
    *     scorer: 'external-api',
@@ -1136,7 +1192,8 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * Worker Pool Adapter configuration
    *
    * Only used when adapter is set to 'worker_threads'.
-   * Provides OS-level memory isolation via worker threads with:
+   * Runs each script in a worker thread: an isolate of the engine with its own heap limit, in
+   * the same process (not a boundary of the operating system), with:
    * - Pool management (min/max workers, scaling)
    * - Memory monitoring and enforcement
    * - Hard halt capability via worker.terminate()

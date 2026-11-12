@@ -9,6 +9,8 @@
 
 import { Enclave } from '../enclave';
 import type { ToolHandler } from '../types';
+import type { WorkerSlot } from '../adapters/worker-pool/worker-slot';
+import type { WorkerPoolMetrics } from '../adapters/worker-pool/config';
 
 /**
  * Helper to create Enclave with WorkerPoolAdapter
@@ -571,6 +573,116 @@ describe('WorkerPoolAdapter', () => {
         isNumber: true,
       });
       enclave.dispose();
+    });
+  });
+
+  describe('Worker Lifecycle', () => {
+    /** The parts of the pool these tests look at */
+    function poolOf(enclave: Enclave) {
+      return (enclave as unknown as { adapter: { slots: Map<string, WorkerSlot>; getMetrics(): WorkerPoolMetrics } })
+        .adapter;
+    }
+
+    function singleWorkerEnclave(toolHandler?: ToolHandler) {
+      return new Enclave({
+        adapter: 'worker_threads',
+        timeout: 20000,
+        toolHandler,
+        workerPoolConfig: { minWorkers: 1, maxWorkers: 1 },
+      });
+    }
+
+    it('should hand a worker to the next execution once it has confirmed that it is idle', async () => {
+      const enclave = singleWorkerEnclave(async () => ({ ok: true }));
+      try {
+        expect((await enclave.run('return 0;')).value).toBe(0);
+        const pool = poolOf(enclave);
+        const [slot] = [...pool.slots.values()];
+        const confirmations: string[] = [];
+        slot.on('message', (message) => {
+          if (message.type === 'result' || message.type === 'idle') confirmations.push(message.type);
+        });
+
+        for (let i = 1; i <= 5; i++) {
+          const result = await enclave.run(`const r = await callTool('math:id', {}); return r.ok ? ${i} : 0;`);
+          expect(result.value).toBe(i);
+          // run() returns when the worker is free again
+          expect(slot.isIdle).toBe(true);
+        }
+
+        // Every result was followed by the worker's confirmation, and the worker was kept
+        expect(confirmations).toEqual(Array(5).fill(['result', 'idle']).flat());
+        expect([...pool.slots.keys()]).toEqual([slot.id]);
+        expect(pool.getMetrics().forcedTerminations).toBe(0);
+      } finally {
+        enclave.dispose();
+      }
+    });
+
+    it('should not take a busy host thread for a worker that is not idle', async () => {
+      // The host thread is busy for longer than a worker gets to confirm that it is idle. The
+      // confirmation is waiting in the host's queue by then: the worker is kept.
+      let stall: (() => void) | undefined;
+      const enclave = singleWorkerEnclave(async () => {
+        stall?.();
+        return { ok: true };
+      });
+      try {
+        expect((await enclave.run('return 0;')).value).toBe(0);
+        const pool = poolOf(enclave);
+        const [slot] = [...pool.slots.values()];
+        // Registered while the execution is running, so that it runs after the pool's own handler
+        stall = () => {
+          stall = undefined;
+          slot.on('message', (message) => {
+            if (message.type !== 'result') return;
+            const until = Date.now() + 1500;
+            while (Date.now() < until) {
+              // Busy host
+            }
+          });
+        };
+
+        const result = await enclave.run(`const r = await callTool('math:id', {}); return r.ok;`);
+
+        expect(result.value).toBe(true);
+        expect([...pool.slots.keys()]).toEqual([slot.id]);
+        expect(slot.isIdle).toBe(true);
+        expect(pool.getMetrics().forcedTerminations).toBe(0);
+      } finally {
+        enclave.dispose();
+      }
+    });
+
+    it('should end an execution that is in flight when the pool is disposed', async () => {
+      let entered: () => void = () => undefined;
+      const inFlight = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      // The tool call does not return before the test is over
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const enclave = singleWorkerEnclave(async () => {
+        entered();
+        await held;
+        return { ok: true };
+      });
+
+      try {
+        const running = enclave.run(`const r = await callTool('slow:op', {}); return r.ok;`);
+        await inFlight;
+        enclave.dispose();
+        const result = await running;
+
+        expect(result.success).toBe(false);
+        expect(result.error?.name).toBe('ExecutionAbortedError');
+        expect(result.error?.message).toMatch(/worker pool was disposed/);
+      } finally {
+        release();
+        enclave.dispose();
+      }
     });
   });
 });

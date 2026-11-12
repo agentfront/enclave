@@ -6,16 +6,15 @@
 
 > Browser and Node.js client SDK for the EnclaveJS streaming runtime
 
-The @enclave-vm/client package provides a client SDK for connecting to EnclaveJS runtime servers from browsers and Node.js applications. It handles connection management, message streaming, and provides a simple API for executing code and handling tool calls.
+The @enclave-vm/client package is a client for an EnclaveJS broker, for browsers and Node.js applications. It sends a script to the broker over HTTP, reads the events of the session as they arrive, and gives you the result.
 
 ## Features
 
-- **Cross-Platform**: Works in browsers and Node.js
-- **Streaming Support**: Real-time message streaming with backpressure handling
-- **Auto-Reconnection**: Automatic reconnection with configurable retry strategy
+- **Cross-Platform**: Works in browsers and Node.js, on top of `fetch`
+- **Streaming Support**: Session events are passed to your handlers as they arrive
+- **Auto-Reconnection**: A lost connection is resumed after the last event received, so every event is delivered once and in order
+- **Cancellation**: Stop a session with its handle, by its id, or with an `AbortSignal`
 - **Type-Safe**: Full TypeScript support
-- **Event-Based**: Rich event system for monitoring execution
-- **Encryption Ready**: Built-in support for encrypted channels
 
 ## Installation
 
@@ -34,89 +33,81 @@ import { EnclaveClient } from '@enclave-vm/client';
 
 // Create client
 const client = new EnclaveClient({
-  url: 'wss://runtime.example.com',
+  baseUrl: 'https://api.example.com',
 });
 
-// Connect and execute code
-await client.connect();
-
+// Execute code and wait for the result
 const result = await client.execute(`
   const user = await callTool('getUser', { id: 123 });
   return { name: user.name };
 `);
 
-console.log(result.value); // { name: 'Alice' }
-
-// Disconnect when done
-await client.disconnect();
+if (result.success) {
+  console.log(result.value); // what the script returned
+} else {
+  console.error(result.error?.code, result.error?.message);
+}
 ```
+
+Tools run on the broker. The client is told about tool calls (`onToolCall`, `onToolResultApplied`), but it executes nothing and has no API to register tools.
 
 ## Event Handling
 
-Listen to execution events:
+Pass handlers with the options of `execute()` or `executeStream()`:
 
 ```typescript
 import { EnclaveClient } from '@enclave-vm/client';
 
-const client = new EnclaveClient({ url: 'wss://runtime.example.com' });
+const client = new EnclaveClient({ baseUrl: 'https://api.example.com' });
 
-client.on('connected', () => {
-  console.log('Connected to runtime');
-});
-
-client.on('disconnected', (reason) => {
-  console.log('Disconnected:', reason);
-});
-
-client.on('tool_call', (call) => {
-  console.log(`Tool called: ${call.name}`, call.args);
-});
-
-client.on('tool_result', (result) => {
-  console.log(`Tool result:`, result.data);
-});
-
-client.on('error', (error) => {
-  console.error('Error:', error);
-});
-
-client.on('log', (log) => {
-  console.log(`[${log.level}]`, ...log.args);
+const result = await client.execute(code, {
+  onSessionInit: (event) => {
+    console.log('Session started:', event.sessionId);
+  },
+  onStdout: (chunk) => {
+    process.stdout.write(chunk);
+  },
+  onLog: (level, message, data) => {
+    console.log(`[${level}]`, message, data);
+  },
+  onToolCall: (callId, toolName, args) => {
+    console.log(`Tool called: ${toolName}`, args);
+  },
+  onToolResultApplied: (callId) => {
+    console.log(`Tool result applied: ${callId}`);
+  },
+  onError: (errorCode, message) => {
+    console.error(`${errorCode}: ${message}`);
+  },
 });
 ```
+
+The handlers are `onEvent` (every event), `onSessionInit`, `onStdout`, `onLog`, `onToolCall`, `onToolResultApplied`, `onHeartbeat`, `onError`, `onPartialResult`, `onToolProgress`, `onDeadlineExceeded` and `onCatalogChanged`. The end of the session has no handler of its own: the result comes from the promise of `execute()`, or from `wait()` on the handle.
 
 ## Streaming Execution
 
-Handle streaming responses:
+`executeStream()` returns a handle for the running session at once:
 
 ```typescript
 import { EnclaveClient } from '@enclave-vm/client';
 
-const client = new EnclaveClient({ url: 'wss://runtime.example.com' });
-await client.connect();
+const client = new EnclaveClient({ baseUrl: 'https://api.example.com' });
 
-// Stream execution with callbacks
-await client.stream(
-  `
-  for (const id of [1, 2, 3]) {
-    const user = await callTool('getUser', { id });
-    yield user;
-  }
-  return 'done';
-`,
-  {
-    onYield: (value) => {
-      console.log('Yielded:', value);
-    },
-    onComplete: (result) => {
-      console.log('Completed:', result);
-    },
-    onError: (error) => {
-      console.error('Error:', error);
-    },
+const session = client.executeStream(code, {
+  onStdout: (chunk) => {
+    process.stdout.write(chunk);
   },
-);
+});
+
+console.log('Session ID:', session.sessionId);
+console.log('Active:', session.isActive());
+console.log('Events so far:', session.getEvents().length);
+
+// Wait for the result
+const result = await session.wait();
 ```
+
+`await client.execute(code, options)` is the same as `await client.executeStream(code, options).wait()`.
 
 ## Configuration Options
 
@@ -125,118 +116,165 @@ import { EnclaveClient } from '@enclave-vm/client';
 
 const client = new EnclaveClient({
   // Connection
-  url: 'wss://runtime.example.com',
-  protocols: ['enclavejs-v1'],
+  baseUrl: 'https://api.example.com',
 
-  // Authentication
-  auth: {
-    token: 'your-api-token',
-    // or
-    apiKey: 'your-api-key',
+  // Headers sent with every request (for example credentials)
+  headers: {
+    Authorization: 'Bearer your-api-token',
   },
+
+  // Waiting for the server
+  timeout: 60000,
 
   // Reconnection
-  reconnect: {
-    enabled: true,
-    maxAttempts: 5,
-    initialDelay: 1000,
-    maxDelay: 30000,
-  },
+  autoReconnect: true,
+  maxReconnectAttempts: 3,
+  reconnectDelay: 1000,
 
-  // Encryption
-  encryption: {
-    enabled: true,
-    // Key exchange happens automatically
-  },
-
-  // Timeouts
-  timeout: 30000, // Execution timeout
-  connectionTimeout: 10000,
-
-  // Debug
-  debug: true,
+  // Largest event accepted
+  maxEventLength: 8388608,
 });
 ```
 
+| Option                 | Default        | Description                                                                                                                                                                                                                        |
+| ---------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `baseUrl`              | Required       | Base URL of the broker                                                                                                                                                                                                             |
+| `headers`              | none           | Headers sent with every request                                                                                                                                                                                                    |
+| `timeout`              | `60000`        | How long the client waits for the server, in milliseconds: for the answer to a request, and for the next event on an open stream (there, never less than two heartbeat intervals). When it runs out the connection counts as lost. |
+| `autoReconnect`        | `true`         | Reconnect when the connection is lost                                                                                                                                                                                              |
+| `maxReconnectAttempts` | `3`            | Reconnection attempts in a row before the session fails                                                                                                                                                                            |
+| `reconnectDelay`       | `1000`         | Base delay before a reconnection attempt, in milliseconds; it grows with each attempt in a row                                                                                                                                     |
+| `maxEventLength`       | `8388608`      | Largest event the client accepts, in characters (8 MiB). A longer event ends the session with `PARSE_ERROR`.                                                                                                                       |
+| `fetch`                | global `fetch` | Custom fetch implementation. Required where there is no global `fetch`.                                                                                                                                                            |
+
+These are all the options. Any other option makes the constructor throw a `TypeError` that names it: the client has no `encryption`, `auth`, `serverUrl` or `reconnect` option. A value the client cannot use, such as a `timeout` of `0`, throws as well.
+
+The client does not encrypt. Requests and events travel as plain JSON over HTTP and are protected only by the transport: use an `https:` base URL, and send credentials with `headers`.
+
 ## Session Management
+
+Every execution is a session with an id that starts with `s_`. The client generates the id unless you pass one with the `sessionId` option; an id that does not start with `s_` is refused before a request is made.
 
 ```typescript
 import { EnclaveClient } from '@enclave-vm/client';
 
-const client = new EnclaveClient({ url: 'wss://runtime.example.com' });
-await client.connect();
+const client = new EnclaveClient({ baseUrl: 'https://api.example.com' });
 
-// Create a persistent session
-const session = await client.createSession({
-  timeout: 60000,
-  maxToolCalls: 100,
-  metadata: { userId: 'user_123' },
+const session = client.executeStream(code, {
+  // Limits requested for the session
+  limits: {
+    sessionTtlMs: 60000,
+    maxToolCalls: 100,
+  },
 });
 
-console.log('Session ID:', session.id);
+console.log('Session ID:', session.sessionId);
 
-// Execute within session
-const result1 = await client.execute('const x = 1; return x;', { sessionId: session.id });
-const result2 = await client.execute('return x + 1;', { sessionId: session.id }); // x is still available
+// Ask the broker about the session (null if it does not know the session)
+const info = await client.getSession(session.sessionId);
+console.log(info?.state, info?.stats.toolCallCount);
 
-// Destroy session when done
-await client.destroySession(session.id);
+// Cancel the session
+await session.cancel('User cancelled');
+// or: await client.cancelSession(session.sessionId, 'User cancelled');
+
+const result = await session.wait();
+console.log(result.error?.code); // 'CANCELLED'
 ```
+
+`cancel()`, `cancelSession()` and aborting the `signal` option all do the same: the session ends in the client as `CANCELLED`, and the broker is asked to end it with `DELETE {baseUrl}/sessions/:sessionId`. They do not reject. If the broker does not confirm the stop, `onError` is called with the code `CANCEL_FAILED`: the script may still be running.
 
 ## Error Handling
 
+A session that fails is not a rejected promise. `execute()` and `wait()` resolve with `success: false` and an `error`:
+
 ```typescript
-import { EnclaveClient, EnclaveError, TimeoutError, ValidationError } from '@enclave-vm/client';
+import { EnclaveClient, EnclaveClientError } from '@enclave-vm/client';
 
-const client = new EnclaveClient({ url: 'wss://runtime.example.com' });
+const client = new EnclaveClient({ baseUrl: 'https://api.example.com' });
 
+const result = await client.execute(code);
+
+if (!result.success) {
+  switch (result.error?.code) {
+    case 'CANCELLED':
+      console.error('Execution was cancelled');
+      break;
+    case 'TIMEOUT':
+      console.error('The broker did not answer in time');
+      break;
+    case 'NETWORK_ERROR':
+    case 'RECONNECT_FAILED':
+      console.error('Connection lost:', result.error?.message);
+      break;
+    default:
+      console.error('Execution failed:', result.error?.code, result.error?.message);
+  }
+}
+
+// getSession() is the one method that rejects, with an EnclaveClientError
 try {
-  await client.connect();
-  const result = await client.execute('invalid code {{{{');
+  const info = await client.getSession(result.sessionId);
+  console.log(info?.state);
 } catch (error) {
-  if (error instanceof ValidationError) {
-    console.error('Code validation failed:', error.issues);
-  } else if (error instanceof TimeoutError) {
-    console.error('Execution timed out');
-  } else if (error instanceof EnclaveError) {
-    console.error('Enclave error:', error.code, error.message);
+  if (error instanceof EnclaveClientError) {
+    console.error('Enclave client error:', error.code, error.message);
   } else {
     throw error;
   }
 }
 ```
 
+`error.code` is one of the client's codes, or the code that the broker sent with the end of the session:
+
+| Code               | Meaning                                                                                                            |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `CANCELLED`        | The session was cancelled with `cancel()`, `cancelSession()` or the `signal`                                       |
+| `TIMEOUT`          | The broker did not answer, or sent no event, within the time the client waits                                      |
+| `NETWORK_ERROR`    | A request failed, or the stream ended before the session was complete                                              |
+| `PARSE_ERROR`      | The answer cannot be read: an event longer than `maxEventLength`, an encrypted event, or a response without a body |
+| `SESSION_ERROR`    | The broker refused to start the session, the session id is not valid, or the id is already running on this client  |
+| `RECONNECT_FAILED` | The broker refused a reconnection                                                                                  |
+
+When the connection is lost and `autoReconnect` is on, the client reconnects first. If the attempts are used up, the session fails with the code of the last failure.
+
 ## Browser Usage
 
-```html
-<script type="module">
-  import { EnclaveClient } from 'https://esm.sh/@enclave-vm/client';
+In the browser the client uses the global `fetch`:
 
-  const client = new EnclaveClient({
-    url: 'wss://runtime.example.com',
-  });
+```typescript
+import { EnclaveClient } from '@enclave-vm/client';
 
-  async function runCode() {
-    await client.connect();
-    const result = await client.execute(`
+const client = new EnclaveClient({
+  baseUrl: 'https://api.example.com',
+});
+
+async function runCode() {
+  const result = await client.execute(
+    `
       const data = await callTool('fetchData', { url: '/api/users' });
       return data;
-    `);
-    console.log(result);
-  }
+    `,
+    {
+      onStdout: (chunk) => {
+        document.body.append(chunk);
+      },
+    },
+  );
+  console.log(result);
+}
 
-  runCode();
-</script>
+runCode();
 ```
 
 ## Related Packages
 
-| Package                                     | Description                       |
-| ------------------------------------------- | --------------------------------- |
-| [@enclave-vm/types](../enclavejs-types)     | Type definitions and Zod schemas  |
-| [@enclave-vm/stream](../enclavejs-stream)   | Streaming protocol implementation |
-| [@enclave-vm/react](../enclavejs-react)     | React hooks and components        |
-| [@enclave-vm/runtime](../enclavejs-runtime) | Standalone runtime worker         |
+| Package                           | Description                                             |
+| --------------------------------- | ------------------------------------------------------- |
+| [@enclave-vm/types](../types)     | Type definitions and Zod schemas                        |
+| [@enclave-vm/stream](../stream)   | Streaming protocol implementation                       |
+| [@enclave-vm/react](../react)     | React hooks and components                              |
+| [@enclave-vm/runtime](../runtime) | Runtime worker building blocks (not a runnable service) |
 
 ## License
 

@@ -16,7 +16,10 @@
  * INNER_REALM_GUARD_SOURCE in ./double-vm/parent-vm-bootstrap): its target is a fresh object of
  * that realm, its traps are functions of that realm, and what those call is the handler built
  * here, which forwards to the secure proxy. The secure proxy keeps deciding what may be read and
- * called; this layer decides nothing except that host values are read-only.
+ * called. This layer decides two things only: host values are read-only, and what a script
+ * passes into a call goes on, and comes back, as the script holds it (an airlock proxy is never
+ * taken off a value on the way in; `call` and `apply` read off a host function are the sandbox
+ * realm's own).
  *
  * @packageDocumentation
  */
@@ -48,9 +51,14 @@ export interface RealmAirlock {
    * `Object.prototype`. Says no to everything else, and to an object that cannot be asked.
    */
   isRealmValue(value: object): boolean;
+  /** Whether a value is an airlock proxy: the form in which the script holds a value of the host */
+  isAirlockProxy(value: object): boolean;
 }
 
 // Captured at load: these run while scripts do.
+const HostFunctionCall = Function.prototype.call;
+const HostFunctionApply = Function.prototype.apply;
+const HostFunctionBind = Function.prototype.bind;
 const ReflectGet = Reflect.get;
 const ReflectHas = Reflect.has;
 const ReflectOwnKeys = Reflect.ownKeys;
@@ -81,6 +89,32 @@ export function createRealmAirlock(realm: RealmMembrane): RealmAirlock {
 
   // The realm's own Object.prototype, read off an object the realm makes
   const realmObjectPrototype: unknown = ObjectGetPrototypeOf(realm.shell('object'));
+
+  // A script never holds the host's `call`, `apply` or `bind`. They invoke their receiver, and
+  // the only call into a host function this membrane prepares is one that goes through the
+  // apply trap below. For `call` and `apply` read off a host function the script gets its own
+  // realm's, read here off a function the realm makes, before any script runs: used on a host
+  // function they end in that trap like any other call, and used on a function of the script
+  // they are the script's own business. A host function is not bound for a script, as before
+  // (a bound host function could never be handed over).
+  const realmFunction = realm.shell('function');
+  const realmCounterparts = new Map<unknown, unknown>([
+    [HostFunctionCall, ReflectGet(realmFunction, 'call')],
+    [HostFunctionApply, ReflectGet(realmFunction, 'apply')],
+    [
+      HostFunctionBind,
+      realm.wrap((): never => {
+        throw createSafeError(
+          'A host function cannot be bound in the sandbox. Call it from a function of your own.',
+          'TypeError',
+        );
+      }, false),
+    ],
+  ]);
+
+  function isAirlockProxy(value: object): boolean {
+    return inward.has(value);
+  }
 
   function isRealmValue(value: object): boolean {
     if (!isReference(realmObjectPrototype) || inward.has(value)) {
@@ -133,13 +167,24 @@ export function createRealmAirlock(realm: RealmMembrane): RealmAirlock {
       return value;
     } else if (isRawHostObject(value)) {
       // Should not happen (a secure proxy hands out nothing unwrapped); wrapped rather than trusted
-      hostProxy = createSecureProxy(value, { exposeToSandbox: toRealm, ownedBySandbox: isRealmValue });
+      hostProxy = createSecureProxy(value, {
+        exposeToSandbox: toRealm,
+        ownedBySandbox: isRealmValue,
+        heldBySandbox: isAirlockProxy,
+      });
     } else {
       // A value of the sandbox realm: what the call gate re-created there, a promise of the realm
       return value;
     }
 
     const callable = typeof hostProxy === 'function';
+    if (callable) {
+      const counterpart = realmCounterparts.get(unwrapSecureProxy(hostProxy));
+      if (counterpart !== undefined) {
+        outward.set(hostProxy, counterpart as object);
+        return counterpart;
+      }
+    }
     const kind = callable ? 'function' : ArrayIsArray(hostProxy) ? 'array' : 'object';
 
     // What a script reads for a key. The refusals apply on every read path: a method the get
@@ -201,11 +246,19 @@ export function createRealmAirlock(realm: RealmMembrane): RealmAirlock {
       apply(_shell: object, thisArg: unknown, args: ArrayLike<unknown>): unknown {
         // `args` is the array the engine built for the trap: read by index, never through its
         // methods (they are the sandbox realm's, and a script can replace those).
-        const hostArgs: unknown[] = [];
+        //
+        // The arguments go on as the script holds them: an airlock proxy stays one. Whatever the
+        // callee does with an argument (a built-in hands it to a callback as its receiver, or
+        // keeps it in the array it returns), what comes back to the script is the value it
+        // passed, never the secure proxy behind it. Host code reads through the airlock proxy
+        // like through any object; the gate for host functions copies what it stands for.
+        const passed: unknown[] = [];
         for (let i = 0; i < args.length; i++) {
-          hostArgs[i] = toHost(args[i]);
+          passed[i] = args[i];
         }
-        return toRealm(ReflectApply(hostProxy as (...a: unknown[]) => unknown, toHost(thisArg), hostArgs));
+        // The receiver is the one value the secure proxy needs as its own: it runs a method on
+        // the host object behind it, and passes no other receiver on to host code.
+        return toRealm(ReflectApply(hostProxy as (...a: unknown[]) => unknown, toHost(thisArg), passed));
       },
       construct(): never {
         throw createSafeError('Host functions cannot be called with new', 'TypeError');
@@ -221,5 +274,5 @@ export function createRealmAirlock(realm: RealmMembrane): RealmAirlock {
     return proxy;
   }
 
-  return { toRealm, toHost, isRealmValue };
+  return { toRealm, toHost, isRealmValue, isAirlockProxy };
 }

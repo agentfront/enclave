@@ -53,6 +53,19 @@ describe('normalizeToolNamespaces', () => {
     }
   });
 
+  it.each(['then', 'toString', 'valueOf', 'toLocaleString', 'toJSON'])(
+    'refuses %s as a method and as a namespace: the language calls it by itself',
+    (name) => {
+      expect(() => normalizeToolNamespaces({ mail: ['list', name] })).toThrow(
+        `Invalid toolNamespaces: method "mail.${name}" has a name the language calls by itself`,
+      );
+      expect(() => normalizeToolNamespaces({ mail: { [name]: 'mail:list' } })).toThrow(TypeError);
+      expect(() => normalizeToolNamespaces({ [name]: ['list'] })).toThrow(
+        `Invalid toolNamespaces: namespace "${name}" is a name the language calls by itself`,
+      );
+    },
+  );
+
   it('allows reserved words as method names (they are valid property names)', () => {
     expect(normalizeToolNamespaces({ files: ['delete', 'new'] })[0].methods.map((m) => m.name)).toEqual([
       'delete',

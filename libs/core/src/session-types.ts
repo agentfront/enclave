@@ -52,7 +52,8 @@ export interface SessionConfig extends CreateEnclaveOptions {
   heartbeatIntervalMs?: number;
 
   /**
-   * Enable encryption for streaming events
+   * Not implemented: nothing in the session reads this value, and its events are not encrypted
+   * whatever it is set to.
    * @default false
    */
   encryption?: boolean;
@@ -259,8 +260,8 @@ export interface SessionFinalResult {
  * Runtime channel abstraction
  *
  * Provides bidirectional communication between the broker and runtime.
- * Different implementations support embedded (in-process) and remote
- * (WebSocket) runtime execution.
+ * This package implements the embedded (in-process) channel only; the remote (WebSocket)
+ * channel is a type of the design, with no implementation here.
  */
 export interface RuntimeChannel {
   /**
@@ -296,7 +297,8 @@ export interface EmbeddedChannelConfig {
 /**
  * WebSocket runtime channel configuration
  *
- * For remote execution where the runtime is in a separate process/worker.
+ * For remote execution where the runtime is in a separate process/worker. A type of the
+ * design: this package has no channel that takes it.
  */
 export interface WebSocketChannelConfig {
   type: 'websocket';

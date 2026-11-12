@@ -126,7 +126,17 @@ const BULK_OPERATION: SuspiciousPattern = {
     if (typeof args === 'object' && args !== null) {
       try {
         const argStr = JSON.stringify(args).toLowerCase();
-        const hasBulkArgs = /limit.*[0-9]{4,}|"\*"|no[_-]?limit/i.test(argStr);
+        // "limit" followed, anywhere later, by a number of four digits or more; a "*" value; or
+        // "no limit" in one of its spellings. Written as plain scans: as one pattern with
+        // `limit.*[0-9]{4,}`, every "limit" in the text restarted a scan to its end, and the time
+        // of one tool call grew with the square of the size of its arguments.
+        const firstLimit = argStr.indexOf('limit');
+        const hasBulkArgs =
+          (firstLimit >= 0 && /[0-9]{4}/.test(argStr.slice(firstLimit + 5))) ||
+          argStr.indexOf('"*"') >= 0 ||
+          argStr.indexOf('nolimit') >= 0 ||
+          argStr.indexOf('no_limit') >= 0 ||
+          argStr.indexOf('no-limit') >= 0;
         if (hasBulkArgs) return true;
       } catch {
         // If args contains circular references or is not serializable,
