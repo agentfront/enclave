@@ -45,6 +45,14 @@ describe('NoJsonCallbacksRule with requireDirectUse', () => {
   it('leaves a variable of the script that is called JSON alone', async () => {
     expect(await issues(validator, 'const JSON = { value: 1 }; const read = JSON.value;')).toEqual([]);
   });
+
+  it('takes `undefined` for "no callback" only where it is the global of that name', async () => {
+    expect(await issues(validator, 'const text = JSON.stringify(value, undefined, 2);')).toEqual([]);
+    // A variable of the script with that name holds whatever the script gave it
+    expect(await issues(validator, 'const f = (undefined) => JSON.stringify(value, undefined, 2);')).toEqual([
+      'error:JSON_CALLBACK_NOT_ALLOWED',
+    ]);
+  });
 });
 
 describe('NoRegexMethodsRule with allowStringArguments: false', () => {
