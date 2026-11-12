@@ -111,3 +111,44 @@ test.describe('AST validation', () => {
     expect(result.value).toBe(42);
   });
 });
+
+// AgentScript has no regular expressions. The validator refuses the ways to write one, and the
+// realm of a validated script cannot run one: both halves are documented behaviour.
+test.describe('regular expressions', () => {
+  test.beforeEach(async ({ page }) => {
+    await loadHarness(page);
+  });
+
+  test('the string methods that take a plain string keep working', async ({ page }) => {
+    const result = await runInEnclave(
+      page,
+      "const text = 'a,b,c'; return [text.split(','), text.replace('a', 'x'), text.replaceAll(',', ';'), text.includes('b'), text.indexOf('c')];",
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual([['a', 'b', 'c'], 'x,b,c', 'a;b;c', true, 4]);
+  });
+
+  test('a call that would compile a pattern at run time fails with a TypeError', async ({ page }) => {
+    // The validator lets a method called search through when its argument is an object of data,
+    // because that is how a tool is called. On a string, the engine would turn the argument into
+    // a pattern.
+    const result = await runInEnclave(page, "const text = 'aaaa'; return text.search({ query: 1 });");
+
+    expect(result.success).toBe(false);
+    expect(result.error?.name).toBe('TypeError');
+    expect(result.error?.message).toBe('Regular expressions are not available in this sandbox');
+  });
+
+  test('a script that is not validated as AgentScript can use them', async ({ page }) => {
+    const code = "return [/a+/.test('caaat'), 'a1b22'.replace(/[0-9]+/g, '#')];";
+
+    const unvalidated = await runInEnclave(page, code, { validate: false });
+    expect(unvalidated.error).toBeUndefined();
+    expect(unvalidated.value).toEqual([true, 'a#b#']);
+
+    const otherPreset = await runInEnclave(page, code, { preset: 'permissive', securityLevel: 'PERMISSIVE' });
+    expect(otherPreset.error).toBeUndefined();
+    expect(otherPreset.value).toEqual([true, 'a#b#']);
+  });
+});

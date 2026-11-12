@@ -433,6 +433,11 @@ export interface SerializedIframeConfig {
   globals?: Record<string, unknown>;
   /** Validated tool namespaces to bind in the inner iframe */
   toolNamespaces?: NormalizedToolNamespace[];
+  /**
+   * Make regular expressions unusable in the realm the script runs in. Set when the script was
+   * validated as AgentScript, which has none.
+   */
+  blockRegExp?: boolean;
 }
 
 /**
