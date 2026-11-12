@@ -7,6 +7,8 @@
  * @packageDocumentation
  */
 
+import { normalizeToolNamespaces, type NormalizedToolNamespace, type ToolNamespaces } from '@enclave-vm/ast';
+
 /**
  * Scorer implementation types
  *
@@ -710,6 +712,13 @@ export interface ScoringGateConfig {
   customRules?: Record<string, number>;
 
   /**
+   * The tool namespaces of the sandbox whose scripts are scored (the `toolNamespaces` of the
+   * enclave). A call of a namespace method, `mail.send(args)`, is scored as the tool call it
+   * stands for, `callTool('mail.send', args)`. Without this the gate only sees `callTool`.
+   */
+  toolNamespaces?: ToolNamespaces | ReadonlyArray<NormalizedToolNamespace>;
+
+  /**
    * Log detailed scoring information
    * @default false
    */
@@ -744,6 +753,11 @@ export interface NormalizedScoringConfig {
    * The effective scorer type
    */
   scorerType: ScorerType;
+
+  /**
+   * Validated tool namespaces whose method calls are scored as tool calls (empty when none)
+   */
+  toolNamespaces: ReadonlyArray<NormalizedToolNamespace>;
 
   /**
    * Progressive config if using progressive strategy
@@ -828,8 +842,15 @@ export function normalizeScoringConfig(config: ScoringGateConfig): NormalizedSco
     scorerType = config.scorer ?? 'disabled';
   }
 
+  // Namespaces as a host writes them are validated and normalized like the enclave does it;
+  // a list is taken as normalized already (the enclave passes its own)
+  const toolNamespaces: ReadonlyArray<NormalizedToolNamespace> = Array.isArray(config.toolNamespaces)
+    ? (config.toolNamespaces as ReadonlyArray<NormalizedToolNamespace>)
+    : normalizeToolNamespaces(config.toolNamespaces as ToolNamespaces | undefined);
+
   return {
     scorerType,
+    toolNamespaces,
     progressiveConfig,
     blockThreshold: config.blockThreshold ?? DEFAULT_SCORING_CONFIG.blockThreshold,
     warnThreshold: config.warnThreshold ?? DEFAULT_SCORING_CONFIG.warnThreshold,

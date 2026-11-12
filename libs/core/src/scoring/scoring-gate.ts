@@ -28,10 +28,10 @@ export class ScoringGate {
   private initialized = false;
 
   constructor(config: ScoringGateConfig) {
-    this.extractor = new FeatureExtractor();
-
     // Normalize configuration (handles both legacy and new progressive mode)
     this.config = normalizeScoringConfig(config);
+
+    this.extractor = new FeatureExtractor({ toolNamespaces: this.config.toolNamespaces });
 
     // Initialize cache if enabled
     if (this.config.cache.enabled && this.config.scorerType !== 'disabled') {
