@@ -19,6 +19,7 @@
 
 import { buildIframeDocument, safeJsonStringify } from './iframe-html-builder';
 import { generateInnerIframeDocument } from './inner-iframe-bootstrap';
+import { MAX_TIMER_DELAY_MS, numberLiteral } from '../utils/numeric-option';
 import type { SerializedIframeConfig, SerializableSuspiciousPattern } from '../types';
 
 export interface OuterIframeBootstrapOptions {
@@ -312,7 +313,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions, innerHt
   // Bounds the script's own running time: paused while a tool call waits for the host, as
   // @enclave-vm/core never cuts off a tool call in progress. Measured on the monotonic clock, so
   // a system clock change cannot stretch or cut the budget; Date.now() is only for the stats.
-  var timeout = ${config.timeout};
+  var timeout = ${numberLiteral('timeout', config.timeout)};
   var startTime = Date.now();
   var remainingTime = timeout;
   var timeoutResumedAt = 0;
@@ -321,7 +322,7 @@ function generateOuterIframeScript(options: OuterIframeBootstrapOptions, innerHt
   function resumeTimeout() {
     if (completed || timeoutTimer !== null) return;
     timeoutResumedAt = performance.now();
-    timeoutTimer = setTimeout(onTimeout, Math.max(0, remainingTime));
+    timeoutTimer = setTimeout(onTimeout, Math.min(Math.max(0, remainingTime), ${MAX_TIMER_DELAY_MS}));
   }
 
   function pauseTimeout() {

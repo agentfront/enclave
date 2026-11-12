@@ -11,6 +11,7 @@
  */
 
 import { buildIframeDocument, escapeScriptText, safeJsonStringify, type IframeDocument } from './iframe-html-builder';
+import { numberLiteral } from '../utils/numeric-option';
 import type { SerializedIframeConfig } from '../types';
 
 /** What a script gets when it runs a regular expression in a realm that has none. */
@@ -41,13 +42,15 @@ export function generateInnerIframeDocument(options: InnerIframeBootstrapOptions
 function generateInnerIframeScript(userCode: string, config: SerializedIframeConfig, requestId: string): string {
   const blockedProperties = safeJsonStringify(config.blockedProperties);
   const throwOnBlocked = config.throwOnBlocked;
-  const maxIterations = config.maxIterations;
-  const maxToolCalls = config.maxToolCalls;
-  const memoryLimit = config.memoryLimit;
-  const maxConsoleCalls = config.maxConsoleCalls;
-  const maxConsoleOutputBytes = config.maxConsoleOutputBytes;
-  const maxSanitizeDepth = config.maxSanitizeDepth;
-  const maxSanitizeProperties = config.maxSanitizeProperties;
+  // Every limit is written as the text of a number, or not at all: see numberLiteral
+  const timeout = numberLiteral('timeout', config.timeout);
+  const maxIterations = numberLiteral('maxIterations', config.maxIterations);
+  const maxToolCalls = numberLiteral('maxToolCalls', config.maxToolCalls);
+  const memoryLimit = numberLiteral('memoryLimit', config.memoryLimit);
+  const maxConsoleCalls = numberLiteral('maxConsoleCalls', config.maxConsoleCalls);
+  const maxConsoleOutputBytes = numberLiteral('maxConsoleOutputBytes', config.maxConsoleOutputBytes);
+  const maxSanitizeDepth = numberLiteral('maxSanitizeDepth', config.maxSanitizeDepth);
+  const maxSanitizeProperties = numberLiteral('maxSanitizeProperties', config.maxSanitizeProperties);
 
   return `
 "use strict";
@@ -59,7 +62,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   // system clock change during a tool call cannot move it.
   var _monotonicNow = performance.now.bind(performance);
   var deadlineStart = _monotonicNow();
-  var timeout = ${config.timeout};
+  var timeout = ${timeout};
   var toolCallCount = 0;
   var iterationCount = 0;
   var consoleCalls = 0;

@@ -40,6 +40,7 @@ import type {
 } from './types';
 import { SECURITY_LEVEL_CONFIGS, DEFAULT_DOUBLE_IFRAME_CONFIG } from './types';
 import { sanitizeStackTrace } from './utils/sanitize-stack';
+import { MAX_TIMER_DELAY_MS, requireFiniteNumber } from './utils/numeric-option';
 
 /**
  * Default security level
@@ -304,7 +305,13 @@ export class BrowserEnclave {
       ...(options.secureProxyConfig ?? {}),
     };
 
-    const timeout = options.timeout ?? levelConfig.timeout;
+    // Every limit is a finite number. They are compared in three places and written into the
+    // source of both frames: text, NaN or Infinity would be a limit that means something else in
+    // each of them. The timeout is also the delay of a timer, which takes no more than
+    // MAX_TIMER_DELAY_MS.
+    const limit = (name: keyof BrowserEnclaveOptions & keyof typeof levelConfig, max?: number): number =>
+      requireFiniteNumber(name, options[name] ?? levelConfig[name], max);
+    const timeout = limit('timeout', MAX_TIMER_DELAY_MS);
     const toolCallGraceMs = options.toolCallGraceMs ?? timeout;
     if (typeof toolCallGraceMs !== 'number' || Number.isNaN(toolCallGraceMs) || toolCallGraceMs < 0) {
       throw new TypeError('toolCallGraceMs must be a non-negative number (Infinity to wait without limit)');
@@ -314,14 +321,14 @@ export class BrowserEnclave {
     this.config = {
       timeout,
       toolCallGraceMs,
-      maxIterations: options.maxIterations ?? levelConfig.maxIterations,
-      maxToolCalls: options.maxToolCalls ?? levelConfig.maxToolCalls,
-      maxConsoleOutputBytes: options.maxConsoleOutputBytes ?? levelConfig.maxConsoleOutputBytes,
-      maxConsoleCalls: options.maxConsoleCalls ?? levelConfig.maxConsoleCalls,
+      maxIterations: limit('maxIterations'),
+      maxToolCalls: limit('maxToolCalls'),
+      maxConsoleOutputBytes: limit('maxConsoleOutputBytes'),
+      maxConsoleCalls: limit('maxConsoleCalls'),
       sanitizeStackTraces: options.sanitizeStackTraces ?? levelConfig.sanitizeStackTraces,
-      maxSanitizeDepth: options.maxSanitizeDepth ?? levelConfig.maxSanitizeDepth,
-      maxSanitizeProperties: options.maxSanitizeProperties ?? levelConfig.maxSanitizeProperties,
-      memoryLimit: options.memoryLimit ?? 1 * 1024 * 1024,
+      maxSanitizeDepth: limit('maxSanitizeDepth'),
+      maxSanitizeProperties: limit('maxSanitizeProperties'),
+      memoryLimit: requireFiniteNumber('memoryLimit', options.memoryLimit ?? 1 * 1024 * 1024),
       globals: options.globals ?? {},
       toolHandler: options.toolHandler,
       secureProxyConfig,
@@ -593,6 +600,13 @@ export class BrowserEnclave {
    * Build double iframe configuration
    */
   private buildDoubleIframeConfig(options?: Partial<DoubleIframeConfig>): DoubleIframeConfig {
+    const config = this.mergeDoubleIframeConfig(options);
+    // Added to the timeout for the host's hard stop: a number, like the timeout
+    requireFiniteNumber('doubleIframe.parentTimeoutBuffer', config.parentTimeoutBuffer, MAX_TIMER_DELAY_MS);
+    return config;
+  }
+
+  private mergeDoubleIframeConfig(options?: Partial<DoubleIframeConfig>): DoubleIframeConfig {
     if (!options) {
       return {
         ...DEFAULT_DOUBLE_IFRAME_CONFIG,

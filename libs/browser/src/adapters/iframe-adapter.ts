@@ -34,6 +34,7 @@ import {
 import { generateOuterIframeHtml } from './outer-iframe-bootstrap';
 import { IFRAME_SANDBOX } from './iframe-html-builder';
 import { PausableTimer } from './pausable-timer';
+import { MAX_TIMER_DELAY_MS } from '../utils/numeric-option';
 
 /**
  * Execution context passed to the adapter
@@ -366,10 +367,14 @@ export class IframeAdapter {
       // ends with the timeout error, as in @enclave-vm/core. No call starts after the hard stop
       // (see handleToolCall), so nothing can be in progress later than this.
       if (Number.isFinite(context.toolCallGraceMs)) {
-        toolCallCap = setTimeout(() => {
-          toolCallCap = null;
-          if (pendingToolCalls > 0) endForTimeout();
-        }, totalTimeout + context.toolCallGraceMs);
+        toolCallCap = setTimeout(
+          () => {
+            toolCallCap = null;
+            if (pendingToolCalls > 0) endForTimeout();
+          },
+          // A timer does not take a longer delay: it would fire at once, and never again
+          Math.min(totalTimeout + context.toolCallGraceMs, MAX_TIMER_DELAY_MS),
+        );
       }
 
       // Generate outer iframe HTML
