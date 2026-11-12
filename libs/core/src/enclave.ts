@@ -30,7 +30,7 @@ import {
   type MultiFileTransformOptions,
   type MultiFileTransformResult,
 } from './babel';
-import { transformAgentScript, isWrappedInMain } from '@enclave-vm/ast';
+import { transformAgentScript, isWrappedInMain, AGENTSCRIPT_DISALLOWED_PROPERTIES } from '@enclave-vm/ast';
 import {
   extractLargeStrings,
   transformConcatenation,
@@ -92,6 +92,16 @@ function parseValidatedCode(source: string): acorn.Node {
     allowAwaitOutsideFunction: true,
   }) as unknown as acorn.Node;
 }
+
+/**
+ * The longest script `run()` takes, in characters: what the validator's pre-scanner accepts
+ * (its `standard` configuration), checked before the script is parsed for the first time.
+ */
+const MAX_SCRIPT_LENGTH = 5 * 1024 * 1024;
+
+/** The longest text one validation issue contributes to an error message, and the longest message. */
+const MAX_ISSUE_TEXT_LENGTH = 500;
+const MAX_VALIDATION_MESSAGE_LENGTH = 32 * 1024;
 
 /**
  * Default security level
@@ -222,6 +232,8 @@ export class Enclave {
   private readonly validator: JSAstValidator;
   private readonly validateCode: boolean;
   private readonly transformCode: boolean;
+  /** Whether the run-time key guard also refuses the property names the AgentScript validator refuses */
+  private readonly guardsReflectionKeys: boolean;
   private readonly referenceConfig?: ReferenceConfig;
   private readonly scoringGate?: ScoringGate;
   private readonly doubleVmConfig: DoubleVmConfig;
@@ -413,6 +425,7 @@ export class Enclave {
     // Configuration flags
     this.validateCode = options.validate !== false; // Default: true
     this.transformCode = options.transform !== false; // Default: true
+    this.guardsReflectionKeys = presetName === 'agentscript' || presetName === 'babel';
 
     // Realm globals: by default the script's realm holds exactly the names its validator accepts.
     // That only holds when this validator is the one checking the script (an allowlist preset,
@@ -532,6 +545,28 @@ export class Enclave {
     let endExecution: (() => void) | undefined;
 
     try {
+      // Step 0: the size of the script, before anything parses it. The validator's pre-scanner
+      // has the same bound, but it runs on the transformed code: by then the script has been
+      // parsed and rewritten in full, whatever its size.
+      if (typeof code !== 'string' || code.length > MAX_SCRIPT_LENGTH) {
+        return {
+          success: false,
+          error: {
+            name: 'ValidationError',
+            message:
+              typeof code !== 'string'
+                ? 'The script must be a string'
+                : `The script is too large: ${code.length} characters, the maximum is ${MAX_SCRIPT_LENGTH}`,
+            code: 'VALIDATION_ERROR',
+          },
+          stats: {
+            ...stats,
+            duration: Date.now() - startTime,
+            endTime: Date.now(),
+          },
+        };
+      }
+
       // Step 1: Transform (if enabled) - MUST happen before validation
       // because AgentScript allows top-level return, await, etc. which are only
       // valid after wrapping in async function __ag_main()
@@ -841,6 +876,15 @@ export class Enclave {
     const blockedKeys = [...buildBlockedPropertiesFromConfig(proxyConfig)];
     if (blockedKeys.length === 0) {
       return code;
+    }
+    // Where the validator refuses a property by name (the reflection statics and the legacy
+    // accessors of AgentScript), the guard refuses the same names under a key that is only
+    // known at run time: one list for both. Not for a preset that allows those names when
+    // they are written out.
+    if (this.guardsReflectionKeys) {
+      for (const name of AGENTSCRIPT_DISALLOWED_PROPERTIES) {
+        if (!blockedKeys.includes(name)) blockedKeys.push(name);
+      }
     }
     const throwOnBlocked = proxyConfig.throwOnBlocked ?? true;
 
@@ -1213,11 +1257,21 @@ export class Enclave {
 
         // Format: "CODE (line:col): message" or "CODE: message" if no location
         const formattedLocation = issue.location ? ` (line ${issue.location.line})` : '';
-        uniqueErrors.push(`${issue.code}${formattedLocation}: ${issue.message}`);
+        // A message quotes the script (an identifier, a property name): cut what one issue
+        // contributes, so that the text of a refusal is not in proportion to the script
+        const text = String(issue.message);
+        uniqueErrors.push(
+          `${issue.code}${formattedLocation}: ${
+            text.length > MAX_ISSUE_TEXT_LENGTH ? `${text.slice(0, MAX_ISSUE_TEXT_LENGTH)}...` : text
+          }`,
+        );
       }
     }
 
-    return uniqueErrors.join('\n');
+    const joined = uniqueErrors.join('\n');
+    return joined.length > MAX_VALIDATION_MESSAGE_LENGTH
+      ? `${joined.slice(0, MAX_VALIDATION_MESSAGE_LENGTH)}\n... (${uniqueErrors.length} issues in all)`
+      : joined;
   }
 }
 
