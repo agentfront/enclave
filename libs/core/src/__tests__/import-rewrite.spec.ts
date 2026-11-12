@@ -239,6 +239,122 @@ describe('Import Rewrite Transform', () => {
     });
   });
 
+  describe('Dynamic imports', () => {
+    it('should rewrite a dynamic import of a listed package', () => {
+      const result = rewriteImports(`const React = await import('react');`, defaultConfig);
+
+      expect(result.code).toContain('import("https://esm.agentfront.dev/react@18.2.0")');
+      expect(result.rewrittenImports).toEqual([
+        { original: 'react', rewritten: 'https://esm.agentfront.dev/react@18.2.0' },
+      ]);
+    });
+
+    it('should rewrite a dynamic import inside a function, with a subpath', () => {
+      const code = `export const load = async () => (await import('lodash/debounce')).default;`;
+      const result = rewriteImports(code, defaultConfig);
+
+      expect(result.code).toContain('https://esm.agentfront.dev/lodash@4.17.21/debounce');
+    });
+
+    it('should treat a template literal without substitutions as a string', () => {
+      const result = rewriteImports('const m = import(`react-dom`);', defaultConfig);
+
+      expect(result.code).toContain('https://esm.agentfront.dev/react-dom@18.2.0');
+    });
+
+    it('should skip a local dynamic import by default', () => {
+      const result = rewriteImports(`const m = await import('./local');`, defaultConfig);
+
+      expect(result.skippedImports).toEqual(['./local']);
+      expect(result.rewrittenImports).toHaveLength(0);
+      expect(result.code).toContain('./local');
+    });
+
+    it('should reject a dynamic import of a package that is not listed', () => {
+      expect(() => rewriteImports(`const m = await import('unknown-package');`, defaultConfig)).toThrow(
+        /Package "unknown-package" is not allowed/,
+      );
+    });
+
+    it('should reject a dynamic import whose specifier is not a string literal', () => {
+      expect(() => rewriteImports(`const m = await import(name);`, defaultConfig)).toThrow(
+        /only allowed with a string literal/,
+      );
+      expect(() => rewriteImports('const m = await import(`${scope}/pkg`);', defaultConfig)).toThrow(
+        /only allowed with a string literal/,
+      );
+    });
+
+    it('should list static and dynamic imports in source order', () => {
+      const code = `import React from 'react';\nconst d = import('lodash');\nexport * from 'react-dom';`;
+      const result = rewriteImports(code, defaultConfig);
+
+      expect(result.rewrittenImports.map((entry) => entry.original)).toEqual(['react', 'lodash', 'react-dom']);
+    });
+  });
+
+  describe('Versions and base URL', () => {
+    it('should accept versions, ranges and tags', () => {
+      for (const version of ['18.2.0', '^18.2.0', '~18.2', '18.x', '>=18', 'latest', 'next', '19.0.0-rc.1']) {
+        const result = rewriteImports(`import React from 'react';`, {
+          ...defaultConfig,
+          packageVersions: { react: version },
+        });
+        expect(result.rewrittenImports[0].rewritten).toBe(`https://esm.agentfront.dev/react@${version}`);
+      }
+    });
+
+    it('should reject a version that is not one path segment', () => {
+      for (const version of ['18/../x', '18.2.0/extra', '18?x=1', '18#x', '18 2', '..']) {
+        expect(() =>
+          rewriteImports(`import React from 'react';`, { ...defaultConfig, packageVersions: { react: version } }),
+        ).toThrow(/Invalid version for package "react"/);
+      }
+    });
+
+    it('should not check the version of a package that is not imported', () => {
+      const result = rewriteImports(`import React from 'react';`, {
+        ...defaultConfig,
+        packageVersions: { react: '18.2.0', other: 'not/a/version' },
+      });
+
+      expect(result.rewrittenImports).toHaveLength(1);
+    });
+
+    it('should accept a base URL with a path', () => {
+      const result = rewriteImports(`import React from 'react';`, {
+        ...defaultConfig,
+        cdnBaseUrl: 'https://cdn.example.com/npm',
+      });
+
+      expect(result.rewrittenImports[0].rewritten).toBe('https://cdn.example.com/npm/react@18.2.0');
+    });
+
+    it('should reject a base URL with credentials, a query or a fragment', () => {
+      for (const cdnBaseUrl of [
+        'https://user@cdn.example.com',
+        'https://user:secret@cdn.example.com',
+        'https://cdn.example.com/?x=1',
+        'https://cdn.example.com/#x',
+      ]) {
+        expect(() => rewriteImports(`import React from 'react';`, { ...defaultConfig, cdnBaseUrl })).toThrow(
+          /Invalid CDN URL/,
+        );
+      }
+    });
+
+    it('should use latest for an allowed package whose name is a property of every object', () => {
+      const result = rewriteImports(`import x from 'constructor';`, {
+        ...defaultConfig,
+        allowedPackages: ['constructor'],
+      });
+
+      expect(result.rewrittenImports).toEqual([
+        { original: 'constructor', rewritten: 'https://esm.agentfront.dev/constructor' },
+      ]);
+    });
+  });
+
   describe('isValidPackageName', () => {
     it('should accept valid package names', () => {
       expect(isValidPackageName('react')).toBe(true);

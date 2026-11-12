@@ -1,15 +1,18 @@
 ---
 title: 'Reference Sidecar'
-description: 'Handle large data in AgentScript without embedding it in the script'
+description: 'Pass large strings between tools by reference, without loading them into the sandbox'
 ---
 
-The Reference Sidecar handles large data in AgentScript without embedding it in the script. This prevents memory issues and improves security when tools return large responses.
+The Reference Sidecar keeps large strings outside the sandbox. The script holds a short reference token in place of the data and can pass that token on to another tool; the data itself is put back when a tool call leaves the sandbox. It is for scripts that move large data from one tool to another (a document, an image, a file), not for scripts that need to read that data.
 
 ## How It Works
 
-1. **Extraction**: When a tool returns data with large strings (> `extractionThreshold`), those strings are stored in the sidecar and replaced with reference tokens (`__ref_abc123`)
-2. **Lazy Resolution**: When script code accesses a reference token, it's resolved just-in-time to the actual data
-3. **Safe Property Access**: Only explicit property accesses trigger resolution, preventing data exfiltration
+1. **Storing**: A string of at least `extractionThreshold` bytes is stored in the sidecar and replaced by a reference token. This happens in two places: for a string literal in the script's source, and for a tool result that is a string as a whole.
+2. **The script holds a token**: The token is an ordinary short string. Nothing is resolved for the script, lazily or otherwise: `token.length` is the length of the token, and the script has no way to read the stored data.
+3. **Resolving at the tool boundary**: When the script passes a token in the arguments of a tool call, at any depth, the enclave replaces it with the stored data before it calls your `toolHandler`.
+4. **Cleanup**: The sidecar belongs to one execution and is disposed when `run()` returns.
+
+Only a result that is a string as a whole is stored. A tool that returns an object or an array is returned to the script as it is, with every string in it, whatever their size. To keep a large value out of the sandbox, return it as a string of its own.
 
 ## Basic Configuration
 
@@ -18,22 +21,27 @@ import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({
   toolHandler: async (name, args) => {
-    if (name === 'documents:get') {
-      // Returns a 2MB document - automatically stored in sidecar
-      return { content: '...2MB of text...' };
+    if (name === 'documents:getContent') {
+      // A 2 MB string: stored in the sidecar, the script gets a token
+      return await loadDocumentText(args.id);
+    }
+    if (name === 'documents:save') {
+      // args.content is the 2 MB string again: the token was resolved
+      return await saveDocument(args.id, args.content);
     }
   },
   sidecar: {
     enabled: true,
-    extractionThreshold: 1024,    // Extract strings > 1KB
-    allowComposites: false,        // Block: ref + "_suffix" (security)
+    extractionThreshold: 1024,    // Store strings of 1 KB and more
+    allowComposites: false,        // Refuse: ref + "_suffix"
   },
 });
 
 const result = await enclave.run(`
-  const doc = await callTool('documents:get', { id: 'doc-123' });
-  // doc.content is a reference token, resolved on access
-  return { wordCount: doc.content.split(' ').length };
+  const content = await callTool('documents:getContent', { id: 'doc-123' });
+  // content is a reference token here, not the text
+  await callTool('documents:save', { id: 'doc-copy', content });
+  return 'copied';
 `);
 ```
 
@@ -42,143 +50,100 @@ const result = await enclave.run(`
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `sidecar.enabled` | boolean | false | Enable the sidecar feature |
-| `sidecar.maxTotalSize` | number | 10MB | Maximum total size of all stored references |
-| `sidecar.maxReferenceSize` | number | 1MB | Maximum size of a single reference |
-| `sidecar.extractionThreshold` | number | 1024 | Minimum string size to extract (bytes) |
-| `sidecar.allowComposites` | boolean | false | Allow string concatenation with references |
+| `sidecar.maxTotalSize` | number | by level | Maximum total size of all stored references |
+| `sidecar.maxReferenceSize` | number | by level | Maximum size of a single reference |
+| `sidecar.extractionThreshold` | number | by level | Size in bytes from which a string is stored |
+| `sidecar.maxResolvedSize` | number | by level | Maximum size the references in the arguments of one tool call may resolve to |
+| `sidecar.maxTotalResolvedSize` | number | twice `maxTotalSize` | Maximum size of everything one execution resolves for its tool calls |
+| `sidecar.maxReferenceCount` | number | by level | Maximum number of references in one execution |
+| `sidecar.allowComposites` | boolean | by level | Allow string concatenation with references |
+
+The defaults follow the enclave's `securityLevel`:
+
+| Default | STRICT | SECURE | STANDARD | PERMISSIVE |
+|---------|--------|--------|----------|------------|
+| `maxTotalSize` | 16 MB | 64 MB | 256 MB | 1 GB |
+| `maxReferenceSize` | 4 MB | 16 MB | 64 MB | 256 MB |
+| `extractionThreshold` | 64 KB | 256 KB | 1 MB | 4 MB |
+| `maxResolvedSize` | 8 MB | 32 MB | 128 MB | 512 MB |
+| `maxReferenceCount` | 50 | 100 | 500 | 1,000 |
+| `allowComposites` | false | false | true | true |
 
 ## Reference Token Format
 
-Reference tokens follow this pattern:
+A reference token is the text `__REF_`, a UUID and `__`:
 
 ```
-__ref_<random-id>
+__REF_<uuid>__
 ```
 
-For example: `__ref_abc123def456`
+For example: `__REF_3f2b8c1e-9a4d-4e7b-8c21-5d6f7a8b9c0d__`
 
-Scripts cannot distinguish between reference tokens and regular strings until they access the data.
+A token means something only in the execution that produced it: the sidecar is per execution. A tool call whose arguments hold a string of this form that names no stored value fails.
 
-## Security: Composite Blocking
+## Concatenation
 
-When `allowComposites: false` (default), the sidecar blocks string concatenation with reference tokens:
+What happens when a script concatenates a token with something else (`+`, `+=` or a template literal) depends on `allowComposites`:
+
+- **`false`** (the default at `STRICT` and `SECURE`): the concatenation throws inside the script. A token can only be passed on as it is.
+- **`true`** (the default at `STANDARD` and `PERMISSIVE`): the concatenation yields a composite handle instead of a string. When the handle is passed to a tool, the enclave resolves its parts and joins them, so the tool receives the concatenated text.
 
 ```ts
-// This will fail if allowComposites is false
+// With allowComposites: false this script fails
 const code = `
-  const doc = await callTool('documents:get', { id: 'doc-123' });
-  const modified = doc.content + '_suffix';  // Blocked!
+  const content = await callTool('documents:getContent', { id: 'doc-123' });
+  const modified = content + '_suffix';  // Throws
   return modified;
 `;
 ```
 
-This prevents data exfiltration via string manipulation.
+## Resolution Limits
+
+Two limits bound what resolving references may build in the host:
+
+- `maxResolvedSize` applies to one tool call: the size its arguments have once every reference in them is resolved.
+- `maxTotalResolvedSize` applies to one execution: everything it resolves for all of its tool calls. A stored value counts once, the first time it is resolved; a concatenation of references counts every time it is built. The default is twice `maxTotalSize`.
+
+A tool call whose arguments would go over either limit is refused before anything is resolved (`REFERENCE_RESOLUTION_LIMIT`), and the tool handler is not called. The call fails inside the script like any failing tool call.
 
 ## Use Cases
 
-### Large API Responses
-
-```ts
-const enclave = new Enclave({
-  toolHandler: async (name, args) => {
-    if (name === 'api:fetch') {
-      const response = await fetch(args.url);
-      return response.json(); // Could be large
-    }
-  },
-  sidecar: {
-    enabled: true,
-    extractionThreshold: 10000, // 10KB threshold
-  },
-});
-```
-
-### Document Processing
-
-```ts
-const enclave = new Enclave({
-  toolHandler: async (name, args) => {
-    if (name === 'documents:list') {
-      // Returns array with potentially large content fields
-      return documents.map(d => ({
-        id: d.id,
-        title: d.title,
-        content: d.content, // Large strings extracted automatically
-      }));
-    }
-  },
-  sidecar: {
-    enabled: true,
-    maxTotalSize: 50 * 1024 * 1024, // 50MB total
-  },
-});
-```
-
-### Multi-Step Workflows
+### Passing Large Data Between Tools
 
 ```ts
 const result = await enclave.run(`
-  // Step 1: Fetch document (content stored in sidecar)
-  const doc = await callTool('documents:get', { id: 'doc-123' });
+  // Step 1: the tool returns a large string; the script gets a token
+  const video = await callTool('storage:download', { key: 'input.mp4' });
 
-  // Step 2: Extract metadata (doesn't resolve content)
-  const metadata = { id: doc.id, title: doc.title };
+  // Step 2: the token is resolved for the next tool
+  const job = await callTool('transcode:start', { data: video, format: 'webm' });
 
-  // Step 3: Process content only if needed
-  if (metadata.title.includes('important')) {
-    // Content resolved lazily here
-    const words = doc.content.split(' ').length;
-    return { ...metadata, words };
-  }
-
-  return metadata;
+  return { jobId: job.id };
 `);
 ```
 
+### Large Literals in a Script
+
+A string literal in the script that is at least `extractionThreshold` bytes long (also a template literal without substitutions) is stored before the script runs, and the script works with a token in its place. The pre-scanner's limits on a script and on its string literals apply first: with the default `agentscript` preset a string literal is at most 10 KB, all string literals together at most 100 KB, and a line at most 2,000 characters, so a host that embeds larger literals raises those limits with the `preScan` option (`preScan: { config: { maxInputSize, maxLineLength, maxStringLength, maxTotalStringContent } }`, or `preScan: { preset: 'standard' }`). A line is at most 100,000 characters under any configuration, so a literal longer than that has to be a template literal over several lines. A literal that cannot be stored within `maxReferenceSize`, `maxTotalSize` and `maxReferenceCount` fails the run with `ENCLAVE_ERROR`.
+
 ## Memory Management
 
-The sidecar helps manage memory in several ways:
+1. **Bounded storage** - `maxTotalSize`, `maxReferenceSize` and `maxReferenceCount` bound what one execution can store
+2. **Bounded resolution** - `maxResolvedSize` and `maxTotalResolvedSize` bound what is built for tool calls
+3. **Automatic cleanup** - References are cleared when the execution ends
 
-1. **Bounded storage** - `maxTotalSize` prevents unbounded growth
-2. **Per-reference limits** - `maxReferenceSize` caps individual entries
-3. **Lazy loading** - Data only loaded when accessed
-4. **Automatic cleanup** - References cleared after execution
+A tool result that cannot be stored because a storage limit is reached is not stored: the script receives the string itself, under the limits that apply to every tool result.
 
-## Error Handling
+## Errors
 
-```ts
-const result = await enclave.run(code);
-
-if (!result.success) {
-  if (result.error?.code === 'SIDECAR_SIZE_EXCEEDED') {
-    console.log('Too much data stored in sidecar');
-  }
-  if (result.error?.code === 'SIDECAR_COMPOSITE_BLOCKED') {
-    console.log('String concatenation with reference blocked');
-  }
-}
-```
-
-## Monitoring Sidecar Usage
-
-```ts
-const result = await enclave.run(code);
-
-if (result.success) {
-  console.log('Sidecar stats:', {
-    referencesCreated: result.stats.sidecar?.referencesCreated,
-    totalBytesStored: result.stats.sidecar?.totalBytesStored,
-    resolutionCount: result.stats.sidecar?.resolutionCount,
-  });
-}
-```
+The sidecar has no error codes of its own in `result.error.code`. A concatenation that is refused and a tool call that is refused for a resolution limit throw inside the script, which may catch them; uncaught, they end the run like any error of the script (see [Error Codes](/core-libraries/enclave-vm/configuration#error-codes)).
 
 ## Best Practices
 
-1. **Set appropriate thresholds** - Too low creates many references; too high defeats the purpose
-2. **Monitor total size** - Track sidecar usage to tune `maxTotalSize`
-3. **Keep composites disabled** - Unless you specifically need string concatenation
-4. **Use with large tool responses** - Most beneficial when tools return KB+ of data
+1. **Return large values as strings** - Only a result that is a string as a whole is stored
+2. **Set appropriate thresholds** - Too low creates many references; too high leaves large strings in the sandbox
+3. **Keep composites disabled** - Unless a script has to build a value around a reference
+4. **Do not expect the script to read the data** - A script that needs part of a large value should ask a tool for that part
 
 ## Related
 

@@ -449,6 +449,151 @@ describe('Session Module', () => {
       await expect(toolPromise).rejects.toThrow('Session cancelled');
     });
 
+    describe('tool calls with an async tool handler', () => {
+      // A handler that settles when the test says so, one release per call
+      const slowHandler = () => {
+        const releases: Array<() => void> = [];
+        const toolHandler = () => new Promise<void>((resolve) => releases.push(resolve));
+        return { toolHandler, releases };
+      };
+      const tick = () => new Promise((resolve) => setImmediate(resolve));
+      const settle = (promise: Promise<unknown>) =>
+        Promise.race([
+          promise.then(
+            (value) => ({ resolved: value }),
+            (error: Error) => ({ rejected: error.message }),
+          ),
+          tick()
+            .then(tick)
+            .then(() => 'pending'),
+        ]);
+
+      it('should deliver a result that is submitted before the handler has settled', async () => {
+        const { toolHandler, releases } = slowHandler();
+        const session = createSession({ toolHandler, config: { heartbeatIntervalMs: 0 } });
+        session.start();
+
+        const call = session.requestToolCall('myTool', {});
+        await tick();
+        await session.submitToolResult({ callId: session.pendingToolCall!.callId, success: true, value: 'result' });
+        releases[0]();
+
+        expect(await settle(call)).toEqual({ resolved: 'result' });
+        expect(session.state).toBe('running');
+      });
+
+      it('should deliver an error that is submitted before the handler has settled', async () => {
+        const { toolHandler, releases } = slowHandler();
+        const session = createSession({ toolHandler, config: { heartbeatIntervalMs: 0 } });
+        session.start();
+
+        const call = session.requestToolCall('myTool', {});
+        await tick();
+        await session.submitToolResult({
+          callId: session.pendingToolCall!.callId,
+          success: false,
+          error: { message: 'Tool failed', code: 'TOOL_ERROR' },
+        });
+        releases[0]();
+
+        expect(await settle(call)).toEqual({ rejected: 'Tool failed' });
+      });
+
+      it('should give each call its own result when the handler of an earlier call settles late', async () => {
+        const { toolHandler, releases } = slowHandler();
+        const session = createSession({ toolHandler, config: { heartbeatIntervalMs: 0 } });
+        session.start();
+
+        const first = session.requestToolCall('first', {});
+        await tick();
+        await session.submitToolResult({
+          callId: session.pendingToolCall!.callId,
+          success: true,
+          value: 'first result',
+        });
+
+        const second = session.requestToolCall('second', {});
+        await tick();
+        const secondCallId = session.pendingToolCall!.callId;
+        // The handler of the second call settles before the handler of the first
+        releases[1]();
+        await tick();
+        releases[0]();
+        await tick();
+        await session.submitToolResult({ callId: secondCallId, success: true, value: 'second result' });
+
+        expect(await settle(first)).toEqual({ resolved: 'first result' });
+        expect(await settle(second)).toEqual({ resolved: 'second result' });
+      });
+
+      it('should reject the call and keep it pending when the handler throws', async () => {
+        const session = createSession({
+          config: { heartbeatIntervalMs: 0 },
+          toolHandler: async () => {
+            throw new Error('handler failed');
+          },
+        });
+        session.start();
+
+        await expect(session.requestToolCall('myTool', {})).rejects.toThrow('handler failed');
+        expect(session.state).toBe('waiting_for_tool');
+        expect(session.pendingToolCall?.toolName).toBe('myTool');
+
+        await session.cancel();
+      });
+
+      it('should reject a call whose handler has not settled when the session is cancelled', async () => {
+        const { toolHandler, releases } = slowHandler();
+        const session = createSession({ toolHandler, config: { heartbeatIntervalMs: 0 } });
+        session.start();
+
+        const call = session.requestToolCall('myTool', {});
+        await tick();
+        await session.cancel();
+        releases[0]();
+
+        expect(await settle(call)).toEqual({ rejected: 'Session cancelled' });
+      });
+
+      it('should not expose how a call is settled on the pending tool call', () => {
+        const session = createSession({ config: { heartbeatIntervalMs: 0 } });
+        session.start();
+
+        session.requestToolCall('myTool', { arg: 1 }).catch(() => undefined);
+
+        expect(Object.keys(session.pendingToolCall!).sort()).toEqual(['args', 'callId', 'timestamp', 'toolName']);
+      });
+    });
+
+    describe('wait()', () => {
+      it('should settle every waiter', async () => {
+        const session = createSession({ config: { heartbeatIntervalMs: 0 } });
+        session.start();
+
+        const first = session.wait();
+        const second = session.wait();
+        session.complete('done');
+
+        const [a, b] = await Promise.all([first, second]);
+        expect(a).toMatchObject({ success: true, value: 'done', finalState: 'completed' });
+        expect(b).toEqual(a);
+      });
+
+      it('should settle waiters that came before and after the end with the same outcome', async () => {
+        const session = createSession({ config: { heartbeatIntervalMs: 0 } });
+        session.start();
+
+        const before = session.wait();
+        session.fail(new Error('boom'));
+        const after = session.wait();
+
+        expect((await before).finalState).toBe('failed');
+        expect((await after).finalState).toBe('failed');
+        expect((await before).error?.message).toBe('boom');
+        expect((await after).error?.message).toBe('boom');
+      });
+    });
+
     it('should get stats', () => {
       const session = createSession();
       session.start();

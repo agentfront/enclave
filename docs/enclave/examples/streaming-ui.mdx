@@ -5,55 +5,60 @@ description: 'Build real-time code execution interfaces with streaming output'
 
 Build real-time interfaces that show code execution as it happens.
 
+The client talks to an [`@enclave-vm/broker`](/enclavejs/broker) over HTTP. Tools run on the broker; the client is told about each tool call and gets the result of the script. The examples below assume a broker at `http://localhost:3001` with the tools `users:list` and `users:process` registered.
+
 ## Basic Streaming
 
 ```ts
 import { EnclaveClient } from '@enclave-vm/client';
 
 const client = new EnclaveClient({
-  serverUrl: 'http://localhost:3001',
+  baseUrl: 'http://localhost:3001',
 });
 
 const code = `
-  console.log('Starting...');
   const users = await callTool('users:list', {});
-  console.log('Found', users.length, 'users');
 
   for (const user of users) {
-    console.log('Processing:', user.name);
-    await callTool('process', { userId: user.id });
+    await callTool('users:process', { userId: user.id });
   }
 
-  console.log('Done!');
   return users.length;
 `;
 
-// Execute with streaming
-const stream = client.execute(code);
+// Execute; the handlers are called as the events arrive
+const result = await client.execute(code, {
+  onToolCall: (callId, toolName, args) => {
+    console.log('[Tool]', toolName, args);
+  },
+  onToolResultApplied: (callId) => {
+    console.log('[Tool done]', callId);
+  },
+  onError: (code, message) => {
+    console.error('[Error]', code, message);
+  },
+});
 
-for await (const event of stream) {
-  switch (event.type) {
-    case 'stdout':
-      console.log('[Output]', event.payload.data);
-      break;
-    case 'tool_call':
-      console.log('[Tool]', event.payload.tool, event.payload.args);
-      break;
-    case 'final':
-      console.log('[Result]', event.payload.result);
-      break;
-    case 'error':
-      console.error('[Error]', event.payload.message);
-      break;
-  }
+if (result.success) {
+  console.log('[Result]', result.value);
+} else {
+  console.error('[Failed]', result.error?.code, result.error?.message);
 }
 ```
 
+`execute()` resolves with the result; a session that fails is not a rejected promise. `executeStream()` returns a handle at once (`sessionId`, `wait()`, `cancel()`, `getEvents()`, `isActive()`), and `onEvent` receives every event.
+
+<Note>
+The broker emits no `stdout` events, and a script cannot use `console` in the broker's sandbox unless the broker is configured for it. Show progress with the tool-call events, as below. To stream console output, see [Streaming with your own endpoint](#streaming-with-your-own-endpoint).
+</Note>
+
 ## React Streaming Hook
+
+`@enclave-vm/react` has a ready-made hook, `useEnclaveSession` (see [@enclave-vm/react](/enclavejs/react)). This one is built on the client directly, to show what such a hook does:
 
 ```tsx
 import { useState, useCallback } from 'react';
-import { EnclaveClient, StreamEvent } from '@enclave-vm/client';
+import type { EnclaveClient } from '@enclave-vm/client';
 
 interface StreamState {
   status: 'idle' | 'running' | 'completed' | 'error';
@@ -66,7 +71,7 @@ interface StreamState {
 interface ToolCall {
   id: string;
   tool: string;
-  args: Record<string, unknown>;
+  args: unknown;
   status: 'pending' | 'completed';
 }
 
@@ -88,73 +93,37 @@ export function useStreaming(client: EnclaveClient) {
       error: null,
     });
 
-    try {
-      const stream = client.execute(code);
+    const result = await client.execute(code, {
+      onToolCall: (callId, toolName, args) => {
+        setState(prev => ({
+          ...prev,
+          output: [...prev.output, `> ${toolName}`],
+          toolCalls: [...prev.toolCalls, { id: callId, tool: toolName, args, status: 'pending' }],
+        }));
+      },
+      onToolResultApplied: (callId) => {
+        setState(prev => ({
+          ...prev,
+          toolCalls: prev.toolCalls.map(tc =>
+            tc.id === callId ? { ...tc, status: 'completed' } : tc
+          ),
+        }));
+      },
+      // Called for stdout events, when the server sends them
+      onStdout: (chunk) => {
+        setState(prev => ({ ...prev, output: [...prev.output, chunk] }));
+      },
+    });
 
-      for await (const event of stream) {
-        setState(prev => processEvent(prev, event));
-      }
-    } catch (error) {
-      setState(prev => ({
-        ...prev,
-        status: 'error',
-        error: (error as Error).message,
-      }));
-    }
+    // A failed session resolves with success: false; execute() does not reject
+    setState(prev =>
+      result.success
+        ? { ...prev, status: 'completed', result: result.value }
+        : { ...prev, status: 'error', error: result.error?.message ?? 'Execution failed' }
+    );
   }, [client]);
 
   return { ...state, execute };
-}
-
-function processEvent(state: StreamState, event: StreamEvent): StreamState {
-  switch (event.type) {
-    case 'stdout':
-      return {
-        ...state,
-        output: [...state.output, event.payload.data],
-      };
-
-    case 'tool_call':
-      return {
-        ...state,
-        toolCalls: [
-          ...state.toolCalls,
-          {
-            id: event.payload.callId,
-            tool: event.payload.tool,
-            args: event.payload.args,
-            status: 'pending',
-          },
-        ],
-      };
-
-    case 'tool_result_applied':
-      return {
-        ...state,
-        toolCalls: state.toolCalls.map(tc =>
-          tc.id === event.payload.callId
-            ? { ...tc, status: 'completed' }
-            : tc
-        ),
-      };
-
-    case 'final':
-      return {
-        ...state,
-        status: 'completed',
-        result: event.payload.result,
-      };
-
-    case 'error':
-      return {
-        ...state,
-        status: 'error',
-        error: event.payload.message,
-      };
-
-    default:
-      return state;
-  }
 }
 ```
 
@@ -212,7 +181,7 @@ import React from 'react';
 interface ToolCall {
   id: string;
   tool: string;
-  args: Record<string, unknown>;
+  args: unknown;
   status: 'pending' | 'completed';
 }
 
@@ -263,18 +232,15 @@ import { StreamingConsole } from './components/StreamingConsole';
 import { ToolTimeline } from './components/ToolTimeline';
 
 const client = new EnclaveClient({
-  serverUrl: 'http://localhost:3001',
+  baseUrl: 'http://localhost:3001',
 });
 
 export function CodeExecutor() {
   const [code, setCode] = useState(`
-console.log('Hello, streaming!');
-
 const users = await callTool('users:list', { limit: 5 });
-console.log('Loaded', users.length, 'users');
 
 for (const user of users) {
-  console.log('Processing:', user.name);
+  await callTool('users:process', { userId: user.id });
 }
 
 return { count: users.length };
@@ -325,9 +291,9 @@ return { count: users.length };
 
       {/* Output Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-        {/* Console Output */}
+        {/* Activity log */}
         <div>
-          <h3>Console Output</h3>
+          <h3>Activity</h3>
           <StreamingConsole output={output} />
         </div>
 
@@ -370,9 +336,9 @@ return { count: users.length };
 }
 ```
 
-## Server-Sent Events (SSE) Alternative
+## Streaming with your own endpoint
 
-For simpler setups, use SSE instead of WebSockets:
+Without the broker, an endpoint of your own can stream what a script does with `@enclave-vm/core` directly. This one uses Server-Sent Events and the `consoleHandler` option, which hands the script's console lines to the host:
 
 ```ts
 // Server
@@ -396,22 +362,24 @@ app.post('/execute', async (req, res) => {
       res.write(`event: tool_result\ndata: ${JSON.stringify({ tool: name })}\n\n`);
       return result;
     },
-    onConsole: (level, ...args) => {
-      res.write(`event: stdout\ndata: ${JSON.stringify({ data: args.join(' ') })}\n\n`);
+    // With a consoleHandler a script may use console at every security level
+    consoleHandler: (level, message) => {
+      res.write(`event: stdout\ndata: ${JSON.stringify({ level, data: message })}\n\n`);
     },
   });
 
   try {
+    // run() does not reject for a failing script: the failure is in the result
     const result = await enclave.run(req.body.code);
     res.write(`event: final\ndata: ${JSON.stringify(result)}\n\n`);
-  } catch (error) {
-    res.write(`event: error\ndata: ${JSON.stringify({ message: (error as Error).message })}\n\n`);
   } finally {
     res.end();
     enclave.dispose();
   }
 });
 ```
+
+This endpoint runs whatever code it is sent: put your authentication in front of it, and bound the size of the request body.
 
 ```ts
 // Client

@@ -11,6 +11,7 @@ import {
   type ClientHello,
   type ServerHello,
   PROTOCOL_VERSION,
+  PROTOCOL_VERSION_V1,
   EncryptionAlgorithm,
   KeyDerivation,
 } from '@enclave-vm/types';
@@ -69,7 +70,9 @@ export async function generateKeyPair(curve: SupportedCurve = SupportedCurve.P25
         name: 'ECDH',
         namedCurve: curve,
       },
-      true, // extractable for export
+      // The private key stays inside Web Crypto. A public key can be exported whatever this
+      // flag says, which is all the handshake needs.
+      false,
       ['deriveBits'],
     );
 
@@ -195,7 +198,29 @@ export async function createServerHello(keyPair: EcdhKeyPair, keyId: string): Pr
 }
 
 /**
+ * Protocol versions whose handshake this module implements.
+ */
+const HANDSHAKE_PROTOCOL_VERSIONS: readonly number[] = [PROTOCOL_VERSION, PROTOCOL_VERSION_V1];
+
+/**
+ * Refuse a handshake message whose version or curve this module does not implement.
+ */
+function assertHandshakeParameters(hello: { protocolVersion: unknown; curve: unknown }): void {
+  if (!HANDSHAKE_PROTOCOL_VERSIONS.includes(hello.protocolVersion as number)) {
+    throw new EcdhError('Unsupported protocol version in handshake', EncryptionErrorCode.HandshakeFailed);
+  }
+  if (!(Object.values(SupportedCurve) as unknown[]).includes(hello.curve)) {
+    throw new EcdhError('Unsupported curve in handshake', EncryptionErrorCode.UnsupportedAlgorithm);
+  }
+}
+
+/**
  * Process a client hello and generate server response.
+ *
+ * The exchange is not authenticated: nothing here proves who sent the hello, and the server
+ * hello carries no signature. It protects against a party that can only read the connection.
+ *
+ * @throws EcdhError when the hello names a version, curve or algorithm that is not implemented
  */
 export async function processClientHello(clientHello: ClientHello): Promise<{
   serverKeyPair: EcdhKeyPair;
@@ -203,6 +228,14 @@ export async function processClientHello(clientHello: ClientHello): Promise<{
   serverHello: ServerHello;
   keyId: string;
 }> {
+  assertHandshakeParameters(clientHello);
+  if (
+    !Array.isArray(clientHello.supportedAlgorithms) ||
+    !clientHello.supportedAlgorithms.includes(EncryptionAlgorithm.AES_GCM_256)
+  ) {
+    throw new EcdhError('No supported encryption algorithm in client hello', EncryptionErrorCode.UnsupportedAlgorithm);
+  }
+
   // Generate server's ephemeral key pair
   const serverKeyPair = await generateKeyPair(clientHello.curve);
 
@@ -225,11 +258,28 @@ export async function processClientHello(clientHello: ClientHello): Promise<{
 
 /**
  * Process a server hello and extract peer's public key.
+ *
+ * The exchange is not authenticated: `signatureB64` is neither created nor verified by this
+ * module, so the public key is only as trustworthy as the connection it arrived on.
+ *
+ * @throws EcdhError when the hello names a version, curve, algorithm or key derivation that is
+ *   not implemented, or has no key id
  */
 export async function processServerHello(serverHello: ServerHello): Promise<{
   peerPublicKey: CryptoKey;
   keyId: string;
 }> {
+  assertHandshakeParameters(serverHello);
+  if (serverHello.selectedAlgorithm !== EncryptionAlgorithm.AES_GCM_256) {
+    throw new EcdhError('Unsupported encryption algorithm in server hello', EncryptionErrorCode.UnsupportedAlgorithm);
+  }
+  if (serverHello.kdf !== KeyDerivation.HKDF_SHA256) {
+    throw new EcdhError('Unsupported key derivation in server hello', EncryptionErrorCode.UnsupportedAlgorithm);
+  }
+  if (typeof serverHello.keyId !== 'string' || serverHello.keyId.length === 0) {
+    throw new EcdhError('Missing key id in server hello', EncryptionErrorCode.HandshakeFailed);
+  }
+
   const peerPublicKey = await importPublicKey(serverHello.serverEphemeralPubKeyB64, serverHello.curve);
 
   return {

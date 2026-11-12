@@ -6,10 +6,18 @@
  * without needing a bundler or package manager.
  *
  * SECURITY CONSIDERATIONS:
- * - Only packages explicitly listed in packageVersions can be imported
- * - Package names and subpaths are validated against strict regex patterns
- * - CDN base URL must be HTTPS
+ * - Only packages explicitly listed in packageVersions (or allowedPackages) can be imported,
+ *   whichever way the import is written: an import declaration, a re-export, or a dynamic
+ *   `import()` anywhere in the code
+ * - A dynamic `import()` whose specifier is not a string literal cannot be checked and is refused
+ * - Package names, subpaths and versions are validated against strict regex patterns
+ * - CDN base URL must be HTTPS, without credentials, query or fragment
  * - Local imports (./foo, ../bar) are skipped by default
+ *
+ * The allowlist is the configuration's. Where the configuration comes from the same party as
+ * the code (a script that passes `importRewrite` to `Babel.transform` inside the sandbox), the
+ * transform is a convenience for that party and restricts nothing: whoever loads the output
+ * treats it as the script's own text.
  *
  * @packageDocumentation
  */
@@ -17,6 +25,7 @@
 import * as acorn from 'acorn';
 import { generate } from 'astring';
 import type { ImportDeclaration, ExportNamedDeclaration, ExportAllDeclaration, Program, Literal } from 'estree';
+import { walkAll, type AnyNode } from '../utils/ast-walk';
 
 /**
  * Configuration for import rewriting
@@ -104,6 +113,13 @@ const PACKAGE_NAME_REGEX = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]
 const SUBPATH_REGEX = /^[a-zA-Z0-9\-_./]+$/;
 
 /**
+ * Regex to validate a package version: what follows `@` in one path segment of the CDN URL.
+ * Matches versions, ranges and tags: '18.2.0', '^18.2.0', '~18', '18.x', '>=18', 'latest', '1.0.0-rc.1'
+ * Rejects anything that would end the segment or change the URL: '/', '\', '?', '#', '%', '@', white space
+ */
+const VERSION_REGEX = /^[a-zA-Z0-9._\-+~^*=<>|]+$/;
+
+/**
  * Check if an import is a local import (starts with ./ or ../)
  */
 function isLocalImport(source: string): boolean {
@@ -161,20 +177,52 @@ function validateSubpath(subpath: string): void {
 }
 
 /**
+ * Validate a package version against security rules
+ */
+function validateVersion(packageName: string, version: unknown): void {
+  const text = String(version);
+  if (!VERSION_REGEX.test(text) || text.includes('..')) {
+    throw new Error(
+      `Invalid version for package "${packageName}": "${text}". ` +
+        `A version is a version number, a range or a tag, without path or URL characters.`,
+    );
+  }
+}
+
+/**
  * Validate the CDN base URL
+ *
+ * Every rewritten import is the base URL followed by a path, so the base URL has to end where a
+ * path can follow: it names a host over HTTPS and optionally a path, and nothing else.
  */
 function validateCdnUrl(cdnBaseUrl: string): void {
+  let url: URL;
   try {
-    const url = new URL(cdnBaseUrl);
-    if (url.protocol !== 'https:') {
-      throw new Error(`CDN URL must use HTTPS: "${cdnBaseUrl}"`);
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('HTTPS')) {
-      throw error;
-    }
+    url = new URL(cdnBaseUrl);
+  } catch {
     throw new Error(`Invalid CDN URL: "${cdnBaseUrl}"`);
   }
+  if (url.protocol !== 'https:') {
+    throw new Error(`CDN URL must use HTTPS: "${cdnBaseUrl}"`);
+  }
+  if (url.username !== '' || url.password !== '' || cdnBaseUrl.includes('?') || cdnBaseUrl.includes('#')) {
+    throw new Error(`Invalid CDN URL: "${cdnBaseUrl}" must not contain credentials, a query or a fragment`);
+  }
+}
+
+/**
+ * The specifier of a dynamic import when it is written as a string: a string literal, or a
+ * template literal without substitutions. `undefined` for anything else.
+ */
+function staticSpecifier(source: AnyNode): string | undefined {
+  if (source?.type === 'Literal' && typeof source.value === 'string') {
+    return source.value;
+  }
+  if (source?.type === 'TemplateLiteral' && source.expressions.length === 0 && source.quasis.length === 1) {
+    const cooked = source.quasis[0].value.cooked;
+    return typeof cooked === 'string' ? cooked : undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -240,8 +288,9 @@ export function rewriteImports(code: string, config: ImportRewriteConfig): Impor
   const rewrittenImports: Array<{ original: string; rewritten: string }> = [];
   const skippedImports: string[] = [];
 
-  // Helper function to rewrite a module source
-  const rewriteSource = (source: string, sourceNode: Literal): void => {
+  // Helper function to rewrite a module source. `replaceSourceNode` is given where the node that
+  // holds the specifier is not a string literal that can be updated in place.
+  const rewriteSource = (source: string, sourceNode: Literal, replaceSourceNode?: (node: Literal) => void): void => {
     // Skip local imports if configured
     if (isLocalImport(source)) {
       if (skipLocalImports) {
@@ -270,7 +319,12 @@ export function rewriteImports(code: string, config: ImportRewriteConfig): Impor
     }
 
     // Get version from config (may be empty string or undefined for latest)
-    const version = config.packageVersions[packageName];
+    const version = Object.hasOwn(config.packageVersions, packageName)
+      ? config.packageVersions[packageName]
+      : undefined;
+    if (version) {
+      validateVersion(packageName, version);
+    }
 
     // Construct CDN URL
     // If version is empty or undefined, don't include @version (use latest)
@@ -280,8 +334,12 @@ export function rewriteImports(code: string, config: ImportRewriteConfig): Impor
       : `${config.cdnBaseUrl}/${packageWithVersion}`;
 
     // Update the source
-    sourceNode.value = cdnUrl;
-    sourceNode.raw = JSON.stringify(cdnUrl);
+    if (replaceSourceNode) {
+      replaceSourceNode({ type: 'Literal', value: cdnUrl, raw: JSON.stringify(cdnUrl) });
+    } else {
+      sourceNode.value = cdnUrl;
+      sourceNode.raw = JSON.stringify(cdnUrl);
+    }
 
     rewrittenImports.push({
       original: source,
@@ -289,8 +347,9 @@ export function rewriteImports(code: string, config: ImportRewriteConfig): Impor
     });
   };
 
-  // Walk through all import and export declarations
-  for (const node of ast.body) {
+  // Every node of the tree, in source order: import and export declarations stand at the top
+  // level of a module, a dynamic import can stand wherever an expression can
+  walkAll(ast, (node: AnyNode) => {
     if (node.type === 'ImportDeclaration') {
       const importNode = node as ImportDeclaration;
       const source = importNode.source.value as string;
@@ -302,8 +361,21 @@ export function rewriteImports(code: string, config: ImportRewriteConfig): Impor
         const source = exportNode.source.value as string;
         rewriteSource(source, exportNode.source as Literal);
       }
+    } else if (node.type === 'ImportExpression') {
+      // The same check as for a declaration. A specifier that is computed when the code runs
+      // cannot be checked here, so it is not let through.
+      const source = staticSpecifier(node.source);
+      if (source === undefined) {
+        throw new Error(
+          'Dynamic import() is only allowed with a string literal as its specifier: ' +
+            'a specifier computed at run time cannot be checked against the allowed packages.',
+        );
+      }
+      rewriteSource(source, node.source as Literal, (literal) => {
+        node.source = literal;
+      });
     }
-  }
+  });
 
   // Generate code from the modified AST
   const rewrittenCode = generate(ast);

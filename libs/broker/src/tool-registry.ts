@@ -188,7 +188,8 @@ export class ToolRegistry {
    * Get tool configurations for all registered tools
    */
   getConfigs(): Record<string, ToolConfig> {
-    const configs: Record<string, ToolConfig> = {};
+    // No prototype: every key of the result is a tool name, whatever the name is
+    const configs = Object.create(null) as Record<string, ToolConfig>;
     for (const [name, tool] of this.tools) {
       if (tool.definition.config) {
         configs[name] = tool.definition.config;

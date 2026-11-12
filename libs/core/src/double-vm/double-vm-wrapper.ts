@@ -21,9 +21,12 @@ import { createConsoleSink } from '../console-handler';
 import { hasHostStackReserve } from '../stack-reserve';
 import { compileSandboxScript, SandboxScript } from '../sandbox-script';
 import { guardSandboxRejections } from '../sandbox-rejections';
+import { describeThrown, isMemoryLimitPayload, THROWN_WITHOUT_MESSAGE } from '../thrown-value';
 import {
   createHostGlobalFunctionInvoker,
+  hostFunctionText,
   isBuiltinMethod,
+  isFunctionTextMethod,
   isMutatingBuiltinMethod,
   isRegExpMatchMethod,
   resolveMaxGlobalFunctionCalls,
@@ -183,22 +186,27 @@ export class DoubleVmWrapper implements SandboxAdapter {
         stats.memoryUsage = memSnapshot.peakTrackedBytes;
       }
 
-      // Handle memory limit errors specially (host Error or sandbox-safe payload)
+      // What the script threw, as text (see ../thrown-value): nothing below reads the thrown
+      // value itself, which may be any object of the sandbox.
+      const thrown = describeThrown(error);
+
+      // The memory limit: the host's own error, or the payload that stands for it inside the
+      // sandbox. A payload only counts where the tracker did refuse an allocation: a script can
+      // throw an object that says the same about itself. The figures are the tracker's.
       if (
         error instanceof MemoryLimitError ||
-        (error && typeof error === 'object' && (error as any).code === 'MEMORY_LIMIT_EXCEEDED')
+        (memoryTracker?.hasExceededLimit() === true && isMemoryLimitPayload(error))
       ) {
-        const payload = error as { message?: unknown; usedBytes?: unknown; limitBytes?: unknown };
-        const usedBytes = typeof payload.usedBytes === 'number' ? payload.usedBytes : (memSnapshot?.trackedBytes ?? 0);
-        const limitBytes = typeof payload.limitBytes === 'number' ? payload.limitBytes : (config.memoryLimit ?? 0);
-
         return {
           success: false,
           error: {
             name: 'MemoryLimitError',
-            message: typeof payload.message === 'string' ? payload.message : 'Memory limit exceeded',
+            message: thrown.message ?? 'Memory limit exceeded',
             code: 'MEMORY_LIMIT_EXCEEDED',
-            data: { usedBytes, limitBytes },
+            data: {
+              usedBytes: error instanceof MemoryLimitError ? error.usedBytes : (memSnapshot?.trackedBytes ?? 0),
+              limitBytes: error instanceof MemoryLimitError ? error.limitBytes : (config.memoryLimit ?? 0),
+            },
           },
           stats,
         };
@@ -213,20 +221,19 @@ export class DoubleVmWrapper implements SandboxAdapter {
           success: false,
           error: {
             name: 'DoubleVMExecutionError',
-            message: error,
+            message: thrown.message ?? '',
             code: 'DOUBLE_VM_EXECUTION_ERROR',
           },
           stats,
         };
       }
 
-      const err = error as Error;
       return {
         success: false,
         error: {
-          name: err.name || 'DoubleVMExecutionError',
-          message: err.message || 'Unknown double VM execution error',
-          stack: sanitizeStackTrace(err.stack, shouldSanitize),
+          name: thrown.name || 'DoubleVMExecutionError',
+          message: thrown.message || THROWN_WITHOUT_MESSAGE,
+          stack: sanitizeStackTrace(thrown.stack, shouldSanitize),
           code: 'DOUBLE_VM_EXECUTION_ERROR',
         },
         stats,
@@ -311,6 +318,17 @@ export class DoubleVmWrapper implements SandboxAdapter {
     // regular expression are reported as 'match': those it refuses at every security level.
     Object.defineProperty(parentContext, '__host_isMutatingBuiltin__', {
       value: (fn: unknown) => (isRegExpMatchMethod(fn) ? 'match' : isMutatingBuiltinMethod(fn)),
+      writable: false,
+      configurable: true, // Allow deletion after capture for defense-in-depth
+    });
+
+    // The source text of a host function stays in the host. For a method that would answer with
+    // it (toString, and toLocaleString, which calls it) the parent VM gets the fixed form here
+    // and hands that to the script; for every other method it gets undefined. `method` is null
+    // when the parent VM has recognised the method itself (its own realm's, on a forwarder).
+    Object.defineProperty(parentContext, '__host_functionText__', {
+      value: (method: unknown, fn: unknown) =>
+        method === null || isFunctionTextMethod(method) ? hostFunctionText(fn) : undefined,
       writable: false,
       configurable: true, // Allow deletion after capture for defense-in-depth
     });

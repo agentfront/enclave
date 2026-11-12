@@ -16,7 +16,7 @@ import { createAgentScriptPreset, AgentScriptOptions, SecurityLevel } from './ag
  * These limits control resource usage for Babel transforms:
  * - maxInputSize: Maximum source code size to transform
  * - maxOutputSize: Maximum transformed output size
- * - transformTimeout: Maximum time for transformation (reserved)
+ * - transformTimeout: Maximum time for transformation (applied by `@enclave-vm/core`)
  * - allowedPresets: Which Babel presets can be used
  * - Multi-file limits (maxFiles, maxTotalInputSize, maxTotalOutputSize)
  */
@@ -108,7 +108,7 @@ export const BABEL_SECURITY_CONFIGS: Record<SecurityLevel, BabelSecurityConfig> 
   },
 
   /**
-   * STANDARD: Standard Babel access (same as SECURE)
+   * STANDARD: Standard Babel access (the presets of SECURE, with higher limits)
    * - Medium input limit (1MB)
    * - TypeScript + React presets
    * - Max 25 files for multi-file transform

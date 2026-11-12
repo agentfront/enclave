@@ -7,7 +7,15 @@
  * - Inner iframe: User code execution with safe runtime and frozen globals
  *
  * Both iframes use sandbox="allow-scripts" (no allow-same-origin) with CSP
- * meta tags that block eval, Function constructor, and all network access.
+ * meta tags that block eval and the Function constructor, allow no script but
+ * the one this package wrote into each document, and allow no request source
+ * the policy governs. The names that open a connection the policy does not
+ * govern are removed from the inner frame, and its document is closed: it
+ * holds nothing and nothing can be added to it.
+ *
+ * What keeps a script from the document it runs in is the validator; a script
+ * that never yields is ended at the timeout only where the browser runs the
+ * frames in another process than the page. See the security architecture page.
  *
  * @packageDocumentation
  */

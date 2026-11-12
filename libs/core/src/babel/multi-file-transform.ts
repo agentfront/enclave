@@ -12,12 +12,16 @@
  * - Total input/output size limits
  * - Filename sanitization
  * - No path traversal in filenames
+ * - The file set is a script's: besides Babel itself (which has its own timeout), everything
+ *   done here with a file's text or name takes time linear in the size of the input, and the
+ *   text is measured against the limits before it is worked on (see ./text-scan)
  *
  * @packageDocumentation
  */
 
 import { rewriteImports, type ImportRewriteConfig } from '@enclave-vm/ast';
 import type { SafeTransformOptions, SafeTransformResult } from './babel-wrapper';
+import { findImportSources, hasFileExtension, mapStaticImportSources } from './text-scan';
 
 /**
  * Multi-file input: mapping of filename to source code
@@ -114,9 +118,20 @@ const EXTENSION_MAP: Record<string, string> = {
 };
 
 /**
+ * Longest file name accepted. The size limits count the text of the files, not their names, and
+ * a name is repeated in the dependency report and in warnings; with this bound the size of both
+ * follows from the limits on the text.
+ */
+const MAX_FILENAME_LENGTH = 255;
+
+/**
  * Validate a filename for security
  */
 function validateFilename(filename: string): void {
+  if (filename.length > MAX_FILENAME_LENGTH) {
+    throw new Error(`Invalid filename "${filename.slice(0, 32)}...": longer than ${MAX_FILENAME_LENGTH} characters`);
+  }
+
   // Check for path traversal
   if (filename.includes('..')) {
     throw new Error(`Invalid filename "${filename}": path traversal not allowed`);
@@ -149,35 +164,6 @@ function getOutputFilename(inputFilename: string): string {
 }
 
 /**
- * Parse import sources from code to build dependency graph
- *
- * SECURITY: Uses a ReDoS-safe regex pattern. The pattern `[^'"]*` cannot
- * overlap with the following `['"]`, preventing polynomial backtracking.
- */
-function extractImports(code: string): string[] {
-  const imports: string[] = [];
-
-  // Match import statements - safe pattern that avoids ReDoS
-  // Uses [^'"]* which cannot overlap with the following quote character
-  // Matches: import X from 'source', import { X } from "source", import 'source', etc.
-  const importRegex = /import\b[^'"]*['"]([^'"]+)['"]/g;
-
-  let match;
-  while ((match = importRegex.exec(code)) !== null) {
-    imports.push(match[1]);
-  }
-
-  // Also match dynamic imports: import('source')
-  // Safe pattern - \s* and ['"] don't overlap (whitespace vs quotes)
-  const dynamicImportRegex = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-  while ((match = dynamicImportRegex.exec(code)) !== null) {
-    imports.push(match[1]);
-  }
-
-  return imports;
-}
-
-/**
  * Check if an import is a local import
  */
 function isLocalImport(source: string): boolean {
@@ -185,59 +171,115 @@ function isLocalImport(source: string): boolean {
 }
 
 /**
- * Resolve a local import to a filename in the file set
+ * Extensions tried for a local import, in this order; the last entry is the path as written
  */
-function resolveLocalImport(importSource: string, fromFilename: string, availableFiles: Set<string>): string | null {
-  // Remove leading ./
-  let relativePath = importSource;
-  if (relativePath.startsWith('./')) {
-    relativePath = relativePath.slice(2);
+const RESOLVE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts', ''];
+
+/**
+ * The files of the set that are below a directory, by their path relative to it ('' is the root
+ * of the set: every file, by its name).
+ */
+function filesBelow(directory: string, availableFiles: ReadonlySet<string>): Map<string, string> {
+  const below = new Map<string, string>();
+  for (const file of availableFiles) {
+    if (directory === '') {
+      below.set(file, file);
+    } else if (
+      file.length > directory.length &&
+      file.charCodeAt(directory.length) === 47 /* '/' */ &&
+      file.startsWith(directory)
+    ) {
+      below.set(file.slice(directory.length + 1), file);
+    }
   }
+  return below;
+}
 
-  // Handle ../ by going up from the current file's directory
-  const fromDir = fromFilename.includes('/') ? fromFilename.split('/').slice(0, -1).join('/') : '';
+/**
+ * The file a path names among `files`: the path with one of the known extensions, or an index
+ * file in a directory of that name.
+ */
+function findFile(files: ReadonlyMap<string, string>, path: string): string | null {
+  for (const ext of RESOLVE_EXTENSIONS) {
+    const direct = files.get(path + ext);
+    if (direct !== undefined) {
+      return direct;
+    }
+    const index = files.get(path + '/index' + ext);
+    if (index !== undefined) {
+      return index;
+    }
+  }
+  return null;
+}
 
-  if (relativePath.startsWith('../')) {
-    // Simple resolution - just resolve relative paths
-    const parts = fromDir.split('/').filter(Boolean);
-    const importParts = relativePath.split('/');
+/**
+ * Resolution of the local imports of one file to filenames in the file set
+ *
+ * A file can hold as many imports as its size allows, so resolving one import takes time that
+ * follows from the length of that import alone: the name of the importing file is taken apart
+ * once, and the files below each directory an import can start from are listed once (see
+ * `filesBelow`) and then looked up by the rest of the import's path.
+ */
+function createLocalImportResolver(
+  fromFilename: string,
+  availableFiles: ReadonlySet<string>,
+): (importSource: string) => string | null {
+  const lastSlash = fromFilename.lastIndexOf('/');
+  const fromDir = lastSlash === -1 ? '' : fromFilename.slice(0, lastSlash);
+  const dirParts = fromDir.split('/').filter(Boolean);
 
-    for (const part of importParts) {
+  // Files below the importing file's own directory
+  let belowDir: Map<string, string> | undefined;
+  // By the number of leading segments of that directory an import keeps after its `..` steps:
+  // the files below that ancestor, and the file the ancestor's own path names
+  const belowAncestor: Array<Map<string, string> | undefined> = [];
+  const ancestorItself: Array<string | null | undefined> = [];
+
+  return (importSource: string): string | null => {
+    // Remove leading ./
+    const relativePath = importSource.startsWith('./') ? importSource.slice(2) : importSource;
+
+    if (!relativePath.startsWith('../')) {
+      belowDir ??= filesBelow(fromDir, availableFiles);
+      return findFile(belowDir, relativePath);
+    }
+
+    // Go up from the importing file's directory: `kept` leading segments of it remain, followed
+    // by the segments the import adds
+    let kept = dirParts.length;
+    const added: string[] = [];
+    for (const part of relativePath.split('/')) {
       if (part === '..') {
-        if (parts.length > 0) {
-          parts.pop();
+        if (added.length > 0) {
+          added.pop();
+        } else if (kept > 0) {
+          kept--;
         }
       } else if (part !== '.') {
-        parts.push(part);
+        added.push(part);
       }
     }
-    relativePath = parts.join('/');
-  } else if (fromDir) {
-    // Prepend the directory
-    relativePath = `${fromDir}/${relativePath}`;
-  }
 
-  // Try to find matching file with various extensions
-  const extensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts', ''];
+    const ancestor = (): string => dirParts.slice(0, kept).join('/');
 
-  for (const ext of extensions) {
-    const candidate = relativePath + ext;
-    if (availableFiles.has(candidate)) {
-      return candidate;
+    if (added.length === 0 && kept > 0) {
+      // The import names an ancestor directory itself
+      let resolved = ancestorItself[kept];
+      if (resolved === undefined) {
+        resolved = findFile(filesBelow('', availableFiles), ancestor());
+        ancestorItself[kept] = resolved;
+      }
+      return resolved;
     }
-    // Also try index files
-    const indexCandidate = relativePath + '/index' + ext;
-    if (availableFiles.has(indexCandidate)) {
-      return indexCandidate;
+
+    let below = belowAncestor[kept];
+    if (below === undefined) {
+      below = filesBelow(ancestor(), availableFiles);
+      belowAncestor[kept] = below;
     }
-  }
-
-  // Direct match
-  if (availableFiles.has(relativePath)) {
-    return relativePath;
-  }
-
-  return null;
+    return findFile(below, added.join('/'));
+  };
 }
 
 /**
@@ -254,28 +296,31 @@ function getOutputExtension(sourceExt: string): string {
 }
 
 /**
+ * The specifier a local import has in the output: the extension of the output file instead of
+ * the source file's, and `.js` where the import names no extension. Other specifiers are returned
+ * as they are.
+ */
+function outputImportSource(source: string): string {
+  if (isLocalImport(source)) {
+    // Update extension in local imports
+    for (const [inputExt, outputExt] of Object.entries(EXTENSION_MAP)) {
+      if (source.endsWith(inputExt)) {
+        return source.slice(0, -inputExt.length) + outputExt;
+      }
+    }
+    // If no extension, add .js (most common case for extensionless imports)
+    if (!hasFileExtension(source)) {
+      return source + '.js';
+    }
+  }
+  return source;
+}
+
+/**
  * Update local import paths in the output code
  */
-function updateLocalImportPaths(code: string, _fileMap: Map<string, string>): string {
-  // Replace import sources with updated extensions
-  return code.replace(
-    /(import\s+(?:(?:\{[^}]*\}|[\w*\s,]+)\s+from\s+)?['"])([^'"]+)(['"])/g,
-    (match, prefix, source, suffix) => {
-      if (isLocalImport(source)) {
-        // Update extension in local imports
-        for (const [inputExt, outputExt] of Object.entries(EXTENSION_MAP)) {
-          if (source.endsWith(inputExt)) {
-            return prefix + source.slice(0, -inputExt.length) + outputExt + suffix;
-          }
-        }
-        // If no extension, add .js (most common case for extensionless imports)
-        if (!source.match(/\.[a-z]+$/i)) {
-          return prefix + source + '.js' + suffix;
-        }
-      }
-      return match;
-    },
-  );
+function updateLocalImportPaths(code: string): string {
+  return mapStaticImportSources(code, outputImportSource);
 }
 
 /**
@@ -307,8 +352,9 @@ function topologicalSort(
     inStack.add(file);
 
     const deps = getDependencies(file);
+    const pathToDeps = [...path, file];
     for (const dep of deps) {
-      visit(dep, [...path, file]);
+      visit(dep, pathToDeps);
     }
 
     inStack.delete(file);
@@ -361,6 +407,7 @@ export function transformMultiple(
   const outputFiles: { [filename: string]: string } = {};
   const dependencies: { [filename: string]: string[] } = {};
   const allRewrittenImports: Array<{ original: string; rewritten: string }> = [];
+  const rewrittenOriginals = new Set<string>();
 
   // 1. Validate file count
   const filenames = Object.keys(files);
@@ -394,21 +441,24 @@ export function transformMultiple(
 
   for (const filename of filenames) {
     const code = files[filename];
-    const imports = extractImports(code);
-    const localDeps: string[] = [];
+    const imports = findImportSources(code);
+    const resolveLocalImport = createLocalImportResolver(filename, fileSet);
+    // A file is a dependency once, however many of the imports name it: the report and the
+    // warnings about cycles then follow from the number of files, not from the number of imports
+    const localDeps = new Set<string>();
 
     for (const importSource of imports) {
       if (isLocalImport(importSource)) {
-        const resolved = resolveLocalImport(importSource, filename, fileSet);
+        const resolved = resolveLocalImport(importSource);
         if (resolved) {
-          localDeps.push(resolved);
+          localDeps.add(resolved);
         } else if (resolveLocalImports) {
           warnings.push(`Unresolved import "${importSource}" in ${filename}`);
         }
       }
     }
 
-    dependencies[filename] = localDeps;
+    dependencies[filename] = [...localDeps];
   }
 
   // 4. Topological sort
@@ -423,12 +473,10 @@ export function transformMultiple(
 
   // 5. Transform each file in order
   let totalOutputSize = 0;
-  const filenameToOutputFilename = new Map<string, string>();
 
   for (const filename of sorted) {
     const inputCode = files[filename];
     const outputFilename = getOutputFilename(filename);
-    filenameToOutputFilename.set(filename, outputFilename);
 
     try {
       // First, apply Babel transform
@@ -442,8 +490,21 @@ export function transformMultiple(
 
       let transformedCode = transformResult.code;
 
+      if (typeof transformedCode !== 'string') {
+        throw new Error('Transform produced invalid output');
+      }
+
+      // The output limit holds for the text the steps below are about to read, not only for
+      // the text they produce
+      const transformedSize = Buffer.byteLength(transformedCode, 'utf-8');
+      if (totalOutputSize + transformedSize > limits.maxTotalOutputSize) {
+        throw new Error(
+          `Total output size exceeds limit: ${totalOutputSize + transformedSize} bytes > ${limits.maxTotalOutputSize} bytes`,
+        );
+      }
+
       // Then, update local import paths
-      transformedCode = updateLocalImportPaths(transformedCode, filenameToOutputFilename);
+      transformedCode = updateLocalImportPaths(transformedCode);
 
       // Finally, apply import rewriting if configured
       if (options.importRewrite?.enabled) {
@@ -453,7 +514,8 @@ export function transformMultiple(
         // Collect rewritten imports
         for (const rewritten of rewriteResult.rewrittenImports) {
           // Avoid duplicates
-          if (!allRewrittenImports.some((r) => r.original === rewritten.original)) {
+          if (!rewrittenOriginals.has(rewritten.original)) {
+            rewrittenOriginals.add(rewritten.original);
             allRewrittenImports.push(rewritten);
           }
         }

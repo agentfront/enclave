@@ -11,7 +11,7 @@ import { Worker, type WorkerOptions } from 'worker_threads';
 import fs from 'fs';
 import path from 'path';
 import { EventEmitter } from 'events';
-import type { WorkerSlotStatus, ResourceUsage } from './config';
+import { DEFAULT_WORKER_POOL_CONFIG, type WorkerSlotStatus, type ResourceUsage } from './config';
 import { workerToMainMessageSchema, type MainToWorkerMessage, type WorkerToMainMessage } from './protocol';
 import { safeDeserialize, safeSerialize } from './safe-deserialize';
 import { WorkerStartupError, WorkerCrashedError, MessageValidationError, WorkerMemoryError } from './errors';
@@ -42,6 +42,13 @@ export interface WorkerSlotOptions {
   memoryLimitMB: number;
   /** Startup timeout in milliseconds */
   startupTimeoutMs?: number;
+  /**
+   * Largest message the worker may send, in bytes of UTF-8. A larger one is refused before it is
+   * parsed. Default: the pool's default `maxMessageSizeBytes`.
+   */
+  maxMessageSizeBytes?: number;
+  /** How long an idle worker that was asked to leave gets before it is terminated. Default: 5000 */
+  gracefulShutdownTimeoutMs?: number;
 }
 
 /** Where the build puts the worker script, relative to the package's output folder. */
@@ -49,7 +56,7 @@ const WORKER_SCRIPT_RELATIVE_PATH = path.join('src', 'adapters', 'worker-pool', 
 
 const MB = 1024 * 1024;
 
-/** How often this thread reads the heap of an executing worker whose limit the engine does not apply */
+/** How often this thread reads what an executing worker holds */
 const HEAP_WATCHDOG_INTERVAL_MS = 100;
 
 /** How long spawn() waits for a new worker's heap statistics before going on without them */
@@ -263,14 +270,23 @@ export class WorkerSlot extends EventEmitter {
   /** What this worker may hold: its limit plus the young generation, in bytes. 0 without a limit. */
   private _memoryBudgetBytes = 0;
 
-  /** The host-side heap check of the running execution (only with `host` enforcement) */
+  /** The host-side memory check of the running execution */
   private heapWatchdog: ReturnType<typeof setInterval> | null = null;
+
+  /** Largest message the worker may send right now, in bytes (see limitMessageSize) */
+  private messageSizeLimitBytes: number;
+
+  /** The worker sent something the protocol does not allow: it is ended, not asked to leave */
+  private protocolViolated = false;
+
+  /** Memory reports asked for and not answered yet: each entry ends its request */
+  private readonly pendingMemoryReports = new Set<(error: Error) => void>();
 
   /** Configuration */
   private readonly options: Required<WorkerSlotOptions>;
 
   /** Message handler bound to this instance */
-  private readonly boundMessageHandler: (raw: string) => void;
+  private readonly boundMessageHandler: (raw: unknown) => void;
 
   /** Error handler bound to this instance */
   private readonly boundErrorHandler: (error: Error) => void;
@@ -286,7 +302,11 @@ export class WorkerSlot extends EventEmitter {
     this.options = {
       memoryLimitMB: options.memoryLimitMB,
       startupTimeoutMs: options.startupTimeoutMs ?? 10000,
+      maxMessageSizeBytes: options.maxMessageSizeBytes ?? DEFAULT_WORKER_POOL_CONFIG.maxMessageSizeBytes,
+      gracefulShutdownTimeoutMs:
+        options.gracefulShutdownTimeoutMs ?? DEFAULT_WORKER_POOL_CONFIG.gracefulShutdownTimeoutMs,
     };
+    this.messageSizeLimitBytes = this.options.maxMessageSizeBytes;
 
     this.boundMessageHandler = this.handleMessage.bind(this);
     this.boundErrorHandler = this.handleError.bind(this);
@@ -426,13 +446,23 @@ export class WorkerSlot extends EventEmitter {
   }
 
   /**
-   * With `host` enforcement: read the worker's heap while it executes, and end the execution
-   * when the worker holds more than its budget. The engine would have done the same at the old
-   * generation limit; from outside only the total is visible, so the young generation is part
-   * of the budget and the limit is approximate (a script can also allocate between two reads).
+   * Read what the worker holds while it executes (its heap plus its external memory), and end
+   * the execution when that is more than the worker's budget.
+   *
+   * With `host` enforcement this is the heap limit itself: the engine would have ended the worker
+   * at the old generation limit; from outside only the total is visible, so the young generation
+   * is part of the budget and the limit is approximate (a script can also allocate between two
+   * reads).
+   *
+   * With `engine` enforcement the engine bounds the heap, and this bounds what the engine does
+   * not count: memory outside the heap. The memory monitor counts it too, but it asks the worker
+   * by message, and a worker answers messages only when its script lets it. This read needs no
+   * answer from the script.
+   *
+   * Not on a Node.js that cannot read a worker's heap from outside (before 22.16).
    */
   private startHeapWatchdog(): void {
-    if (this._heapLimitEnforcement !== 'host' || this.heapWatchdog) {
+    if (this.heapWatchdog || this._memoryBudgetBytes <= 0 || !this._worker || !heapStatisticsReader(this._worker)) {
       return;
     }
 
@@ -534,10 +564,20 @@ export class WorkerSlot extends EventEmitter {
   }
 
   /**
+   * The largest message the worker may send while it runs the next execution, in bytes. The pool
+   * sets it per execution, because what one message may legitimately carry depends on the
+   * limits of the enclave the script belongs to. release() puts the slot's own limit back.
+   */
+  limitMessageSize(maxBytes: number): void {
+    this.messageSizeLimitBytes = maxBytes;
+  }
+
+  /**
    * Release this slot after execution
    */
   release(): void {
     this.stopHeapWatchdog();
+    this.messageSizeLimitBytes = this.options.maxMessageSizeBytes;
     if (this._status !== 'executing') {
       return;
     }
@@ -567,10 +607,15 @@ export class WorkerSlot extends EventEmitter {
       return;
     }
 
+    // Only a worker with nothing to run is asked to leave. One that was given a script and has
+    // not been released, or that broke the protocol, is ended: asked, it would go on running the
+    // script until the grace period was over.
+    const ask = graceful && this._currentExecutionId === null && !this.protocolViolated;
+
     this.setStatus('terminating');
     const worker = this._worker; // Capture reference to avoid race condition
 
-    if (graceful) {
+    if (ask) {
       // Send terminate message and wait
       this.sendMessage({ type: 'terminate', graceful: true });
 
@@ -586,7 +631,7 @@ export class WorkerSlot extends EventEmitter {
           }
         }),
         new Promise<void>((resolve) => {
-          gracePeriod = setTimeout(resolve, 5000);
+          gracePeriod = setTimeout(resolve, this.options.gracefulShutdownTimeoutMs);
         }),
       ]);
       clearTimeout(gracePeriod);
@@ -621,22 +666,36 @@ export class WorkerSlot extends EventEmitter {
    */
   async requestMemoryReport(timeoutMs = 1000): Promise<ResourceUsage> {
     return new Promise((resolve, reject) => {
+      const settle = () => {
+        clearTimeout(timeout);
+        this.off('message', handler);
+        this.pendingMemoryReports.delete(abandon);
+      };
       const handler = (msg: WorkerToMainMessage) => {
         if (msg.type === 'memory-report-result') {
-          clearTimeout(timeout);
-          this.off('message', handler);
+          settle();
           this._memoryUsage = msg.usage;
           resolve(msg.usage);
         }
       };
+      // The request ends without an answer: no answer in time, the request could not be sent,
+      // or the worker is gone (see cleanup). A worker whose script keeps it busy answers nothing.
+      const abandon = (error: Error) => {
+        settle();
+        reject(error);
+      };
 
-      const timeout = setTimeout(() => {
-        this.off('message', handler); // Remove listener on timeout to prevent memory leak
-        reject(new Error('Memory report timeout'));
-      }, timeoutMs);
+      const timeout = setTimeout(() => abandon(new Error('Memory report timeout')), timeoutMs);
+      // Waiting for an answer must not keep the host process alive
+      timeout.unref();
 
+      this.pendingMemoryReports.add(abandon);
       this.on('message', handler);
-      this.sendMessage({ type: 'memory-report' });
+      try {
+        this.sendMessage({ type: 'memory-report' });
+      } catch (error) {
+        abandon(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -644,14 +703,18 @@ export class WorkerSlot extends EventEmitter {
   // Event Handlers
   // ============================================================================
 
-  private handleMessage(raw: string): void {
+  private handleMessage(raw: unknown): void {
     let msg: WorkerToMainMessage;
     try {
       // The worker is the less trusted side of this boundary: if a script ever gets out of the
-      // sandbox inside it, the worker's messages are the script's. Every message is parsed
-      // without prototype pollution and then checked against the protocol schema (shape, types,
-      // identifier and tool-name patterns, size limits) before anything here acts on it.
-      const parsed = workerToMainMessageSchema.safeParse(safeDeserialize(raw));
+      // sandbox inside it, the worker's messages are the script's. A message is text, no larger
+      // than the limit: anything else is refused before this thread does any work on it. Then it
+      // is parsed without prototype pollution and checked against the protocol schema (shape,
+      // types, identifier and tool-name patterns, size limits) before anything here acts on it.
+      if (typeof raw !== 'string') {
+        throw new MessageValidationError('worker message is not text');
+      }
+      const parsed = workerToMainMessageSchema.safeParse(safeDeserialize(raw, this.messageSizeLimitBytes));
       if (!parsed.success) {
         const issue = parsed.error.issues[0];
         throw new MessageValidationError(
@@ -660,7 +723,9 @@ export class WorkerSlot extends EventEmitter {
       }
       msg = parsed.data as WorkerToMainMessage;
     } catch (error) {
-      // The execution that is waiting on this worker fails now, and the worker is replaced.
+      // The execution that is waiting on this worker fails now, and the worker is replaced:
+      // ended at once (see terminate), whatever it is running.
+      this.protocolViolated = true;
       this.emit('error', error instanceof Error ? error : new MessageValidationError(String(error)));
       this.markForRecycle();
       return;
@@ -707,6 +772,10 @@ export class WorkerSlot extends EventEmitter {
 
   private cleanup(): void {
     this.stopHeapWatchdog();
+    // Nobody will answer these any more. Left alone, each would wait out its own timeout.
+    for (const abandon of [...this.pendingMemoryReports]) {
+      abandon(new Error('Memory report abandoned: the worker is gone'));
+    }
     if (this._worker) {
       this._worker.off('message', this.boundMessageHandler);
       this._worker.off('error', this.boundErrorHandler);

@@ -38,20 +38,23 @@ const enclave = new BrowserEnclave({
 |--------|------|---------|-------------|
 | `securityLevel` | string | `'STANDARD'` | Preset: `STRICT`, `SECURE`, `STANDARD`, `PERMISSIVE` |
 | `preset` | string | `'agentscript'` | AST preset: `agentscript`, `strict`, `secure`, `standard`, `permissive` |
-| `timeout` | number | varies | Maximum execution time in milliseconds. Time spent waiting for `toolHandler` does not count toward the hard stop, so a tool call in progress is not cut off at the deadline; once `timeout` has passed, the script's next tool call fails with `Execution aborted` (same as `@enclave-vm/core`) |
+| `preScan` | object | the pre-scanner preset named like `preset` | `{ preset?, config? }`: the [pre-scanner](/core-libraries/ast-guard/pre-scanner) preset the text of a script is checked with before anything parses it, and overrides of single limits. The default `agentscript` pre-scanner takes 100 KB in 1,000 lines of at most 2,000 characters and refuses regular-expression literals and bidirectional or invisible control characters. Not consulted with `validate: false` |
+| `timeout` | number | varies | Maximum execution time in milliseconds (at most 2,147,483,647, the longest delay a timer takes). Time spent waiting for `toolHandler` does not count toward the hard stop, so a tool call in progress is not cut off at the deadline; once `timeout` has passed, the script's next tool call fails with `Execution aborted` (same as `@enclave-vm/core`). A script that computes without yielding is ended at the timeout only where the browser runs the sandbox frames in another process than the page: see [Timeouts and the Browser's Process Model](/core-libraries/enclave-browser/security-architecture#timeouts-and-the-browsers-process-model) |
 | `toolCallGraceMs` | number | `timeout` | How long a tool call that is still in progress when `timeout` has passed may take to deliver. When that is over as well, `run()` returns the timeout error (`EXECUTION_TIMEOUT`, with `error.data.pendingHostCalls`) and what the handler returns later is dropped. `0` ends the run at the hard stop; `Infinity` waits for the handler however long it takes (same as `@enclave-vm/core`). The host page's hard stop is `timeout` plus `doubleIframe.parentTimeoutBuffer` (1,000 ms by default), and the grace is counted from there: with `timeout: 100` and `toolCallGraceMs: 0` a run whose tool call does not return ends about 1,100 ms after it started |
 | `maxToolCalls` | number | varies | Maximum tool calls per execution |
 | `maxIterations` | number | varies | Maximum loop iterations (per loop) |
-| `memoryLimit` | number | 1048576 | Memory limit in bytes (soft tracking) |
+| `memoryLimit` | number | 1048576 | Limit in bytes on what the tracked operations allocate over a run (`repeat`, `padStart`, `padEnd`, `join`, `fill`); other allocations are not counted. `0` turns the tracking off |
 | `toolHandler` | function | - | Async function that handles `callTool()` invocations |
 | `toolNamespaces` | object | - | Expose tools as `ns.method(args)`: `{ mail: ['list', 'send'] }` or `{ users: { get: 'users:get' } }`. Each call is a `callTool()` call, validated by the outer iframe. Same naming rules as `@enclave-vm/core` |
-| `globals` | object | - | Additional globals available in the sandbox (JSON data only; the constructor throws for a function, symbol, BigInt, circular structure, Map, Set, RegExp or `undefined`). Each run reads the values again, so a change inside a global is picked up; a global that changes between a string and another kind of value fails the run with `GLOBALS_CHANGED` (scripts are validated against what each global was when the enclave was created) |
-| `validate` | boolean | `true` | Validate code with ast-guard before execution |
+| `globals` | object | - | Additional globals available in the sandbox (JSON data only; the constructor throws for a function, symbol, BigInt, circular structure, Map, Set, RegExp or `undefined`). Each run reads the values again, so a change inside a global is picked up; a global that changes between a string and another kind of value fails the run with `GLOBALS_CHANGED` (scripts are validated against what each global was when the enclave was created). A name the runtime owns (one starting with `__safe_`, `__ag_` or `__iter_`, and `__maxIterations`) is refused with a `TypeError` |
+| `validate` | boolean | `true` | Validate code with ast-guard before execution. Several guarantees hold only for a validated script: see [What Each Guarantee Rests On](/core-libraries/enclave-browser/security-architecture#what-each-guarantee-rests-on). With `false`, a script still cannot use the frame's document or open a connection, but it can reach the sandbox's own variables |
 | `transform` | boolean | `true` | Transform code before execution (AgentScript wrappers) |
 | `allowFunctionsInGlobals` | boolean | varies | No effect in the browser: functions never cross the iframe boundary, so a function in `globals` always throws. Expose host capabilities as tools |
 | `sanitizeStackTraces` | boolean | varies | Sanitize the stack of every error `run()` returns (frames become `at [REDACTED]`, URLs and paths are redacted) |
 | `maxSanitizeDepth` | number | varies | Maximum nesting depth of the value a script returns; a deeper value fails the run |
 | `maxSanitizeProperties` | number | varies | Maximum properties (keys, array elements, Map and Set entries, over the whole value) a script may return; a larger value fails the run |
+
+Every numeric option on this page (`timeout`, `maxToolCalls`, `maxIterations`, `memoryLimit`, `maxSanitizeDepth`, `maxSanitizeProperties`, `maxConsoleOutputBytes`, `maxConsoleCalls`, `doubleIframe.parentTimeoutBuffer`) must be a finite number of 0 or more. The constructor throws a `TypeError` for anything else: a number written as text (`'5000'`), `NaN`, `Infinity`, a negative value. For a limit that should never be reached, pass `Number.MAX_SAFE_INTEGER`. The exception is `toolCallGraceMs`, which takes `Infinity`.
 
 ## Console Limits
 
@@ -93,7 +96,7 @@ Override proxy behavior for the current security level:
 | `secureProxyConfig.blockConstructor` | boolean | varies | Block access to `.constructor` |
 | `secureProxyConfig.blockPrototype` | boolean | varies | Block access to `.__proto__` and `.prototype` |
 | `secureProxyConfig.blockLegacyAccessors` | boolean | varies | Block `__defineGetter__`, `__defineSetter__`, etc. |
-| `secureProxyConfig.proxyMaxDepth` | number | varies | Maximum nesting depth for proxy wrapping |
+| `secureProxyConfig.proxyMaxDepth` | number | varies | No effect in the browser: a value is wrapped when it is read, at any depth, and the blocked properties are refused at every one of them |
 | `secureProxyConfig.throwOnBlocked` | boolean | varies | Throw error vs return `undefined` on blocked access |
 
 ```ts
@@ -101,7 +104,6 @@ const enclave = new BrowserEnclave({
   securityLevel: 'STANDARD',
   secureProxyConfig: {
     throwOnBlocked: false, // Return undefined instead of throwing
-    proxyMaxDepth: 5,      // Limit proxy nesting
   },
 });
 ```
@@ -112,8 +114,8 @@ Configure the outer iframe security barrier:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `doubleIframe.enabled` | boolean | `true` | Enable double iframe isolation |
-| `doubleIframe.parentTimeoutBuffer` | number | `1000` | Extra timeout for outer iframe (ms) |
+| `doubleIframe.enabled` | boolean | `true` | No effect: the two iframes are how the package runs a script, and are always used |
+| `doubleIframe.parentTimeoutBuffer` | number | `1000` | Milliseconds the host page adds to `timeout` for its own hard stop, so that the outer iframe can report its timeout first |
 | `doubleIframe.parentValidation.validateOperationNames` | boolean | `true` | Validate tool names |
 | `doubleIframe.parentValidation.allowedOperationPattern` | RegExp | - | Whitelist pattern for tool names |
 | `doubleIframe.parentValidation.blockedOperationPatterns` | RegExp[] | - | Blacklist patterns for tool names |
@@ -121,7 +123,7 @@ Configure the outer iframe security barrier:
 | `doubleIframe.parentValidation.blockSuspiciousSequences` | boolean | `true` | Detect multi-step attack patterns |
 | `doubleIframe.parentValidation.rapidEnumerationThreshold` | number | `30` | Same-operation repetition threshold |
 | `doubleIframe.parentValidation.rapidEnumerationOverrides` | object | `{}` | Per-operation threshold overrides |
-| `doubleIframe.parentValidation.suspiciousPatterns` | array | `[]` | Custom detection patterns |
+| `doubleIframe.parentValidation.suspiciousPatterns` | array | `[]` | Custom detection patterns as functions: `{ id, description, detect(operationName, args, history) }`. See [Custom Suspicious Patterns](#custom-suspicious-patterns) |
 
 ```ts
 const enclave = new BrowserEnclave({
@@ -146,10 +148,41 @@ These patterns are detected automatically when `blockSuspiciousSequences` is ena
 | Pattern | Description |
 |---------|-------------|
 | `EXFIL_LIST_SEND` | List/query operation followed by send/export |
-| `RAPID_ENUMERATION` | Same operation repeated beyond threshold in 5s window |
+| `RAPID_ENUMERATION` | Same operation repeated beyond threshold within the recorded calls |
 | `CREDENTIAL_EXFIL` | Credential access followed by external operation |
 | `BULK_OPERATION` | Bulk/batch/mass/dump operations or unlimited queries |
 | `DELETE_AFTER_ACCESS` | Delete operation after data read (potential cover-up) |
+
+These patterns are heuristics over tool names and arguments. They run in the outer iframe, which keeps a record of the tool calls of the last two seconds: a sequence whose steps are further apart than that is not detected, and `RAPID_ENUMERATION` counts the same operation within those two seconds.
+
+### Custom Suspicious Patterns
+
+There are two ways to add a pattern, and they run in different places:
+
+| Option | Form | Where it runs | What it sees |
+|--------|------|---------------|--------------|
+| `customSerializablePatterns` | `{ id, description, detectBody }`: the body of `function (operationName, args, history)` as source text | In the outer iframe, with the built-in patterns | The calls of the last two seconds |
+| `doubleIframe.parentValidation.suspiciousPatterns` | `{ id, description, detect }`: a function | In the host page, for every tool call that passed the tool-call limit and the name patterns, just before your tool handler | The tool name, the copy of the arguments the handler would receive, and the earlier calls of the execution that reached a handler (the last 10,000) |
+
+```ts
+const enclave = new BrowserEnclave({
+  toolHandler,
+  doubleIframe: {
+    parentValidation: {
+      suspiciousPatterns: [
+        {
+          id: 'EXPORT_AFTER_READ',
+          description: 'export after a read',
+          detect: (operationName, args, history) =>
+            operationName === 'report:export' && history.some((call) => call.operationName.startsWith('crm:')),
+        },
+      ],
+    },
+  },
+});
+```
+
+A call a pattern detects is refused: the script's `callTool` rejects with `Suspicious pattern detected: <description> [<id>]` and the handler is not called. A function-based pattern that throws refuses the call as well. Both kinds are off when `blockSuspiciousSequences` is `false`. The constructor throws a `TypeError` for an entry of `suspiciousPatterns` without a `detect` function.
 
 ## Custom Globals
 
@@ -178,6 +211,8 @@ const enclave = new BrowserEnclave({
 </Warning>
 
 Each custom global is also available with a `__safe_` prefix (e.g., `config` and `__safe_config`), matching the pattern used by AgentScript's code transformation.
+
+A script reaches a custom global, or a tool namespace, as a parameter of the function it runs in. The name therefore means your value even when the frame's window has a property of that name (`location`, `name`, `top`, `history`) or the sandbox's own code has a variable of that name (`timeout`, `result`).
 
 ## Tool Namespaces and callTool Options
 

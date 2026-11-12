@@ -129,4 +129,51 @@ describe.each<[string, CreateEnclaveOptions]>([
     expect(result.error).toBeUndefined();
     expect(result.value).toEqual({ a: { name: 'a', self: '[Circular]' }, nan: NaN, big: '10' });
   });
+
+  it('returns a value that is referenced twice both times', async () => {
+    const result = await enclave.run(
+      'const unit = { id: 1 }; const list = [unit, unit]; return { first: unit, again: unit, list, deeper: { list } };',
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual({
+      first: { id: 1 },
+      again: { id: 1 },
+      list: [{ id: 1 }, { id: 1 }],
+      deeper: { list: [{ id: 1 }, { id: 1 }] },
+    });
+  });
+
+  it('marks only what contains itself as circular', async () => {
+    const result = await enclave.run(
+      'const unit = { id: 1 }; const loop = { unit }; loop.self = loop; return { unit, loop, after: unit };',
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual({
+      unit: { id: 1 },
+      loop: { unit: { id: 1 }, self: '[Circular]' },
+      after: { id: 1 },
+    });
+  });
+
+  it('hands a tool result with a shared reference to the script as the tool returned it', async () => {
+    const shared = { id: 7 };
+    const withTool = new Enclave({
+      timeout: 5000,
+      ...adapterOptions,
+      toolHandler: async () => ({ first: shared, again: shared, list: [shared, shared] }),
+    });
+    try {
+      const result = await withTool.run(
+        `const data = await callTool('data:get', {});
+         return [data.first.id, data.again.id, data.list.length, data.list[1].id];`,
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.value).toEqual([7, 7, 2, 7]);
+    } finally {
+      withTool.dispose();
+    }
+  });
 });

@@ -1,7 +1,10 @@
 /**
  * Session Executor
  *
- * Wraps enclave-vm session for runtime execution.
+ * Wraps an enclave-vm session and forwards its events to a runtime channel.
+ *
+ * It does not execute code: no execution engine is wired into this package. `execute()`
+ * says so (see `RuntimeNotImplementedError`).
  *
  * @packageDocumentation
  */
@@ -9,6 +12,25 @@
 import type { SessionId, CallId, SessionLimits } from '@enclave-vm/types';
 import { createSession, Session } from '@enclave-vm/core';
 import type { RuntimeChannel, RuntimeSession } from './types';
+
+/**
+ * Thrown by the operations of this package that are not implemented.
+ *
+ * `@enclave-vm/runtime` has the session bookkeeping and the channels of a runtime worker, but
+ * nothing in it runs a script. Scripts are run by `@enclave-vm/broker` (sessions, tools and
+ * streaming over HTTP) and `@enclave-vm/core` (the sandbox).
+ */
+export class RuntimeNotImplementedError extends Error {
+  readonly code = 'NOT_IMPLEMENTED';
+
+  constructor(operation: string) {
+    super(
+      `${operation} is not implemented: @enclave-vm/runtime does not execute code. ` +
+        'Run scripts with @enclave-vm/broker or @enclave-vm/core.',
+    );
+    this.name = 'RuntimeNotImplementedError';
+  }
+}
 
 /**
  * Session executor options
@@ -20,7 +42,7 @@ export interface SessionExecutorOptions {
   sessionId?: SessionId;
 
   /**
-   * Code to execute
+   * Code of the session. It is kept and never run: see `SessionExecutor.execute()`.
    */
   code: string;
 
@@ -43,8 +65,8 @@ export interface SessionExecutorOptions {
 /**
  * Session executor
  *
- * Manages execution of a single session, handling communication
- * between the enclave-vm session and the runtime channel.
+ * Holds one session and forwards its events to the runtime channel. Cancelling and tool
+ * results go to the session; executing the session's code is not implemented.
  */
 export class SessionExecutor {
   readonly sessionId: SessionId;
@@ -53,7 +75,6 @@ export class SessionExecutor {
   private readonly code: string;
   private readonly debug: boolean;
   private unsubscribe: (() => void) | null = null;
-  private executing = false;
 
   constructor(options: SessionExecutorOptions) {
     const { code, channel, limits, debug = false } = options;
@@ -114,38 +135,28 @@ export class SessionExecutor {
   }
 
   /**
-   * Execute the code
+   * Execute the code: not implemented.
+   *
+   * Nothing in this package runs a script. Rather than report a running session that never
+   * finishes, the session is ended with the error code `NOT_IMPLEMENTED` (the channel
+   * receives its `final` event) and the returned promise rejects.
+   *
+   * @throws RuntimeNotImplementedError always
    */
   async execute(): Promise<void> {
-    if (this.executing) {
-      throw new Error('Session is already executing');
+    const error = new RuntimeNotImplementedError('SessionExecutor.execute()');
+
+    if (!this.isTerminal) {
+      this.log(`Session ${this.sessionId} cannot be executed: ${error.message} (${this.code.length} characters)`);
+
+      // A well-formed session for the other end of the channel: init, then the final error
+      if (this.session.state === 'starting') {
+        this.session.start();
+      }
+      this.session.fail(error);
     }
 
-    this.executing = true;
-
-    try {
-      this.log(`Starting execution for session ${this.sessionId}`);
-
-      // Start the session
-      this.session.start();
-
-      // Note: In a real implementation, we would need to:
-      // 1. Parse and execute the code in the enclave
-      // 2. Handle tool calls by waiting for tool_result messages
-      //
-      // For now, we simulate basic execution
-      // The actual execution is handled by enclave-vm internally
-
-      // Wait for completion
-      const result = await this.session.wait();
-
-      this.log(`Session ${this.sessionId} completed: ${result.finalState}`);
-    } catch (error) {
-      this.log(`Session ${this.sessionId} error: ${error}`);
-      throw error;
-    } finally {
-      this.executing = false;
-    }
+    throw error;
   }
 
   /**

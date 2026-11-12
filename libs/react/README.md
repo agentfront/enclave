@@ -6,15 +6,14 @@
 
 > React hooks and components for the EnclaveJS streaming runtime
 
-The @enclave-vm/react package provides React bindings for EnclaveJS, including hooks for code execution, connection management, and pre-built components for common use cases like code editors and output displays.
+The @enclave-vm/react package provides React bindings for EnclaveJS: a provider that shares an `EnclaveClient` with a component tree, and hooks that run code on an EnclaveJS broker and keep the state of the run.
 
 ## Features
 
-- **React Hooks**: `useEnclave`, `useExecution`, `useSession` hooks
+- **React Hooks**: `useEnclaveSession` and `useEnclaveClient` hooks
 - **Context Provider**: Share client instance across components
+- **Session State**: State, result, error, stdout and events of a run as React state
 - **TypeScript Support**: Full type definitions
-- **SSR Compatible**: Works with Next.js and other SSR frameworks
-- **Suspense Ready**: Built-in support for React Suspense
 
 ## Installation
 
@@ -29,34 +28,32 @@ pnpm add @enclave-vm/react @enclave-vm/client
 ## Quick Start
 
 ```tsx
-import { EnclaveProvider, useEnclave } from '@enclave-vm/react';
+import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
 function App() {
   return (
-    <EnclaveProvider url="wss://runtime.example.com">
+    <EnclaveProvider config={{ baseUrl: 'https://api.example.com' }}>
       <CodeRunner />
     </EnclaveProvider>
   );
 }
 
 function CodeRunner() {
-  const { execute, isConnected, isExecuting } = useEnclave();
-  const [result, setResult] = useState(null);
+  const { execute, isRunning, result, error } = useEnclaveSession();
 
-  const runCode = async () => {
-    const res = await execute(`
+  const runCode = () =>
+    execute(`
       const user = await callTool('getUser', { id: 1 });
       return user.name;
     `);
-    setResult(res.value);
-  };
 
   return (
     <div>
-      <button onClick={runCode} disabled={!isConnected || isExecuting}>
-        {isExecuting ? 'Running...' : 'Run Code'}
+      <button onClick={runCode} disabled={isRunning}>
+        {isRunning ? 'Running...' : 'Run Code'}
       </button>
-      {result && <div>Result: {result}</div>}
+      {result?.success && <div>Result: {JSON.stringify(result.value)}</div>}
+      {error && <div>Error: {error.message}</div>}
     </div>
   );
 }
@@ -64,126 +61,116 @@ function CodeRunner() {
 
 ## Hooks
 
-### useEnclave
+### useEnclaveSession
 
-Main hook for interacting with the EnclaveJS runtime:
+Main hook for running code and following the run:
 
 ```tsx
-import { useEnclave } from '@enclave-vm/react';
+import { useEnclaveSession } from '@enclave-vm/react';
 
 function MyComponent() {
   const {
-    // Connection
-    isConnected,
-    connect,
-    disconnect,
-
     // Execution
     execute,
-    stream,
-    isExecuting,
+    cancel,
+    reset,
 
-    // Session
+    // State
+    state,
+    isRunning,
     sessionId,
-    createSession,
-    destroySession,
 
-    // Events
-    onToolCall,
-    onToolResult,
-    onLog,
-    onError,
-  } = useEnclave();
+    // Output
+    result,
+    error,
+    stdout,
+    events,
+  } = useEnclaveSession({
+    // Limits requested for the session
+    timeoutMs: 30000,
+    maxToolCalls: 20,
 
-  // Subscribe to tool calls
-  useEffect(() => {
-    const unsubscribe = onToolCall((call) => {
-      console.log('Tool called:', call.name);
-    });
-    return unsubscribe;
-  }, [onToolCall]);
+    // Callbacks
+    onToolCall: (callId, toolName, args) => {
+      console.log('Tool called:', toolName, args);
+    },
+    onComplete: (sessionResult) => {
+      console.log('Finished:', sessionResult.success);
+    },
+    onError: (sessionError) => {
+      console.error(sessionError.code, sessionError.message);
+    },
+  });
 
-  return <div>{isConnected ? 'Connected' : 'Disconnected'}</div>;
+  return <div>{state}</div>;
 }
 ```
 
-### useExecution
+| Value       | Description                                                                             |
+| ----------- | --------------------------------------------------------------------------------------- |
+| `execute`   | `(code) => Promise<SessionResult>`: starts a run and resolves with its result           |
+| `cancel`    | `(reason?) => Promise<void>`: cancels the running session                               |
+| `reset`     | Puts the hook back to `'idle'` and clears its values. Does not cancel a running session |
+| `state`     | `'idle'`, `'running'`, `'completed'`, `'error'` or `'cancelled'`                        |
+| `isRunning` | `true` while `state` is `'running'`                                                     |
+| `sessionId` | ID of the latest session; `null` before the first run and after `reset()`               |
+| `result`    | The `SessionResult` of the latest run, once it has ended                                |
+| `error`     | `{ code?, message }` when the latest run failed                                         |
+| `stdout`    | The stdout of the run so far                                                            |
+| `events`    | The events of the run so far                                                            |
 
-Hook for managing individual code executions:
+The options are `sessionId`, `timeoutMs`, `maxToolCalls`, `heartbeatIntervalMs`, and the callbacks `onStart`, `onStdout`, `onLog`, `onToolCall`, `onToolResultApplied`, `onComplete` and `onError`.
+
+### useEnclaveClient
+
+Hook for using the `EnclaveClient` of the provider directly:
 
 ```tsx
-import { useExecution } from '@enclave-vm/react';
+import { useEnclaveClient } from '@enclave-vm/react';
 
 function ExecutionComponent() {
-  const { execute, result, error, isLoading, toolCalls } = useExecution();
+  const client = useEnclaveClient();
 
-  return (
-    <div>
-      <button onClick={() => execute('return 1 + 1')} disabled={isLoading}>
-        Execute
-      </button>
+  const handleClick = async () => {
+    const result = await client.execute('return 1 + 1');
+    console.log(result.value);
+  };
 
-      {isLoading && <div>Executing...</div>}
-      {error && <div>Error: {error.message}</div>}
-      {result && <div>Result: {JSON.stringify(result.value)}</div>}
-
-      <div>
-        <h3>Tool Calls:</h3>
-        {toolCalls.map((call) => (
-          <div key={call.id}>
-            {call.name}: {JSON.stringify(call.args)}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  return <button onClick={handleClick}>Execute</button>;
 }
 ```
 
-### useSession
+### useEnclaveContext
 
-Hook for persistent session management:
+Hook for reading the context value: the client, and the configuration it was built from.
 
 ```tsx
-import { useSession } from '@enclave-vm/react';
+import { useEnclaveContext } from '@enclave-vm/react';
 
-function SessionComponent() {
-  const { session, create, destroy, execute, isActive } = useSession();
+function BrokerInfo() {
+  const { config } = useEnclaveContext();
 
-  useEffect(() => {
-    create({ timeout: 60000 });
-    return () => destroy();
-  }, []);
-
-  if (!isActive) return <div>No active session</div>;
-
-  return (
-    <div>
-      <div>Session: {session.id}</div>
-      <button onClick={() => execute('return Date.now()')}>Get Time</button>
-    </div>
-  );
+  return <div>Broker: {config.baseUrl}</div>;
 }
 ```
+
+All three hooks throw when they are used outside an `EnclaveProvider`.
 
 ## Provider Options
 
 ```tsx
 import { EnclaveProvider } from '@enclave-vm/react';
 
-function App() {
+function Root({ token }: { token: string }) {
   return (
     <EnclaveProvider
-      url="wss://runtime.example.com"
-      auth={{ token: 'your-token' }}
-      autoConnect={true}
-      reconnect={{
-        enabled: true,
-        maxAttempts: 5,
+      config={{
+        baseUrl: 'https://api.example.com',
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 60000,
+        autoReconnect: true,
+        maxReconnectAttempts: 3,
       }}
-      onConnected={() => console.log('Connected!')}
-      onDisconnected={() => console.log('Disconnected')}
-      onError={(error) => console.error(error)}
     >
       <App />
     </EnclaveProvider>
@@ -191,40 +178,49 @@ function App() {
 }
 ```
 
+`config` takes exactly the options of `EnclaveClient`: `baseUrl`, `headers`, `timeout`, `autoReconnect`, `maxReconnectAttempts`, `reconnectDelay`, `maxEventLength` and `fetch`. Any other option, such as `encryption`, `auth` or `serverUrl`, throws when the provider renders.
+
+The provider builds the client from `config`. When a render brings a configuration with other values, for example a renewed token in `headers`, the provider builds a new client from it. A render with an equal configuration, such as the inline object above, keeps the client. A session that was started before the change finishes on the client it was started with.
+
+To use a client that you created yourself, pass it with the `client` prop. The provider then builds none, and `config` is only what `useEnclaveContext()` reports.
+
+The client does not encrypt: requests and events travel as plain JSON over HTTP. Use an `https:` base URL, and send credentials with `headers`.
+
 ## Streaming Results
 
-Handle streaming execution with real-time updates:
+`stdout` and `events` grow while the session runs, and the callbacks are called as the events arrive:
 
 ```tsx
-import { useEnclave } from '@enclave-vm/react';
+import { useState } from 'react';
+import { useEnclaveSession } from '@enclave-vm/react';
 
 function StreamingComponent() {
-  const { stream } = useEnclave();
-  const [items, setItems] = useState([]);
+  const [toolNames, setToolNames] = useState<string[]>([]);
 
-  const runStreaming = async () => {
-    setItems([]);
-    await stream(
-      `
+  const { execute, isRunning, stdout } = useEnclaveSession({
+    onStart: () => setToolNames([]),
+    onToolCall: (callId, toolName) => {
+      setToolNames((prev) => [...prev, toolName]);
+    },
+  });
+
+  const runStreaming = () =>
+    execute(`
       for (const i of [1, 2, 3, 4, 5]) {
-        const data = await callTool('processItem', { id: i });
-        yield data;
+        await callTool('processItem', { id: i });
       }
-    `,
-      {
-        onYield: (value) => {
-          setItems((prev) => [...prev, value]);
-        },
-      },
-    );
-  };
+      return 'done';
+    `);
 
   return (
     <div>
-      <button onClick={runStreaming}>Start Streaming</button>
+      <button onClick={runStreaming} disabled={isRunning}>
+        Start Streaming
+      </button>
+      <pre>{stdout}</pre>
       <ul>
-        {items.map((item, i) => (
-          <li key={i}>{JSON.stringify(item)}</li>
+        {toolNames.map((name, i) => (
+          <li key={i}>{name}</li>
         ))}
       </ul>
     </div>
@@ -232,56 +228,73 @@ function StreamingComponent() {
 }
 ```
 
-## Error Boundaries
+Tools run on the broker. The hook is told about tool calls; it executes nothing.
 
-Use with React error boundaries:
+## Error Handling
+
+A run that fails does not throw. `execute` resolves with a result whose `success` is `false`, `state` becomes `'error'`, and `error` holds the code and the message. A cancelled run ends in the state `'cancelled'`.
 
 ```tsx
-import { EnclaveErrorBoundary } from '@enclave-vm/react';
+import { useEnclaveSession } from '@enclave-vm/react';
 
-function App() {
+function CodeRunner() {
+  const { execute, cancel, reset, state, error } = useEnclaveSession();
+
   return (
-    <EnclaveErrorBoundary
-      fallback={(error, reset) => (
+    <div>
+      <button onClick={() => execute('return 1 + 1')} disabled={state === 'running'}>
+        Run
+      </button>
+      {state === 'running' && <button onClick={() => cancel()}>Cancel</button>}
+      {state === 'cancelled' && <p>Cancelled</p>}
+      {state === 'error' && (
         <div>
-          <p>Something went wrong: {error.message}</p>
+          <p>Something went wrong: {error?.message}</p>
           <button onClick={reset}>Try again</button>
         </div>
       )}
-    >
-      <CodeRunner />
-    </EnclaveErrorBoundary>
+    </div>
   );
 }
 ```
 
 ## Server Components (Next.js)
 
-For Next.js App Router, use client components:
+The provider and the hooks use React context and state. For Next.js App Router, use client components:
 
 ```tsx
 // components/code-runner.tsx
 'use client';
 
-import { EnclaveProvider, useEnclave } from '@enclave-vm/react';
+import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
 export function CodeRunner() {
   return (
-    <EnclaveProvider url={process.env.NEXT_PUBLIC_ENCLAVE_URL!}>
+    <EnclaveProvider config={{ baseUrl: process.env.NEXT_PUBLIC_ENCLAVE_URL! }}>
       <RunnerInner />
     </EnclaveProvider>
+  );
+}
+
+function RunnerInner() {
+  const { execute, isRunning } = useEnclaveSession();
+
+  return (
+    <button onClick={() => execute('return 1 + 1')} disabled={isRunning}>
+      Run
+    </button>
   );
 }
 ```
 
 ## Related Packages
 
-| Package                                     | Description                       |
-| ------------------------------------------- | --------------------------------- |
-| [@enclave-vm/types](../enclavejs-types)     | Type definitions and Zod schemas  |
-| [@enclave-vm/client](../enclavejs-client)   | Browser/Node.js client SDK        |
-| [@enclave-vm/stream](../enclavejs-stream)   | Streaming protocol implementation |
-| [@enclave-vm/runtime](../enclavejs-runtime) | Standalone runtime worker         |
+| Package                           | Description                                             |
+| --------------------------------- | ------------------------------------------------------- |
+| [@enclave-vm/types](../types)     | Type definitions and Zod schemas                        |
+| [@enclave-vm/client](../client)   | Browser/Node.js client SDK                              |
+| [@enclave-vm/stream](../stream)   | Streaming protocol implementation                       |
+| [@enclave-vm/runtime](../runtime) | Runtime worker building blocks (not a runnable service) |
 
 ## License
 

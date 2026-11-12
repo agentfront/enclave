@@ -2,7 +2,7 @@
  * Session Executor Tests
  */
 
-import { createSessionExecutor, SessionExecutor } from './session-executor';
+import { createSessionExecutor, SessionExecutor, RuntimeNotImplementedError } from './session-executor';
 import { createMemoryChannel } from './channels/memory-channel';
 
 describe('SessionExecutor', () => {
@@ -112,22 +112,24 @@ describe('SessionExecutor', () => {
   });
 
   describe('execute', () => {
-    it('should throw if already executing', async () => {
+    it('should reject with RuntimeNotImplementedError and end the session', async () => {
       const channel = createMemoryChannel();
       const executor = createSessionExecutor({
         code: 'return 1',
         channel,
       });
 
-      // Start first execution (won't complete normally without proper setup)
-      const promise1 = executor.execute().catch(() => {});
+      await expect(executor.execute()).rejects.toBeInstanceOf(RuntimeNotImplementedError);
 
-      // Try to start second execution immediately
-      await expect(executor.execute()).rejects.toThrow('already executing');
+      expect(executor.state).toBe('failed');
+      expect(executor.isTerminal).toBe(true);
+      expect(channel.getEvents().map((event) => event.type)).toEqual(['session_init', 'final']);
 
-      // Clean up
-      await executor.cancel('test cleanup');
-      await promise1;
+      // A second call says the same and sends nothing more
+      await expect(executor.execute()).rejects.toMatchObject({ code: 'NOT_IMPLEMENTED' });
+      expect(channel.getEvents()).toHaveLength(2);
+
+      executor.dispose();
     });
   });
 

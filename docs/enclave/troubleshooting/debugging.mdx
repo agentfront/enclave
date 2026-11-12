@@ -9,32 +9,37 @@ This page covers techniques for debugging issues with Enclave code execution.
 
 ### Pre-validate Code
 
-Before running code in the enclave, validate it separately:
+To see why a script is refused, run the steps of the enclave yourself: pre-scan the script as it was written, transform it, then validate the transformed code. (AgentScript allows a top-level `return` and `await`, which only parse once the script is wrapped.)
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset, PreScanner, createPreScannerConfig } from '@enclave-vm/ast';
+import { JSAstValidator, PreScanner, createAgentScriptPreset, transformAgentScript } from '@enclave-vm/ast';
 
 async function debugValidation(code: string) {
-  // Step 1: Pre-scan
-  const scanner = new PreScanner(createPreScannerConfig('agentscript'));
-  const scanResult = scanner.scan(code);
-
-  if (!scanResult.valid) {
-    console.log('Pre-scan failed:');
-    for (const issue of scanResult.issues) {
-      console.log(`  [${issue.severity}] ${issue.message}`);
-    }
+  // Step 1: Pre-scan the script as written. 'agentscript' is the preset of an enclave
+  // with the default AST preset; an enclave with a `preScan` option uses that instead.
+  const scan = new PreScanner({ preset: 'agentscript' }).scan(code);
+  if (!scan.success) {
+    console.log('Pre-scan failed:', scan.fatalIssue?.code, scan.fatalIssue?.message);
     return;
   }
 
-  // Step 2: AST validation
+  // Step 2: Transform, as the enclave does before it validates
+  let transformed: string;
+  try {
+    transformed = transformAgentScript(code, { maxIterations: 10000 });
+  } catch (error) {
+    console.log('Transform failed:', (error as Error).message);
+    return;
+  }
+
+  // Step 3: AST validation of the transformed code. The pre-scan is done (step 1).
   const validator = new JSAstValidator(createAgentScriptPreset());
-  const result = await validator.validate(code);
+  const result = await validator.validate(transformed, { preScan: { enabled: false } });
 
   if (!result.valid) {
-    console.log('AST validation failed:');
+    console.log('Validation failed:');
     for (const issue of result.issues) {
-      console.log(`  [${issue.rule}] ${issue.message}`);
+      console.log(`  [${issue.code}] ${issue.message}`);
       if (issue.location) {
         console.log(`    Line ${issue.location.line}, Column ${issue.location.column}`);
       }
@@ -44,6 +49,8 @@ async function debugValidation(code: string) {
   }
 }
 ```
+
+The enclave validates with its own list of allowed globals (your `globals` and `toolNamespaces` included), so a script that uses them is refused by this stand-alone validator and accepted by `run()`. The issues `run()` itself found are in `result.error.data.issues`.
 
 ### View Transformed Code
 
@@ -71,9 +78,18 @@ console.log(transformed);
 
 ### Use Console Logging
 
-Console output is captured and available in results:
+A script may use `console` when the enclave has a `consoleHandler`, which receives each call as `(level, message)`. The result has no captured output: collect the lines in the handler.
 
 ```ts
+const lines: string[] = [];
+
+const enclave = new Enclave({
+  consoleHandler: (level, message) => {
+    lines.push(`[${level}] ${message}`);
+  },
+  toolHandler: async (name, args) => executeTool(name, args),
+});
+
 const code = `
   console.log('Starting execution');
   const users = await callTool('users:list', {});
@@ -89,9 +105,10 @@ const code = `
 
 const result = await enclave.run(code);
 
-// Access captured console output
-console.log('Script output:', result.stdout);
+console.log('Script output:', lines);
 ```
+
+Without a `consoleHandler`, `console` is allowed only at `PERMISSIVE` and writes to the host process console.
 
 ### Track Tool Calls
 
@@ -141,6 +158,7 @@ if (!result.success) {
   console.log('  Name:', result.error?.name);
   console.log('  Message:', result.error?.message);
 
+  // Only errors made outside the sandbox have a stack: an error a script threw has none
   if (result.error?.stack) {
     console.log('  Stack:', result.error.stack);
   }
@@ -155,12 +173,17 @@ if (!result.success) {
 
 | Code | Meaning | Debug Steps |
 |------|---------|-------------|
-| `VALIDATION_ERROR` | AST validation failed | Check validation issues |
-| `TIMEOUT` | Exceeded timeout | Profile slow operations |
-| `MAX_TOOL_CALLS` | Too many tool calls | Review call patterns |
-| `MAX_ITERATIONS` | Loop limit hit | Check loop bounds |
-| `TOOL_ERROR` | Tool handler error | Debug tool handler |
-| `MEMORY_LIMIT_EXCEEDED` | Memory limit | Profile memory usage |
+| `VALIDATION_ERROR` | AST validation failed | Check `error.data.issues` |
+| `DOUBLE_VM_EXECUTION_ERROR` | The script failed while it ran: read `error.message` | See below |
+| - `Script execution timed out ...` | Exceeded timeout | Profile slow operations |
+| - `Maximum tool call limit exceeded ...` | Too many tool calls | Review call patterns |
+| - `Maximum iteration limit exceeded ...` | Loop limit hit | Check loop bounds |
+| - any other message | The script threw, or a tool handler did | Debug the script or the tool handler |
+| `MEMORY_LIMIT_EXCEEDED` | Memory limit | Profile memory usage (`error.data`) |
+| `SCORING_BLOCKED` | Refused by the scoring gate | Read `error.data.signals` |
+| `ENCLAVE_ERROR` | Failure before the script ran, such as a syntax error | Read `error.message` |
+
+With `doubleVm: { enabled: false }` the code of a failing script is `VM_EXECUTION_ERROR`. See [Error Codes](/core-libraries/enclave-vm/configuration#error-codes).
 
 ## Scoring Gate Debugging
 
@@ -172,28 +195,36 @@ const enclave = new Enclave({
     scorer: 'rule-based',
     blockThreshold: 70,
     warnThreshold: 40,
-    onScore: (result) => {
-      console.log('Scoring result:', {
-        score: result.score,
-        signals: result.signals,
-        blocked: result.score >= 70,
-      });
-    },
+    verbose: true, // Log every score and its signals to the console
   },
+});
+
+const result = await enclave.run(code);
+
+// The gate has no callback: the score is in the result
+console.log('Scoring result:', {
+  score: result.scoringResult?.totalScore,
+  signals: result.scoringResult?.signals,
+  allowed: result.scoringResult?.allowed,
 });
 ```
 
 ### Test Scoring Separately
 
 ```ts
-import { RuleBasedScorer } from '@enclave-vm/core';
+import { ScoringGate } from '@enclave-vm/core';
 
-const scorer = new RuleBasedScorer();
-const result = scorer.score(code);
+const gate = new ScoringGate({ scorer: 'rule-based', blockThreshold: 70 });
+const result = await gate.evaluate(code);
 
-console.log('Score:', result.score);
+console.log('Score:', result.totalScore);
 console.log('Signals:', result.signals);
+console.log('Allowed:', result.allowed);
+
+gate.dispose();
 ```
+
+The gate of an enclave scores the transformed script and knows the enclave's tool namespaces; a gate you create yourself sees `callTool` calls only, unless you pass it `toolNamespaces`.
 
 ## Performance Debugging
 

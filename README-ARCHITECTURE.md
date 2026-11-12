@@ -2,25 +2,29 @@
 
 This document captures the architecture and decisions for turning `enclave-vm` into a **remote, continuous, streaming runtime** that supports `callTool()` roundtrips without requiring developers to run their own VPC runtime.
 
-The design intentionally supports:
+It is a design document. Parts of it are implemented and parts are not; the table below and the notes marked **Status** say which. Where this document and a package's README disagree, the README describes the code.
+
+The design is for:
 
 - **Browser + server clients on day 1**
 - **Continuous sessions** (not "resume per request")
 - **Streaming output** + **tool calls** + **tool results**
-- **Optional authenticated per-session encryption** (to prevent MITM/proxy visibility)
-- **Reference sidecar + auto-ref** to avoid moving large/sensitive payloads through the runtime when not needed
+- **Optional per-session encryption** on top of the transport (not implemented: see [Security](#10-security-authentication--optional-per-session-encryption))
+- **Reference sidecar + auto-ref** to avoid moving large/sensitive payloads through the runtime when not needed (the sidecar exists in `@enclave-vm/core`; auto-ref is not implemented)
 
 ## Implementation Status
 
-| Package               | Status  | Description                             |
-| --------------------- | ------- | --------------------------------------- |
-| `@enclave-vm/core`    | ✅ Done | Core sandbox VM engine                  |
-| `@enclave-vm/types`   | ✅ Done | Shared TypeScript types and Zod schemas |
-| `@enclave-vm/stream`  | ✅ Done | NDJSON streaming protocol               |
-| `@enclave-vm/broker`  | ✅ Done | Middleware/tool broker with HTTP API    |
-| `@enclave-vm/client`  | ✅ Done | Browser + Node client SDK               |
-| `@enclave-vm/runtime` | ✅ Done | Extracted runtime worker                |
-| `@enclave-vm/react`   | ✅ Done | React hooks & components                |
+| Package               | Status             | Description                                                                                                 |
+| --------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `@enclave-vm/core`    | ✅ Done            | Core sandbox VM engine                                                                                      |
+| `@enclave-vm/types`   | ✅ Done            | Shared TypeScript types and Zod schemas                                                                     |
+| `@enclave-vm/stream`  | ✅ Done            | NDJSON parsing and reconnection helpers. Its encryption primitives are not used by any other package        |
+| `@enclave-vm/broker`  | ✅ Done            | Tool broker with sessions and HTTP routes, running the sandbox in process. No authentication, no encryption |
+| `@enclave-vm/client`  | ✅ Done            | Browser + Node client SDK. No encryption, no authentication of its own (credentials go in `headers`)        |
+| `@enclave-vm/react`   | ✅ Done            | React provider and hooks around the client                                                                  |
+| `@enclave-vm/runtime` | ❌ Not implemented | Building blocks only: session bookkeeping and channels. `execute` rejects with `RuntimeNotImplementedError` |
+
+What works today is the **embedded** deployment (scenarios 1 and 3 below): the broker runs the sandbox in its own process. The **extracted** deployment (scenarios 2 and 4), in which a broker hands execution to a separate runtime worker, is a design: the broker has no option to connect to a worker, and the runtime package does not execute scripts.
 
 ## Table of contents
 
@@ -48,8 +52,8 @@ The design intentionally supports:
   - runtime executes continuously and streams events
   - runtime can request tool execution (`tool_call`) and continue once it receives `tool_result`
 - Support two deployment modes:
-  - **Embedded runtime**: the middleware runs `enclave-vm` directly (single app / VPC).
-  - **Extracted runtime**: the middleware launches/connects to an external runtime worker (Lambda/edge/server) and proxies streaming + tool calls.
+  - **Embedded runtime**: the middleware runs `enclave-vm` directly (single app / VPC). Implemented.
+  - **Extracted runtime**: the middleware launches/connects to an external runtime worker (Lambda/edge/server) and proxies streaming + tool calls. Not implemented.
 - Keep secrets and tool execution in the middleware/tool-broker by default (the runtime worker should not have secrets).
 - Keep tool contracts safe and explicit via **zod input/output schemas**.
 - Reduce throughput and prevent accidental leakage by supporting **reference sidecar** and **AST-based auto-ref**.
@@ -109,9 +113,9 @@ The design intentionally supports:
 | `@enclave-vm/types`   | `@enclave-vm/types`   | Shared TypeScript types, Zod schemas, protocol constants.                 |
 | `@enclave-vm/stream`  | `@enclave-vm/stream`  | NDJSON streaming protocol, event parsing, reconnection logic.             |
 | `@enclave-vm/broker`  | `@enclave-vm/broker`  | Middleware: tool registry, secret management, session API, HTTP handlers. |
-| `@enclave-vm/client`  | `@enclave-vm/client`  | Browser + Node SDK for connecting to middleware. (Planned)                |
-| `@enclave-vm/runtime` | `@enclave-vm/runtime` | Extracted runtime worker for Lambda/DO/containers. (Planned)              |
-| `@enclave-vm/react`   | `@enclave-vm/react`   | React hooks for session management. (Planned)                             |
+| `@enclave-vm/client`  | `@enclave-vm/client`  | Browser + Node SDK for connecting to middleware.                          |
+| `@enclave-vm/runtime` | `@enclave-vm/runtime` | Building blocks of an extracted runtime worker. Does not execute yet.     |
+| `@enclave-vm/react`   | `@enclave-vm/react`   | React hooks for session management.                                       |
 
 ---
 
@@ -159,9 +163,19 @@ const broker = createBroker()
 
 const app = express();
 app.use(express.json());
-registerExpressRoutes(app, createSessionHandler({ broker }));
+app.use(authenticate); // your authentication: the broker has none
+registerExpressRoutes(
+  app,
+  createSessionHandler({
+    broker,
+    // Tells the routes who the caller is, so that a session belongs to the caller that created it
+    identify: (request) => (request.raw as { user?: { id: string } }).user?.id,
+  }),
+);
 app.listen(3000);
 ```
+
+The broker does not authenticate callers. Without an `identify` hook its routes do not tell callers apart: whoever can reach them can list, read, replay and end every session (see the broker's README).
 
 **Example (Browser):**
 
@@ -197,7 +211,9 @@ while (true) {
 
 ### Scenario 2: Web → VPC (Middleware) → Lambda/Vercel (Runtime)
 
-Browser connects to middleware, but code execution happens on a separate Lambda/Vercel worker. **Best for isolation and scale.**
+> **Status: design, not implemented.** `@enclave-vm/broker` has no option to connect to a runtime worker, and `@enclave-vm/runtime` does not execute scripts: its `execute` request ends with `RuntimeNotImplementedError`.
+
+Browser connects to middleware, but code execution happens on a separate Lambda/Vercel worker. **Intended for isolation and scale.**
 
 ```
 ┌─────────────┐    HTTPS/NDJSON    ┌─────────────────────┐    WebSocket    ┌─────────────────┐
@@ -210,7 +226,7 @@ Browser connects to middleware, but code execution happens on a separate Lambda/
                                    └─────────────────────┘                  └─────────────────┘
 ```
 
-**Why use this?**
+**What the design is for:**
 
 - **Scalability**: Lambda/Vercel scales horizontally for compute
 - **Cost**: Pay-per-execution for runtime
@@ -327,7 +343,9 @@ const output = await runAgentCode(`
 
 ### Scenario 4: Server → Lambda/Vercel (Extracted Runtime)
 
-Your server orchestrates but offloads code execution to Lambda/Vercel. **Best for untrusted code isolation.**
+> **Status: design, not implemented.** See the note on scenario 2.
+
+Your server orchestrates but offloads code execution to Lambda/Vercel. **Intended for untrusted code isolation.**
 
 ```
 ┌──────────────────────────┐         WebSocket/HTTP        ┌─────────────────────┐
@@ -341,7 +359,7 @@ Your server orchestrates but offloads code execution to Lambda/Vercel. **Best fo
 └──────────────────────────┘                               └─────────────────────┘
 ```
 
-**Why use this?**
+**What the design is for:**
 
 - **Security isolation**: Untrusted code runs in isolated Lambda
 - **Resource isolation**: Lambda memory/CPU limits prevent abuse
@@ -352,14 +370,16 @@ Your server orchestrates but offloads code execution to Lambda/Vercel. **Best fo
 
 ### Deployment Comparison
 
-| Scenario                     | Client  | Middleware | Runtime       | Secrets Location | Best For                 |
-| ---------------------------- | ------- | ---------- | ------------- | ---------------- | ------------------------ |
-| **1. Web→Embedded**          | Browser | VPC        | In-process    | VPC              | Simple deployments       |
-| **2. Web→Middleware→Lambda** | Browser | VPC        | Lambda/Vercel | VPC only         | Scale + isolation        |
-| **3. Server→Embedded**       | None    | Server     | In-process    | Server           | Backend automation       |
-| **4. Server→Lambda**         | None    | Server     | Lambda/Vercel | Server only      | Untrusted code isolation |
+| Scenario                     | Client  | Middleware | Runtime       | Secrets Location | Best For                 | Status          |
+| ---------------------------- | ------- | ---------- | ------------- | ---------------- | ------------------------ | --------------- |
+| **1. Web→Embedded**          | Browser | VPC        | In-process    | VPC              | Simple deployments       | Implemented     |
+| **2. Web→Middleware→Lambda** | Browser | VPC        | Lambda/Vercel | VPC only         | Scale + isolation        | Not implemented |
+| **3. Server→Embedded**       | None    | Server     | In-process    | Server           | Backend automation       | Implemented     |
+| **4. Server→Lambda**         | None    | Server     | Lambda/Vercel | Server only      | Untrusted code isolation | Not implemented |
 
 **Key Principle**: Secrets always stay in the middleware/broker. The runtime only sees tool call requests and results, never the credentials used to execute them.
+
+In the embedded deployments a session runs in the broker's own process and thread: a script that computes without calling a tool holds the thread, and with it every other session, until it ends or reaches its timeout. Run the broker in a process of its own, or give its sandbox the worker-pool adapter, when you serve callers you do not trust.
 
 ---
 
@@ -370,7 +390,7 @@ If a session must be truly continuous and keep an in-memory sidecar, then all se
 In this architecture, that typically means:
 
 - **Embedded runtime**: the middleware is the session host (it owns the sidecar and runs `enclave-vm`), so it must be stateful for the session lifetime.
-- **Extracted runtime**: the middleware and the runtime worker both hold session state and communicate over a per-session channel; each side must be reachable for the duration.
+- **Extracted runtime** (design, not implemented): the middleware and the runtime worker both hold session state and communicate over a per-session channel; each side must be reachable for the duration.
 
 ### What does NOT work by itself
 
@@ -383,9 +403,11 @@ In those environments, the runtime must either:
 - run on a **stateful** host (server/container or Durable Object), or
 - use a **single per-session channel** (typically WebSocket) so messages are delivered to the correct live session without relying on load balancer affinity.
 
+With the embedded runtime that exists today, this means: a session lives in the memory of the broker that created it. Behind a load balancer, a session's later requests (a reconnect to `GET /sessions/:sessionId/stream`, a cancel) have to reach that broker; another one answers with 404.
+
 ### How does the middleware deliver tool results to the right live session?
 
-Because the sidecar and execution are in-memory, the runtime must route inbound messages to the correct live worker/actor:
+This question belongs to the extracted runtime (design). Because the sidecar and execution are in-memory, the runtime must route inbound messages to the correct live worker/actor:
 
 - **Durable Objects**: route by `sessionId` → the platform delivers all requests to the same object instance.
 - **Sticky load balancer**: consistent hashing / cookie affinity so the same `sessionId` lands on the same runtime node.
@@ -400,13 +422,16 @@ The middleware API is designed so the **first request starts the session and ret
 
 ### HTTP Endpoints
 
-| Method   | Path                          | Description                                      |
-| -------- | ----------------------------- | ------------------------------------------------ |
-| `GET`    | `/sessions`                   | List all active sessions                         |
-| `POST`   | `/sessions`                   | Create session and execute code (streams NDJSON) |
-| `GET`    | `/sessions/:sessionId`        | Get session information                          |
-| `GET`    | `/sessions/:sessionId/stream` | Stream/replay session events (for reconnection)  |
-| `DELETE` | `/sessions/:sessionId`        | Terminate a session                              |
+| Method   | Path                          | Description                                                  |
+| -------- | ----------------------------- | ------------------------------------------------------------ |
+| `GET`    | `/sessions`                   | List sessions (the caller's own, with an `identify` hook)    |
+| `POST`   | `/sessions`                   | Create session and execute code (streams NDJSON)             |
+| `GET`    | `/sessions/:sessionId`        | Get session information                                      |
+| `GET`    | `/sessions/:sessionId/stream` | Replay the kept events from `?fromSeq=N` and follow the rest |
+| `DELETE` | `/sessions/:sessionId`        | Terminate a session                                          |
+| `POST`   | `/sessions/:sessionId/cancel` | Terminate a session (the `cancelUrl` of `session_init`)      |
+
+There is no route for submitting a tool result: tools run in the broker, which applies their results itself.
 
 ### Streaming format
 
@@ -414,7 +439,6 @@ Day-1 recommendation: `application/x-ndjson`
 
 - Works well with browser `fetch()` streaming (POST + readable stream)
 - Easy framing (1 JSON object per line)
-- Easier to encrypt at the message level than SSE
 
 ### Example: Create Session Request
 
@@ -437,10 +461,10 @@ Accept: application/x-ndjson
 ### Example: Streamed Response (NDJSON)
 
 ```jsonl
-{"protocolVersion":1,"sessionId":"s_abc123","seq":1,"type":"session_init","payload":{"expiresAt":"2024-01-01T00:01:00Z"}}
-{"protocolVersion":1,"sessionId":"s_abc123","seq":2,"type":"tool_call","payload":{"callId":"c_xyz","toolName":"get_users","args":{}}}
-{"protocolVersion":1,"sessionId":"s_abc123","seq":3,"type":"tool_result_applied","payload":{"callId":"c_xyz"}}
-{"protocolVersion":1,"sessionId":"s_abc123","seq":4,"type":"final","payload":{"ok":true,"result":[{"id":1,"name":"Alice"}]}}
+{"protocolVersion":2,"sessionId":"s_abc123","seq":1,"type":"session_init","payload":{"cancelUrl":"/sessions/s_abc123/cancel","expiresAt":"2024-01-01T00:01:00Z","encryption":{"enabled":false}}}
+{"protocolVersion":2,"sessionId":"s_abc123","seq":2,"type":"tool_call","payload":{"callId":"c_xyz","toolName":"get_users","args":{}}}
+{"protocolVersion":2,"sessionId":"s_abc123","seq":3,"type":"tool_result_applied","payload":{"callId":"c_xyz"}}
+{"protocolVersion":2,"sessionId":"s_abc123","seq":4,"type":"final","payload":{"ok":true,"result":[{"id":1,"name":"Alice"}]}}
 ```
 
 ---
@@ -449,7 +473,7 @@ Accept: application/x-ndjson
 
 Every message includes:
 
-- `protocolVersion` - Protocol version (currently `1`)
+- `protocolVersion` - Protocol version (currently `2`; `1` is still accepted by the schemas)
 - `sessionId` - Session identifier (`s_` prefix)
 - `seq` - Monotonic sequence number
 - `type` - Event type
@@ -467,6 +491,11 @@ Every message includes:
 | `final`               | Session completed (success or failure)      |
 | `heartbeat`           | Keep-alive signal                           |
 | `error`               | Non-fatal error during execution            |
+| `partial_result`      | Part of a result, with a path (version 2)   |
+| `tool_progress`       | Progress of a tool call (version 2)         |
+| `deadline_exceeded`   | The session's deadline passed (version 2)   |
+| `catalog_changed`     | The tool catalog changed (version 2)        |
+| `enc`                 | Encrypted envelope (defined, not produced)  |
 
 ### TypeScript Types (from `@enclave-vm/types`)
 
@@ -482,11 +511,15 @@ type StreamEvent =
   | ToolResultAppliedEvent
   | FinalEvent
   | HeartbeatEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | PartialResultEvent
+  | ToolProgressEvent
+  | DeadlineExceededEvent
+  | CatalogChangedEvent;
 
 // Base event structure
 interface BaseEvent {
-  protocolVersion: 1;
+  protocolVersion: 2 | 1;
   sessionId: SessionId; // `s_${string}`
   seq: number;
   type: string;
@@ -576,6 +609,8 @@ const broker = createBroker()
 
 ## 9) Reference Sidecar + auto-ref (key decision)
 
+> **Status.** `@enclave-vm/core` has a reference sidecar (`sidecar: { enabled: true }`): a tool result that is a string as a whole, of at least the extraction threshold, is stored outside the sandbox, the script holds a token of the form `__REF_<uuid>__`, and the token is resolved when the script passes it to another tool. The rest of this section is design and is **not implemented**: no AST-based auto-ref, no `{ $ref: { id } }` tokens in tool results (the `RefToken` type of `@enclave-vm/types` is not produced by any package), and a reference a script returns is not resolved for the caller.
+
 ### The problem
 
 - Tool outputs can be large (throughput) and/or sensitive (secrets/PII).
@@ -613,21 +648,25 @@ return users.length;
 
 ## 10) Security: authentication + optional per-session encryption
 
-### Baseline
+### What the packages provide
 
-- Always use TLS (`https`/`wss`)
-- Authenticate session creation (API key / JWT / signed request)
-- Enforce session limits (duration, output bytes, tool calls, etc.)
+- **Transport.** Requests and events travel as plain JSON. Always use TLS (`https`/`wss`): nothing else protects them.
+- **Authentication.** None of the packages authenticates a caller. `@enclave-vm/broker` leaves it to the middleware you put in front of its routes; `@enclave-vm/client` sends the `headers` you give it and has no authentication option of its own.
+- **Who may see a session.** With the `identify` hook of the broker's session routes, a session belongs to the caller that created it: another caller gets the answer of an id that does not exist, and a request without an identity is answered with 401. Without the hook the routes do not tell callers apart.
+- **Limits.** The limits the embedder gives the broker (lifetime, tool calls, tool result size, per-tool deadline) bound every session; a request may lower `maxToolCalls` and the lifetime and cannot raise them.
+- **Rate limiting.** Not provided. The broker bounds the registered sessions (`sessions.maxSessions`) and the streams per session.
 
 ### Authorization model
 
 - `sessionId` is not a secret; treat it as a routing key.
-- Every endpoint that mutates/observes session state requires authorization
-- The middleware ↔ runtime session channel must be authenticated
+- Every endpoint that mutates/observes session state requires authorization. In the broker this is the `identify` hook together with your authentication.
+- The middleware ↔ runtime session channel must be authenticated (design: there is no such channel in the packages today, and `WebSocketChannel` of `@enclave-vm/runtime` sends no credentials).
 
 ### Optional per-session encryption
 
-Per-hop encryption using:
+> **Status: not implemented as a protocol.** `@enclave-vm/stream` exports primitives (ephemeral ECDH on P-256, HKDF-SHA-256, AES-256-GCM, an envelope whose header is authenticated), and `@enclave-vm/types` defines the hello messages and the `enc` envelope. No client or broker of this repository uses them: the client refuses an `encryption` option and ends a session that receives an encrypted event, and the broker refuses a request that requires encryption. The key exchange of the primitives is not authenticated, so by themselves they protect against a party that can only read the connection, not against one that can change messages.
+
+The design is per-hop encryption using:
 
 - Ephemeral ECDH key exchange
 - HKDF key derivation
@@ -649,9 +688,9 @@ Per-hop encryption using:
 
 ### Recommendations
 
-- **Server/container**: Best for most deployments. Run Node.js with `@enclave-vm/broker`.
-- **Cloudflare DO**: Best for edge deployment with global distribution.
-- **Lambda**: Use for short-lived sessions or as extracted runtime with middleware coordination.
+- **Server/container**: Best for most deployments. Run Node.js with `@enclave-vm/broker`. This is the placement the packages support today.
+- **Cloudflare DO**: A candidate for edge deployment with global distribution (design; no package targets it).
+- **Lambda**: A candidate for short-lived sessions or as extracted runtime with middleware coordination (design; the extracted runtime is not implemented).
 - **Vercel Edge**: Use only as gateway/proxy to stateful runtime.
 
 ---

@@ -10,15 +10,19 @@ This guide covers security best practices for hardening Enclave deployments in p
 ### Critical
 
 - [ ] Use `STRICT` security level for untrusted code
-- [ ] Enable AI Scoring Gate
-- [ ] Set memory limits
+- [ ] Set memory limits, on the sandbox and on the process or container around it
 - [ ] Configure timeouts
 - [ ] Validate all tool inputs
+- [ ] Authenticate callers in front of every endpoint that accepts code, and in front of every session route of the broker: the routes that list, read, replay and end sessions have no authentication of their own either
+- [ ] Give the broker's session routes an `identify` hook, so that a session belongs to the caller that created it. Authentication alone does not do that. Only a broker whose routes a single trusted backend calls can go without the hook (see [Client Connections](#client-connections))
 - [ ] Run as non-root user
 
 ### Recommended
 
-- [ ] Enable end-to-end encryption
+- [ ] Use HTTPS for client connections: the client and the broker exchange plain JSON
+- [ ] Run the sandbox in the worker pool for a hard stop of a script that runs past its timeout and a heap limit per worker. A worker thread shares the host's process: the pool does not guarantee that the host survives
+- [ ] Run the enclave in a child process or a container with limits of the operating system when the host must survive any script
+- [ ] Consider the AI Scoring Gate as an additional, heuristic signal
 - [ ] Implement rate limiting
 - [ ] Use network segmentation
 - [ ] Enable audit logging
@@ -77,24 +81,20 @@ app.post('/execute', async (req, res) => {
 
 ### Layer 2: Pre-Scanner
 
-Block obvious attacks early:
+`Enclave` runs the pre-scanner on the script as it was written, before anything parses it, with the pre-scanner preset named like the AST preset. With the default `agentscript` preset that is the strictest one: 100 KB of code in at most 1,000 lines of at most 2,000 characters, string literals of at most 10 KB, no regular-expression literal, and no bidirectional or invisible control character.
+
+Loosen single limits only where your scripts need it, and keep the Unicode checks:
 
 ```ts
-import { PreScanner, createPreScannerConfig } from '@enclave-vm/ast';
-
-const scanner = new PreScanner(createPreScannerConfig('agentscript'));
-
-function preScreen(code: string): boolean {
-  const result = scanner.scan(code);
-  if (!result.valid) {
-    logger.warn('Pre-scan blocked code', {
-      issues: result.issues,
-    });
-    return false;
-  }
-  return true;
-}
+const enclave = new Enclave({
+  preScan: {
+    // The agentscript pre-scanner, with room for scripts of up to 500 KB
+    config: { maxInputSize: 500 * 1024, maxLines: 5000 },
+  },
+});
 ```
+
+`preScan: { preset: 'standard' }` gives the limits enclaves had before 2.19.2 (5 MB, 10,000 lines, regular-expression literals analyzed, no check for bidirectional or invisible characters).
 
 ### Layer 3: AST Validation
 
@@ -129,7 +129,7 @@ const validator = new JSAstValidator(
 
 ### Layer 4: AI Scoring Gate
 
-Detect suspicious semantic patterns:
+An optional heuristic: it scores a script by its tool calls and refuses it at a threshold. It flags patterns that look risky; a low score does not show that a script is safe.
 
 ```ts
 const enclave = new Enclave({
@@ -137,25 +137,28 @@ const enclave = new Enclave({
     scorer: 'rule-based',
     blockThreshold: 70,
     warnThreshold: 40,
-    onScore: (result) => {
-      if (result.score >= 40) {
-        logger.warn('Suspicious code pattern', {
-          score: result.score,
-          signals: result.signals,
-        });
-      }
-    },
+    failOpen: false, // Refuse a script the gate cannot score
   },
 });
+
+const result = await enclave.run(code);
+
+// The gate has no callback: read the score from the result
+if (result.scoringResult?.warned) {
+  logger.warn('Suspicious code pattern', {
+    score: result.scoringResult.totalScore,
+    signals: result.scoringResult.signals,
+  });
+}
 ```
 
 ### Layer 5: Runtime Isolation
 
-Maximum runtime isolation:
+Limits, and the worker pool around the sandbox:
 
 ```ts
 const enclave = new Enclave({
-  // Memory limit
+  // Memory limit (the enclave's own accounting; the default is 1 MB)
   memoryLimit: 64 * 1024 * 1024, // 64MB
 
   // Execution timeout
@@ -167,13 +170,20 @@ const enclave = new Enclave({
   // Iteration limit
   maxIterations: 10000,
 
-  // Use worker pool for OS-level isolation
-  adapter: createWorkerPoolAdapter({
-    poolSize: 4,
-    maxWorkerMemory: 128 * 1024 * 1024,
-  }),
+  // Run scripts in worker threads: a heap limit per worker and a hard stop
+  adapter: 'worker_threads',
+  workerPoolConfig: {
+    maxWorkers: 4,
+    memoryLimitPerWorker: 128 * 1024 * 1024,
+  },
 });
 ```
+
+What these limits are, and are not:
+
+- In process, `timeout` and `memoryLimit` are the enclave's own accounting, not the engine's. The deadline is checked between the steps of the script's own code, so one call into a built-in is not bounded by `timeout`. `memoryLimit` counts the operations that make text and arrays grow; it does not count copies, objects, Maps or Sets.
+- The worker pool adds the engine's heap limit and terminates a script that is still running five seconds after its timeout. A worker thread shares the process with the host: it is not process isolation, and the heap limit is a backstop, not a guarantee that the process survives.
+- A host that must survive whatever a script does runs the enclave in a child process or a container with limits of the operating system.
 
 ### Layer 6: Output Sanitization
 
@@ -263,34 +273,38 @@ const enclave = new Enclave({
 
 ### Permission Control
 
-Implement tool permissions per user:
+Implement tool permissions per user. A tool handler receives the tool name and the arguments, nothing about the caller, so create the enclave (or pass the handler to `run()`) for the user the script runs for:
 
 ```ts
 interface UserPermissions {
   tools: string[];
   limits: {
     maxToolCalls: number;
-    maxDataSize: number;
   };
 }
 
-const enclave = new Enclave({
-  toolHandler: async (name, args, context) => {
-    const permissions = await getUserPermissions(context.userId);
+async function runForUser(userId: string, code: string) {
+  const permissions = await getUserPermissions(userId);
 
-    // Check tool access
-    if (!permissions.tools.includes(name)) {
-      throw new Error(`Tool ${name} not allowed for user`);
-    }
+  const enclave = new Enclave({
+    securityLevel: 'STRICT',
+    // The enclave enforces the call limit itself
+    maxToolCalls: permissions.limits.maxToolCalls,
+    toolHandler: async (name, args) => {
+      // Check tool access
+      if (!permissions.tools.includes(name)) {
+        throw new Error(`Tool ${name} not allowed for user`);
+      }
+      return executeTool(name, args, { userId });
+    },
+  });
 
-    // Check limits
-    if (context.toolCallCount >= permissions.limits.maxToolCalls) {
-      throw new Error('Tool call limit exceeded');
-    }
-
-    return executeTool(name, args);
-  },
-});
+  try {
+    return await enclave.run(code);
+  } finally {
+    enclave.dispose();
+  }
+}
 ```
 
 ### Data Filtering
@@ -325,20 +339,20 @@ function filterSensitiveData(data: unknown): unknown {
 
 ### Isolation
 
-Run Enclave in isolated network:
+Run the process that executes scripts (your application with `@enclave-vm/core`, or the broker) on an internal network, behind the gateway that authenticates callers. A script has no network access of its own; what reaches the network are your tool handlers, so give that process only the routes its tools need:
 
 ```yaml
 # docker-compose.yml
 services:
-  enclave-runtime:
+  gateway:
     networks:
       - enclave-internal
-    # No external network access
+      - external
 
   enclave-broker:
     networks:
       - enclave-internal
-      - external
+    # Reached through the gateway only
 
 networks:
   enclave-internal:
@@ -368,19 +382,51 @@ const server = createServer({
 });
 ```
 
-### End-to-End Encryption
+### Client Connections
 
-Enable E2E encryption for sensitive data:
+`@enclave-vm/client` sends requests and receives events as plain JSON. It does not encrypt and has no encryption option, so the transport is what protects a session: use an `https:` base URL. Credentials go in `headers`:
 
 ```ts
+import { EnclaveClient } from '@enclave-vm/client';
+
 const client = new EnclaveClient({
-  serverUrl: 'https://broker.example.com',
-  encryption: {
-    enabled: true,
-    curve: 'P-256',
+  baseUrl: 'https://broker.example.com',
+  headers: {
+    Authorization: `Bearer ${token}`,
   },
 });
 ```
+
+The client's options are `baseUrl`, `headers`, `timeout`, `autoReconnect`, `maxReconnectAttempts`, `reconnectDelay`, `maxEventLength` and `fetch`. Any other key, such as `encryption` or `auth`, makes the constructor throw.
+
+The broker's session routes have no authentication of their own. The application has to put authentication in front of all of them (the route that creates a session, and the routes that list, read, replay and end sessions) and check the credentials the client sends.
+
+Authentication does not tell the routes whose session is whose: without an `identify` hook they answer every caller for every session. Give the session handler the hook, and let it return the caller your authentication found:
+
+```ts
+import { createSessionHandler, registerExpressRoutes } from '@enclave-vm/broker';
+
+app.use(authenticate); // your middleware: checks the credential and sets req.user
+registerExpressRoutes(
+  app,
+  createSessionHandler({
+    broker,
+    // request.raw is the request object of the HTTP framework
+    identify: (request) => (request.raw as { user?: { id: string } }).user?.id,
+  }),
+);
+```
+
+With the hook a session belongs to the caller that created it: `GET /sessions` lists the caller's own sessions, a request for another caller's session is answered with `404`, and a request without an identity with `401`. The hook can be left out only where a single trusted backend is the one caller of the routes; that backend then has to keep the sessions of its own users apart. See [Who may see a session](/enclavejs/broker#who-may-see-a-session).
+
+### Payload Encryption
+
+No EnclaveJS package encrypts payloads. An application that wants payload encryption on top of TLS has to wire the primitives of `@enclave-vm/stream` (ECDH P-256, HKDF-SHA-256, AES-256-GCM) into its own endpoints, on both ends. See the [Encrypted Sessions](/examples/encrypted-sessions) example. What such an application has to take care of:
+
+- The key exchange is not authenticated: it protects against a party that can only read the connection, not against one that can change messages. Authenticate the hello messages yourself (for example by signing them with a key the client pins) or rely on TLS for the identity of the server.
+- There are two keys, one per direction. Use one `SessionEncryptionContext` per direction.
+- Read envelopes with `openEncryptedEnvelope` or `context.openEnvelope`, which fail when the ciphertext or the envelope's header was changed. Whether a sequence number was seen before is for the receiver to check.
+- The server that receives the code decrypts it to run it. Payload encryption does not hide anything from that server.
 
 ## Rate Limiting
 
@@ -459,34 +505,35 @@ function logAudit(log: AuditLog) {
   auditStore.insert(log);
 }
 
-const enclave = new Enclave({
-  toolHandler: async (name, args, context) => {
-    const start = Date.now();
-    let result: unknown;
-    let error: Error | undefined;
+// A tool handler receives (name, args). Who the script runs for comes from your own code.
+function createAuditedEnclave(userId: string, sessionId: string) {
+  return new Enclave({
+    toolHandler: async (name, args) => {
+      const start = Date.now();
+      let error: Error | undefined;
 
-    try {
-      result = await executeTool(name, args);
-      return result;
-    } catch (e) {
-      error = e as Error;
-      throw e;
-    } finally {
-      logAudit({
-        timestamp: new Date().toISOString(),
-        userId: context.userId,
-        sessionId: context.sessionId,
-        action: `tool:${name}`,
-        details: {
-          args: sanitizeForLog(args),
-          duration: Date.now() - start,
-        },
-        result: error ? 'failure' : 'success',
-        errorCode: error?.message,
-      });
-    }
-  },
-});
+      try {
+        return await executeTool(name, args);
+      } catch (e) {
+        error = e as Error;
+        throw e;
+      } finally {
+        logAudit({
+          timestamp: new Date().toISOString(),
+          userId,
+          sessionId,
+          action: `tool:${name}`,
+          details: {
+            args: sanitizeForLog(args),
+            duration: Date.now() - start,
+          },
+          result: error ? 'failure' : 'success',
+          errorCode: error?.message,
+        });
+      }
+    },
+  });
+}
 ```
 
 ### Log Retention
@@ -511,7 +558,7 @@ const logConfig = {
 
 ```dockerfile
 # Use specific version
-FROM node:20.10-slim
+FROM node:22-slim
 
 # Run as non-root
 RUN useradd -m -u 1001 enclave

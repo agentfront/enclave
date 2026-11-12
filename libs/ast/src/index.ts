@@ -5,7 +5,7 @@
  */
 
 // Core validator
-export { JSAstValidator } from './validator';
+export { JSAstValidator, DEFAULT_MAX_ISSUES } from './validator';
 
 // Transformer
 export { transformAst, generateCode, transformCode } from './transformer';
@@ -157,7 +157,12 @@ export {
   guardComputedMemberKeys,
   GUARD_KEY_FN,
   DEFAULT_GUARD_BLOCKED_KEYS,
+  guardArrayWrites,
+  ARRAY_WRITE_SET_FN,
+  ARRAY_WRITE_SLOT_FN,
 } from './transforms';
+
+export type { ArrayWriteGuardOptions, ArrayWriteGuardResult } from './transforms';
 
 export type {
   StringExtractionConfig,

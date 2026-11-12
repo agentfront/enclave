@@ -1,41 +1,45 @@
 ---
 title: 'AI Scoring Gate'
-description: 'Semantic security analysis that detects attack patterns beyond static AST validation'
+description: 'A heuristic risk score for a script, computed from its tool calls before it runs'
 ---
 
-The Scoring Gate adds semantic security analysis that detects attack patterns beyond what static AST validation can catch. It analyzes code intent and behavior patterns to identify potential threats.
+The Scoring Gate gives a script a risk score from 0 to 100 before it runs, and refuses the script when the score reaches a threshold. The score is a heuristic: it is computed from features of the script's text (which tools it calls, with which argument names and literal values, in which order, inside which loops). It flags patterns that look risky; it does not prove that a script is safe, and a script without those patterns scores low whatever it does. Use it as one signal next to AST validation and the limits, not in their place.
 
-## What It Detects
+The gate runs after AST validation and before execution.
 
-- **Data exfiltration** - List followed by send, or query followed by export sequences
+## What It Looks For
+
+- **Data exfiltration** - A tool whose name suggests reading (list, get, query) followed by one whose name suggests sending (send, export, webhook)
 - **Excessive access** - High limits, wildcard queries
-- **Fan-out attacks** - Tool calls inside loops
-- **Sensitive data access** - Passwords, tokens, PII fields
+- **Fan-out** - Tool calls inside loops
+- **Sensitive data access** - Property names, argument names and string literals that look like passwords, tokens or PII fields
 
 ## Basic Configuration
 
 ```ts
 import { Enclave } from '@enclave-vm/core';
 
-// Rule-based scorer (~1ms latency, zero dependencies)
+// Rule-based scorer (zero dependencies)
 const enclave = new Enclave({
   scoringGate: {
     scorer: 'rule-based',
-    blockThreshold: 70,     // Score >= 70 blocks execution
-    warnThreshold: 40,      // Score >= 40 logs warning
-    failOpen: true,         // Allow if scoring fails (default)
+    blockThreshold: 70,     // Score >= 70: the script is not run
+    warnThreshold: 40,      // Score >= 40: the script runs, scoringResult.warned is true
+    failOpen: true,         // Run the script if scoring fails (default)
   },
 });
 ```
 
 ## Scorer Types
 
-| Type           | Latency | Dependencies   | Detection |
-| -------------- | ------- | -------------- | --------- |
-| `disabled`     | 0ms     | None           | None      |
-| `rule-based`   | ~1ms    | None           | Good      |
-| `local-llm`    | ~5-10ms | Model download | Better    |
-| `external-api` | ~100ms  | Network        | Best      |
+| Type           | Dependencies | What the score is computed from |
+| -------------- | ------------ | ------------------------------- |
+| `disabled`     | None         | No scoring (the default) |
+| `rule-based`   | None         | The eight rules below, over the extracted features |
+| `local-llm`    | Optional     | Your `customAnalyzer`, or a built-in keyword heuristic over the extracted features. No model computes the score |
+| `external-api` | Network      | The answer of your scoring service, which receives the extracted features |
+
+A fifth mode, progressive scoring, runs the rule-based scorer first and a second scorer only for scripts that score high (see [Progressive Scoring](#progressive-scoring)).
 
 ### Rule-Based Scorer
 
@@ -53,7 +57,7 @@ const enclave = new Enclave({
 
 ### External API Scorer
 
-Best detection using an external scoring service:
+Scoring by a service of your own:
 
 ```ts
 const enclave = new Enclave({
@@ -71,16 +75,21 @@ const enclave = new Enclave({
 });
 ```
 
+The gate sends a `POST` with the JSON body `{ features, version: '1.0' }` (the extracted features, not the source) and `Authorization: Bearer <apiKey>` when an `apiKey` is set. It expects `{ score: number, risk?, signals? }`, where `risk` and each signal's `level` are one of `none`, `low`, `medium`, `high`, `critical`. A response that is not of that shape, an HTTP error and a timeout are retried `retries` times (at most 10); after that the scoring has failed and `failOpen` decides.
+
 ### Local LLM Scorer
 
-Balance between speed and detection using a local model:
+Despite its name, the `local-llm` scorer does not compute a score with a model. Its score comes from one of two places:
+
+- your `customAnalyzer`, when you configure one (see [Custom Analyzer](#custom-analyzer));
+- otherwise a built-in keyword heuristic: it looks for fixed keywords (`password`, `secret`, `token`, `send`, `webhook`, `upload`, ...) in a text summary of the extracted features, for a read-then-send tool sequence, for a high fan-out and for several sensitive categories.
 
 ```ts
 const enclave = new Enclave({
   scoringGate: {
     scorer: 'local-llm',
     localLlm: {
-      modelPath: './models/security-scorer.onnx',
+      modelId: 'Xenova/all-MiniLM-L6-v2',
     },
     blockThreshold: 70,
     warnThreshold: 40,
@@ -88,13 +97,30 @@ const enclave = new Enclave({
 });
 ```
 
-### Similarity Mode with VectoriaDB
+| Option | Default | Description |
+| ------ | ------- | ----------- |
+| `modelId` | `'Xenova/all-MiniLM-L6-v2'` | Hugging Face model to load (see below) |
+| `mode` | `'classification'` | `'classification'` or `'similarity'` (see [Similarity Mode](#similarity-mode)) |
+| `cacheDir` | `~/.enclave/models` | Where a downloaded model is kept |
+| `fallbackToRules` | `true` | Use the rule-based scorer when the model cannot be loaded (in classification mode) or the analyzer fails |
+| `customAnalyzer` | - | Your own analyzer; replaces the keyword heuristic |
+| `vectoriaConfig` | - | `threshold`, `topK`, `modelName` for similarity mode |
 
-For pattern-matching against known malicious code patterns, use similarity mode with VectoriaDB:
+At initialization the scorer loads a Hugging Face `feature-extraction` pipeline for `modelId` when the optional dependency `@huggingface/transformers` is installed; the model is downloaded on first use. The pipeline is never called and no score is computed from it. Whether it loaded only decides which scoring applies in classification mode when there is no `customAnalyzer`: the keyword heuristic when it did, the rule-based scorer when it did not (with `fallbackToRules: false` the initialization fails instead). Set the environment variable `ENCLAVE_DISABLE_LOCAL_LLM_MODEL=1` to skip the load.
+
+With `scorer: 'local-llm'` and no `localLlm` configuration, the gate uses the rule-based scorer.
+
+### Similarity Mode
+
+`localLlm.mode: 'similarity'` additionally searches a VectoriaDB index (optional dependency `vectoriadb`) for patterns similar to the script's feature summary, and takes the higher of that match and the score of your `customAnalyzer` or, without one, of the keyword heuristic.
+
+<Warning>
+The index is created empty for each scorer, and the configuration has no way to add patterns to it. The search therefore finds nothing, and the score in similarity mode is the score of the `customAnalyzer` or of the keyword heuristic alone.
+
+That is the score of classification mode in every case but one. When the model could not be loaded and there is no `customAnalyzer`, classification mode answers with the rule-based scorer, and similarity mode still answers with the keyword heuristic. The two modes can then give different scores for the same script, and decide differently at `blockThreshold` and `warnThreshold`.
+</Warning>
 
 ```ts
-import { Enclave } from '@enclave-vm/core';
-
 const enclave = new Enclave({
   scoringGate: {
     scorer: 'local-llm',
@@ -113,152 +139,188 @@ const enclave = new Enclave({
 });
 ```
 
-**VectoriaDB Configuration Options:**
-
 | Option      | Type     | Default                              | Description                                      |
 | ----------- | -------- | ------------------------------------ | ------------------------------------------------ |
 | `threshold` | `number` | `0.85`                               | Similarity threshold (0-1) for considering a match |
 | `topK`      | `number` | `5`                                  | Maximum number of similar patterns to return     |
 | `modelName` | `string` | Inherits from `localLlm.modelId`     | Embedding model for similarity computation       |
 
-<Note>
-Similarity mode requires the optional `vectoriadb` peer dependency:
-```bash
-npm install vectoriadb
-```
-</Note>
+### Progressive Scoring
 
-Similarity mode can operate without the Hugging Face transformers pipeline - it will use VectoriaDB for similarity search and fall back to heuristics when needed.
+```ts
+const enclave = new Enclave({
+  scoringGate: {
+    scoring: {
+      strategy: 'progressive',
+      fast: { type: 'rule-based' },
+      detailed: {
+        type: 'external-api',
+        externalApi: { endpoint: 'https://api.example.com/score' },
+      },
+      escalationThreshold: 30, // default
+      combination: 'max',      // 'max' (default), 'avg' or 'replace'
+    },
+    blockThreshold: 70,
+  },
+});
+```
+
+The rule-based scorer runs for every script. When its score reaches `escalationThreshold`, the detailed scorer (`local-llm` or `external-api`) runs as well and the two scores are combined.
 
 ## Detection Rules
 
 The rule-based scorer evaluates these patterns:
 
-| Rule              | Score | Description                            |
-| ----------------- | ----- | -------------------------------------- |
-| `SENSITIVE_FIELD` | 35    | Queries password/token/secret fields   |
-| `EXCESSIVE_LIMIT` | 25    | limit > 10,000                         |
-| `WILDCARD_QUERY`  | 20    | query="*" or filter={}                 |
-| `LOOP_TOOL_CALL`  | 25    | callTool inside for/for-of loop        |
-| `EXFIL_PATTERN`   | 50    | list followed by send or query followed by export sequence |
-| `EXTREME_VALUE`   | 30    | Numeric arg > 1,000,000                |
-| `DYNAMIC_TOOL`    | 20    | Variable tool name (not static string) |
-| `BULK_OPERATION`  | 15    | Tool name contains bulk/batch/all      |
+| Rule              | Base score | Description                            |
+| ----------------- | ---------- | -------------------------------------- |
+| `SENSITIVE_FIELD` | 35         | A property name, argument name or string literal matches a sensitive pattern (password, token, secret, email, ...) |
+| `EXCESSIVE_LIMIT` | 25         | A limit-like argument (`limit`, `pageSize`, `count`, ...) above 10,000 |
+| `WILDCARD_QUERY`  | 20         | A `*`, `**` or `%` string argument, or a query-like tool called without arguments |
+| `LOOP_TOOL_CALL`  | 25         | A tool call inside a loop |
+| `EXFIL_PATTERN`   | 50         | A read-like tool followed by a send-like tool |
+| `EXTREME_VALUE`   | 30         | A numeric argument above 1,000,000 |
+| `DYNAMIC_TOOL`    | 20         | A tool name that is not a string literal |
+| `BULK_OPERATION`  | 15         | A tool name that contains bulk, batch, all, mass or multi |
 
-Scores are additive - a script triggering multiple rules accumulates points.
+A rule that fires contributes its base score, and several rules add to it for repeated or stronger matches. The total is the sum of the contributions, capped at 100.
 
-## Thresholds
+### Custom Rule Scores
 
-Configure how scores translate to actions:
+`customRules` replaces the base score of a rule, by rule id. Values are clamped to 0-100, and `0` turns a rule off. Ids that are not rule ids and values that are not numbers are ignored.
+
+```ts
+const enclave = new Enclave({
+  scoringGate: {
+    scorer: 'rule-based',
+    customRules: { EXFIL_PATTERN: 100, BULK_OPERATION: 0 },
+  },
+});
+```
+
+## Tool Namespaces
+
+A call through a [tool namespace](/core-libraries/enclave-vm/tool-system#tool-namespaces), `mail.send(args)`, is scored as the tool call it stands for, `callTool('mail.send', args)`. The gate of an enclave knows the enclave's `toolNamespaces`; nothing needs to be configured. A `ScoringGate` you create yourself sees namespace calls only when you pass it `toolNamespaces`.
+
+## Thresholds and Failures
 
 ```ts
 const enclave = new Enclave({
   scoringGate: {
     scorer: 'rule-based',
 
-    // Block execution if score >= 70
+    // Do not run the script if score >= 70
     blockThreshold: 70,
 
-    // Log warning if score >= 40
+    // Set scoringResult.warned if score >= 40
     warnThreshold: 40,
 
-    // If scoring fails (e.g., API timeout):
-    // true = allow execution (fail open)
-    // false = block execution (fail closed)
+    // If scoring fails:
+    // true = run the script (fail open)
+    // false = do not run it (fail closed)
     failOpen: true,
   },
 });
 ```
 
+A scoring failure is anything that keeps the configured scorer from giving its answer:
+
+- the feature extractor cannot parse the script (`FeatureExtractionError`);
+- the scorer throws, for example an external API that does not answer;
+- in progressive mode, the detailed scorer fails or is not configured once the fast score has reached `escalationThreshold`.
+
+With `failOpen: false` each of these refuses the script, and `scoringResult.reason` says why. With `failOpen: true` (the default) the script runs: after a failed extraction or a scorer that threw without a score (`scoringResult.reason` says so), and in progressive mode on the fast score alone.
+
+The gate does not log a warning by itself: a score at or above `warnThreshold` sets `warned` in the result. `verbose: true` logs every score and its signals to the console.
+
 ## Custom Analyzer
 
-Add custom analysis logic:
+A custom analyzer replaces the keyword heuristic of the `local-llm` scorer with your own scoring, for example a call to a model you host:
 
 ```ts
-interface CustomAnalyzer {
-  name: string;
-  analyze: (code: string, ast: Node) => AnalysisResult;
-}
-
 const enclave = new Enclave({
   scoringGate: {
-    scorer: 'rule-based',
-    customAnalyzers: [
-      {
-        name: 'company-policy',
-        analyze: (code, ast) => {
-          let score = 0;
-          const signals: string[] = [];
-
-          // Check for company-specific patterns
-          if (code.includes('internal:')) {
-            score += 30;
-            signals.push('INTERNAL_TOOL_ACCESS');
-          }
-
-          return { score, signals };
+    scorer: 'local-llm',
+    localLlm: {
+      modelId: 'Xenova/all-MiniLM-L6-v2',
+      customAnalyzer: {
+        // prompt: a one-line text summary of the features; features: ExtractedFeatures
+        async analyze(prompt, features) {
+          const usesInternalTools = features.toolCalls.some((call) => call.toolName.startsWith('internal:'));
+          return {
+            score: usesInternalTools ? 30 : 0,
+            signals: usesInternalTools
+              ? [{ id: 'INTERNAL_TOOL_ACCESS', score: 30, description: 'Calls an internal tool', level: 'medium' }]
+              : [],
+          };
         },
+        // Optional
+        async initialize() {},
+        dispose() {},
       },
-    ],
+    },
   },
 });
 ```
 
+`analyze` returns a score from 0 to 100 and a list of signals (`id`, `score`, `description`, `level`, optional `context`). When it throws, the rule-based scorer answers instead, unless `fallbackToRules` is `false`.
+
 ## Feature Extraction
 
-The scorer extracts these features for analysis:
+Every scorer works on the same extracted features (`ExtractedFeatures`):
 
-- **Tool names** - All `callTool()` targets
-- **Arguments** - Numeric values, field names, patterns
-- **Control flow** - Loops containing tool calls
-- **Data flow** - Variables passed between tool calls
-- **Sequences** - Order of operations
+- **Tool calls** - For each `callTool()` and namespace method call: the tool name and whether it is a string literal, the argument keys, the string and numeric literals in the arguments, and whether the call is inside a loop
+- **Patterns** - The number of calls and of distinct tools, the tools called in loops, the loop nesting, the order of the tool calls, and whether a loop iterates over a tool result
+- **Numbers** - The largest limit-like argument, the longest string argument, tool calls per line, and a fan-out estimate
+- **Sensitive fields** - Property names, argument names and string literals that match the patterns for authentication, PII, financial and internal data
+- **Meta** - The SHA-256 digest of the script, which is the key of the result cache, and its line count
 
 ## Handling Scoring Results
 
 ```ts
 const result = await enclave.run(code);
 
-if (!result.success) {
-  if (result.error?.code === 'SCORING_BLOCKED') {
-    console.log('Blocked by scoring gate');
-    console.log('Score:', result.error.data.score);
-    console.log('Signals:', result.error.data.signals);
-  }
+if (!result.success && result.error?.code === 'SCORING_BLOCKED') {
+  console.log('Blocked by scoring gate');
+  console.log('Score:', result.error.data?.totalScore);
+  console.log('Risk level:', result.error.data?.riskLevel);
+  console.log('Signals:', result.error.data?.signals);
 }
 ```
 
+`error.data` holds `totalScore`, `riskLevel` and `signals`. When a script is refused because scoring failed (`failOpen: false`), there is no score: `totalScore` is `undefined` and the message carries the reason.
+
 ## Logging and Monitoring
 
+A result carries `scoringResult` when the gate evaluated the script, also for a script that ran:
+
 ```ts
-const enclave = new Enclave({
-  scoringGate: {
-    scorer: 'rule-based',
-    blockThreshold: 70,
-    warnThreshold: 40,
+const result = await enclave.run(code);
+const scoring = result.scoringResult;
 
-    // Callback for all scoring results
-    onScore: (result) => {
-      metrics.recordScore(result.score);
+if (scoring?.totalScore !== undefined) {
+  metrics.recordScore(scoring.totalScore);
+}
+if (scoring?.warned) {
+  logger.warn('Elevated risk score', {
+    score: scoring.totalScore,
+    signals: scoring.signals,
+    cached: scoring.cached,
+  });
+}
 
-      if (result.score >= 40) {
-        logger.warn('Elevated risk score', {
-          score: result.score,
-          signals: result.signals,
-        });
-      }
-    },
-  },
-});
+// Cache statistics: { size, maxEntries, totalHits, totalMisses, hitRate, enabled }
+console.log(enclave.getScoringStats());
 ```
+
+Results are cached by the digest of the script (`cache: { enabled, ttlMs, maxEntries }`, by default 1,000 entries for five minutes).
 
 ## Best Practices
 
 1. **Start with warnings** - Use `warnThreshold` to monitor before blocking
 2. **Tune thresholds** - Adjust based on your false positive rate
-3. **Use fail-open cautiously** - Only in non-critical paths
+3. **Choose `failOpen` deliberately** - With the default, a script the gate cannot score runs
 4. **Monitor signals** - Track which rules trigger most often
-5. **Layer with other defenses** - Scoring complements AST validation
+5. **Layer with other defenses** - A low score is not a guarantee; scoring complements AST validation and the limits
 
 ## Breaking Changes
 
@@ -266,9 +328,7 @@ const enclave = new Enclave({
 
 **Removed: `indexPath` option**
 
-The `indexPath` option has been removed from `VectoriaConfigForScoring`. This option was intended to load pre-built malicious pattern indexes, but VectoriaDB v2.x handles persistence differently using storage adapters.
-
-**Migration:**
+The `indexPath` option has been removed from `VectoriaConfigForScoring`. This option was intended to load pre-built malicious pattern indexes. The remaining options are `threshold`, `topK` and `modelName`:
 
 ```ts
 // Before (v1.x) - No longer supported
@@ -289,12 +349,7 @@ const config = {
 };
 ```
 
-If you were using `indexPath` to load pre-built indexes, you'll need to handle persistence externally using VectoriaDB's storage adapter APIs (`saveToStorage()`, `MemoryStorageAdapter`, `FileStorageAdapter`, or `RedisStorageAdapter`).
-
-**New options in v2.x:**
-
-- `topK` - Control how many similar patterns to consider (default: 5)
-- `modelName` - Override the embedding model (defaults to `localLlm.modelId`)
+Nothing replaces `indexPath`: the scorer's index starts empty and the configuration cannot fill it (see [Similarity Mode](#similarity-mode)).
 
 ## Related
 

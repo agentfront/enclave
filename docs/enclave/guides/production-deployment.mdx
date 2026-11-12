@@ -26,9 +26,9 @@ flowchart TB
     style Enclave fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
-### Distributed Deployment
+### Several Servers
 
-For production scale:
+For production scale, run several instances of the server that executes scripts (your application with `@enclave-vm/core`, or an EnclaveJS broker) behind a load balancer. A session of a broker lives in the memory of the broker that created it, so route a session's later requests to the same instance. The packages have no shared session store and no separate execution tier: `@enclave-vm/runtime` does not execute scripts yet.
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
@@ -38,28 +38,23 @@ flowchart TB
         API1["API 1"]
         API2["API 2"]
     end
-    subgraph orchTier["Orchestration Tier"]
-        Broker["EnclaveJS Broker<br/>(Redis-backed)"]
-    end
-    subgraph execTier["Execution Tier"]
-        R1["Runtime 1"]
-        R2["Runtime 2"]
+    subgraph brokerTier["Broker Tier (session affinity)"]
+        B1["Broker 1<br/>sandbox + tools"]
+        B2["Broker 2<br/>sandbox + tools"]
     end
     LB --> API1
     LB --> API2
-    API1 --> Broker
-    API2 --> Broker
-    Broker --> R1
-    Broker --> R2
+    API1 --> B1
+    API1 --> B2
+    API2 --> B1
+    API2 --> B2
     style LB fill:#f0b865,stroke:#c78935,color:#333
     style appTier fill:#fff5e6,stroke:#c78935,color:#333
-    style orchTier fill:#fff5e6,stroke:#c78935,color:#333
-    style execTier fill:#fff5e6,stroke:#c78935,color:#333
+    style brokerTier fill:#fff5e6,stroke:#c78935,color:#333
     style API1 fill:#e8a045,stroke:#c78935,color:#fff
     style API2 fill:#e8a045,stroke:#c78935,color:#fff
-    style Broker fill:#e8a045,stroke:#c78935,color:#fff
-    style R1 fill:#e8a045,stroke:#c78935,color:#fff
-    style R2 fill:#e8a045,stroke:#c78935,color:#fff
+    style B1 fill:#e8a045,stroke:#c78935,color:#fff
+    style B2 fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
 ## Pre-Deployment Checklist
@@ -67,16 +62,37 @@ flowchart TB
 ### Security
 
 - [ ] Set `securityLevel: 'STRICT'` for untrusted code
-- [ ] Enable AI Scoring Gate
-- [ ] Configure memory limits
+- [ ] Configure memory limits: the sandbox's `memoryLimit` is an estimate, so give the container a limit as well
 - [ ] Set appropriate timeouts
+- [ ] Authenticate callers in front of every endpoint that accepts code, and in front of every session route of the EnclaveJS broker (the broker has no authentication of its own)
+- [ ] Give the broker's session routes an `identify` hook, so that a session belongs to the caller that created it (see below)
+- [ ] Use HTTPS: the EnclaveJS client and broker exchange plain JSON
 - [ ] Enable input validation
 - [ ] Review tool permissions
+- [ ] Consider the AI Scoring Gate as an additional, heuristic signal
+
+Authentication in front of the broker does not tell its routes whose session is whose: without an `identify` hook they answer every caller for every session (the list of sessions, a session's state and events, and the request to end it). The hook returns the caller your authentication found:
+
+```ts
+import { createSessionHandler, registerExpressRoutes } from '@enclave-vm/broker';
+
+app.use(authenticate); // your middleware: checks the credential and sets req.user
+registerExpressRoutes(
+  app,
+  createSessionHandler({
+    broker,
+    // request.raw is the request object of the HTTP framework
+    identify: (request) => (request.raw as { user?: { id: string } }).user?.id,
+  }),
+);
+```
+
+A request for which the hook returns no identity is answered with `401`, and a session is answered only for the caller that created it. The hook can be left out only where a single trusted backend is the one caller of the routes. See [Who may see a session](/enclavejs/broker#who-may-see-a-session).
 
 ### Performance
 
 - [ ] Configure worker pool for CPU-bound loads
-- [ ] Set up Redis for distributed sessions
+- [ ] With several brokers, route a session's requests to the broker that created it
 - [ ] Configure connection pooling
 - [ ] Enable response compression
 - [ ] Set up CDN for static assets
@@ -121,7 +137,7 @@ ENCLAVE_SCORING_THRESHOLD=70
 ENCLAVE_WORKER_POOL_SIZE=4
 ENCLAVE_WORKER_MAX_MEMORY=134217728  # 128MB
 
-# Redis (for distributed mode)
+# Redis (only if your own application uses it; the Enclave packages do not)
 REDIS_URL=redis://localhost:6379
 
 # Logging
@@ -133,14 +149,15 @@ LOG_FORMAT=json
 
 ```ts
 // src/config/enclave.ts
-import { Enclave } from '@enclave-vm/core';
+import { Enclave, type ToolHandler } from '@enclave-vm/core';
 
-export function createProductionEnclave(toolHandler: Function) {
+export function createProductionEnclave(toolHandler: ToolHandler) {
   return new Enclave({
     // Security
     securityLevel: 'STRICT',
 
-    // Limits
+    // Limits. Each must be a finite integer in its range: the constructor throws a
+    // TypeError for anything else, a mistyped environment variable (NaN) included.
     timeout: parseInt(process.env.ENCLAVE_TIMEOUT || '30000'),
     maxToolCalls: parseInt(process.env.ENCLAVE_MAX_TOOL_CALLS || '100'),
     maxIterations: parseInt(process.env.ENCLAVE_MAX_ITERATIONS || '10000'),
@@ -155,9 +172,9 @@ export function createProductionEnclave(toolHandler: Function) {
     // Tool handling
     toolHandler,
 
-    // Logging
-    onLog: (level, message, data) => {
-      logger.log(level, message, data);
+    // Console output of scripts: each call arrives as (level, message)
+    consoleHandler: (level, message) => {
+      logger.info({ event: 'script_console', level, message });
     },
   });
 }
@@ -168,7 +185,7 @@ export function createProductionEnclave(toolHandler: Function) {
 ### Dockerfile
 
 ```dockerfile
-FROM node:20-slim
+FROM node:22-slim
 
 # Security: Run as non-root user
 RUN useradd -m -u 1001 enclave

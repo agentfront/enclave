@@ -17,7 +17,7 @@
 
 import type { SecureProxyLevelConfig, SecurityLevel } from './types';
 import { createSafeError, isSafeError } from './safe-error';
-import { isBuiltinMethod } from './global-function-gate';
+import { builtinMethodHomes, hostFunctionText, isBuiltinMethod, isFunctionTextMethod } from './global-function-gate';
 
 // SECURITY (GHSA-3279 defense-in-depth): pin pristine reflection intrinsics at module load so the
 // membrane traps below never re-read a global that could be overwritten to capture a raw target.
@@ -32,6 +32,7 @@ const ReflectDefineProperty = Reflect.defineProperty;
 const ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
 const ReflectOwnKeys = Reflect.ownKeys;
 const ReflectApply = Reflect.apply;
+const ReflectHas = Reflect.has;
 const ReflectConstruct = Reflect.construct;
 const ObjectGetPrototypeOf = Object.getPrototypeOf;
 const HostObjectPrototype: object = Object.prototype;
@@ -472,11 +473,26 @@ export interface SecureProxyOptions {
 
   /**
    * Whether an object was made in the sandbox realm (by the script, or for it). Such a value is
-   * the script's own: when a host built-in passes it to a callback (the object a script gave
-   * `reduce` to collect into) it goes back as it is instead of behind the membrane, where it
-   * would be read-only. The test must only say yes to what certainly is of that realm.
+   * the script's own, wherever it comes back from: passed to a callback by a host built-in (the
+   * object a script gave `reduce` to collect into), read out of what a built-in returned (a
+   * function a `map` callback returned), or returned by a call. It leaves the membrane as it is,
+   * never behind a proxy: a proxy would make the script's object read-only and would send a call
+   * to the script's function through the gate for host functions. The test must only say yes to
+   * what certainly is of that realm.
    */
   ownedBySandbox?: (value: object) => boolean;
+
+  /**
+   * Whether a value is the form in which the sandbox holds a value of the host: what
+   * `exposeToSandbox` returned for it earlier (the single VM's airlock proxy). A script passes
+   * such a value into a call as it is. Whatever the callee does with it (hands it on to a
+   * function of the script, keeps it in what it returns), it leaves the membrane as it went in,
+   * and it is not wrapped a second time.
+   *
+   * With this hook set, a built-in method of host data runs on host data only: on an object
+   * that is not a value of the host the call is refused (see the apply trap).
+   */
+  heldBySandbox?: (value: object) => boolean;
 }
 
 /**
@@ -620,12 +636,67 @@ const INTERNAL_SLOT_TYPES = new Set(['[object Promise]']);
  * script passes to these are guarded (see guardCallbackArguments).
  */
 const boundBuiltinMethods = new WeakSet<object>();
+
+// The guard of an object a script passed to a host function (see guardObjectArgument in
+// createSecureProxy). A guard hands values on through the membrane that made it, so it is kept
+// the way that membrane's proxies are: per call gate (per execution), otherwise per
+// configuration. The same object passed through another membrane gets that membrane's guard.
+const argumentGuards = new WeakMap<object, Map<string, object>>();
+const gatedArgumentGuards = new WeakMap<object, WeakMap<object, object>>();
+
+function gatedArgumentGuardCache(gate: object): WeakMap<object, object> {
+  let cache = gatedArgumentGuards.get(gate);
+  if (!cache) {
+    cache = new WeakMap<object, object>();
+    gatedArgumentGuards.set(gate, cache);
+  }
+  return cache;
+}
+
+// What each guard stands for, whichever membrane made it
+const guardedArguments = new WeakMap<object, unknown>();
 const JsonParse = JSON.parse;
 const JsonStringify = JSON.stringify;
 
-function passesHostValuesToCallbacks(fn: unknown): boolean {
+/** What a script is told when it calls a built-in method of host data on an object of its own */
+const HOST_RECEIVER_MESSAGE =
+  'A built-in method of a value passed in globals can only be called on a value passed in globals. ' +
+  'Use the method of the same name of your own value.';
+
+/** What a script is told when it calls a built-in method of one kind of host value on another kind */
+const HOST_RECEIVER_KIND_MESSAGE =
+  'A built-in method of a value passed in globals can only be called on a value of the same kind ' +
+  '(an array method on an array, a Map method on a Map).';
+
+/**
+ * Whether a host value is of the kind a built-in method belongs to: one of the prototypes the
+ * method is defined on is in its prototype chain. The methods of `Object.prototype` are every
+ * object's. A value that cannot be asked is not of the kind.
+ */
+function isOfBuiltinKind(receiver: object, homes: readonly object[]): boolean {
+  for (let h = 0; h < homes.length; h++) {
+    const home = homes[h];
+    if (home === HostObjectPrototype) {
+      return true;
+    }
+    try {
+      let proto: unknown = ObjectGetPrototypeOf(receiver);
+      for (let depth = 0; depth < 32 && proto !== null; depth++) {
+        if (proto === home) {
+          return true;
+        }
+        proto = ObjectGetPrototypeOf(proto as object);
+      }
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function passesHostValuesToCallbacks(fn: unknown, builtinMethod: boolean): boolean {
   return (
-    isBuiltinMethod(fn) ||
+    builtinMethod ||
     fn === JsonParse ||
     fn === JsonStringify ||
     (typeof fn === 'function' && boundBuiltinMethods.has(fn))
@@ -673,6 +744,23 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
   const lookupCached = (obj: object): object | undefined =>
     gateCache ? gateCache.get(obj) : proxyCache.get(obj)?.get(cacheKey);
 
+  // The guards this membrane made for the objects that were passed to its host functions
+  const gateGuards = options.callGate ? gatedArgumentGuardCache(options.callGate) : undefined;
+  const lookupGuard = (obj: object): object | undefined =>
+    gateGuards ? gateGuards.get(obj) : argumentGuards.get(obj)?.get(cacheKey);
+  const storeGuard = (obj: object, guard: object): void => {
+    if (gateGuards) {
+      gateGuards.set(obj, guard);
+      return;
+    }
+    let guards = argumentGuards.get(obj);
+    if (!guards) {
+      guards = new Map<string, object>();
+      argumentGuards.set(obj, guards);
+    }
+    guards.set(cacheKey, guard);
+  };
+
   // Check if already proxied with this config
   const cached = lookupCached(target);
   if (cached) {
@@ -701,6 +789,14 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
   // Use throwOnBlocked from options or levelConfig (options takes precedence)
   const throwOnBlocked = options.throwOnBlocked ?? options.levelConfig?.throwOnBlocked ?? false;
 
+  // Whether this membrane can tell a value the sandbox may hold as it is from a value of the
+  // host (see ownedBySandbox and heldBySandbox). Without either hook everything is wrapped.
+  const { ownedBySandbox, heldBySandbox } = options;
+  const classifiesValues = ownedBySandbox !== undefined || heldBySandbox !== undefined;
+  const passesAsItIs = (value: object): boolean =>
+    (heldBySandbox !== undefined && heldBySandbox(value)) ||
+    (ownedBySandbox !== undefined && !proxySet.has(value) && ownedBySandbox(value));
+
   // Create inner function for recursive proxying with depth tracking
   function proxyWithDepth<U extends object>(obj: U, depth: number): U {
     // Return primitives as-is
@@ -708,10 +804,29 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
       return obj;
     }
 
+    // An argument guard (see guardObjectArgument) that a host built-in kept in what it returned
+    // stands for the value it was made for: that value is what leaves the membrane.
+    if (guardedArguments.has(obj)) {
+      const guarded = guardedArguments.get(obj) as U;
+      if (!classifiesValues || !isProxyable(guarded)) {
+        return guarded;
+      }
+      // A guard is made for whatever a built-in was called with, which is a value of the script
+      // only as a rule: it leaves like any other value.
+      obj = guarded;
+    }
+
     // Check cache first with config key
     const cachedProxy = lookupCached(obj);
     if (cachedProxy) {
       return cachedProxy as U;
+    }
+
+    // A value the script may hold as it is (its own, or a host value in the form it holds one).
+    // Asked after the cache, so only for a value this membrane has not wrapped before, and never
+    // for the value the caller of createSecureProxy asked to have wrapped.
+    if (depth > 0 && passesAsItIs(obj)) {
+      return obj;
     }
 
     // Recursion backstop. Fail CLOSED: returning the raw target here would hand sandbox code an
@@ -734,33 +849,107 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
      * receives those values, and its receiver, behind the membrane. Without this, the third
      * argument of a `forEach` callback is the raw host array.
      */
-    const guardCallbackArguments = (args: unknown[]): unknown[] =>
-      args.map((arg) => {
-        if (typeof arg !== 'function' || proxySet.has(arg)) return arg;
-        const callback = arg;
-        // A host error (a rejection reason, say) arrives as a safe error, as a thrown one does;
-        // a safe error is inert and passes as it is; every other object or function is wrapped.
-        const toSandbox = (value: unknown): unknown => {
-          const laundered = launderHostError(value);
-          // A value of the script's own realm is the script's: the object it gave `reduce` to
-          // collect into comes back as it is, and stays writable. Everything else is the host's
-          // and goes behind the membrane.
-          if (
-            options.ownedBySandbox &&
-            isProxyable(laundered) &&
-            !proxySet.has(laundered) &&
-            options.ownedBySandbox(laundered)
-          ) {
-            return laundered;
-          }
-          const wrapped =
-            isProxyable(laundered) && !isSafeError(laundered) ? proxyWithDepth(laundered, depth + 1) : laundered;
-          return options.exposeToSandbox ? options.exposeToSandbox(wrapped) : wrapped;
-        };
-        return function guardedCallback(this: unknown, ...hostArgs: unknown[]): unknown {
-          return ReflectApply(callback, toSandbox(this), hostArgs.map(toSandbox));
-        };
+    // A value of the host on its way into script code. A host error (a rejection reason, say)
+    // arrives as a safe error, as a thrown one does; a safe error is inert and passes as it is;
+    // every other object or function is wrapped.
+    const toSandbox = (value: unknown): unknown => {
+      if (!isProxyable(value)) {
+        return value;
+      }
+      // A host value in the form the script holds it: what the script passed, handed on
+      if (heldBySandbox && heldBySandbox(value)) {
+        return value;
+      }
+      const laundered = launderHostError(value);
+      // A value of the script's own realm is the script's: the object it gave `reduce` to
+      // collect into comes back as it is, and stays writable. Everything else is the host's
+      // and goes behind the membrane. (proxyWithDepth decides which is which, and resolves an
+      // argument guard that a built-in handed back.)
+      const wrapped =
+        isProxyable(laundered) && !isSafeError(laundered) ? proxyWithDepth(laundered, depth + 1) : laundered;
+      return options.exposeToSandbox ? options.exposeToSandbox(wrapped) : wrapped;
+    };
+
+    /**
+     * An object of the script on its way into a host function that may call one of its methods
+     * with host values (the set operations of a `Set` ask the other collection `has(element)`
+     * for each element of the receiver). It gets a guard instead: an object that answers every
+     * property read from the script's object, with a function member replaced by one that
+     * receives its arguments behind the membrane and keeps the script's object as its receiver,
+     * and an object member or result guarded the same way. Its own properties are listed as
+     * they are, so a function that copies or serializes the object sees the same data. An array
+     * is data to every built-in and passes as it is, as does a value that is behind the
+     * membrane already.
+     */
+    const guardObjectArgument = (value: unknown): unknown => {
+      if (value === null || typeof value !== 'object') return value;
+      if (proxySet.has(value) || guardedArguments.has(value) || Array.isArray(value)) return value;
+      if (heldBySandbox && heldBySandbox(value)) return value;
+      const existing = lookupGuard(value);
+      if (existing) return existing;
+      const original = value;
+      // Over an empty object, not over the script's object: a frozen member of the target would
+      // have to be reported as it is (proxy invariant), unguarded.
+      const guard = new Proxy(Object.create(null) as object, {
+        get: (_shell, property) => guardMember(ReflectGet(original, property, original), original),
+        has: (_shell, property) => ReflectHas(original, property),
+        // A function that lists the object (to copy or to serialize it, as JSON.stringify does)
+        // sees the script's own properties, each as a data property holding what a read gives.
+        ownKeys: () => ReflectOwnKeys(original),
+        getOwnPropertyDescriptor: (_shell, property) => {
+          const descriptor = ReflectGetOwnPropertyDescriptor(original, property);
+          if (!descriptor) return undefined;
+          return {
+            value: guardMember(ReflectGet(original, property, original), original),
+            writable: true,
+            enumerable: descriptor.enumerable === true,
+            configurable: true,
+          };
+        },
+        // What a host function stores in the object is a host value like any other
+        set: (_shell, property, stored) => ReflectSet(original, property, toSandbox(stored), original),
       });
+      storeGuard(original, guard);
+      guardedArguments.set(guard, original);
+      return guard;
+    };
+
+    const guardMember = (member: unknown, holder: object): unknown => {
+      if (typeof member !== 'function') return guardObjectArgument(member);
+      const method = function guardedMethod(...hostArgs: unknown[]): unknown {
+        return guardArgument(ReflectApply(member, holder, hostArgs.map(toSandbox)));
+      };
+      guardedArguments.set(method, member);
+      return method;
+    };
+
+    const guardCallback = (callback: (...args: unknown[]) => unknown): unknown => {
+      const guarded = function guardedCallback(this: unknown, ...hostArgs: unknown[]): unknown {
+        return ReflectApply(callback, toSandbox(this), hostArgs.map(toSandbox));
+      };
+      // A built-in that keeps the function instead of calling it (concat, with) hands back the
+      // script's function, not this one
+      guardedArguments.set(guarded, callback);
+      return guarded;
+    };
+
+    const guardArgument = (arg: unknown): unknown => {
+      if (typeof arg === 'function') {
+        return proxySet.has(arg) || guardedArguments.has(arg) || (heldBySandbox && heldBySandbox(arg))
+          ? arg
+          : guardCallback(arg as (...args: unknown[]) => unknown);
+      }
+      return guardObjectArgument(arg);
+    };
+
+    /**
+     * Arguments for a host function that calls into what it is given with values of the host
+     * realm (see passesHostValuesToCallbacks): every function the script passed is replaced by
+     * one that receives those values, and its receiver, behind the membrane (without this, the
+     * third argument of a `forEach` callback is the raw host array), and every object by a guard
+     * (see guardObjectArgument).
+     */
+    const guardCallbackArguments = (args: unknown[]): unknown[] => args.map(guardArgument);
 
     const proxy = new Proxy(obj, {
       get(target: U, property: string | symbol, receiver: unknown): unknown {
@@ -1009,12 +1198,16 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         // that read `#private` fields (a Proxy lacks the class's private brand). Unwrap a
         // known secure proxy back to its wrapped target before invoking the method. This only
         // affects proxies WE created, and the method's return value is still wrapped below.
-        const unwrappedThis =
-          thisArg !== null &&
-          (typeof thisArg === 'object' || typeof thisArg === 'function') &&
-          proxyToTarget.has(thisArg)
-            ? proxyToTarget.get(thisArg)
-            : thisArg;
+        const receiverIsReference = thisArg !== null && (typeof thisArg === 'object' || typeof thisArg === 'function');
+        const wrappedReceiver = receiverIsReference ? proxyToTarget.get(thisArg) : undefined;
+        const unwrappedThis = wrappedReceiver !== undefined ? wrappedReceiver : thisArg;
+
+        // The text of a host function is a fixed form, never its source: asked of a function
+        // of the host, toString (and toLocaleString, which calls it) answer with that form.
+        // Before the gate: the answer is not a call into the function.
+        if (classifiesValues && typeof wrappedReceiver === 'function' && isFunctionTextMethod(target)) {
+          return hostFunctionText(wrappedReceiver);
+        }
 
         // Gated functions (host functions from `globals`) are called by the gate, which
         // enforces the limits and returns a value that is already safe for the sandbox.
@@ -1026,13 +1219,32 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
           return options.callGate.call(target, hostReceiver, argArray);
         }
 
+        // A built-in method of host data runs on host data only. Its arguments are prepared for
+        // host code (a guard in place of a script object, a wrapper in place of a callback), and
+        // on host data that is where they stay: nothing of the script is called with them except
+        // through those guards.
+        //
+        // And on host data of its own kind: an array method on an array, a Date method on a
+        // Date. What a method reads off its receiver, returns and reports in an error is what
+        // the membrane expects of it only for the kind of value it is defined for.
+        const homes = builtinMethodHomes(target);
+        const builtinMethod = homes !== undefined;
+        if (builtinMethod && heldBySandbox !== undefined && receiverIsReference) {
+          if (wrappedReceiver === undefined) {
+            throw createSafeError(HOST_RECEIVER_MESSAGE, 'TypeError');
+          }
+          if (!isOfBuiltinKind(wrappedReceiver, homes)) {
+            throw createSafeError(HOST_RECEIVER_KIND_MESSAGE, 'TypeError');
+          }
+        }
+
         // Call the original function
         let result: unknown;
         try {
           result = ReflectApply(
             target,
             unwrappedThis,
-            passesHostValuesToCallbacks(target) ? guardCallbackArguments(argArray) : argArray,
+            passesHostValuesToCallbacks(target, builtinMethod) ? guardCallbackArguments(argArray) : argArray,
           );
         } catch (error) {
           throw launderHostError(error);

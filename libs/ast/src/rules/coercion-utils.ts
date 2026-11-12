@@ -6,6 +6,68 @@
  * `obj[{toString: () => 'constructor'}]`).
  */
 
+/** Marks an expression whose value is not known without running the script. */
+const NOT_CONSTANT = Symbol('not-constant');
+
+type Constant = string | number | boolean | null;
+
+/**
+ * The value of an expression made only of literals: a string, number, boolean or `null` literal,
+ * a template literal whose substitutions are constant, and `+` between constants (with the
+ * language's own rule: a concatenation when either side is a string, a sum otherwise).
+ *
+ * A key spelled in pieces (`'con' + 'structor'`, `` `con${'structor'}` ``) is as static as the
+ * same key in one piece.
+ */
+function constantValue(node: any): Constant | typeof NOT_CONSTANT {
+  if (!node) return NOT_CONSTANT;
+
+  switch (node.type) {
+    case 'Literal': {
+      const value = node.value;
+      if (node.regex || node.bigint !== undefined) return NOT_CONSTANT;
+      if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        return value;
+      }
+      return NOT_CONSTANT;
+    }
+
+    case 'TemplateLiteral': {
+      const quasis: any[] = node.quasis ?? [];
+      const expressions: any[] = node.expressions ?? [];
+      let text = '';
+      for (let i = 0; i < quasis.length; i++) {
+        const cooked = quasis[i].value?.cooked;
+        if (typeof cooked !== 'string') return NOT_CONSTANT;
+        text += cooked;
+        if (i < expressions.length) {
+          const part = constantValue(expressions[i]);
+          if (part === NOT_CONSTANT) return NOT_CONSTANT;
+          text += String(part);
+        }
+      }
+      return text;
+    }
+
+    case 'BinaryExpression': {
+      if (node.operator !== '+') return NOT_CONSTANT;
+      const left = constantValue(node.left);
+      if (left === NOT_CONSTANT) return NOT_CONSTANT;
+      const right = constantValue(node.right);
+      if (right === NOT_CONSTANT) return NOT_CONSTANT;
+      return typeof left === 'string' || typeof right === 'string'
+        ? String(left) + String(right)
+        : Number(left) + Number(right);
+    }
+
+    case 'ParenthesizedExpression':
+      return constantValue(node.expression);
+
+    default:
+      return NOT_CONSTANT;
+  }
+}
+
 /**
  * Extract a string literal from a ReturnStatement inside a BlockStatement.
  * Returns `null` if the body doesn't contain exactly one ReturnStatement
@@ -161,7 +223,7 @@ export function tryGetObjectCoercedString(node: any): string | null {
  * Also recurses into ObjectExpression elements inside arrays:
  * e.g. `[{toString: () => 'constructor'}]` coerces to `'constructor'`.
  */
-export function tryGetArrayCoercedString(node: any): string | null {
+export function tryGetArrayCoercedString(node: any, foldConstants = false): string | null {
   if (node.type !== 'ArrayExpression') return null;
   if (!node.elements || node.elements.length !== 1) return null;
   const element = node.elements[0];
@@ -171,12 +233,26 @@ export function tryGetArrayCoercedString(node: any): string | null {
     return element.value;
   }
   if (element.type === 'ArrayExpression') {
-    return tryGetArrayCoercedString(element);
+    return tryGetArrayCoercedString(element, foldConstants);
   }
   if (element.type === 'ObjectExpression') {
     return tryGetObjectCoercedString(element);
   }
+  // A string spelled in pieces: [`con${'structor'}`], ['con' + 'structor']
+  if (foldConstants && (element.type === 'TemplateLiteral' || element.type === 'BinaryExpression')) {
+    const value = constantValue(element);
+    return typeof value === 'string' ? value : null;
+  }
   return null;
+}
+
+/** Options of {@link tryGetStaticComputedKeys}. */
+export interface StaticComputedKeyOptions {
+  /**
+   * Also resolve a key that is a concatenation of constants or a template literal with constant
+   * substitutions. Default: false (such a key is left to the checks that run with the script).
+   */
+  foldConstants?: boolean;
 }
 
 /**
@@ -187,7 +263,7 @@ export function tryGetArrayCoercedString(node: any): string | null {
  *
  * Returns an array of resolved strings (may be empty).
  */
-function collectStaticKeys(node: any, out: string[]): void {
+function collectStaticKeys(node: any, out: string[], foldConstants: boolean): void {
   if (!node) return;
 
   // String literal: obj['constructor']
@@ -203,41 +279,56 @@ function collectStaticKeys(node: any, out: string[]): void {
         const val = node.quasis[0].value?.cooked ?? node.quasis[0].value?.raw;
         if (val != null) out.push(val);
       }
+      return;
+    }
+    // Template literal whose substitutions are constant: obj[`con${'structor'}`]
+    if (foldConstants) {
+      const val = constantValue(node);
+      if (val !== NOT_CONSTANT) out.push(String(val));
+    }
+    return;
+  }
+
+  // Concatenation of constants: obj['con' + 'structor']
+  if (node.type === 'BinaryExpression') {
+    if (foldConstants) {
+      const val = constantValue(node);
+      if (val !== NOT_CONSTANT) out.push(String(val));
     }
     return;
   }
 
   // Conditional: obj[true ? 'constructor' : 'x'] — collect BOTH branches
   if (node.type === 'ConditionalExpression') {
-    collectStaticKeys(node.consequent, out);
-    collectStaticKeys(node.alternate, out);
+    collectStaticKeys(node.consequent, out, foldConstants);
+    collectStaticKeys(node.alternate, out, foldConstants);
     return;
   }
 
   // Sequence: obj[(0, 'constructor')] — JS evaluates to last expression
   if (node.type === 'SequenceExpression') {
     if (node.expressions && node.expressions.length > 0) {
-      collectStaticKeys(node.expressions[node.expressions.length - 1], out);
+      collectStaticKeys(node.expressions[node.expressions.length - 1], out, foldConstants);
     }
     return;
   }
 
   // Assignment: obj[x = 'constructor'] — evaluates to the RHS
   if (node.type === 'AssignmentExpression') {
-    collectStaticKeys(node.right, out);
+    collectStaticKeys(node.right, out, foldConstants);
     return;
   }
 
   // Logical: obj['' || 'constructor'] — collect BOTH operands
   if (node.type === 'LogicalExpression') {
-    collectStaticKeys(node.left, out);
-    collectStaticKeys(node.right, out);
+    collectStaticKeys(node.left, out, foldConstants);
+    collectStaticKeys(node.right, out, foldConstants);
     return;
   }
 
   // Array coercion: obj[['constructor']]
   if (node.type === 'ArrayExpression') {
-    const val = tryGetArrayCoercedString(node);
+    const val = tryGetArrayCoercedString(node, foldConstants);
     if (val !== null) out.push(val);
     return;
   }
@@ -267,9 +358,13 @@ function collectStaticKeys(node: any, out: string[]): void {
  * Returns an array of all possible resolved strings. For branching expressions
  * (Conditional, Logical), both branches are returned so the caller can check
  * each against the disallowed set.
+ *
+ * With `foldConstants`, a key spelled in pieces is resolved as well:
+ * - `BinaryExpression` (`+` between constants) — `obj['con' + 'structor']`
+ * - `TemplateLiteral` (constant substitutions) — `` obj[`con${'structor'}`] ``
  */
-export function tryGetStaticComputedKeys(node: any): string[] {
+export function tryGetStaticComputedKeys(node: any, options: StaticComputedKeyOptions = {}): string[] {
   const results: string[] = [];
-  collectStaticKeys(node, results);
+  collectStaticKeys(node, results, options.foldConstants === true);
   return results;
 }

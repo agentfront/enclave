@@ -5,7 +5,7 @@ description: 'Protocol types and Zod schemas for the EnclaveJS streaming runtime
 
 # @enclave-vm/types
 
-Type definitions and Zod schemas for the EnclaveJS streaming runtime protocol. This package provides the foundation for type-safe communication between all EnclaveJS components.
+Type definitions and Zod schemas for the EnclaveJS streaming runtime protocol. This package provides the foundation for type-safe communication between all EnclaveJS components. It holds types, constants, schemas and type guards; it sends and receives nothing.
 
 ## Installation
 
@@ -25,35 +25,35 @@ import {
   isSessionId,
   isCallId,
   isRefId,
-  SESSION_ID_PREFIX,  // 'ses_'
-  CALL_ID_PREFIX,     // 'call_'
+  SESSION_ID_PREFIX,  // 's_'
+  CALL_ID_PREFIX,     // 'c_'
   REF_ID_PREFIX,      // 'ref_'
-  PROTOCOL_VERSION,   // 1
+  PROTOCOL_VERSION,   // 2
+  PROTOCOL_VERSION_V1, // 1, still accepted by the schemas
 } from '@enclave-vm/types';
 
 // Generate unique IDs
-const sessionId = generateSessionId();  // 'ses_a1b2c3d4-...'
-const callId = generateCallId();        // 'call_e5f6g7h8-...'
-const refId = generateRefId();          // 'ref_i9j0k1l2-...'
+const sessionId = generateSessionId();  // 's_a1b2c3d4-...'
+const callId = generateCallId();        // 'c_e5f6a7b8-...'
+const refId = generateRefId();          // 'ref_c9d0e1f2-...'
 
-// Type guards
+// Type guards (they check the prefix)
 if (isSessionId(id)) {
   // id is SessionId
 }
 ```
 
-### Session State Machine
+### Session States
 
 ```typescript
 import { SessionState } from '@enclave-vm/types';
 
-// Possible states
-type SessionState =
-  | 'running'
-  | 'waiting_for_tool'
-  | 'completed'
-  | 'error'
-  | 'cancelled';
+SessionState.Starting        // 'starting'
+SessionState.Running         // 'running'
+SessionState.WaitingForTool  // 'waiting_for_tool'
+SessionState.Completed       // 'completed'
+SessionState.Cancelled       // 'cancelled'
+SessionState.Failed          // 'failed'
 ```
 
 ### Session Limits
@@ -62,15 +62,22 @@ type SessionState =
 import { DEFAULT_SESSION_LIMITS, type SessionLimits } from '@enclave-vm/types';
 
 const limits: SessionLimits = {
-  timeout: 30000,           // Max execution time (ms)
-  memoryLimit: 128 * 1024 * 1024,  // Max memory (bytes)
-  maxToolCalls: 100,        // Max tool invocations
-  maxConsoleBytes: 1024 * 1024,    // Max console output
+  sessionTtlMs: 60000,        // How long a session lives (default 60000)
+  maxToolCalls: 50,           // Tool calls of one session (default 50)
+  maxToolResultBytes: 5242880, // One tool result (default 5 MB)
+  toolTimeoutMs: 30000,       // Default 30000
+  perToolDeadlineMs: 30000,   // One tool call (default 30000)
+  deadlineMs: 0,              // The whole session; 0: none (default)
+  heartbeatIntervalMs: 15000, // Interval of heartbeat events (default 15000)
+  cancelOnFirstError: false,  // Default false
+  maxStdoutBytes: 262144,     // Default 256 KB
 };
 
 // Defaults
 console.log(DEFAULT_SESSION_LIMITS);
 ```
+
+These are the fields of the type. What each one bounds is decided by the component that applies it: see the [limits of the broker](/enclavejs/broker#limits).
 
 ## Stream Events
 
@@ -87,59 +94,68 @@ import {
   isFinalEvent,
   isHeartbeatEvent,
   isErrorEvent,
+  isPartialResultEvent,
+  isToolProgressEvent,
+  isDeadlineExceededEvent,
+  isCatalogChangedEvent,
 } from '@enclave-vm/types';
 
-// Event type enum values
-EventType.SESSION_INIT         // 'session_init'
-EventType.STDOUT               // 'stdout'
-EventType.LOG                  // 'log'
-EventType.TOOL_CALL            // 'tool_call'
-EventType.TOOL_RESULT_APPLIED  // 'tool_result_applied'
-EventType.FINAL                // 'final'
-EventType.HEARTBEAT            // 'heartbeat'
-EventType.ERROR                // 'error'
+EventType.SessionInit        // 'session_init'
+EventType.Stdout             // 'stdout'
+EventType.Log                // 'log'
+EventType.ToolCall           // 'tool_call'
+EventType.ToolResultApplied  // 'tool_result_applied'
+EventType.Final              // 'final'
+EventType.Heartbeat          // 'heartbeat'
+EventType.Error              // 'error'
+EventType.PartialResult      // 'partial_result'
+EventType.ToolProgress       // 'tool_progress'
+EventType.DeadlineExceeded   // 'deadline_exceeded'
+EventType.CatalogChanged     // 'catalog_changed'
+EventType.Encrypted          // 'enc'
 ```
 
 ### Event Structures
 
+Every event has `protocolVersion`, `sessionId`, a sequence number `seq`, a `type` and a `payload`. There is no timestamp field.
+
 ```typescript
 import type {
-  StreamEvent,
   SessionInitEvent,
   StdoutEvent,
   LogEvent,
   ToolCallEvent,
   FinalEvent,
-  ErrorEvent,
 } from '@enclave-vm/types';
 
 // Session Init
 const initEvent: SessionInitEvent = {
+  protocolVersion: 2,
+  sessionId: 's_3f0e2f6e-1c1b-4c57-9a55-0a8b5a3d2c11',
+  seq: 1,
   type: 'session_init',
-  sessionId: 'ses_...',
-  seq: 0,
-  timestamp: Date.now(),
   payload: {
-    limits: { timeout: 30000 },
-    encryption: null,
+    cancelUrl: '/sessions/s_3f0e2f6e-1c1b-4c57-9a55-0a8b5a3d2c11/cancel',
+    expiresAt: '2026-01-01T00:01:00.000Z',
+    encryption: { enabled: false },
   },
 };
 
 // Stdout
 const stdoutEvent: StdoutEvent = {
+  protocolVersion: 2,
+  sessionId: 's_3f0e2f6e-1c1b-4c57-9a55-0a8b5a3d2c11',
+  seq: 2,
   type: 'stdout',
-  sessionId: 'ses_...',
-  seq: 1,
-  timestamp: Date.now(),
   payload: { chunk: 'Hello, world!\n' },
 };
 
 // Log
 const logEvent: LogEvent = {
+  protocolVersion: 2,
+  sessionId: 's_3f0e2f6e-1c1b-4c57-9a55-0a8b5a3d2c11',
+  seq: 3,
   type: 'log',
-  sessionId: 'ses_...',
-  seq: 2,
-  timestamp: Date.now(),
   payload: {
     level: 'info',  // 'debug' | 'info' | 'warn' | 'error'
     message: 'Processing started',
@@ -149,50 +165,50 @@ const logEvent: LogEvent = {
 
 // Tool Call
 const toolCallEvent: ToolCallEvent = {
+  protocolVersion: 2,
+  sessionId: 's_3f0e2f6e-1c1b-4c57-9a55-0a8b5a3d2c11',
+  seq: 4,
   type: 'tool_call',
-  sessionId: 'ses_...',
-  seq: 3,
-  timestamp: Date.now(),
   payload: {
-    callId: 'call_...',
-    name: 'fetchData',
+    callId: 'c_9a55e2f6-4c57-1c1b-3f0e-0a8b5a3d2c11',
+    toolName: 'fetchData',
     args: { url: 'https://api.example.com' },
-    timeout: 5000,
   },
 };
 
 // Final
 const finalEvent: FinalEvent = {
-  type: 'final',
-  sessionId: 'ses_...',
+  protocolVersion: 2,
+  sessionId: 's_3f0e2f6e-1c1b-4c57-9a55-0a8b5a3d2c11',
   seq: 10,
-  timestamp: Date.now(),
+  type: 'final',
   payload: {
-    result: { value: 42, success: true },
+    ok: true,
+    result: 42,
     stats: {
-      executionTime: 1234,
-      toolCalls: 3,
-      memoryUsage: 1024 * 1024,
+      durationMs: 1234,
+      toolCallCount: 3,
+      stdoutBytes: 0,
     },
   },
 };
 ```
 
+A failed session has `ok: false` and `error: { message, code? }` in its `final` payload.
+
 ## Zod Schemas
 
-All types have corresponding Zod schemas for runtime validation:
+The types have corresponding Zod schemas for runtime validation:
 
 ```typescript
 import {
   SessionIdSchema,
   StreamEventSchema,
-  SessionInitEventSchema,
-  ToolCallEventSchema,
   parseStreamEvent,
 } from '@enclave-vm/types';
 
 // Validate a session ID
-const result = SessionIdSchema.safeParse('ses_abc123');
+const result = SessionIdSchema.safeParse('s_abc123');
 if (result.success) {
   console.log('Valid session ID:', result.data);
 }
@@ -205,30 +221,43 @@ if (parsed.success) {
 }
 ```
 
+`parseStreamEvent`, `parseEncryptedEnvelope`, `parseRuntimeChannelMessage`, `parseCreateSessionRequest` and `parseStreamEventOrEncrypted` return the result of `safeParse`.
+
 ### Available Schemas
 
 | Schema | Description |
 |--------|-------------|
-| `SessionIdSchema` | Session ID format validation |
-| `CallIdSchema` | Call ID format validation |
-| `RefIdSchema` | Reference ID format validation |
+| `SessionIdSchema` | A string that starts with `s_` |
+| `CallIdSchema` | A string that starts with `c_` |
+| `RefIdSchema` | A string that starts with `ref_` |
 | `SessionLimitsSchema` | Session limits configuration |
 | `StreamEventSchema` | Union of all event types |
 | `SessionInitEventSchema` | Session init event |
 | `StdoutEventSchema` | Stdout event |
 | `LogEventSchema` | Log event |
 | `ToolCallEventSchema` | Tool call event |
+| `ToolResultAppliedEventSchema` | Tool result applied event |
 | `FinalEventSchema` | Final event |
+| `HeartbeatEventSchema` | Heartbeat event |
 | `ErrorEventSchema` | Error event |
+| `PartialResultEventSchema`, `ToolProgressEventSchema`, `DeadlineExceededEventSchema`, `CatalogChangedEventSchema` | The events added in protocol version 2 |
+| `EncryptedEnvelopeSchema`, `ClientHelloSchema`, `ServerHelloSchema` | The encryption types below |
+| `RuntimeChannelMessageSchema` | Tool result and cancel messages of a runtime channel |
+
+These schemas describe the wire format. A component may accept less than a schema allows: the broker, for example, accepts session ids of a fixed alphabet and length only.
 
 ## Encryption Types
 
+<Warning>
+These are type definitions. `@enclave-vm/client`, `@enclave-vm/react`, `@enclave-vm/broker` and `@enclave-vm/runtime` do not encrypt: they perform no handshake, the client ends a session that receives an `enc` event, and the broker refuses a request that requires encryption. `@enclave-vm/stream` exports primitives for these types, with a key exchange that is not authenticated; no package uses them. Sessions are plain JSON protected by the transport, so use HTTPS.
+</Warning>
+
 ```typescript
 import {
-  SupportedCurve,      // 'P-256' | 'P-384' | 'P-521'
-  EncryptionAlgorithm, // 'AES-GCM'
-  KeyDerivation,       // 'HKDF'
-  EncryptionMode,      // 'none' | 'required' | 'optional'
+  SupportedCurve,      // { P256: 'P-256' }
+  EncryptionAlgorithm, // { AES_GCM_256: 'AES-GCM-256' }
+  KeyDerivation,       // { HKDF_SHA256: 'HKDF-SHA-256' }
+  EncryptionMode,      // { Disabled: 'disabled', Optional: 'optional', Required: 'required' }
   AES_GCM_NONCE_SIZE,  // 12
   AES_GCM_TAG_SIZE,    // 16
   AES_256_KEY_SIZE,    // 32
@@ -241,27 +270,35 @@ import type {
   ServerHello,
 } from '@enclave-vm/types';
 
-// Client hello for key exchange
+// Client hello of a key exchange
 const clientHello: ClientHello = {
-  type: 'client_hello',
-  publicKey: 'base64-encoded-public-key',
+  protocolVersion: 2,
+  clientEphemeralPubKeyB64: 'base64-encoded-public-key',
   curve: 'P-256',
+  supportedAlgorithms: ['AES-GCM-256'],
 };
 
-// Server hello response
+// Server hello
 const serverHello: ServerHello = {
-  type: 'server_hello',
-  publicKey: 'base64-encoded-server-public-key',
-  sessionId: 'ses_...',
+  protocolVersion: 2,
+  serverEphemeralPubKeyB64: 'base64-encoded-public-key',
+  curve: 'P-256',
+  selectedAlgorithm: 'AES-GCM-256',
+  kdf: 'HKDF-SHA-256',
+  keyId: 'k_...',
+  // signatureB64 is reserved: nothing creates or verifies it
 };
 
-// Encrypted envelope
+// Encrypted envelope: an event of type 'enc' that wraps another event
 const envelope: EncryptedEnvelope = {
-  type: 'encrypted',
+  protocolVersion: 2,
+  sessionId: 's_3f0e2f6e-1c1b-4c57-9a55-0a8b5a3d2c11',
+  seq: 42,
+  type: 'enc',
   payload: {
-    ciphertext: 'base64-encrypted-data',
-    nonce: 'base64-nonce',
-    tag: 'base64-auth-tag',
+    kid: 'k_...',
+    nonceB64: 'base64-nonce',
+    ciphertextB64: 'base64-ciphertext',
   },
 };
 ```
@@ -272,49 +309,52 @@ const envelope: EncryptedEnvelope = {
 import {
   FilterMode,
   PatternType,
-  DEFAULT_ALWAYS_ALLOW,
+  DEFAULT_ALWAYS_ALLOW, // ['session_init', 'final']
 } from '@enclave-vm/types';
 
 import type {
   ContentPattern,
   TypeFilter,
   ContentFilter,
+  FilterRule,
   EventFilterConfig,
 } from '@enclave-vm/types';
 
 // Filter modes
-FilterMode.INCLUDE  // Only include matching events
-FilterMode.EXCLUDE  // Exclude matching events
+FilterMode.Include  // 'include': only send matching events
+FilterMode.Exclude  // 'exclude': do not send matching events
 
 // Pattern types
-PatternType.EXACT   // Exact string match
-PatternType.PREFIX  // Prefix match
-PatternType.REGEX   // Regular expression
-PatternType.GLOB    // Glob pattern (*, ?)
+PatternType.Exact   // 'exact'
+PatternType.Prefix  // 'prefix'
+PatternType.Regex   // 'regex'
+PatternType.Glob    // 'glob'
 
-// Filter configuration
+// Filter configuration: a mode and a list of rules
 const filterConfig: EventFilterConfig = {
-  typeFilter: {
-    mode: FilterMode.EXCLUDE,
-    types: ['heartbeat'],  // Exclude heartbeats
-  },
-  contentFilter: {
-    patterns: [
-      {
-        type: PatternType.PREFIX,
-        content: 'DEBUG:',
+  mode: FilterMode.Exclude,
+  rules: [
+    // Do not send heartbeats
+    { types: { types: ['heartbeat'] } },
+    // Do not send log events whose message starts with 'DEBUG:'
+    {
+      types: { types: ['log'] },
+      content: {
+        patterns: [{ type: PatternType.Prefix, pattern: 'DEBUG:', field: 'payload.message' }],
+        match: 'any',
       },
-    ],
-    mode: FilterMode.EXCLUDE,
-  },
+    },
+  ],
 };
 ```
+
+A rule matches when its type filter and its content filter both match; a filter matches when one of its rules does. The broker applies these configurations; see [Event Filtering](/enclavejs/broker#event-filtering).
 
 ## Runtime Channel Messages
 
 ```typescript
 import {
-  RuntimeChannelMessageType,
+  RuntimeChannelMessageType, // { ToolResultSubmit: 'tool_result_submit', Cancel: 'cancel' }
   parseRuntimeChannelMessage,
 } from '@enclave-vm/types';
 
@@ -324,46 +364,53 @@ import type {
   RuntimeChannelMessage,
 } from '@enclave-vm/types';
 
-// Submit tool result
+// Submit a tool result
 const toolResult: ToolResultSubmitMessage = {
-  type: 'tool_result',
+  protocolVersion: 2,
+  sessionId: 's_3f0e2f6e-1c1b-4c57-9a55-0a8b5a3d2c11',
+  type: 'tool_result_submit',
   payload: {
-    callId: 'call_...',
+    callId: 'c_9a55e2f6-4c57-1c1b-3f0e-0a8b5a3d2c11',
+    ok: true,
     result: { data: 'fetched data' },
-    error: null,
   },
 };
 
 // Cancel execution
 const cancel: CancelMessage = {
+  protocolVersion: 2,
+  sessionId: 's_3f0e2f6e-1c1b-4c57-9a55-0a8b5a3d2c11',
   type: 'cancel',
   payload: {
-    sessionId: 'ses_...',
     reason: 'User requested cancellation',
   },
 };
 ```
 
+These are the messages a middleware sends to a runtime over a channel; the channel types of `@enclave-vm/core` sessions and of [`@enclave-vm/runtime`](/enclavejs/runtime) carry them. The broker does not use such a channel: it runs the sandbox in process and applies tool results itself, and `@enclave-vm/runtime` does not execute scripts.
+
 ## Reference Tokens
 
 ```typescript
 import {
+  generateRefId,
   isRefToken,
   createRefToken,
 } from '@enclave-vm/types';
 
 import type { RefToken } from '@enclave-vm/types';
 
-// Create a reference token for large data
-const token = createRefToken();
-// { __ref: 'ref_uuid-here' }
+// A reference token names a value by its ref id
+const token: RefToken = createRefToken(generateRefId());
+// { $ref: { id: 'ref_...' } }
 
-// Check if value is a reference token
+// Check if a value is a reference token
 if (isRefToken(value)) {
-  // value has type RefToken
-  console.log(value.__ref);
+  console.log(value.$ref.id);
 }
 ```
+
+The type is part of the protocol definitions. The reference sidecar of `@enclave-vm/core` does not use it: there a reference is a string of the form `__REF_<uuid>__` (see [Reference Sidecar](/core-libraries/enclave-vm/reference-sidecar)).
 
 ## Links
 

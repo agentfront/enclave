@@ -256,8 +256,9 @@ function transformComputedMemberKeys(
           if (shouldTransformIdentifier(propValue, mode, targetSet)) {
             const newValue = `${prefix}${propValue}`;
             node.property.value = newValue;
-            // Update raw to ensure astring generates correct code
-            node.property.raw = `'${newValue}'`;
+            // The printer writes `raw` as it is, so it has to be the literal of the new value
+            // whatever characters the key holds
+            node.property.raw = JSON.stringify(newValue);
           }
         }
         // Handle template literals like obj[`eval`]
@@ -270,7 +271,7 @@ function transformComputedMemberKeys(
               node.property = {
                 type: 'Literal',
                 value: `${prefix}${staticValue}`,
-                raw: `'${prefix}${staticValue}'`,
+                raw: JSON.stringify(`${prefix}${staticValue}`),
               };
             }
           }

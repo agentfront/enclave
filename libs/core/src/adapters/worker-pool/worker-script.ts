@@ -56,6 +56,9 @@ if (!port) {
   throw new Error('worker-script.ts must run inside a worker thread');
 }
 
+/** This thread's own way to wait for the next turn of its event loop (see confirmIdle) */
+const nextEventLoopTurn = setImmediate;
+
 /**
  * Globals of this thread that nothing here needs after startup. Defense in depth: the script
  * never runs in this realm, but a value that is not here cannot be reached from it either.
@@ -189,6 +192,19 @@ port.on('message', async (raw: string) => {
  */
 async function handleExecute(msg: ExecuteMessage): Promise<void> {
   const startTime = Date.now();
+  // One execution at a time. The pool does not send a script to a worker that has not finished
+  // the last one; if one arrives all the same it is refused, not started on top of the other.
+  // (No idle confirmation follows: this worker is not idle.)
+  if (currentExecution) {
+    sendMessage({
+      type: 'result',
+      requestId: msg.requestId,
+      success: false,
+      error: { name: 'WorkerBusyError', message: 'The worker is still running another execution' },
+      stats: resultStats({ duration: 0, toolCallCount: 0, iterationCount: 0, startTime, endTime: startTime }),
+    });
+    return;
+  }
   const config = msg.config;
   const stats: ExecutionStats = {
     duration: 0,
@@ -229,7 +245,11 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
       },
       hostToolBridge: (requestJson) => relayToolRequest(execution, requestJson),
       consoleHandler: config.hasConsoleHandler
-        ? (level, text) => sendMessage({ type: 'console', requestId: execution.id, level, args: [text] })
+        ? (level, text) => {
+            // What a script prints after its execution has ended reaches nobody
+            if (currentExecution !== execution) return;
+            sendMessage({ type: 'console', requestId: execution.id, level, args: [text] });
+          }
         : undefined,
       secureProxyConfig: config.secureProxyConfig,
       toolNamespaces: config.toolNamespaces,
@@ -297,7 +317,27 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
     if (currentExecution === execution) {
       currentExecution = null;
     }
+    confirmIdle(msg.requestId);
   }
+}
+
+/**
+ * Tell the pool that nothing of an execution is left in this worker.
+ *
+ * The result alone does not say that: a script can return and leave callbacks behind, and as
+ * long as they keep running, this thread cannot start the next script. The confirmation is sent
+ * from the next turn of the event loop, which is only reached when every job the script queued
+ * has run and queued nothing more. The pool gives this worker to nobody before it arrives, and
+ * ends the worker when it does not.
+ */
+function confirmIdle(requestId: string): void {
+  nextEventLoopTurn(() => {
+    try {
+      sendMessage({ type: 'idle', requestId });
+    } catch {
+      // Without the confirmation the pool replaces this worker
+    }
+  });
 }
 
 /**

@@ -13,183 +13,283 @@ npm install @enclave-vm/client
 
 ## EnclaveClient Class
 
-The main client class for connecting to EnclaveJS brokers.
+The main client class for connecting to EnclaveJS brokers. It starts sessions over HTTP, reads their events as a stream, and returns their results.
 
 ### Constructor
 
 ```ts
-new EnclaveClient(options: ClientOptions)
+new EnclaveClient(config: EnclaveClientConfig)
 ```
 
-### ClientOptions
+### EnclaveClientConfig
 
 ```ts
-interface ClientOptions {
+interface EnclaveClientConfig {
   // Connection
-  serverUrl: string;
+  baseUrl: string;
+  headers?: Record<string, string>;
   timeout?: number;
 
-  // Authentication
-  auth?: AuthOptions;
-
   // Reconnection
-  reconnection?: ReconnectionOptions;
+  autoReconnect?: boolean;
+  maxReconnectAttempts?: number;
+  reconnectDelay?: number;
 
-  // Encryption
-  encryption?: EncryptionOptions;
+  // Events
+  maxEventLength?: number;
 
-  // Logging
-  logger?: Logger;
+  // Custom fetch
+  fetch?: typeof fetch;
 }
 ```
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `serverUrl` | `string` | Required | Broker URL |
-| `timeout` | `number` | `30000` | Request timeout in ms |
-| `auth` | `AuthOptions` | `undefined` | Authentication config |
-| `reconnection` | `ReconnectionOptions` | `undefined` | Reconnection config |
-| `encryption` | `EncryptionOptions` | `undefined` | E2E encryption config |
+| `baseUrl` | `string` | Required | Base URL of the broker |
+| `headers` | `Record<string, string>` | `undefined` | Headers sent with every request, for example `Authorization` |
+| `timeout` | `number` | `60000` | How long the client waits for the server, in ms. See [Timeouts](#timeouts) |
+| `autoReconnect` | `boolean` | `true` | Reconnect when the connection is lost |
+| `maxReconnectAttempts` | `number` | `3` | Reconnection attempts in a row before the session fails |
+| `reconnectDelay` | `number` | `1000` | Base delay before a reconnection attempt, in ms |
+| `maxEventLength` | `number` | `8388608` | Largest event the client accepts, in characters of its JSON line (8 MiB). A longer event ends the session with `PARSE_ERROR` |
+| `fetch` | `typeof fetch` | global `fetch` | Custom fetch implementation. Required where there is no global `fetch` |
 
-### AuthOptions
+These are all the options. The constructor throws a `TypeError`:
 
-```ts
-interface AuthOptions {
-  type: 'bearer' | 'api-key';
-  token?: string;
-  apiKey?: string;
-  getToken?: () => Promise<string>;
-}
-```
-
-### ReconnectionOptions
-
-```ts
-interface ReconnectionOptions {
-  enabled: boolean;
-  maxAttempts?: number;
-  initialDelayMs?: number;
-  maxDelayMs?: number;
-  backoffMultiplier?: number;
-}
-```
-
-### EncryptionOptions
-
-```ts
-interface EncryptionOptions {
-  enabled: boolean;
-  curve?: 'P-256' | 'P-384' | 'P-521';
-}
-```
+- for any other option, and the message names it. The client has no `encryption`, `auth`, `serverUrl` or `reconnect` option.
+- for a value it cannot use, for example an empty `baseUrl`, a `timeout` of `0`, or `headers` with a value that is not a string.
+- when there is no global `fetch` and none is passed.
 
 ### Methods
 
 #### execute(code, options?)
 
-Execute code with streaming response.
+Execute code and wait for the result.
 
 ```ts
-execute(code: string, options?: ExecuteOptions): AsyncIterable<StreamEvent>
+execute(code: string, options?: ExecuteOptions & SessionEventHandlers): Promise<SessionResult>
 ```
 
-**Options:**
-```ts
-interface ExecuteOptions {
-  timeout?: number;
-  maxToolCalls?: number;
-  context?: Record<string, unknown>;
-  filter?: EventFilter;
-  signal?: AbortSignal;
-}
-```
+The promise resolves when the session ends. It does not reject: a session that fails or is cancelled resolves with `success: false`. The call is the same as `executeStream(code, options).wait()`.
 
 **Example:**
 ```ts
-const client = new EnclaveClient({ serverUrl: 'http://localhost:3001' });
+const client = new EnclaveClient({ baseUrl: 'https://api.example.com' });
 
-const stream = client.execute(`
-  console.log('Hello');
-  return 42;
-`);
+const result = await client.execute('return 1 + 1');
 
-for await (const event of stream) {
-  if (event.type === 'stdout') {
-    console.log(event.payload.data);
-  }
-  if (event.type === 'final') {
-    console.log('Result:', event.payload.result);
-  }
+if (result.success) {
+  console.log('Result:', result.value); // 2
+} else {
+  console.error(result.error?.code, result.error?.message);
 }
 ```
 
-#### executeWithToolHandler(code, toolHandler, options?)
+#### executeStream(code, options?)
 
-Execute with automatic tool handling.
+Execute code and return a handle for the running session.
 
 ```ts
-async executeWithToolHandler(
-  code: string,
-  toolHandler: ToolHandler,
-  options?: ExecuteOptions
-): Promise<ExecutionResult>
+executeStream(code: string, options?: ExecuteOptions & SessionEventHandlers): SessionHandle
 ```
+
+The handle is returned at once, not as a promise. Events go to the handlers in `options` as they arrive.
 
 **Example:**
 ```ts
-const result = await client.executeWithToolHandler(
-  code,
-  async (name, args) => {
-    console.log(`Tool called: ${name}`, args);
-    return executeTool(name, args);
-  }
-);
+const session = client.executeStream(code, {
+  onStdout: (chunk) => process.stdout.write(chunk),
+  onToolCall: (callId, toolName, args) => console.log('Tool:', toolName, args),
+});
 
-console.log('Final result:', result.value);
+const result = await session.wait();
 ```
 
 #### getSession(sessionId)
 
-Get session information.
+Get session information from the broker.
 
 ```ts
-async getSession(sessionId: string): Promise<Session>
+getSession(sessionId: SessionId): Promise<SessionInfo | null>
 ```
 
-#### submitToolResult(sessionId, callId, result)
-
-Submit a tool result.
+Resolves with `null` when the broker answers `404`. Rejects with an [`EnclaveClientError`](#enclaveclienterror): `SESSION_ERROR` for a session ID that is not valid and for any other error status, `TIMEOUT` when the broker does not answer in time, `NETWORK_ERROR` when the request fails.
 
 ```ts
-async submitToolResult(
-  sessionId: string,
-  callId: string,
-  result: unknown
-): Promise<void>
-```
-
-#### health()
-
-Check broker health.
-
-```ts
-async health(): Promise<HealthStatus>
-```
-
-```ts
-interface HealthStatus {
-  status: 'ok' | 'degraded' | 'error';
-  uptime: number;
-  sessions: {
-    active: number;
-    total: number;
+interface SessionInfo {
+  sessionId: SessionId;
+  state: string;
+  createdAt: number;
+  expiresAt: number;
+  stats: {
+    duration: number;
+    toolCallCount: number;
   };
 }
 ```
 
+#### cancelSession(sessionId, reason?)
+
+Cancel a session that this client is running. See [Cancellation](#cancellation).
+
+```ts
+cancelSession(sessionId: SessionId, reason?: string): Promise<void>
+```
+
+Does nothing when this client is not running a session with that ID.
+
+## Execute Options
+
+`execute()` and `executeStream()` take the same options: `ExecuteOptions` together with the [event handlers](#event-handling).
+
+```ts
+interface ExecuteOptions {
+  sessionId?: SessionId;
+  limits?: Partial<SessionLimits>;
+  signal?: AbortSignal;
+}
+```
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `sessionId` | `SessionId` | ID for the session. Generated if not provided |
+| `limits` | `Partial<SessionLimits>` | Limits requested for the session. The client sends `sessionTtlMs`, `maxToolCalls` and `heartbeatIntervalMs` to the broker; the other fields of `SessionLimits` are not sent |
+| `signal` | `AbortSignal` | Aborting it does what `cancel()` on the handle does |
+
+A session ID is a string that starts with `s_`. Anything else is refused before a request is made: `execute()` and `executeStream()` give a `SESSION_ERROR` result, and `getSession()` rejects. A session with an ID that is already running on the same client is refused the same way.
+
+## Session Handle
+
+```ts
+interface SessionHandle {
+  sessionId: SessionId;
+  wait(): Promise<SessionResult>;
+  cancel(reason?: string): Promise<void>;
+  getEvents(): StreamEvent[];
+  isActive(): boolean;
+}
+```
+
+| Member | Description |
+|--------|-------------|
+| `sessionId` | ID of the session |
+| `wait()` | Resolves with the result when the session ends. Does not reject |
+| `cancel(reason?)` | Cancels the session. See [Cancellation](#cancellation) |
+| `getEvents()` | The events received so far |
+| `isActive()` | `true` until the session has its result |
+
+## Session Result
+
+```ts
+interface SessionResult<T = unknown> {
+  success: boolean;
+  sessionId: SessionId;
+  value?: T;
+  error?: {
+    code?: string;
+    message: string;
+  };
+  errors?: Array<{
+    code: string;
+    message: string;
+    path?: string[];
+  }>;
+  stats?: {
+    durationMs: number;
+    toolCallCount: number;
+    stdoutBytes: number;
+  };
+  events: StreamEvent[];
+}
+```
+
+| Property | Description |
+|----------|-------------|
+| `success` | Whether the execution succeeded |
+| `value` | What the script returned, if it succeeded |
+| `error` | Why the session failed, if it did. See [Error Handling](#error-handling) |
+| `errors` | Per-path errors, if the session reported any |
+| `stats` | Counted by the client: time since the session was started, number of tool calls, size of the stdout received |
+| `events` | All events received during the session |
+
 ## Event Handling
 
+### Event Handlers
+
+```ts
+interface SessionEventHandlers {
+  onEvent?: (event: StreamEvent) => void;
+  onSessionInit?: (event: StreamEvent) => void;
+  onStdout?: (chunk: string) => void;
+  onLog?: (level: string, message: string, data?: Record<string, unknown>) => void;
+  onToolCall?: (callId: string, toolName: string, args: unknown) => void;
+  onToolResultApplied?: (callId: string) => void;
+  onHeartbeat?: () => void;
+  onError?: (code: string, message: string) => void;
+  onPartialResult?: (path: string[], data?: unknown, error?: ErrorPayload, hasNext?: boolean) => void;
+  onToolProgress?: (callId: string, phase: ToolProgressPhase, elapsedMs: number) => void;
+  onDeadlineExceeded?: (elapsedMs: number, budgetMs: number) => void;
+  onCatalogChanged?: (version: string, addedActions: string[], removedActions: string[]) => void;
+}
+```
+
+`ErrorPayload` and `ToolProgressPhase` are types of [`@enclave-vm/types`](/api-reference/enclavejs-types).
+
+| Handler | Called for |
+|---------|------------|
+| `onEvent` | Every event, before the handler of its type |
+| `onSessionInit` | `session_init` |
+| `onStdout` | `stdout` |
+| `onLog` | `log` |
+| `onToolCall` | `tool_call` |
+| `onToolResultApplied` | `tool_result_applied` |
+| `onHeartbeat` | `heartbeat` |
+| `onError` | `error`, a non-fatal error of the session. Also called with the code `CANCEL_FAILED` when the broker does not confirm a cancellation |
+| `onPartialResult` | `partial_result` |
+| `onToolProgress` | `tool_progress` |
+| `onDeadlineExceeded` | `deadline_exceeded` |
+| `onCatalogChanged` | `catalog_changed` |
+
+The `final` event has no handler of its own. It ends the session, and its content becomes the `SessionResult` that `wait()` and `execute()` resolve with.
+
+Tools run on the broker. `onToolCall` and `onToolResultApplied` tell the client about them; the client executes nothing and has no API to register tools or to submit tool results.
+
+### Processing Events
+
+```ts
+const result = await client.execute(code, {
+  onSessionInit: (event) => {
+    console.log('Session:', event.sessionId);
+  },
+
+  onStdout: (chunk) => {
+    process.stdout.write(chunk);
+  },
+
+  onLog: (level, message) => {
+    console.log(`[${level}]`, message);
+  },
+
+  onToolCall: (callId, toolName, args) => {
+    console.log('Tool:', toolName, args);
+  },
+
+  onToolResultApplied: (callId) => {
+    console.log('Tool completed:', callId);
+  },
+
+  onError: (errorCode, message) => {
+    console.error('Error:', errorCode, message);
+  },
+});
+
+console.log('Result:', result.value);
+console.log('Stats:', result.stats);
+```
+
 ### Event Types
+
+`onEvent`, `getEvents()` and `result.events` work with the events themselves.
 
 ```ts
 type StreamEvent =
@@ -198,56 +298,45 @@ type StreamEvent =
   | LogEvent
   | ToolCallEvent
   | ToolResultAppliedEvent
-  | HeartbeatEvent
   | FinalEvent
-  | ErrorEvent;
+  | HeartbeatEvent
+  | ErrorEvent
+  | PartialResultEvent
+  | ToolProgressEvent
+  | DeadlineExceededEvent
+  | CatalogChangedEvent;
 ```
 
-### Processing Events
-
 ```ts
-const stream = client.execute(code);
+const result = await client.execute(code, {
+  onEvent: (event) => {
+    switch (event.type) {
+      case 'stdout':
+        process.stdout.write(event.payload.chunk);
+        break;
 
-for await (const event of stream) {
-  switch (event.type) {
-    case 'session_init':
-      console.log('Session:', event.sessionId);
-      break;
+      case 'tool_call':
+        console.log('Tool:', event.payload.toolName, event.payload.args);
+        break;
 
-    case 'stdout':
-      process.stdout.write(event.payload.data);
-      break;
-
-    case 'log':
-      console.log(`[${event.payload.level}]`, event.payload.message);
-      break;
-
-    case 'tool_call':
-      console.log('Tool:', event.payload.tool, event.payload.args);
-      // Handle tool call...
-      break;
-
-    case 'tool_result_applied':
-      console.log('Tool completed:', event.payload.callId);
-      break;
-
-    case 'heartbeat':
-      // Keep-alive
-      break;
-
-    case 'final':
-      console.log('Result:', event.payload.result);
-      console.log('Stats:', event.payload.stats);
-      break;
-
-    case 'error':
-      console.error('Error:', event.payload.message);
-      break;
-  }
-}
+      case 'final':
+        console.log('Done:', event.payload.ok);
+        break;
+    }
+  },
+});
 ```
 
 ## Cancellation
+
+A session is cancelled with `cancel()` on its handle, with `cancelSession()`, or by aborting the `signal` it was started with. All three do the same:
+
+- The session ends in the client as `CANCELLED`, and no further event of it is delivered.
+- The broker is asked to end the session with `DELETE {baseUrl}/sessions/:sessionId`.
+
+Cancelling does not reject. If the broker does not confirm the stop, `onError` is called with the code `CANCEL_FAILED`: the script may still be running.
+
+A session that is started with a signal that is already aborted ends as `CANCELLED` without a request being made.
 
 ### Using AbortController
 
@@ -257,78 +346,49 @@ const controller = new AbortController();
 // Cancel after 5 seconds
 setTimeout(() => controller.abort(), 5000);
 
-try {
-  const stream = client.execute(code, {
-    signal: controller.signal,
-  });
+const result = await client.execute(code, {
+  signal: controller.signal,
+  onError: (errorCode, message) => {
+    if (errorCode === 'CANCEL_FAILED') {
+      console.warn(message);
+    }
+  },
+});
 
-  for await (const event of stream) {
-    // Process events...
-  }
-} catch (error) {
-  if (error.name === 'AbortError') {
-    console.log('Execution cancelled');
-  }
+if (result.error?.code === 'CANCELLED') {
+  console.log('Execution cancelled');
 }
 ```
 
-## Authentication
+## Transport and Credentials
 
-### Bearer Token
+<Note>
+  The client does not encrypt. Requests and events travel as plain JSON over HTTP and are protected only by the transport: use an `https:` base URL, and send credentials with `headers`.
+</Note>
 
 ```ts
 const client = new EnclaveClient({
-  serverUrl: 'http://localhost:3001',
-  auth: {
-    type: 'bearer',
-    token: 'your-jwt-token',
+  baseUrl: 'https://api.example.com',
+  headers: {
+    Authorization: 'Bearer your-token',
   },
 });
 ```
 
-### Dynamic Token
+The headers are sent with every request of the client. The client has no method to change them: create a new client to use other credentials.
 
-```ts
-const client = new EnclaveClient({
-  serverUrl: 'http://localhost:3001',
-  auth: {
-    type: 'bearer',
-    getToken: async () => {
-      // Refresh token if needed
-      return getAccessToken();
-    },
-  },
-});
-```
+A broker that sends encrypted events cannot be used with this client: an encrypted event ends the session with `PARSE_ERROR`.
 
-### API Key
+### Requests
 
-```ts
-const client = new EnclaveClient({
-  serverUrl: 'http://localhost:3001',
-  auth: {
-    type: 'api-key',
-    apiKey: 'your-api-key',
-  },
-});
-```
+| Request | Sent |
+|---------|------|
+| `POST {baseUrl}/sessions` | To start a session. The body is `{ sessionId, code, config? }`, the answer a stream of events as NDJSON |
+| `GET {baseUrl}/sessions/:sessionId` | By `getSession()` |
+| `GET {baseUrl}/sessions/:sessionId/stream?fromSeq=N` | To reconnect. `N` is the sequence number after the last event delivered |
+| `DELETE {baseUrl}/sessions/:sessionId` | To cancel a session |
 
-## Encryption
-
-### Enable E2E Encryption
-
-```ts
-const client = new EnclaveClient({
-  serverUrl: 'https://broker.example.com',
-  encryption: {
-    enabled: true,
-    curve: 'P-256',
-  },
-});
-
-// All communication is now encrypted
-const stream = client.execute(code);
-```
+`config` carries the `limits` of the session: `{ maxExecutionMs, maxToolCalls, heartbeatIntervalMs }`, where `maxExecutionMs` is `limits.sessionTtlMs`. Session IDs are URL-encoded in the request paths.
 
 ## Reconnection
 
@@ -336,45 +396,96 @@ const stream = client.execute(code);
 
 ```ts
 const client = new EnclaveClient({
-  serverUrl: 'http://localhost:3001',
-  reconnection: {
-    enabled: true,
-    maxAttempts: 5,
-    initialDelayMs: 1000,
-    maxDelayMs: 30000,
-    backoffMultiplier: 2,
-  },
+  baseUrl: 'https://api.example.com',
+  autoReconnect: true,
+  maxReconnectAttempts: 5,
+  reconnectDelay: 1000,
 });
 ```
 
+A connection counts as lost when a request fails, when the stream ends before the `final` event, or when the broker stays silent for longer than the client waits. The client then reconnects:
+
+- up to `maxReconnectAttempts` times in a row. The count starts again when a connection delivers a new event.
+- after a delay that is based on `reconnectDelay` and grows with each attempt in a row.
+- asking the broker for the events after the last one it delivered. Every event is delivered once and in order, and nothing is delivered after the `final` event.
+
+If the attempts are used up, or `autoReconnect` is `false`, the session fails with the code of the last failure.
+
+### Timeouts
+
+`timeout` is how long the client waits for the broker:
+
+- for the answer to a request.
+- for the next event on an open stream. Here the wait is never shorter than two heartbeat intervals of the session (15 seconds each, unless `limits.heartbeatIntervalMs` asks for another).
+
+When the time runs out the connection counts as lost: the client reconnects if it may, otherwise the session fails with `TIMEOUT`.
+
+`timeout` does not limit how long a script runs. A session that keeps sending events, heartbeats included, stays open. To ask the broker for a limit on the duration of a session, use `limits.sessionTtlMs`.
+
 ## Error Handling
 
+A session that fails is not a rejected promise. `execute()` and `wait()` resolve with `success: false` and an `error`, whose `code` is one of the client's codes or the code that the broker sent in the `final` event.
+
 ```ts
-import { EnclaveError, isEnclaveError } from '@enclave-vm/client';
+const result = await client.execute(code);
+
+if (!result.success) {
+  switch (result.error?.code) {
+    case 'TIMEOUT':
+      console.log('The broker did not answer in time');
+      break;
+    case 'NETWORK_ERROR':
+    case 'RECONNECT_FAILED':
+      console.log('Connection lost');
+      break;
+    case 'CANCELLED':
+      console.log('Execution cancelled');
+      break;
+    default:
+      console.log('Execution error:', result.error?.message);
+  }
+}
+```
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `CANCELLED` | The session was cancelled with `cancel()`, `cancelSession()` or the `signal` |
+| `TIMEOUT` | The broker did not answer, or sent no event, within the time the client waits |
+| `NETWORK_ERROR` | A request failed, or the stream ended before the `final` event |
+| `PARSE_ERROR` | The answer cannot be read: an event longer than `maxEventLength`, an encrypted event, or a response without a body |
+| `SESSION_ERROR` | The broker refused to start the session, the session ID is not valid, or the ID is already running on this client |
+| `RECONNECT_FAILED` | The broker refused a reconnection |
+
+### EnclaveClientError
+
+`getSession()` rejects with an `EnclaveClientError`. It is the one method of the client that rejects.
+
+```ts
+class EnclaveClientError extends Error {
+  readonly code: ClientErrorCode;
+  readonly cause?: Error;
+}
+
+type ClientErrorCode =
+  | 'NETWORK_ERROR'
+  | 'TIMEOUT'
+  | 'PARSE_ERROR'
+  | 'SESSION_ERROR'
+  | 'CANCELLED'
+  | 'RECONNECT_FAILED';
+```
+
+```ts
+import { EnclaveClientError } from '@enclave-vm/client';
 
 try {
-  const stream = client.execute(code);
-
-  for await (const event of stream) {
-    if (event.type === 'error') {
-      throw new EnclaveError(event.payload.code, event.payload.message);
-    }
-  }
+  const info = await client.getSession(sessionId);
+  console.log(info?.state);
 } catch (error) {
-  if (isEnclaveError(error)) {
-    switch (error.code) {
-      case 'TIMEOUT':
-        console.log('Execution timed out');
-        break;
-      case 'VALIDATION_ERROR':
-        console.log('Code validation failed');
-        break;
-      case 'CONNECTION_ERROR':
-        console.log('Connection lost');
-        break;
-      default:
-        console.log('Execution error:', error.message);
-    }
+  if (error instanceof EnclaveClientError) {
+    console.log(error.code, error.message);
   }
 }
 ```
@@ -387,57 +498,47 @@ import { EnclaveClient } from '@enclave-vm/client';
 async function main() {
   // Create client
   const client = new EnclaveClient({
-    serverUrl: 'http://localhost:3001',
-    auth: {
-      type: 'bearer',
-      token: process.env.API_TOKEN,
+    baseUrl: 'https://api.example.com',
+    headers: {
+      Authorization: `Bearer ${process.env.API_TOKEN}`,
     },
-    reconnection: {
-      enabled: true,
-      maxAttempts: 3,
-    },
+    maxReconnectAttempts: 3,
     timeout: 60000,
   });
 
-  // Check health
-  const health = await client.health();
-  console.log('Broker status:', health.status);
-
-  // Execute with tool handling
+  // The tools are registered on the broker
   const code = `
     const users = await callTool('users:list', { limit: 5 });
-    console.log('Found', users.length, 'users');
-
-    for (const user of users) {
-      console.log('Processing:', user.name);
-    }
 
     return { count: users.length };
   `;
 
-  const result = await client.executeWithToolHandler(
-    code,
-    async (name, args) => {
-      switch (name) {
-        case 'users:list':
-          return [
-            { id: '1', name: 'Alice' },
-            { id: '2', name: 'Bob' },
-          ].slice(0, args.limit);
-        default:
-          throw new Error(`Unknown tool: ${name}`);
-      }
+  // Start the session
+  const session = client.executeStream(code, {
+    limits: {
+      sessionTtlMs: 30000,
+      maxToolCalls: 10,
     },
-    {
-      timeout: 30000,
-      filter: {
-        blockedTypes: ['heartbeat'],
-      },
-    }
-  );
+    onStdout: (chunk) => process.stdout.write(chunk),
+    onToolCall: (callId, toolName, args) => {
+      console.log(`Tool called: ${toolName}`, args);
+    },
+    onError: (errorCode, message) => {
+      console.error(`${errorCode}: ${message}`);
+    },
+  });
 
-  console.log('Result:', result.value);
-  console.log('Stats:', result.stats);
+  console.log('Session:', session.sessionId);
+
+  // Wait for the result
+  const result = await session.wait();
+
+  if (result.success) {
+    console.log('Result:', result.value);
+    console.log('Stats:', result.stats);
+  } else {
+    console.error('Failed:', result.error?.code, result.error?.message);
+  }
 }
 
 main().catch(console.error);
@@ -448,22 +549,55 @@ main().catch(console.error);
 ```ts
 import { EnclaveClient } from '@enclave-vm/client';
 
-// Works in browser
+// In the browser the client uses the global fetch
 const client = new EnclaveClient({
-  serverUrl: 'https://api.example.com',
-  auth: {
-    type: 'bearer',
-    getToken: async () => localStorage.getItem('token'),
+  baseUrl: 'https://api.example.com',
+  headers: {
+    Authorization: `Bearer ${token}`,
   },
 });
 
 // Execute code
-const stream = client.execute(code);
-
-for await (const event of stream) {
-  updateUI(event);
-}
+const result = await client.execute(code, {
+  onEvent: (event) => {
+    updateUI(event);
+  },
+});
 ```
+
+## Exports
+
+```ts
+import { EnclaveClient, EnclaveClientError, ConnectionState } from '@enclave-vm/client';
+
+import type {
+  EnclaveClientConfig,
+  ExecuteOptions,
+  EventHandler,
+  SessionEventHandlers,
+  SessionResult,
+  SessionHandle,
+  SessionInfo,
+  ClientErrorCode,
+} from '@enclave-vm/client';
+
+// Re-exported from @enclave-vm/types
+import type {
+  SessionId,
+  SessionLimits,
+  StreamEvent,
+  SessionInitEvent,
+  StdoutEvent,
+  LogEvent,
+  ToolCallEvent,
+  ToolResultAppliedEvent,
+  FinalEvent,
+  HeartbeatEvent,
+  ErrorEvent,
+} from '@enclave-vm/client';
+```
+
+`ConnectionState` is re-exported from `@enclave-vm/stream`.
 
 ## Related
 

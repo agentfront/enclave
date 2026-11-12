@@ -5,7 +5,7 @@ description: 'Browser and Node.js client SDK for the EnclaveJS streaming runtime
 
 # @enclave-vm/client
 
-Browser and Node.js client SDK for connecting to an EnclaveJS broker. Provides streaming execution, event handling, and automatic reconnection.
+Browser and Node.js client SDK for connecting to an EnclaveJS broker. Provides streaming execution, event handling, cancellation, and automatic reconnection.
 
 ## Installation
 
@@ -19,20 +19,22 @@ npm install @enclave-vm/client
 import { EnclaveClient } from '@enclave-vm/client';
 
 const client = new EnclaveClient({
-  baseUrl: 'http://localhost:3000',
+  baseUrl: 'https://api.example.com',
 });
 
-// Execute code and handle events
-const handle = await client.execute('console.log("Hello!"); return 42;', {
+// Execute code and handle events as they arrive
+const result = await client.execute('return 1 + 1', {
   onStdout: (chunk) => process.stdout.write(chunk),
   onLog: (level, message) => console.log(`[${level}]`, message),
-  onFinal: (result) => console.log('Result:', result),
-  onError: (error) => console.error('Error:', error),
+  onError: (code, message) => console.error(`${code}: ${message}`),
 });
 
-// Wait for completion
-const result = await handle.result;
-console.log('Execution completed:', result);
+// The promise resolves when the session ends
+if (result.success) {
+  console.log('Result:', result.value); // 2
+} else {
+  console.error('Failed:', result.error?.code, result.error?.message);
+}
 ```
 
 ## Client Configuration
@@ -42,67 +44,90 @@ import { EnclaveClient, type EnclaveClientConfig } from '@enclave-vm/client';
 
 const config: EnclaveClientConfig = {
   // Required: Broker URL
-  baseUrl: 'http://localhost:3000',
+  baseUrl: 'https://api.example.com',
 
-  // Custom headers (e.g., for authentication)
+  // Headers sent with every request (e.g., credentials)
   headers: {
     'Authorization': 'Bearer token',
   },
 
-  // Request timeout (ms)
-  timeout: 30000,
+  // How long to wait for the server (ms): for the answer to a request,
+  // and for the next event on an open stream. Default: 60000
+  timeout: 60000,
 
-  // Reconnection settings
-  reconnect: {
-    enabled: true,
-    maxAttempts: 5,
-    initialDelay: 1000,
-    maxDelay: 30000,
-  },
+  // Reconnect when the connection is lost. Default: true
+  autoReconnect: true,
 
-  // Custom fetch implementation (for Node.js or testing)
-  fetch: customFetch,
+  // Reconnection attempts in a row before the session fails. Default: 3
+  maxReconnectAttempts: 3,
+
+  // Base delay before a reconnection attempt (ms). Default: 1000
+  reconnectDelay: 1000,
+
+  // Largest event accepted, in characters. Default: 8388608 (8 MiB)
+  maxEventLength: 8388608,
 };
 
 const client = new EnclaveClient(config);
 ```
+
+Together with `fetch` (see [Node.js Usage](#nodejs-usage)), these are all the options. Any other option makes the constructor throw a `TypeError` that names it: the client has no `encryption`, `auth`, `serverUrl` or `reconnect` option. A value the client cannot use, such as a `timeout` of `0`, throws as well.
+
+<Note>
+  The client does not encrypt. Requests and events travel as plain JSON over HTTP and are protected only by the transport: use an `https:` base URL, and send credentials with `headers`.
+</Note>
 
 ## Executing Code
 
 ### Basic Execution
 
 ```typescript
-const handle = await client.execute(code);
+// Wait for the result
+const result = await client.execute(code);
+
+// Or get a handle for the running session
+const session = client.executeStream(code);
 
 // The handle provides:
-handle.sessionId;    // Session ID
-handle.result;       // Promise resolving to final result
-handle.cancel();     // Cancel execution
+session.sessionId;    // Session ID
+session.wait();       // Promise resolving to the result
+session.cancel();     // Cancel execution
+session.getEvents();  // Events received so far
+session.isActive();   // Whether the session is still running
 ```
 
+`executeStream()` returns the handle at once, not a promise. `execute(code, options)` is the same as `executeStream(code, options).wait()`.
+
 ### Execution Options
+
+Both methods take the same options: the three below, plus the [event handlers](#event-handlers).
 
 ```typescript
 import type { ExecuteOptions } from '@enclave-vm/client';
 
-const options: ExecuteOptions = {
-  // Session limits
-  limits: {
-    timeout: 60000,
-    memoryLimit: 256 * 1024 * 1024,
-    maxToolCalls: 100,
-  },
+const abortController = new AbortController();
 
-  // Event handlers (see below)
-  onStdout: (chunk) => { /* ... */ },
-  onFinal: (result) => { /* ... */ },
+const options: ExecuteOptions = {
+  // Session ID (generated if not provided). Must start with "s_"
+  sessionId: 's_my-session',
+
+  // Limits requested for the session
+  limits: {
+    sessionTtlMs: 60000,        // Maximum session duration (ms)
+    maxToolCalls: 100,
+    heartbeatIntervalMs: 15000,
+  },
 
   // Abort signal for cancellation
   signal: abortController.signal,
 };
 
-const handle = await client.execute(code, options);
+const result = await client.execute(code, options);
 ```
+
+Of the fields of `SessionLimits`, the client sends `sessionTtlMs`, `maxToolCalls` and `heartbeatIntervalMs` to the broker.
+
+`timeout` and `limits.sessionTtlMs` are different things. `timeout` is how long the client waits for the broker to say something; a session that keeps sending events, heartbeats included, stays open. `limits.sessionTtlMs` asks the broker to limit how long the session may last.
 
 ## Event Handlers
 
@@ -115,10 +140,9 @@ const handlers: SessionEventHandlers = {
   // Session started
   onSessionInit: (event) => {
     console.log('Session started:', event.sessionId);
-    console.log('Limits:', event.payload.limits);
   },
 
-  // Console output
+  // Stdout output
   onStdout: (chunk) => {
     process.stdout.write(chunk);
   },
@@ -128,10 +152,9 @@ const handlers: SessionEventHandlers = {
     console.log(`[${level.toUpperCase()}]`, message, data);
   },
 
-  // Tool call requested
-  onToolCall: (callId, name, args) => {
-    console.log(`Tool call: ${name}`, args);
-    // Tool results are handled by the broker
+  // Tool call started
+  onToolCall: (callId, toolName, args) => {
+    console.log(`Tool call: ${toolName}`, args);
   },
 
   // Tool result applied
@@ -139,21 +162,35 @@ const handlers: SessionEventHandlers = {
     console.log(`Tool result applied: ${callId}`);
   },
 
-  // Execution completed
-  onFinal: (result, stats) => {
-    console.log('Result:', result);
-    console.log('Stats:', stats);
+  // Tool progress reported
+  onToolProgress: (callId, phase, elapsedMs) => {
+    console.log(`Tool ${callId}: ${phase} after ${elapsedMs} ms`);
+  },
+
+  // Partial result arrived
+  onPartialResult: (path, data, error, hasNext) => {
+    console.log('Partial result:', path.join('.'), error ?? data, hasNext);
+  },
+
+  // Deadline exceeded
+  onDeadlineExceeded: (elapsedMs, budgetMs) => {
+    console.log(`Deadline exceeded: ${elapsedMs} ms of ${budgetMs} ms`);
+  },
+
+  // Action catalog changed
+  onCatalogChanged: (version, addedActions, removedActions) => {
+    console.log('Catalog changed:', version, addedActions, removedActions);
   },
 
   // Heartbeat received
-  onHeartbeat: (timestamp) => {
-    console.log('Heartbeat:', new Date(timestamp));
+  onHeartbeat: () => {
+    console.log('Heartbeat');
   },
 
-  // Error occurred
-  onError: (error) => {
-    console.error('Execution error:', error.message);
-    console.error('Code:', error.code);
+  // Non-fatal error of the session, or a cancellation the broker
+  // did not confirm (code CANCEL_FAILED)
+  onError: (code, message) => {
+    console.error(`${code}: ${message}`);
   },
 
   // Any event (for custom handling)
@@ -162,8 +199,12 @@ const handlers: SessionEventHandlers = {
   },
 };
 
-const handle = await client.execute(code, handlers);
+const result = await client.execute(code, handlers);
 ```
+
+The end of the session has no handler of its own: the result comes from the promise of `execute()`, or from `wait()` on the handle.
+
+Tools run on the broker. `onToolCall` and `onToolResultApplied` tell the client about them; the client executes nothing and has no API to register tools.
 
 ### Event Handler Shortcuts
 
@@ -173,32 +214,31 @@ await client.execute(code, {
   onStdout: console.log,
 });
 
-// Just handle final result
-await client.execute(code, {
-  onFinal: (result) => saveResult(result),
-});
+// Just use the result
+const result = await client.execute(code);
+console.log(result.value);
 ```
 
 ## Session Handle
 
-The execute method returns a session handle for managing the execution:
+`executeStream()` returns a session handle for managing the execution:
 
 ```typescript
 import type { SessionHandle } from '@enclave-vm/client';
 
-const handle: SessionHandle = await client.execute(code);
+const session: SessionHandle = client.executeStream(code);
 
 // Session ID
-console.log('Session:', handle.sessionId);
-
-// Wait for result
-const result = await handle.result;
-
-// Cancel execution
-await handle.cancel('User cancelled');
+console.log('Session:', session.sessionId);
 
 // Check if still running
-console.log('Active:', handle.isActive);
+console.log('Active:', session.isActive());
+
+// Events received so far
+console.log('Events:', session.getEvents().length);
+
+// Wait for result
+const result = await session.wait();
 ```
 
 ## Session Result
@@ -206,7 +246,7 @@ console.log('Active:', handle.isActive);
 ```typescript
 import type { SessionResult } from '@enclave-vm/client';
 
-const result: SessionResult = await handle.result;
+const result: SessionResult = await session.wait();
 
 if (result.success) {
   console.log('Value:', result.value);
@@ -215,53 +255,110 @@ if (result.success) {
   console.log('Error:', result.error);
 }
 
-// Stats available
-result.stats.executionTime;   // ms
-result.stats.toolCalls;       // number of tool calls
-result.stats.memoryUsage;     // bytes
+// Per-path errors, if the session reported any
+result.errors;                 // Array<{ code, message, path? }> | undefined
+
+// Stats, as counted by the client
+result.stats?.durationMs;      // ms since the session was started
+result.stats?.toolCallCount;   // number of tool calls
+result.stats?.stdoutBytes;     // size of the stdout received
+
+// All events received during the session
+result.events;
+```
+
+## Cancelling
+
+There are three ways to cancel a session, and they do the same:
+
+```typescript
+// On the handle
+await session.cancel('User cancelled');
+
+// By session ID, for a session this client is running
+await client.cancelSession(session.sessionId, 'User cancelled');
+
+// With an abort signal passed in the options
+abortController.abort();
+```
+
+The session ends in the client as `CANCELLED`, and the broker is asked to end it with `DELETE {baseUrl}/sessions/:sessionId`. No further event of the session is delivered after that. Cancelling does not reject: if the broker does not confirm the stop, `onError` is called with the code `CANCEL_FAILED`, and the script may still be running.
+
+```typescript
+const result = await session.wait();
+
+result.success;       // false
+result.error?.code;   // 'CANCELLED'
 ```
 
 ## Error Handling
 
+A session that fails is not a rejected promise. `execute()` and `wait()` resolve with `success: false` and an `error`:
+
 ```typescript
-import { EnclaveClientError, type ClientErrorCode } from '@enclave-vm/client';
+const result = await client.execute(code);
 
-try {
-  await client.execute(code);
-} catch (error) {
-  if (error instanceof EnclaveClientError) {
-    console.log('Error code:', error.code);
-    console.log('Message:', error.message);
+if (!result.success) {
+  console.log('Error code:', result.error?.code);
+  console.log('Message:', result.error?.message);
 
-    switch (error.code) {
-      case 'TIMEOUT':
-        console.log('Execution timed out');
-        break;
-      case 'CONNECTION_FAILED':
-        console.log('Failed to connect to broker');
-        break;
-      case 'VALIDATION_ERROR':
-        console.log('Invalid request');
-        break;
-      case 'CANCELLED':
-        console.log('Execution was cancelled');
-        break;
-    }
+  switch (result.error?.code) {
+    case 'TIMEOUT':
+      console.log('The broker did not answer in time');
+      break;
+    case 'NETWORK_ERROR':
+      console.log('Connection lost');
+      break;
+    case 'SESSION_ERROR':
+      console.log('The session could not be started');
+      break;
+    case 'CANCELLED':
+      console.log('Execution was cancelled');
+      break;
   }
 }
 ```
 
 ### Error Codes
 
+`error.code` is one of the client's codes below, or the code that the broker sent with the end of the session.
+
 | Code | Description |
 |------|-------------|
-| `TIMEOUT` | Execution exceeded time limit |
-| `CONNECTION_FAILED` | Failed to connect to broker |
-| `CONNECTION_LOST` | Connection lost during execution |
-| `VALIDATION_ERROR` | Invalid code or options |
-| `CANCELLED` | Execution was cancelled |
-| `BROKER_ERROR` | Error from the broker |
-| `UNKNOWN` | Unknown error |
+| `CANCELLED` | The session was cancelled with `cancel()`, `cancelSession()` or the `signal` |
+| `TIMEOUT` | The broker did not answer, or sent no event, within the time the client waits |
+| `NETWORK_ERROR` | A request failed, or the stream ended before the session was complete |
+| `PARSE_ERROR` | The answer cannot be read: an event longer than `maxEventLength`, an encrypted event, or a response without a body |
+| `SESSION_ERROR` | The broker refused to start the session, the session ID is not valid, or the ID is already running on this client |
+| `RECONNECT_FAILED` | The broker refused a reconnection |
+
+### Session Lookup
+
+`getSession()` asks the broker about a session. It resolves with `null` when the broker does not know the session, and it is the one method that rejects, with an `EnclaveClientError`:
+
+```typescript
+import { EnclaveClientError } from '@enclave-vm/client';
+
+try {
+  const info = await client.getSession(session.sessionId);
+
+  if (info) {
+    console.log(info.state, info.createdAt, info.expiresAt);
+    console.log(info.stats.duration, info.stats.toolCallCount);
+  }
+} catch (error) {
+  if (error instanceof EnclaveClientError) {
+    console.log('Error code:', error.code);
+    console.log('Message:', error.message);
+  }
+}
+```
+
+## Reconnection
+
+A connection counts as lost when a request fails, when the stream ends before the session is complete, or when the broker stays silent for longer than the client waits. With `autoReconnect` on, the client then reconnects, up to `maxReconnectAttempts` times in a row and with a growing delay, and asks the broker for the events after the last one it delivered. Every event is delivered once and in order, and nothing is delivered after the `final` event.
+
+If the attempts are used up, or `autoReconnect` is off, the session fails with the code of the last failure.
 
 ## Connection State
 
@@ -269,26 +366,25 @@ try {
 import { ConnectionState } from '@enclave-vm/client';
 
 // Available states
-ConnectionState.DISCONNECTED   // Not connected
-ConnectionState.CONNECTING     // Connecting to broker
-ConnectionState.CONNECTED      // Active connection
-ConnectionState.RECONNECTING   // Attempting reconnection
+ConnectionState.Disconnected   // Not connected
+ConnectionState.Connecting     // Connecting to broker
+ConnectionState.Connected      // Active connection
+ConnectionState.Reconnecting   // Attempting reconnection
+ConnectionState.Failed         // Reconnection attempts used up
+ConnectionState.Closed         // Closed on purpose
 ```
+
+`ConnectionState` is re-exported from `@enclave-vm/stream`. The client tracks the connection of each session internally; the session handle does not expose it.
 
 ## Multiple Sessions
 
 ```typescript
 // Execute multiple scripts concurrently
-const handles = await Promise.all([
+const results = await Promise.all([
   client.execute('return 1 + 1'),
   client.execute('return 2 + 2'),
   client.execute('return 3 + 3'),
 ]);
-
-// Wait for all results
-const results = await Promise.all(
-  handles.map(h => h.result)
-);
 
 console.log(results.map(r => r.value)); // [2, 4, 6]
 ```
@@ -296,7 +392,7 @@ console.log(results.map(r => r.value)); // [2, 4, 6]
 ## Browser Usage
 
 ```typescript
-// Works in browsers with no additional setup
+// In browsers the client uses the global fetch
 const client = new EnclaveClient({
   baseUrl: 'https://api.example.com',
   headers: {
@@ -305,7 +401,7 @@ const client = new EnclaveClient({
 });
 
 // Execute from browser
-const handle = await client.execute(code, {
+const result = await client.execute(code, {
   onStdout: (chunk) => {
     outputElement.textContent += chunk;
   },
@@ -315,23 +411,41 @@ const handle = await client.execute(code, {
 ## Node.js Usage
 
 ```typescript
-// Works in Node.js 18+ with native fetch
+// In Node.js the client uses the global fetch
 const client = new EnclaveClient({
-  baseUrl: 'http://localhost:3000',
-});
-
-// Or provide custom fetch for older Node.js
-import fetch from 'node-fetch';
-
-const client = new EnclaveClient({
-  baseUrl: 'http://localhost:3000',
-  fetch: fetch as any,
+  baseUrl: 'https://api.example.com',
 });
 ```
+
+Or provide a fetch implementation of your own:
+
+```typescript
+const client = new EnclaveClient({
+  baseUrl: 'https://api.example.com',
+  fetch: (input, init) => {
+    console.log('Request:', init?.method ?? 'GET', String(input));
+    return fetch(input, init);
+  },
+});
+```
+
+Where there is no global `fetch`, the `fetch` option is required. The implementation has to return a standard `Response`: the client reads the events from its `body` stream.
 
 ## TypeScript Types
 
 ```typescript
+// Types of the client
+import type {
+  EnclaveClientConfig,
+  ExecuteOptions,
+  EventHandler,
+  SessionEventHandlers,
+  SessionResult,
+  SessionHandle,
+  SessionInfo,
+  ClientErrorCode,
+} from '@enclave-vm/client';
+
 // Re-exported from @enclave-vm/types
 import type {
   SessionId,
@@ -341,7 +455,9 @@ import type {
   StdoutEvent,
   LogEvent,
   ToolCallEvent,
+  ToolResultAppliedEvent,
   FinalEvent,
+  HeartbeatEvent,
   ErrorEvent,
 } from '@enclave-vm/client';
 ```

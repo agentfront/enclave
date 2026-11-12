@@ -46,6 +46,13 @@ export interface BrokerRequest {
    * Abort signal for cancellation
    */
   signal?: AbortSignal;
+
+  /**
+   * The request object of the HTTP framework this request was adapted from, when the adapter
+   * provides it. An `identify` hook finds there what an authentication middleware left on the
+   * request.
+   */
+  raw?: unknown;
 }
 
 /**
@@ -70,7 +77,7 @@ export interface BrokerResponse {
   /**
    * Write data to response stream
    */
-  write(data: string): void;
+  write(data: string): boolean | void;
 
   /**
    * End the response
@@ -81,6 +88,19 @@ export interface BrokerResponse {
    * Flush the response buffer (for streaming)
    */
   flush?(): void;
+
+  /**
+   * How many bytes written to this response its reader has not taken yet. With it, a stream
+   * whose reader falls behind by more than `maxBufferedBytes` is dropped; an adapter that
+   * cannot tell leaves it out.
+   */
+  bufferedBytes?(): number;
+
+  /**
+   * Close the connection of this response without waiting for its reader. Used to drop a
+   * reader; without it the response is ended.
+   */
+  destroy?(): void;
 }
 
 /**

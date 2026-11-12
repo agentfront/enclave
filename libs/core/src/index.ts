@@ -55,6 +55,7 @@ export {
   createScoringGate,
   // Feature extraction
   FeatureExtractor,
+  FeatureExtractionError,
   // Cache
   ScoringCache,
   // Scorer interface and base class
@@ -134,6 +135,7 @@ export {
   REF_ID_PATTERN,
   isReferenceId,
   getReferenceConfig,
+  getMaxTotalResolvedSize,
   // Sidecar
   ReferenceSidecar,
   ReferenceSource,
@@ -151,10 +153,10 @@ export {
 // QuickJS / WASM / node:vm); the worker-safe sandbox.
 export { InterpreterAdapter } from './adapters/interpreter-adapter';
 export type { InterpreterAdapterOptions } from './adapters/interpreter-adapter';
-export { Interpreter, InterpreterError, StepLimitError } from './interpreter/interpreter';
+export { Interpreter, InterpreterError, StepLimitError, DeadlineError } from './interpreter/interpreter';
 export type { InterpreterOptions } from './interpreter/interpreter';
 
-// Worker Pool Adapter (OS-level memory isolation)
+// Worker Pool Adapter (a worker thread per script, with the engine's heap limit)
 export {
   // Main adapter
   WorkerPoolAdapter,
