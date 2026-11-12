@@ -10,7 +10,7 @@
  * @packageDocumentation
  */
 
-import { buildIframeHtml, safeJsonStringify } from './iframe-html-builder';
+import { buildIframeDocument, escapeScriptText, safeJsonStringify, type IframeDocument } from './iframe-html-builder';
 import type { SerializedIframeConfig } from '../types';
 
 /** What a script gets when it runs a regular expression in a realm that has none. */
@@ -23,13 +23,13 @@ export interface InnerIframeBootstrapOptions {
 }
 
 /**
- * Generate the inner iframe HTML content
+ * Generate the inner iframe document: its HTML, and the hash that names its script in a policy
  */
-export function generateInnerIframeHtml(options: InnerIframeBootstrapOptions): string {
+export function generateInnerIframeDocument(options: InnerIframeBootstrapOptions): IframeDocument {
   const { userCode, config, requestId } = options;
 
   const script = generateInnerIframeScript(userCode, config, requestId);
-  return buildIframeHtml(script, { title: 'Enclave Inner Sandbox' });
+  return buildIframeDocument(script, { title: 'Enclave Inner Sandbox' });
 }
 
 function generateInnerIframeScript(userCode: string, config: SerializedIframeConfig, requestId: string): string {
@@ -946,9 +946,9 @@ function generateUserCodeExecution(userCode: string): string {
   // The user code has already been transformed by @enclave-vm/ast
   // and contains __ag_main() function definition.
   // We embed it directly - it runs in the same script context.
-  // Escape closing script tags to prevent HTML parser breakout
-  // when embedded via buildIframeHtml's <script>${content}</script>
-  return userCode.replace(/<\//g, '<\\/');
+  // What means something to the HTML parser inside a script element is escaped, so that the
+  // code is read as it was written: the end tag, and the start of an HTML comment.
+  return escapeScriptText(userCode);
 }
 
 /**
