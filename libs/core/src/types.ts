@@ -838,6 +838,13 @@ export interface ReferenceSidecarOptions {
   maxResolvedSize?: number;
 
   /**
+   * Maximum size, in bytes, of everything one execution resolves for its tool calls in total.
+   * A stored value counts once, a concatenation of references every time it is built.
+   * @default Twice `maxTotalSize`
+   */
+  maxTotalResolvedSize?: number;
+
+  /**
    * Whether to allow composite handles from string concatenation
    * If false, concatenating references throws an error
    * @default Determined by securityLevel (false for STRICT/SECURE)

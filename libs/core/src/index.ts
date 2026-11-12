@@ -55,6 +55,7 @@ export {
   createScoringGate,
   // Feature extraction
   FeatureExtractor,
+  FeatureExtractionError,
   // Cache
   ScoringCache,
   // Scorer interface and base class
@@ -134,6 +135,7 @@ export {
   REF_ID_PATTERN,
   isReferenceId,
   getReferenceConfig,
+  getMaxTotalResolvedSize,
   // Sidecar
   ReferenceSidecar,
   ReferenceSource,

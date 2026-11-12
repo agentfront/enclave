@@ -183,6 +183,8 @@ function buildReferenceConfig(
     maxReferenceSize: sidecarOptions.maxReferenceSize ?? baseConfig.maxReferenceSize,
     extractionThreshold: sidecarOptions.extractionThreshold ?? baseConfig.extractionThreshold,
     maxResolvedSize: sidecarOptions.maxResolvedSize ?? baseConfig.maxResolvedSize,
+    // Left undefined where the host did not set it: the limit is then twice maxTotalSize
+    maxTotalResolvedSize: sidecarOptions.maxTotalResolvedSize ?? baseConfig.maxTotalResolvedSize,
     allowComposites: sidecarOptions.allowComposites ?? baseConfig.allowComposites,
     maxReferenceCount: sidecarOptions.maxReferenceCount ?? baseConfig.maxReferenceCount,
     maxResolutionDepth: baseConfig.maxResolutionDepth,
@@ -444,7 +446,12 @@ export class Enclave {
 
     // Initialize scoring gate if configured
     if (options.scoringGate && options.scoringGate.scorer !== 'disabled') {
-      this.scoringGate = new ScoringGate(options.scoringGate);
+      // The gate reads a call through a tool namespace as the tool call it is: it gets the
+      // namespaces of this enclave unless the host configured the gate's own.
+      this.scoringGate = new ScoringGate({
+        ...options.scoringGate,
+        toolNamespaces: options.scoringGate.toolNamespaces ?? this.toolNamespaces,
+      });
     }
 
     // Build double VM config (default enabled for all adapters)
@@ -667,14 +674,21 @@ export class Enclave {
         scoringResult = await this.scoringGate.evaluate(transformedCode);
 
         if (!scoringResult.allowed) {
+          // A refusal without a score is one where the scorer could not answer (failOpen: false):
+          // the reason says so, there are no signals to list.
+          const hasScore = typeof scoringResult.totalScore === 'number';
           const signalSummary =
-            scoringResult.signals?.map((s) => `${s.id}: ${s.description}`).join('; ') ?? 'Unknown risk';
+            scoringResult.signals && scoringResult.signals.length > 0
+              ? scoringResult.signals.map((s) => `${s.id}: ${s.description}`).join('; ')
+              : (scoringResult.reason ?? 'Unknown risk');
 
           return {
             success: false,
             error: {
               name: 'ScoringGateError',
-              message: `Script blocked by AI scoring (score: ${scoringResult.totalScore}): ${signalSummary}`,
+              message: hasScore
+                ? `Script blocked by AI scoring (score: ${scoringResult.totalScore}): ${signalSummary}`
+                : `Script blocked by AI scoring: ${signalSummary}`,
               code: 'SCORING_BLOCKED',
               data: {
                 totalScore: scoringResult.totalScore,
