@@ -116,9 +116,14 @@ export class FeatureExtractor {
   constructor(options: FeatureExtractorOptions = {}) {
     this.toolNamespaces = new Map();
     for (const namespace of options.toolNamespaces ?? []) {
+      if (typeof namespace?.name !== 'string' || !Array.isArray(namespace.methods)) {
+        continue;
+      }
       const methods = new Map<string, string>();
       for (const method of namespace.methods) {
-        methods.set(method.name, method.toolName);
+        if (typeof method?.name === 'string' && typeof method.toolName === 'string') {
+          methods.set(method.name, method.toolName);
+        }
       }
       this.toolNamespaces.set(namespace.name, methods);
     }
