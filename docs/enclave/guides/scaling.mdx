@@ -3,46 +3,54 @@ title: 'Scaling'
 description: 'Scale Enclave for high-throughput production workloads'
 ---
 
-This guide covers scaling Enclave for high-throughput workloads, from single-server optimization to distributed multi-pod deployments.
+This guide covers scaling Enclave for high-throughput workloads, from single-server optimization to several servers behind a load balancer.
 
 ## Scaling Dimensions
 
-| Dimension | Single Server | Distributed |
-|-----------|---------------|-------------|
-| Concurrency | Worker pool | Multiple runtime pods |
-| Sessions | In-memory | Redis-backed |
-| Tool execution | Local | Distributed via broker |
-| State | Process memory | Redis/external store |
+| Dimension | Single Server | Several Servers |
+|-----------|---------------|-----------------|
+| Concurrency | Worker pool | More processes or pods, each with its own enclaves or broker |
+| Sessions | In the memory of the broker | In the memory of the broker that created them: route a session's requests to that broker |
+| Tool execution | In the host process | In each broker's process |
+| State | Process memory | Process memory; the packages have no shared session store |
 
 ## Single-Server Scaling
 
 ### Worker Pool
 
-For CPU-bound workloads, use the worker pool adapter:
+By default a script runs on the thread that called `run()`. To run scripts on several threads, use the worker pool adapter:
 
 ```ts
-import { Enclave, createWorkerPoolAdapter } from '@enclave-vm/core';
+import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({
-  adapter: createWorkerPoolAdapter({
-    // Number of worker processes
-    poolSize: 4,
+  adapter: 'worker_threads',
+  workerPoolConfig: {
+    // Workers kept warm, and the most that run at once
+    minWorkers: 2,
+    maxWorkers: 4,
 
-    // Memory limit per worker
-    maxWorkerMemory: 128 * 1024 * 1024, // 128MB
+    // Heap limit per worker
+    memoryLimitPerWorker: 128 * 1024 * 1024, // 128MB
 
-    // Restart workers after N executions (memory leak prevention)
+    // Recycle a worker after N executions
     maxExecutionsPerWorker: 1000,
 
-    // Worker idle timeout
-    idleTimeout: 60000,
-  }),
+    // Release an idle worker after this long
+    idleTimeoutMs: 60000,
+
+    // Executions beyond maxWorkers wait in a queue
+    maxQueueSize: 100,
+    queueTimeoutMs: 30000,
+  },
 
   toolHandler: async (name, args) => {
     return executeTool(name, args);
   },
 });
 ```
+
+Tool handlers still run on the host thread: a worker sends each tool call to it. Functions in `globals` are not available in a worker. See [Worker Pool](/core-libraries/enclave-vm/worker-pool).
 
 ### Pool Sizing Guidelines
 
@@ -56,12 +64,14 @@ const enclave = new Enclave({
 import os from 'os';
 
 const cpuCount = os.cpus().length;
-const poolSize = Math.max(2, Math.floor(cpuCount * 1.5));
+const maxWorkers = Math.max(2, Math.floor(cpuCount * 1.5));
 ```
+
+Executions beyond `maxWorkers` wait in the pool's queue, and the wait counts against the script's `timeout`. A full queue fails the execution with `QueueFullError`, a wait longer than `queueTimeoutMs` with `QueueTimeoutError`.
 
 ### Enclave Pooling
 
-Reuse Enclave instances to avoid initialization overhead:
+An `Enclave` can be reused for many executions, and with the worker pool one enclave already runs several scripts at a time. To bound the number of in-process executions yourself, keep a pool of enclaves:
 
 ```ts
 class EnclavePool {
@@ -119,107 +129,80 @@ class EnclavePool {
 }
 ```
 
-## Distributed Scaling
+## Scaling Out
 
 ### Architecture
+
+The EnclaveJS broker runs the sandbox in its own process, and a session lives in the memory of the broker that created it. To scale out, run several brokers behind a load balancer:
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
 flowchart TB
-    LB["Load Balancer"]
-    subgraph apiTier["API Tier"]
-        API1["API Pod 1<br/>EnclaveClient"]
-        API2["API Pod 2<br/>EnclaveClient"]
-        API3["API Pod 3<br/>EnclaveClient"]
+    Clients["Clients<br/>EnclaveClient"]
+    LB["Load Balancer<br/>(session affinity)"]
+    subgraph brokerTier["Broker Tier"]
+        B1["Broker Pod 1<br/>sandbox + tools"]
+        B2["Broker Pod 2<br/>sandbox + tools"]
+        B3["Broker Pod 3<br/>sandbox + tools"]
     end
-    Broker["EnclaveJS Broker<br/>(Redis-backed)"]
-    subgraph runtimeTier["Runtime Tier"]
-        R1["Runtime Pod 1"]
-        R2["Runtime Pod 2"]
-        R3["Runtime Pod 3"]
-    end
-    LB --> API1
-    LB --> API2
-    LB --> API3
-    API1 --> Broker
-    API2 --> Broker
-    API3 --> Broker
-    Broker --> R1
-    Broker --> R2
-    Broker --> R3
+    Clients --> LB
+    LB --> B1
+    LB --> B2
+    LB --> B3
+    style Clients fill:#f0b865,stroke:#c78935,color:#333
     style LB fill:#f0b865,stroke:#c78935,color:#333
-    style apiTier fill:#fff5e6,stroke:#c78935,color:#333
-    style runtimeTier fill:#fff5e6,stroke:#c78935,color:#333
-    style API1 fill:#e8a045,stroke:#c78935,color:#fff
-    style API2 fill:#e8a045,stroke:#c78935,color:#fff
-    style API3 fill:#e8a045,stroke:#c78935,color:#fff
-    style Broker fill:#e8a045,stroke:#c78935,color:#fff
-    style R1 fill:#e8a045,stroke:#c78935,color:#fff
-    style R2 fill:#e8a045,stroke:#c78935,color:#fff
-    style R3 fill:#e8a045,stroke:#c78935,color:#fff
+    style brokerTier fill:#fff5e6,stroke:#c78935,color:#333
+    style B1 fill:#e8a045,stroke:#c78935,color:#fff
+    style B2 fill:#e8a045,stroke:#c78935,color:#fff
+    style B3 fill:#e8a045,stroke:#c78935,color:#fff
 ```
+
+<Note>
+There is no shared session store and no separate runtime tier in the packages. `@enclave-vm/broker` has no Redis or routing options, and `@enclave-vm/runtime` holds building blocks of a runtime worker but does not execute scripts: an `execute` request ends with `RuntimeNotImplementedError`.
+</Note>
 
 ### Broker Configuration
 
 ```ts
 // broker/server.ts
-import { EnclaveBroker } from '@enclave-vm/broker';
-import Redis from 'ioredis';
+import express from 'express';
+import { createBroker, createSessionHandler, registerExpressRoutes } from '@enclave-vm/broker';
 
-const redis = new Redis(process.env.REDIS_URL);
+const broker = createBroker({
+  // Options of the sandbox
+  enclave: { securityLevel: 'SECURE' },
 
-const broker = new EnclaveBroker({
-  // Redis for session state
-  redis,
-
-  // Tool registry
-  tools: toolRegistry,
-
-  // Session limits
-  maxConcurrentSessions: 1000,
-  sessionTimeout: 300000, // 5 minutes
-
-  // Runtime pool management
-  runtimePool: {
-    minSize: 2,
-    maxSize: 10,
-    scaleUpThreshold: 0.8, // Scale up at 80% utilization
-    scaleDownThreshold: 0.3, // Scale down at 30% utilization
-    scaleInterval: 30000, // Check every 30 seconds
+  // Limits of every session
+  limits: {
+    maxToolCalls: 50,
+    toolTimeoutMs: 10_000, // run time of a script
+    sessionTtlMs: 300_000, // 5 minutes
   },
+
+  // The session registry of this broker
+  sessions: { maxSessions: 1000 },
 });
 
-broker.listen(3001);
+// broker.tool(...) for each tool
+
+const app = express();
+app.use(express.json({ limit: '1mb' }));
+app.use(authenticate); // your authentication: the broker has none
+registerExpressRoutes(
+  app,
+  createSessionHandler({
+    broker,
+    identify: (request) => (request.raw as { user?: { id: string } }).user?.id,
+    allowedOrigins: ['https://app.example.com'],
+  }),
+);
+
+app.listen(3001);
 ```
 
-### Runtime Configuration
+When `sessions.maxSessions` sessions are registered, a further `POST /sessions` is answered with `503 MAX_SESSIONS_REACHED`: use that as the backpressure signal.
 
-```ts
-// runtime/server.ts
-import { EnclaveRuntime } from '@enclave-vm/runtime';
-
-const runtime = new EnclaveRuntime({
-  // Connect to broker
-  brokerUrl: process.env.BROKER_URL,
-
-  // Worker configuration
-  workerPool: {
-    size: 4,
-    maxMemory: 128 * 1024 * 1024,
-  },
-
-  // Heartbeat
-  heartbeatInterval: 5000,
-
-  // Labels for routing
-  labels: {
-    region: process.env.REGION,
-    tier: 'standard',
-  },
-});
-
-runtime.connect();
-```
+A session runs on the broker's thread. A script that computes without calling a tool holds that thread, and every other session of that broker, until it ends or reaches `toolTimeoutMs`. Keep the limit low, or give the sandbox the worker pool (`enclave: { adapter: 'worker_threads' }`).
 
 ### Client Configuration
 
@@ -228,61 +211,18 @@ runtime.connect();
 import { EnclaveClient } from '@enclave-vm/client';
 
 const client = new EnclaveClient({
-  serverUrl: process.env.BROKER_URL,
+  baseUrl: process.env.BROKER_URL!,
+
+  // Credentials for your authentication in front of the broker
+  headers: { Authorization: `Bearer ${process.env.BROKER_TOKEN}` },
 
   // Reconnection
-  reconnection: {
-    enabled: true,
-    maxAttempts: 5,
-    backoffMultiplier: 2,
-  },
+  autoReconnect: true,
+  maxReconnectAttempts: 5,
+  reconnectDelay: 1000, // grows with each attempt in a row
 
-  // Request timeout
+  // Waiting for the server
   timeout: 60000,
-});
-```
-
-## Redis Configuration
-
-### Session State
-
-```ts
-// Redis key structure
-// session:{sessionId} - Session metadata
-// session:{sessionId}:events - Event stream
-// session:{sessionId}:tools - Pending tool calls
-
-const redis = new Redis({
-  host: process.env.REDIS_HOST,
-  port: parseInt(process.env.REDIS_PORT || '6379'),
-  password: process.env.REDIS_PASSWORD,
-
-  // Connection pool
-  maxRetriesPerRequest: 3,
-  enableReadyCheck: true,
-  lazyConnect: true,
-
-  // Cluster mode (if using Redis Cluster)
-  // cluster: [{ host: 'node1', port: 6379 }],
-});
-```
-
-### Redis Cluster
-
-For high availability:
-
-```ts
-import Redis from 'ioredis';
-
-const redis = new Redis.Cluster([
-  { host: 'redis-node-1', port: 6379 },
-  { host: 'redis-node-2', port: 6379 },
-  { host: 'redis-node-3', port: 6379 },
-], {
-  redisOptions: {
-    password: process.env.REDIS_PASSWORD,
-  },
-  scaleReads: 'slave', // Read from replicas
 });
 ```
 
@@ -295,12 +235,12 @@ const redis = new Redis.Cluster([
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: enclave-runtime-hpa
+  name: enclave-broker-hpa
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: enclave-runtime
+    name: enclave-broker
   minReplicas: 2
   maxReplicas: 20
   metrics:
@@ -313,11 +253,13 @@ spec:
     - type: Pods
       pods:
         metric:
-          name: enclave_active_executions
+          name: enclave_active_executions # a metric your application exports
         target:
           type: AverageValue
           averageValue: 10
 ```
+
+A broker that is scaled down takes its sessions with it: they end for their clients as a lost connection.
 
 ### Pod Disruption Budget
 
@@ -326,12 +268,12 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: enclave-runtime-pdb
+  name: enclave-broker-pdb
 spec:
   minAvailable: 2
   selector:
     matchLabels:
-      app: enclave-runtime
+      app: enclave-broker
 ```
 
 ### Resource Quotas
@@ -351,11 +293,13 @@ spec:
     pods: "50"
 ```
 
+Give each pod a memory limit. In process the sandbox's `memoryLimit` is an estimate, and a worker's heap limit is a backstop: the container's limit is what bounds a pod.
+
 ## Load Balancing
 
 ### Sticky Sessions
 
-For WebSocket connections:
+A session's later requests (a reconnect to `GET /sessions/:sessionId/stream`, a cancel, a status request) have to reach the broker that holds the session. Another broker answers them with `404`. Use session affinity:
 
 ```yaml
 # ingress.yaml
@@ -369,48 +313,11 @@ metadata:
     nginx.ingress.kubernetes.io/session-cookie-max-age: "3600"
 ```
 
-### Runtime Routing
+A client that does not keep cookies (a server-side `EnclaveClient` with the default `fetch`) needs another form of affinity, such as routing by a header you set in `headers`.
 
-Route to specific runtimes based on workload:
+## Performance
 
-```ts
-const broker = new EnclaveBroker({
-  // Route by labels
-  routingStrategy: 'label-match',
-
-  // Routing rules
-  routingRules: [
-    {
-      match: { priority: 'high' },
-      target: { tier: 'premium' },
-    },
-    {
-      match: { region: 'us-east' },
-      target: { region: 'us-east' },
-    },
-  ],
-});
-```
-
-## Performance Benchmarks
-
-### Single Server (8 cores, 16GB RAM)
-
-| Metric | Value |
-|--------|-------|
-| Simple scripts | 500 req/s |
-| With tool calls | 200 req/s |
-| P50 latency | 15ms |
-| P99 latency | 85ms |
-
-### Distributed (3 runtime pods)
-
-| Metric | Value |
-|--------|-------|
-| Simple scripts | 1200 req/s |
-| With tool calls | 500 req/s |
-| P50 latency | 25ms |
-| P99 latency | 120ms |
+Measure with your own scripts and tools: throughput depends on what a script does and on how long its tools take. As a baseline, a small script that makes one tool call costs about 5.9 ms per execution with the double VM on Node.js 24 and 2.7 ms on Node.js 22 (2.9 ms and 1.6 ms with the single VM), measured on arm64. See the runtime notes in the `@enclave-vm/core` README for what the numbers depend on.
 
 ## Monitoring at Scale
 
@@ -436,24 +343,17 @@ const metrics = {
   queueDepth: new Gauge({
     name: 'enclave_queue_depth',
     help: 'Number of pending executions',
-    labelNames: ['runtime'],
-  }),
-
-  // Runtime health
-  runtimeHealth: new Gauge({
-    name: 'enclave_runtime_health',
-    help: 'Runtime health status (1=healthy, 0=unhealthy)',
-    labelNames: ['runtime_id'],
   }),
 
   // Memory usage
   workerMemory: new Gauge({
     name: 'enclave_worker_memory_bytes',
-    help: 'Worker memory usage in bytes',
-    labelNames: ['worker_id'],
+    help: 'Peak worker memory usage in bytes',
   }),
 };
 ```
+
+These are metrics of your application: the packages export none. With the worker pool, read the counters of the pool (`WorkerPoolAdapter.getMetrics()`: `queuedRequests`, `executingSlots`, `timeoutExecutions`, `memoryKills`, `maxWorkerMemory`, ...) and publish them; see [Monitoring Worker Health](/core-libraries/enclave-vm/worker-pool#monitoring-worker-health).
 
 ### Alerting Rules
 
@@ -478,23 +378,16 @@ groups:
         annotations:
           summary: Execution queue backlog
 
-      - alert: RuntimeUnhealthy
-        expr: enclave_runtime_health == 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: Runtime pod unhealthy
 ```
 
 ## Best Practices
 
-1. **Start simple** - Use worker pool before going distributed
+1. **Start simple** - Use the worker pool before adding servers
 2. **Monitor queue depth** - Scale based on pending executions
-3. **Set memory limits** - Prevent runaway scripts
-4. **Use connection pooling** - Reuse Redis/DB connections
-5. **Implement backpressure** - Reject requests when overloaded
-6. **Regional deployment** - Deploy runtimes close to users
+3. **Set memory limits** - On the sandbox, on the workers and on the container
+4. **Use connection pooling** - Reuse the connections your tools need
+5. **Implement backpressure** - Reject requests when overloaded (`maxQueueSize`, `sessions.maxSessions`)
+6. **Route a session to its broker** - Session affinity for reconnects and cancels
 7. **Graceful degradation** - Fallback when components fail
 
 ## Related

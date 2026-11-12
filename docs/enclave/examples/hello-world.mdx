@@ -16,12 +16,10 @@ const enclave = new Enclave();
 // Execute code
 const result = await enclave.run(`
   const greeting = 'Hello, World!';
-  console.log(greeting);
   return greeting;
 `);
 
 console.log(result.value); // "Hello, World!"
-console.log(result.stdout); // "Hello, World!\n"
 
 // Clean up
 enclave.dispose();
@@ -58,7 +56,17 @@ main();
 
 ## With Console Output
 
+A script may use `console` when the enclave has a `consoleHandler`. The handler receives each call as `(level, message)`; the result does not carry the output.
+
 ```ts
+const lines: string[] = [];
+
+const enclave = new Enclave({
+  consoleHandler: (level, message) => {
+    lines.push(message);
+  },
+});
+
 const result = await enclave.run(`
   console.log('Step 1: Initialize');
   const numbers = [1, 2, 3, 4, 5];
@@ -76,13 +84,15 @@ const result = await enclave.run(`
 console.log('Return value:', result.value);
 // [2, 4, 6, 8, 10]
 
-// Console output
-console.log('Output:', result.stdout);
+// Console output, as the handler received it
+console.log('Output:', lines);
 // Step 1: Initialize
 // Step 2: Process
 // Step 3: Complete
-// Doubled: [2, 4, 6, 8, 10]
+// Doubled: [2,4,6,8,10]
 ```
+
+Without a `consoleHandler`, `console` is available only at the `PERMISSIVE` security level; at the other levels a script that uses it fails validation.
 
 ## With Variables
 
@@ -97,7 +107,6 @@ const enclave = new Enclave({
 });
 
 const result = await enclave.run(`
-  console.log('Hello,', userName);
   const sum = items.reduce((a, b) => a + b, 0);
   return { user: userName, total: sum };
 `);
@@ -132,14 +141,18 @@ console.log(result.value); // "Hello, World!"
 
 ```ts
 const result = await enclave.run(`
-  throw new Error('Something went wrong');
-`);
+  const data = await callTool('missing', {});
+  return data;
+`, async (name) => {
+  throw new Error(`Unknown tool: ${name}`);
+});
 
 if (!result.success) {
-  console.log('Failed:', result.error?.message);
-  // "Something went wrong"
+  console.log('Failed:', result.error?.code, result.error?.message);
 }
 ```
+
+`run()` does not reject for a failing script: the failure is in the result. `error.message` and `error.name` are plain strings, and an error made inside the sandbox has no `stack`. AgentScript has no `Error` constructor; a script signals a failure by returning a value that says so, or by letting a tool's error pass.
 
 ## Complete Example
 
@@ -159,15 +172,17 @@ async function helloWorld() {
       console.log(`Tool called: ${name}`, args);
       return { success: true };
     },
+    // Lets the script use console at STRICT; each call arrives as (level, message)
+    consoleHandler: (level, message) => console.log(`[script] ${message}`),
   });
 
   try {
     // Run code
     const result = await enclave.run(`
-      console.log('Config:', config);
+      console.log('Debug:', config.debug);
 
-      const data = await callTool('process', { input: 'test' });
-      console.log('Tool result:', data);
+      const data = await callTool('echo', { input: 'test' });
+      console.log('Tool succeeded:', data.success);
 
       return 'Hello from Enclave!';
     `);
@@ -193,9 +208,9 @@ helloWorld();
 ## Expected Output
 
 ```
-Config: { debug: true }
-Tool called: process { input: 'test' }
-Tool result: { success: true }
+[script] Debug: true
+Tool called: echo { input: 'test' }
+[script] Tool succeeded: true
 ✓ Execution succeeded
 Value: Hello from Enclave!
 Duration: 12 ms

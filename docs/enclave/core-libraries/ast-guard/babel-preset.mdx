@@ -53,6 +53,8 @@ console.log(BABEL_SECURITY_CONFIGS);
 | `STANDARD` | 1 MB | 5 MB | 15s | `typescript`, `react` |
 | `PERMISSIVE` | 5 MB | 25 MB | 30s | `typescript`, `react`, `env` |
 
+The preset validates the script that calls `Babel`; the limits in this table are applied by the Babel wrapper of `@enclave-vm/core` when the script runs. The timeout is per transform, and multi-file transforms have limits of their own (3, 10, 25 and 100 files by level). Babel itself runs in the host realm: see [Babel Transform](/core-libraries/enclave-vm/babel-transform#security-model).
+
 <Tip>
   Use `STRICT` for untrusted input where you only need JSX transformation. Use `STANDARD` for typical LLM-generated TypeScript+React code.
 </Tip>

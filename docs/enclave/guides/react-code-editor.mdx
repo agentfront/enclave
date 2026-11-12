@@ -38,11 +38,11 @@ flowchart TB
             Monaco["Monaco Editor"]
             Output["Output Panel"]
         end
-        Hook["useEnclave() / EnclaveClient"]
+        Hook["useCodeExecution() / EnclaveClient"]
     end
     Broker["EnclaveJS Broker"]
     editor --> Hook
-    Hook -->|"WebSocket/HTTP"| Broker
+    Hook -->|"HTTP (NDJSON)"| Broker
     style frontend fill:#fff5e6,stroke:#c78935,color:#333
     style editor fill:#f0b865,stroke:#c78935,color:#333
     style Monaco fill:#e8a045,stroke:#c78935,color:#fff
@@ -58,13 +58,13 @@ flowchart TB
 import { EnclaveClient } from '@enclave-vm/client';
 
 export const enclaveClient = new EnclaveClient({
-  serverUrl: process.env.REACT_APP_ENCLAVE_URL || 'http://localhost:3001',
-  reconnection: {
-    enabled: true,
-    maxAttempts: 5,
-  },
+  baseUrl: process.env.REACT_APP_ENCLAVE_URL || 'http://localhost:3001',
+  autoReconnect: true,
+  maxReconnectAttempts: 5,
 });
 ```
+
+The client sends requests and receives events as plain JSON over HTTP: in production use an `https:` base URL, and send your credentials with the `headers` option. The client has no other options than `baseUrl`, `headers`, `timeout`, `autoReconnect`, `maxReconnectAttempts`, `reconnectDelay`, `maxEventLength` and `fetch`; any other option makes the constructor throw.
 
 ## Step 2: Create the Provider
 
@@ -99,7 +99,7 @@ export function useEnclaveClient() {
 // src/hooks/useCodeExecution.ts
 import { useState, useCallback, useRef } from 'react';
 import { useEnclaveClient } from '../enclave/EnclaveProvider';
-import type { StreamEvent } from '@enclave-vm/types';
+import type { SessionHandle } from '@enclave-vm/client';
 
 interface ExecutionState {
   status: 'idle' | 'running' | 'completed' | 'error';
@@ -115,18 +115,16 @@ interface ToolCall {
   tool: string;
   args: Record<string, unknown>;
   status: 'pending' | 'completed' | 'error';
-  result?: unknown;
 }
 
 interface ExecutionStats {
-  duration: number;
+  durationMs: number;
   toolCallCount: number;
-  iterationCount: number;
 }
 
 export function useCodeExecution() {
   const client = useEnclaveClient();
-  const abortRef = useRef<AbortController | null>(null);
+  const sessionRef = useRef<SessionHandle | null>(null);
 
   const [state, setState] = useState<ExecutionState>({
     status: 'idle',
@@ -148,31 +146,58 @@ export function useCodeExecution() {
       stats: null,
     });
 
-    // Create abort controller
-    abortRef.current = new AbortController();
-
-    try {
-      const stream = client.execute(code, {
-        signal: abortRef.current.signal,
-      });
-
-      for await (const event of stream) {
-        handleEvent(event, setState);
-      }
-    } catch (error) {
-      if ((error as Error).name !== 'AbortError') {
+    // executeStream() returns a handle at once; the handlers are called as events arrive
+    const session = client.executeStream(code, {
+      onStdout: (chunk) => {
+        setState(prev => ({ ...prev, output: [...prev.output, chunk] }));
+      },
+      onToolCall: (callId, toolName, args) => {
         setState(prev => ({
           ...prev,
-          status: 'error',
-          error: (error as Error).message,
+          toolCalls: [
+            ...prev.toolCalls,
+            { id: callId, tool: toolName, args: (args ?? {}) as Record<string, unknown>, status: 'pending' },
+          ],
         }));
-      }
+      },
+      onToolResultApplied: (callId) => {
+        setState(prev => ({
+          ...prev,
+          toolCalls: prev.toolCalls.map(tc =>
+            tc.id === callId ? { ...tc, status: 'completed' } : tc
+          ),
+        }));
+      },
+    });
+    sessionRef.current = session;
+
+    // wait() does not reject: a failed or cancelled session resolves with success: false
+    const result = await session.wait();
+    if (sessionRef.current !== session) return; // a newer run has started
+
+    if (result.success) {
+      setState(prev => ({
+        ...prev,
+        status: 'completed',
+        result: result.value,
+        stats: result.stats
+          ? { durationMs: result.stats.durationMs, toolCallCount: result.stats.toolCallCount }
+          : null,
+      }));
+    } else if (result.error?.code === 'CANCELLED') {
+      setState(prev => ({ ...prev, status: 'idle' }));
+    } else {
+      setState(prev => ({
+        ...prev,
+        status: 'error',
+        error: result.error?.message ?? 'Execution failed',
+      }));
     }
   }, [client]);
 
   const stop = useCallback(() => {
-    abortRef.current?.abort();
-    setState(prev => ({ ...prev, status: 'idle' }));
+    // Ends the session in the client and asks the broker to end it
+    void sessionRef.current?.cancel('Stopped by the user');
   }, []);
 
   return {
@@ -182,64 +207,9 @@ export function useCodeExecution() {
     isRunning: state.status === 'running',
   };
 }
-
-function handleEvent(
-  event: StreamEvent,
-  setState: React.Dispatch<React.SetStateAction<ExecutionState>>
-) {
-  switch (event.type) {
-    case 'stdout':
-      setState(prev => ({
-        ...prev,
-        output: [...prev.output, event.payload.data],
-      }));
-      break;
-
-    case 'tool_call':
-      setState(prev => ({
-        ...prev,
-        toolCalls: [
-          ...prev.toolCalls,
-          {
-            id: event.payload.callId,
-            tool: event.payload.tool,
-            args: event.payload.args,
-            status: 'pending',
-          },
-        ],
-      }));
-      break;
-
-    case 'tool_result_applied':
-      setState(prev => ({
-        ...prev,
-        toolCalls: prev.toolCalls.map(tc =>
-          tc.id === event.payload.callId
-            ? { ...tc, status: 'completed' }
-            : tc
-        ),
-      }));
-      break;
-
-    case 'final':
-      setState(prev => ({
-        ...prev,
-        status: 'completed',
-        result: event.payload.result,
-        stats: event.payload.stats,
-      }));
-      break;
-
-    case 'error':
-      setState(prev => ({
-        ...prev,
-        status: 'error',
-        error: event.payload.message,
-      }));
-      break;
-  }
-}
 ```
+
+Tools run on the broker. The hook is told about each tool call; it executes nothing. The broker emits no `stdout` events, so `output` stays empty unless your server sends them.
 
 ## Step 4: Build the Editor Component
 
@@ -368,9 +338,8 @@ import styles from './StatsPanel.module.css';
 
 interface StatsPanelProps {
   stats: {
-    duration: number;
+    durationMs: number;
     toolCallCount: number;
-    iterationCount: number;
   } | null;
 }
 
@@ -381,15 +350,11 @@ export function StatsPanel({ stats }: StatsPanelProps) {
     <div className={styles.panel}>
       <div className={styles.stat}>
         <span className={styles.label}>Duration</span>
-        <span className={styles.value}>{stats.duration}ms</span>
+        <span className={styles.value}>{stats.durationMs}ms</span>
       </div>
       <div className={styles.stat}>
         <span className={styles.label}>Tool Calls</span>
         <span className={styles.value}>{stats.toolCallCount}</span>
-      </div>
-      <div className={styles.stat}>
-        <span className={styles.label}>Iterations</span>
-        <span className={styles.value}>{stats.iterationCount}</span>
       </div>
     </div>
   );
@@ -410,10 +375,8 @@ import styles from './CodePlayground.module.css';
 
 const DEFAULT_CODE = `// List users and filter by name
 const users = await callTool('users:list', { limit: 10 });
-console.log('Found', users.length, 'users');
 
 const filtered = users.filter(u => u.name.startsWith('A'));
-console.log('Filtered to', filtered.length, 'users');
 
 return filtered;`;
 
@@ -568,32 +531,44 @@ export default App;
 
 ## Using the Official React Package
 
-The `@enclave-vm/react` package provides pre-built hooks:
+The `@enclave-vm/react` package provides the provider and the hook ready-made:
 
 ```tsx
-import { useEnclave, useExecutionStream } from '@enclave-vm/react';
+import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
+
+function App() {
+  return (
+    <EnclaveProvider config={{ baseUrl: 'https://broker.example.com' }}>
+      <MyComponent />
+    </EnclaveProvider>
+  );
+}
 
 function MyComponent() {
-  const { execute, stream } = useEnclave();
-
-  // Stream provides real-time updates
-  const { output, toolCalls, result, error, isRunning } = useExecutionStream(stream);
+  const { execute, cancel, isRunning, result, error, events } = useEnclaveSession({
+    onToolCall: (callId, toolName) => console.log('Tool called:', toolName),
+  });
 
   return (
     <div>
-      <button onClick={() => execute(code)}>Run</button>
-      {output.map((line, i) => <div key={i}>{line}</div>)}
+      <button onClick={() => execute(code)} disabled={isRunning}>Run</button>
+      {isRunning && <button onClick={() => cancel()}>Stop</button>}
+      {result?.success && <pre>{JSON.stringify(result.value, null, 2)}</pre>}
+      {error && <div>{error.message}</div>}
+      <div>{events.length} events</div>
     </div>
   );
 }
 ```
 
+`useEnclaveSession` returns `execute`, `cancel`, `reset`, `state`, `isRunning`, `sessionId`, `result`, `error`, `stdout` and `events`. See [@enclave-vm/react](/enclavejs/react).
+
 ## Best Practices
 
 1. **Debounce execution** - Don't run on every keystroke
 2. **Show loading states** - Indicate when code is running
-3. **Handle disconnections** - Reconnect automatically
-4. **Limit output** - Cap console output to prevent memory issues
+3. **Handle disconnections** - The client reconnects by itself (`autoReconnect`) and resumes after the last event it received
+4. **Limit output** - Cap what you keep of the output and the events to prevent memory issues
 5. **Sanitize display** - Escape HTML in output
 6. **Mobile support** - Handle touch events for mobile editors
 

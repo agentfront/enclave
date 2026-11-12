@@ -3,28 +3,30 @@ title: 'Security Rules'
 description: 'Built-in security rules for AST validation'
 ---
 
-ast-guard ships with 15 built-in security rules that cover common attack vectors. Each rule can be configured and combined to match your security requirements.
+ast-guard ships with 21 built-in rules; 19 of them are exported as classes (`InfiniteLoopRule` and `ResourceExhaustionRule` are part of the AgentScript preset only). Each rule can be configured and combined to match your security requirements. This page covers the ones a host is most likely to configure itself; the [AgentScript preset](/core-libraries/ast-guard/agentscript-preset) combines them for LLM-generated code.
 
 ## NoGlobalAccessRule
 
-Blocks access to dangerous global objects via member expressions.
+Blocks access to the global objects, to `constructor`, to the `Reflect` API and to the reflection statics of `Object`.
 
 ```ts
 import { NoGlobalAccessRule } from '@enclave-vm/ast';
 
 const rule = new NoGlobalAccessRule({
-  blockedGlobals: ['window', 'process', 'global', 'globalThis'],
-  allowedMembers: { console: ['log', 'warn', 'error'] },
+  blockedGlobals: ['window', 'globalThis', 'self', 'global', 'this'], // the default
+  blockMemberAccess: true,       // window.x (default: true)
+  blockComputedAccess: true,     // window['x'], window[name] (default: true)
+  requireDirectObjectUse: false, // see below (default: false)
 });
 ```
 
 **Blocks:**
 - `window.location`
-- `process.env`
-- `global.setTimeout`
+- `globalThis['Function']`
+- `this` as a value in any position, when `'this'` is in `blockedGlobals`: `const g = this`, `f(this)`, `const { x } = this`. The STRICT and SECURE presets refuse it this way
+- `Object.create`, `Object.defineProperty`, `Object.getPrototypeOf` and the other prototype and descriptor statics, wherever the member is read
 
-**Allows:**
-- `console.log()` (if configured)
+With `requireDirectObjectUse: true` the global `Object` may only be used directly: as `Object.name` with a name written in the source, called, constructed, or as the operand of `typeof` / `instanceof`. An alias (`const O = Object`), passing or storing it, destructuring from it, a member name computed at run time and `Object.valueOf()` are refused with `OBJECT_INDIRECT_USE`. The AgentScript preset switches this on.
 
 ## ReservedPrefixRule
 
@@ -34,7 +36,7 @@ Prevents user code from declaring identifiers with reserved prefixes.
 import { ReservedPrefixRule } from '@enclave-vm/ast';
 
 const rule = new ReservedPrefixRule({
-  prefixes: ['__ag_', '__safe_'],
+  reservedPrefixes: ['__ag_', '__safe_'], // the default
   allowedIdentifiers: ['__ag_main'],
 });
 ```
@@ -42,6 +44,9 @@ const rule = new ReservedPrefixRule({
 **Blocks:**
 - `const __ag_hack = 1;`
 - `let __safe_bypass = true;`
+- `__maxIterations`, the runtime's name for the iteration limit, whatever prefixes are configured
+
+On the rule, `reservedPrefixes` is the complete list. The `reservedPrefixes` option of the AgentScript preset adds to `__ag_` and `__safe_` instead.
 
 ## NoCallTargetAssignmentRule
 
@@ -61,9 +66,11 @@ const rule = new NoCallTargetAssignmentRule({
 - `const { callTool } = obj;` - Destructuring shadowing
 - `function callTool() {}` - Function declaration shadowing
 
+The rule sees every write and every declaration of a protected name: destructuring patterns, loop heads, `++` / `--`, catch-clause patterns, parameters and their default values, and class names.
+
 ## UnicodeSecurityRule
 
-Detects Unicode-based attacks including Trojan Source and homoglyphs.
+Reports bidirectional control characters, look-alike characters, zero-width characters and invisible characters in a script. The tag characters (U+E0000 to U+E007F) count as invisible characters. No preset includes this rule; add it to a validator yourself.
 
 ```ts
 import { UnicodeSecurityRule } from '@enclave-vm/ast';
@@ -91,7 +98,8 @@ import { StaticCallTargetRule } from '@enclave-vm/ast';
 const rule = new StaticCallTargetRule({
   targetFunctions: ['callTool', '__safe_callTool'],
   argumentPosition: 0,
-  allowedToolNames: ['users:list', 'billing:*'], // Optional whitelist
+  allowedToolNames: ['users:list', /^billing:/], // Optional whitelist: exact names or RegExp
+  requireDirectCall: false, // true: the target may only appear as a direct call
 });
 ```
 
@@ -101,6 +109,8 @@ const rule = new StaticCallTargetRule({
 
 **Allows:**
 - `callTool('users:list', {})` - Static string literal
+
+With `requireDirectCall: true` (as in the AgentScript preset) nothing else may be done with the target function: no alias, no `.call` / `.apply` / `.bind`, no tagged template, no passing it as a value.
 
 ## NoRegexLiteralRule
 
@@ -172,8 +182,11 @@ import { UnknownGlobalRule } from '@enclave-vm/ast';
 const rule = new UnknownGlobalRule({
   allowedGlobals: ['callTool', 'Math', 'JSON', 'Array', 'Object'],
   allowStandardGlobals: true, // Allow undefined, null, NaN, etc.
+  allowGlobalAssignment: false, // Assigning to an allowed global is refused (default)
 });
 ```
+
+Names are resolved by lexical scope: a declaration in a block, an arrow function or a catch clause makes a name local only there. The first `UNKNOWN_GLOBAL` issue of a validation states the list of allowed globals (in its message and in `data.allowedGlobals`); the following ones name the identifier only.
 
 ## NoEvalRule
 
@@ -198,7 +211,7 @@ Restricts async/await usage.
 import { NoAsyncRule } from '@enclave-vm/ast';
 
 const rule = new NoAsyncRule({
-  allowTopLevelAwait: true,
+  allowAwait: true,
   allowAsyncFunctions: false,
 });
 ```
@@ -212,8 +225,11 @@ import { NoUserDefinedFunctionsRule } from '@enclave-vm/ast';
 
 const rule = new NoUserDefinedFunctionsRule({
   allowArrowFunctions: true, // For array methods
+  allowedFunctionNames: ['__ag_main'], // The wrapper a compiler puts around the script (default)
 });
 ```
+
+A name in `allowedFunctionNames` allows one declaration: the first one at the top level that has the shape of the wrapper (`async function name() { ... }`: async, not a generator, no parameters). Every other function declaration is refused whatever its name.
 
 **Blocks:**
 - `function foo() {}`
@@ -240,20 +256,73 @@ Validates function call arguments.
 import { CallArgumentValidationRule } from '@enclave-vm/ast';
 
 const rule = new CallArgumentValidationRule({
-  targetFunctions: ['callTool'],
-  minArgs: 1,
-  maxArgs: 2,
+  functions: {
+    callTool: {
+      minArgs: 1,
+      maxArgs: 2,
+      expectedTypes: ['string', 'object'],
+    },
+  },
 });
 ```
 
-## Rule Severity
+## AllowedSyntaxRule
 
-All rules support severity configuration:
+An allowlist of syntax: a script may only contain the listed ESTree node types.
 
 ```ts
-const rule = new DisallowedIdentifierRule({
-  disallowed: ['eval'],
-  severity: 'error', // 'error' or 'warning'
+import { AllowedSyntaxRule, AGENTSCRIPT_ALLOWED_NODE_TYPES } from '@enclave-vm/ast';
+
+const rule = new AllowedSyntaxRule({
+  allowedNodeTypes: [...AGENTSCRIPT_ALLOWED_NODE_TYPES],
+});
+```
+
+Four constructs share their node type with an ordinary one and are constructs of their own. They are refused (`DISALLOWED_SYNTAX`) unless listed under their own name: `UsingDeclaration`, `AwaitUsingDeclaration`, `ForAwaitStatement` and `GeneratorFunction`. Listing `ForOfStatement` allows `for…of`, not `for await…of`.
+
+## NoRegexMethodsRule
+
+Blocks the string and regex methods that run a regular expression.
+
+```ts
+import { NoRegexMethodsRule } from '@enclave-vm/ast';
+
+const rule = new NoRegexMethodsRule({
+  allowStringArguments: false, // Also refuse a string argument (default: true)
+  hostObjectNames: ['docs'],   // Globals that are host objects, not strings
+  requireDirectCall: false,    // true: the methods cannot be read as values (default: false)
+});
+```
+
+`match`, `matchAll` and `search` compile a string argument into a regular expression, so with `allowStringArguments: false` they are refused with any argument. The method name is resolved in every static spelling (`x.match`, `x['match']`, a template literal without substitutions), and the call is seen through `call` / `apply` / `bind`, as a template tag and without an argument.
+
+With `requireDirectCall: true`, a property named `match`, `matchAll` or `search` can only be called where it stands: reading it, passing or storing it and taking it by destructuring are refused. That also refuses reading a field of ordinary data with such a name (`params.search`), which is why it is off by default.
+
+## NoJsonCallbacksRule
+
+Blocks `JSON.stringify` with a replacer function and `JSON.parse` with a reviver function.
+
+```ts
+import { NoJsonCallbacksRule } from '@enclave-vm/ast';
+
+const rule = new NoJsonCallbacksRule({
+  requireDirectUse: true, // JSON may only appear as JSON.parse(...) / JSON.stringify(...)
+});
+```
+
+With `requireDirectUse: true` an alias of `JSON`, `.call` / `.apply` / `.bind`, a computed method name and every method other than `parse` and `stringify` are refused (`JSON_INDIRECT_USE`). Only the global `undefined` counts as "no replacer or reviver", not a variable of the script with that name.
+
+## Rule Severity
+
+A rule has a default severity. Override it per validation, by rule name:
+
+```ts
+import { ValidationSeverity } from '@enclave-vm/ast';
+
+const result = await validator.validate(code, {
+  rules: {
+    'disallowed-identifier': { enabled: true, severity: ValidationSeverity.WARNING },
+  },
 });
 ```
 

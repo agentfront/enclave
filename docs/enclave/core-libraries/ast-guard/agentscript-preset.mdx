@@ -49,12 +49,19 @@ const validator = new JSAstValidator(createAgentScriptPreset({
 
 | Option                            | Type       | Default               | Description                                              |
 | --------------------------------- | ---------- | --------------------- | -------------------------------------------------------- |
+| `securityLevel`                   | `string`   | `'STANDARD'`          | Selects the default allowed globals: `STRICT`, `SECURE`, `STANDARD`, `PERMISSIVE` |
 | `requireCallTool`                 | `boolean`  | `false`               | Require at least one `callTool()` invocation in the code |
-| `allowedGlobals`                  | `string[]` | Standard safe globals | Identifiers that can be referenced without declaration   |
+| `allowedGlobals`                  | `string[]` | By `securityLevel`    | Identifiers that can be referenced without declaration   |
 | `hostObjectGlobals` | `string[]` | `[]` | The names in `allowedGlobals` that are objects of the host and not strings (tool namespaces, object globals). A method called `match`, `matchAll` or `search` on one of them is accepted with any argument; on every other value those three are refused |
 | `allowArrowFunctions`             | `boolean`  | `true`                | Allow arrow functions for array methods                  |
 | `allowedLoops`                    | `object`   | `for` and `for-of`    | Configure which loop types are allowed                   |
 | `additionalDisallowedIdentifiers` | `string[]` | `[]`                  | Additional identifiers to block                          |
+| `reservedPrefixes`                | `string[]` | `[]`                  | Prefixes to reserve in addition to `__ag_` and `__safe_`, which are always reserved |
+| `staticCallTarget`                | `object`   | `{ enabled: true }`   | Require the tool name of `callTool` to be a string literal; `allowedToolNames` restricts the names |
+| `callToolValidation`              | `object`   | -                     | Argument count and types of `callTool` (`minArgs`, `maxArgs`, `expectedTypes`) |
+| `requireDirectRegexMethodCalls`   | `boolean`  | `false`               | Refuse `match` / `matchAll` / `search` as anything but a direct call (see [Regular-Expression Methods](#regular-expression-methods)) |
+| `additionalAllowedSyntax`         | `string[]` | `[]`                  | Constructs to allow beyond the syntax allowlist (see [Syntax Allowlist](#syntax-allowlist)) |
+| `allowDynamicArrayFill`           | `boolean`  | `false`               | Allow `Array(n).fill()` with a size that is not a literal; only for a runtime that bounds memory itself |
 
 <Tip>
   Use `requireCallTool: true` to ensure AgentScript code actually interacts with tools rather than just performing local computations.
@@ -76,6 +83,64 @@ const validator = new JSAstValidator(createAgentScriptPreset({
 | **Weak references** | `WeakMap`, `WeakSet`, `WeakRef`                                     | Prevents reference manipulation               |
 | **User functions**  | `function foo() {}`, `const f = function() {}`                      | Prevents recursion (arrow functions allowed)  |
 | **Unbounded loops** | `while`, `do-while`, `for-in`                                       | Prevents infinite loops and prototype walking |
+
+## Syntax Allowlist
+
+The table above lists names. The preset also has an allowlist of syntax (`AllowedSyntaxRule`, `AGENTSCRIPT_ALLOWED_NODE_TYPES`): a script may only contain the node types on it, so a construct no rule names is refused as well. Not on the list are `this`, classes, `new.target`, `import.meta`, `debugger`, `with`, `yield`, dynamic `import()` and module declarations.
+
+Four constructs share their node type with an allowed one and are constructs of their own. They are refused, and allowed only when listed under their own name:
+
+| Construct | Name |
+| --------- | ---- |
+| `using x = ...` | `UsingDeclaration` |
+| `await using x = ...` | `AwaitUsingDeclaration` |
+| `for await (const x of ...)` | `ForAwaitStatement` |
+| `function* () {}` | `GeneratorFunction` |
+
+Listing `ForOfStatement` allows `for…of`, not `for await…of`.
+
+```ts
+// Only for a host that does not run untrusted code
+const validator = new JSAstValidator(createAgentScriptPreset({
+  additionalAllowedSyntax: ['ForAwaitStatement'],
+}));
+```
+
+The one function declaration a script may contain is the wrapper the transformer puts around it: the first top-level `async function __ag_main() { ... }` without parameters. Every other function declaration is refused, also one that carries that name.
+
+## `Object` Is Used Directly
+
+The preset refuses the reflection functions by property name, wherever they are read and on whatever object: `getPrototypeOf`, `setPrototypeOf`, `defineProperty`, `defineProperties`, `getOwnPropertyDescriptor`, `getOwnPropertyDescriptors`, `getOwnPropertySymbols` and the legacy accessor methods (`__defineGetter__`, `__lookupGetter__`, ...). `Object.create` is refused on `Object`. So that this holds, the global `Object` may only be used directly (the `requireDirectObjectUse` option of `NoGlobalAccessRule`, which the preset switches on):
+
+```js
+// Accepted
+Object.keys(data);
+Object(value);
+new Object();
+typeof Object;
+value instanceof Object;
+
+// Refused with OBJECT_INDIRECT_USE
+const O = Object;          // an alias
+helper(Object);            // passing it as a value
+const { keys } = Object;   // destructuring from it
+Object[name];              // a member name computed at run time
+Object.valueOf();           // returns Object itself
+```
+
+A variable of the script that is called `Object` is not the global and is left alone.
+
+## Regular-Expression Methods
+
+AgentScript has no regular expressions: regex literals are refused, and so are `match`, `matchAll` and `search` on a value of the script, with any argument, because a string passed to them is compiled into a regular expression. The check sees the call in every static spelling of the method name (`x.match`, `x['match']`, a template literal without substitutions), through `call` / `apply` / `bind`, as a template tag and without an argument.
+
+A method of that name on a global the host declared as an object (`hostObjectGlobals`: a tool namespace such as `docs.search(args)`) is the host's own method and is accepted.
+
+With `requireDirectRegexMethodCalls: true` the three methods cannot be read as a value or taken by destructuring either. That also refuses reading a field of ordinary data with one of these names (`params.search`), so it is off by default. It is for a host where the validator is the only thing between a script and the regular-expression engine; `@enclave-vm/core` by default runs scripts in a realm where a regular expression cannot run whatever a script does.
+
+## Reserved Names
+
+A script cannot declare, assign or use as a property target a name that starts with `__ag_` or `__safe_`, the prefixes of the runtime. `reservedPrefixes` adds prefixes to those two; it does not replace them. `__maxIterations`, the runtime's name for the iteration limit, is reserved as well.
 
 ## What AgentScript Allows
 
@@ -110,19 +175,21 @@ return { count, active, names };
 
 ## Default Allowed Globals
 
-The AgentScript preset allows these globals by default:
+The AgentScript preset allows these globals by default (`securityLevel: 'STANDARD'`):
 
 - `callTool` - Tool invocation
 - `Math` - Mathematical operations
-- `JSON` - JSON parsing/stringifying
+- `JSON` - `JSON.parse` and `JSON.stringify`, as direct calls without a reviver or replacer function
 - `Array` - Array constructor and methods
-- `Object` - Object methods
+- `Object` - Object methods, used directly (see above)
 - `String` - String methods
 - `Number` - Number methods
-- `Boolean` - Boolean conversion
-- `Date` - Date operations (read-only)
-- `console` - Logging (rate-limited by enclave)
-- `undefined`, `null`, `NaN`, `Infinity` - Primitives
+- `Date` - Date operations
+- `undefined`, `NaN`, `Infinity` - Constants
+- `parseInt`, `parseFloat`, `isNaN`, `isFinite`, `encodeURI`, `decodeURI`, `encodeURIComponent`, `decodeURIComponent` - Not at `STRICT`
+- `console` - Only at `PERMISSIVE`
+
+`getAgentScriptGlobals(securityLevel)` returns the list for a level.
 
 ## Customizing Allowed Globals
 

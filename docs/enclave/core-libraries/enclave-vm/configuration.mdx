@@ -36,7 +36,7 @@ const enclave = new Enclave({
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `securityLevel` | string | `'STANDARD'` | Preset: `STRICT`, `SECURE`, `STANDARD`, `PERMISSIVE` |
-| `timeout` | number | 30000 | Maximum execution time in milliseconds. Script code is stopped at the deadline, also after an `await` (it checks the clock at every function entry and loop iteration). A tool call in progress when it passes is not cut off; the script's next tool call then fails with `Execution aborted` (same in `@enclave-vm/browser`). How long that call may still take is `toolCallGraceMs`. A script that is only waiting for something of its own when the deadline passes (a thenable that never calls back) is ended with the timeout error |
+| `timeout` | number | 30000 | Maximum execution time in milliseconds. In process the deadline is cooperative: the script's own code checks the clock at every function entry and loop iteration, also after an `await`. One call into a built-in is finished by the engine before the next check, so its duration is bounded by the size of what it works on, not by `timeout`; a script run with `transform: false` has no such checks. With `adapter: 'worker_threads'` a script that is still running five seconds after its timeout is terminated with its worker. A tool call in progress when the deadline passes is not cut off; the script's next tool call then fails with `Execution aborted` (same in `@enclave-vm/browser`). How long that call may still take is `toolCallGraceMs`. A script that is only waiting for something of its own when the deadline passes (a thenable that never calls back) is ended with the timeout error |
 | `toolCallGraceMs` | number | same as `timeout` | How long, after `timeout` has passed, a tool call (or an async function from `globals`) that was in progress may still take to deliver its result. Then the execution ends with the timeout error and `error.data.pendingHostCalls` says how many calls were left running. `0` ends every execution at the deadline; `Infinity` waits for the handler however long it takes (the behaviour up to 2.18). Not used by the `worker_threads` adapter |
 | `maxToolCalls` | number | 100 | Maximum tool calls per execution |
 | `maxIterations` | number | 10000 | Maximum loop iterations (prevents infinite loops) |
@@ -45,11 +45,37 @@ const enclave = new Enclave({
 | `globals` | object | - | Additional globals available in script context |
 | `allowFunctionsInGlobals` | boolean | varies | Allow functions in `globals`. Calls into them are gated: abort check, `maxGlobalFunctionCalls`, the double VM rate limit, and a sanitized copy of the result |
 | `maxGlobalFunctionCalls` | number | 10 × `maxToolCalls` | Maximum calls into functions from `globals` per execution |
-| `validate` | boolean | true | Validate code with ast-guard before execution |
+| `validate` | boolean | true | Validate code with ast-guard before execution. With `false`, a script that contains `import()` or `import.meta` still fails with `SECURITY_VIOLATION` before it runs |
 | `transform` | boolean | true | Transform code before execution |
+| `preset` | string | `'agentscript'` | AST validation preset: `agentscript`, `strict`, `secure`, `standard`, `permissive`, `babel` |
 | `realmGlobals` | string | varies | Which standard globals exist in the script's realm. `'allowlist'`: only the names the validator allows (the default with the `agentscript` or `babel` preset while `validate` is on); every other global, including `Function`, `globalThis`, `Proxy`, `Reflect`, `Symbol`, `Promise` and `RegExp`, is removed and regular expressions cannot run. `'security-level'`: only the dangerous globals listed for the security level are removed (the default otherwise) |
 
 Scripts run in strict mode at every security level: `this` is `undefined` outside a method call, an assignment to an undeclared name is an error, and a write that cannot happen (over a built-in method, or to a frozen object) throws a `TypeError` instead of being ignored.
+
+A script has a maximum size of 5,242,880 characters. A longer one, or a script that is not a string, fails with `VALIDATION_ERROR` before anything parses it.
+
+### Option Values
+
+The constructor checks the options below and throws a `TypeError` for a value outside the type or range. A limit is a finite integer in its range and a switch is a boolean: `Infinity`, `NaN` and a value of another type (a numeric string, `null`) are refused. An option passed as `undefined` is an option that was not set: it has its default, which is the security level's value where the level sets one.
+
+| Option | Accepted values |
+|--------|-----------------|
+| `securityLevel` | `'STRICT'`, `'SECURE'`, `'STANDARD'`, `'PERMISSIVE'` |
+| `timeout` | Integer from 1 to 4294967295 |
+| `maxIterations`, `maxSanitizeDepth`, `maxSanitizeProperties` | Integer of at least 1 |
+| `maxToolCalls`, `maxConsoleCalls`, `maxConsoleOutputBytes`, `maxGlobalFunctionCalls` | Integer of at least 0 |
+| `memoryLimit` | Integer of at least 0 (`0`: no memory limit) |
+| `toolCallGraceMs` | Number of at least 0; `Infinity` is accepted here and waits without limit |
+| `validate`, `transform`, `sanitizeStackTraces`, `allowFunctionsInGlobals`, `allowBuiltins` | `true` or `false` |
+| `realmGlobals` | `'allowlist'` or `'security-level'` |
+| `secureProxyConfig.blockConstructor`, `.blockPrototype`, `.blockLegacyAccessors`, `.throwOnBlocked` | `true` or `false` |
+| `secureProxyConfig.proxyMaxDepth` | Integer of at least 1 |
+| `toolBridge.mode` | `'string'` (default) or `'direct'`; `'direct'` without `toolBridge.acknowledgeInsecureDirect: true` throws an `Error` |
+| `toolBridge.maxPayloadBytes` | Positive finite number |
+| `doubleVm.enabled`, `doubleVm.parentValidation.validateOperationNames`, `.blockSuspiciousSequences` | `true` or `false` |
+| `doubleVm.parentTimeoutBuffer` | Integer from 0 to 4294967295 |
+| `doubleVm.parentValidation.maxOperationsPerSecond` | Finite number of at least 1 |
+| `doubleVm.parentValidation.rapidEnumerationThreshold`, each value of `.rapidEnumerationOverrides` | Integer of at least 1 |
 
 ## Console
 
@@ -82,7 +108,7 @@ await enclave.run(`console.info('users', { count: 2 }); return 1;`);
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `memoryLimit` | number | - | Memory limit in bytes (enables tracking) |
+| `memoryLimit` | number | 1048576 (1 MB) | Memory limit in bytes, as the enclave counts it; `0` switches the tracking off |
 
 ```ts
 const enclave = new Enclave({
@@ -93,15 +119,36 @@ const result = await enclave.run(code);
 console.log('Peak memory:', result.stats.memoryUsage);
 ```
 
+`memoryLimit` is the enclave's own accounting, not a limit of the engine's heap. It counts the operations that make text and arrays grow:
+
+- **Text**: concatenation (`a + b`, and `x += y`, which is charged like `x + y`) and the methods that multiply their input (`repeat`, `padStart`, `padEnd`, `join`).
+- **Arrays**: no single array is larger than the limit holds, at 8 bytes per element, and what an operation adds is charged: `push`, `unshift`, `splice`, `fill`, the elements `concat`, `flat`, `flatMap` and a spread literal add, and what `Array.from` makes out of something that is not an array.
+
+It does not count a copy (a script can hold many arrays that are each within the limit), and it does not count object literals, Maps and Sets. A script that goes over the limit fails with `MEMORY_LIMIT_EXCEEDED`. With a limit set, the VM adapters also measure the returned value: one whose serialized size is estimated above `memoryLimit`, or above 50 MB where the limit is larger, fails with `SERIALIZATION_LIMIT_EXCEEDED`.
+
+Treat the limit as an estimate. Where the host must survive whatever a script allocates, use the [worker pool](/core-libraries/enclave-vm/worker-pool), whose workers have a heap limit of the engine, or run the enclave in a child process or a container with a memory limit of the operating system.
+
 ## Reference Sidecar
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `sidecar.enabled` | boolean | false | Enable sidecar for large data handling |
-| `sidecar.maxTotalSize` | number | 10MB | Maximum total size of stored references |
-| `sidecar.maxReferenceSize` | number | 1MB | Maximum size of a single reference |
-| `sidecar.extractionThreshold` | number | 1024 | Minimum string size to extract |
-| `sidecar.allowComposites` | boolean | false | Allow string concatenation with references |
+| `sidecar.maxTotalSize` | number | by level | Maximum total size of stored references |
+| `sidecar.maxReferenceSize` | number | by level | Maximum size of a single reference |
+| `sidecar.extractionThreshold` | number | by level | Size in bytes from which a string is stored in the sidecar |
+| `sidecar.maxResolvedSize` | number | by level | Maximum size the references in the arguments of one tool call may resolve to |
+| `sidecar.maxTotalResolvedSize` | number | twice `maxTotalSize` | Maximum size of everything one execution resolves for its tool calls. A stored value counts once, a concatenation of references every time it is built |
+| `sidecar.maxReferenceCount` | number | by level | Maximum number of references in one execution |
+| `sidecar.allowComposites` | boolean | by level | Allow string concatenation with references |
+
+| Default | STRICT | SECURE | STANDARD | PERMISSIVE |
+|---------|--------|--------|----------|------------|
+| `maxTotalSize` | 16 MB | 64 MB | 256 MB | 1 GB |
+| `maxReferenceSize` | 4 MB | 16 MB | 64 MB | 256 MB |
+| `extractionThreshold` | 64 KB | 256 KB | 1 MB | 4 MB |
+| `maxResolvedSize` | 8 MB | 32 MB | 128 MB | 512 MB |
+| `maxReferenceCount` | 50 | 100 | 500 | 1,000 |
+| `allowComposites` | false | false | true | true |
 
 ```ts
 const enclave = new Enclave({
@@ -113,6 +160,8 @@ const enclave = new Enclave({
   },
 });
 ```
+
+See [Reference Sidecar](/core-libraries/enclave-vm/reference-sidecar) for what is stored and when a reference is resolved.
 
 ## Double VM Layer
 
@@ -145,13 +194,20 @@ const enclave = new Enclave({
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `scoringGate.scorer` | string | `'disabled'` | Scorer type: `disabled`, `rule-based`, `local-llm`, `external-api` |
-| `scoringGate.blockThreshold` | number | 70 | Score to block execution |
-| `scoringGate.warnThreshold` | number | 40 | Score to log warning |
-| `scoringGate.failOpen` | boolean | true | Allow execution if scoring fails |
+| `scoringGate.scoring` | object | - | Progressive scoring (`strategy: 'progressive'`): the rule-based scorer first, a detailed scorer when its score reaches `escalationThreshold` (default 30) |
+| `scoringGate.blockThreshold` | number | 70 | A script with a score at or above it is not run |
+| `scoringGate.warnThreshold` | number | 40 | A script with a score at or above it runs, with `scoringResult.warned` set |
+| `scoringGate.failOpen` | boolean | true | Whether a script runs when the scorer cannot give its answer |
+| `scoringGate.customRules` | object | - | Base scores of the rule-based scorer by rule id, 0 to 100; `0` turns a rule off |
+| `scoringGate.toolNamespaces` | object | the enclave's `toolNamespaces` | The namespaces whose method calls are scored as tool calls |
+| `scoringGate.localLlm` | object | - | Configuration of the `local-llm` scorer (`modelId`, `mode`, `cacheDir`, `customAnalyzer`, `fallbackToRules`, `vectoriaConfig`) |
 | `scoringGate.externalApi.endpoint` | string | - | External API endpoint |
-| `scoringGate.externalApi.apiKey` | string | - | API key for external service |
+| `scoringGate.externalApi.apiKey` | string | - | API key for external service, sent as a Bearer token |
 | `scoringGate.externalApi.timeoutMs` | number | 5000 | API timeout |
-| `scoringGate.customAnalyzers` | array | - | Custom analysis functions |
+| `scoringGate.externalApi.retries` | number | 1 | Retries after a failed request (at most 10) |
+| `scoringGate.externalApi.headers` | object | - | Additional request headers |
+| `scoringGate.cache` | object | `{ enabled: true, ttlMs: 300000, maxEntries: 1000 }` | Cache of scoring results |
+| `scoringGate.verbose` | boolean | false | Log scores and signals to the console |
 
 ```ts
 const enclave = new Enclave({
@@ -169,11 +225,15 @@ const enclave = new Enclave({
 |--------|------|---------|-------------|
 | `adapter` | string | `'vm'` | Where the sandbox runs: `vm` (in this process) or `worker_threads` (in a pool of worker threads). In both cases the script runs in the double VM, or in a single VM with `doubleVm: { enabled: false }` |
 | `workerPoolConfig.minWorkers` | number | 2 | Minimum workers to keep warm |
-| `workerPoolConfig.maxWorkers` | number | 8 | Maximum concurrent workers |
+| `workerPoolConfig.maxWorkers` | number | 16 | Maximum concurrent workers |
 | `workerPoolConfig.memoryLimitPerWorker` | number | 256MB | Heap limit per worker, enforced by the engine; a worker that exceeds it is terminated and replaced |
 | `workerPoolConfig.maxExecutionsPerWorker` | number | 1000 | Executions before worker recycle |
 | `workerPoolConfig.maxQueueSize` | number | 100 | Maximum pending executions |
-| `workerPoolConfig.maxMessagesPerSecond` | number | 1000 | Message flood protection |
+| `workerPoolConfig.maxMessagesPerSecond` | number | 1000 | Messages a worker may send per second while it runs one execution (`MessageFloodError`) |
+| `workerPoolConfig.maxPendingToolCalls` | number | 100 | Tool calls one execution may have in flight (`TooManyPendingCallsError`) |
+| `workerPoolConfig.maxMessageSizeBytes` | number | 16MB | Largest message a worker may send (`MessageSizeError`) |
+
+The defaults shown are those of the `STANDARD` security level; see [Worker Pool](/core-libraries/enclave-vm/worker-pool#worker-pool-presets) for the other levels and for the errors an execution can end with.
 
 ```ts
 const enclave = new Enclave({
@@ -215,10 +275,17 @@ It differs from the VM adapters in what isolates a script. There is one realm: t
 - Custom `globals` must be JSON data; they are given to the script as frozen copies.
 - A built-in method works on the kind of value it belongs to: an array method on an array, a string method on a string (`[].join.call({ length: 3 })` is refused). `call`, `apply` and `bind` are resolved to the function they invoke, so a limit holds however a call is written.
 - One call cannot make more than a script may hold: an array of at most 1,000,000 items (`concat`, `flat`, `push`, `split`), a text of at most 16,000,000 chars when an array is joined or converted to text (`join`, `'' + array`, a template literal, an array given to a built-in that expects text), 1,000,000 chars from `repeat`, `padStart`, `padEnd` and from the replacements of `replace` / `replaceAll`. `JSON.stringify` counts its indentation, and what `JSON.parse` builds is charged to `maxAllocationBytes` before it is built.
+- The timeout ends a script that computes as well as one that waits. The interpreter reads the clock every few hundred steps and before every built-in call, and the execution fails with `EXECUTION_TIMEOUT`.
+- The work of a built-in counts as steps, in proportion to what it reads: a built-in that works through a long text or array uses up `maxSteps` and shows in `stats.iterationCount`, like a loop of the script would.
+- A function cannot be stored under a name the engine calls by itself: `then`, `toString`, `valueOf`, `toJSON`, `toLocaleString`, `toISOString`, and `join` on an array. The write is refused, so converting, serializing or awaiting a value never runs a function of the script; any other value may be stored under those names.
+- Of an iterator (`values()`, `keys()`, `entries()` of an array) only `next` can be called. `for…of`, spread and destructuring work as usual.
+- A BigInt is limited to 1,048,576 bits. Beyond the size of a number, what it holds is charged to the allocation budget and working on it counts as steps.
+- A text made by `+` is charged to the allocation budget in full when it is made. A variable that is appended to (`s += x`) is charged for what is appended, and in full once its value is used for anything else.
+- A script cannot catch the allocation limit, the step limit or the timeout: no `catch` or `finally` of the script runs after one of them.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `maxSteps` | `5000000` | Evaluated nodes before the execution is ended (bounds loops) |
+| `maxSteps` | `5000000` | Evaluated nodes, and the work built-ins do for the script, before the execution is ended with `STEP_LIMIT_EXCEEDED` (bounds loops) |
 | `maxCallDepth` | `256` | How deep calls may nest, along one chain of calls. A callback is one call deeper than the function that invokes it; the tasks of a `parallel` batch each continue the chain that started the batch and do not add up |
 | `maxPendingCalls` | `4096` | Calls of the whole execution that have not returned yet (running or waiting), over all its chains |
 | `maxAllocationBytes` | `67108864` | What a script may allocate, as the interpreter estimates it; the execution's `memoryLimit` applies when it is lower |
@@ -227,10 +294,10 @@ It differs from the VM adapters in what isolates a script. There is one realm: t
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `sanitizeStackTraces` | boolean | varies | Sanitize the stack of every error `run()` returns (any stage, any adapter): frames become `at [REDACTED]`, paths and file locations are redacted |
-| `blockTimingAPIs` | boolean | varies | Block Date, performance timing |
-| `allowUnboundedLoops` | boolean | varies | Allow while/do-while loops |
-| `unicodeSecurityCheck` | boolean | varies | Check for Unicode attacks |
+| `sanitizeStackTraces` | boolean | by level (`true` at `STRICT` and `SECURE`) | Sanitize the `stack` of an error `run()` returns, where it has one: frames become `at [REDACTED]`, paths and file locations are redacted |
+| `secureProxyConfig` | object | by level | Which property names the runtime refuses on every value (`blockConstructor`, `blockPrototype`, `blockLegacyAccessors`), how deep values are wrapped (`proxyMaxDepth`) and whether a refused access throws (`throwOnBlocked`) |
+
+An error made inside the sandbox has no `stack`: no sandbox realm captures a stack trace, so `error.stack` is `undefined` for the script and absent from `result.error`. That covers what a script throws, and the errors the runtime raises inside the sandbox (a limit, a failed tool call). It holds for the double VM and the single VM, in process and in a worker. Errors the host makes outside a sandbox realm (an adapter that fails, a worker pool error, an error of the [interpreter adapter](#the-interpreter-adapter), which has no realm of its own) keep their stack, and `sanitizeStackTraces` applies to those.
 
 ## Execution Result
 
@@ -243,38 +310,42 @@ interface ExecutionResult<T> {
   error?: {
     name: string;
     message: string;
-    code: string;         // Error code (see below)
-    stack?: string;
-    data?: unknown;       // Additional error context
+    code?: string;        // Error code (see below)
+    stack?: string;       // Only for errors made outside the sandbox
+    data?: Record<string, unknown>; // Additional error context
   };
   stats: {
     duration: number;      // Execution time (ms)
     toolCallCount: number; // Tool calls made
     iterationCount: number; // Loop iterations
-    memoryUsage?: number;  // Peak memory (if tracked)
-    sidecar?: {
-      referencesCreated: number;
-      totalBytesStored: number;
-      resolutionCount: number;
-    };
+    memoryUsage?: number;  // Peak tracked memory (if tracked)
+    startTime: number;
+    endTime: number;
   };
+  scoringResult?: ScoringGateResult; // When a scoring gate is configured
 }
 ```
 
+`result.error` is plain text of bounded length, whatever a script threw: `name` is a string of at most 256 characters and `message` one of at most 16,384. A thrown string is the message; a thrown `null`, `undefined`, number or other primitive is named in the message (`The script threw null`); an object without a string `message` is reported as `The script threw a value that is not an error`. The message of a validation failure is cut to 500 characters per issue and 32,768 in total; `error.data.issues` holds the issues.
+
 ## Error Codes
+
+`result.error.code` is one of:
 
 | Code | Description |
 |------|-------------|
-| `VALIDATION_ERROR` | AST validation failed |
-| `EXECUTION_ERROR` | Runtime error in script |
-| `TIMEOUT` | Execution exceeded timeout |
-| `TOOL_ERROR` | Tool call failed |
-| `MAX_TOOL_CALLS` | Tool call limit exceeded |
-| `MAX_ITERATIONS` | Loop iteration limit exceeded |
-| `MEMORY_LIMIT_EXCEEDED` | Memory limit exceeded |
-| `SCORING_BLOCKED` | Blocked by scoring gate |
-| `SIDECAR_SIZE_EXCEEDED` | Sidecar storage limit exceeded |
-| `SIDECAR_COMPOSITE_BLOCKED` | String concatenation blocked |
+| `VALIDATION_ERROR` | AST validation failed, or the script is too large or not a string |
+| `SECURITY_VIOLATION` | The script contains a dynamic import (also with `validate: false`), or a blocked operation was recorded at `STRICT` or `SECURE` |
+| `SCORING_BLOCKED` | Blocked by the scoring gate |
+| `DOUBLE_VM_EXECUTION_ERROR` | The script failed in the double VM (the default): an error it threw or did not catch, a failed tool call, the tool-call or iteration limit, the timeout. `error.message` says which |
+| `VM_EXECUTION_ERROR` | The same with `doubleVm: { enabled: false }`. Also, with either VM, the timeout of a script that was only waiting when the deadline passed, or whose tool call outlasted `toolCallGraceMs` |
+| `MEMORY_LIMIT_EXCEEDED` | `memoryLimit` exceeded |
+| `SERIALIZATION_LIMIT_EXCEEDED` | The returned value is larger than the memory limit allows |
+| `EXECUTION_ERROR` | The adapter itself failed; with the worker pool, `error.name` is the pool's error (`WorkerTimeoutError`, `WorkerMemoryError`, `ExecutionAbortedError`, ...) |
+| `ENCLAVE_ERROR` | Any other failure outside the sandbox, such as a script with a syntax error (`Failed to parse AgentScript code: ...`) |
+| `EXECUTION_TIMEOUT`, `STEP_LIMIT_EXCEEDED` | The timeout and the step budget of the [interpreter adapter](#the-interpreter-adapter) |
+
+With the VM adapters the message of a timeout starts with `Script execution timed out`. With `sidecar` enabled, a tool call whose references cannot be resolved within the limits fails inside the script like any failing tool call (see [Reference Sidecar](/core-libraries/enclave-vm/reference-sidecar)).
 
 ## Related
 

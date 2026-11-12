@@ -1,6 +1,6 @@
 # AST Guard
 
-[![npm version](https://img.shields.io/npm/v/ast-guard.svg)](https://www.npmjs.com/package/ast-guard)
+[![npm version](https://img.shields.io/npm/v/@enclave-vm/ast.svg)](https://www.npmjs.com/package/@enclave-vm/ast)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 
@@ -49,17 +49,17 @@ To run code you do not trust, put the validator in front of a runtime sandbox: [
 ## Installation
 
 ```bash
-npm install ast-guard
+npm install @enclave-vm/ast
 # or
-yarn add ast-guard
+yarn add @enclave-vm/ast
 # or
-pnpm add ast-guard
+pnpm add @enclave-vm/ast
 ```
 
 ## Quick Start
 
 ```typescript
-import { JSAstValidator, DisallowedIdentifierRule, NoEvalRule } from 'ast-guard';
+import { JSAstValidator, DisallowedIdentifierRule, NoEvalRule } from '@enclave-vm/ast';
 
 // Create validator with built-in rules
 const validator = new JSAstValidator([
@@ -100,19 +100,19 @@ AST Guard provides pre-configured security presets for quick and easy setup. Cho
 ### Quick Start with Presets
 
 ```typescript
-import { JSAstValidator, Presets, PresetLevel } from 'ast-guard';
+import { JSAstValidator, Presets, PresetLevel } from '@enclave-vm/ast';
 
 // Option 1: Use the Presets object
 const lockdownRules = Presets.strict();
 const validator = new JSAstValidator(lockdownRules);
 
 // Option 2: Use createPreset with level
-import { createPreset } from 'ast-guard';
+import { createPreset } from '@enclave-vm/ast';
 const securedRules = createPreset(PresetLevel.SECURE);
 const validator = new JSAstValidator(securedRules);
 
 // Option 3: Use individual preset function
-import { createStandardPreset } from 'ast-guard';
+import { createStandardPreset } from '@enclave-vm/ast';
 const balancedRules = createStandardPreset();
 const validator = new JSAstValidator(balancedRules);
 ```
@@ -133,7 +133,7 @@ Includes all security rules to block known sandbox escape exploits:
 - ✅ And more...
 
 ```typescript
-import { Presets } from 'ast-guard';
+import { Presets } from '@enclave-vm/ast';
 
 // Maximum lockdown
 const rules = Presets.strict();
@@ -173,9 +173,9 @@ const rules = Presets.strict({
 High security with some flexibility for semi-trusted code.
 
 ```typescript
-import { Presets } from 'ast-guard';
+import { Presets } from '@enclave-vm/ast';
 
-const rules = Presets.secured({
+const rules = Presets.secure({
   requiredFunctions: ['callTool'],
   maxFunctionCalls: 20,
 });
@@ -198,9 +198,9 @@ const rules = Presets.secured({
 Medium security with sensible defaults for most use cases.
 
 ```typescript
-import { Presets } from 'ast-guard';
+import { Presets } from '@enclave-vm/ast';
 
-const rules = Presets.balanced({
+const rules = Presets.standard({
   requiredFunctions: ['callTool'],
   additionalDisallowedIdentifiers: ['window', 'document'], // Browser-specific
 });
@@ -223,9 +223,9 @@ const rules = Presets.balanced({
 Low security for internal or trusted scripts.
 
 ```typescript
-import { Presets } from 'ast-guard';
+import { Presets } from '@enclave-vm/ast';
 
-const rules = Presets.naive({
+const rules = Presets.permissive({
   requiredFunctions: ['callTool'], // Optional API enforcement
 });
 ```
@@ -246,9 +246,9 @@ const rules = Presets.naive({
 All presets accept options to customize their behavior:
 
 ```typescript
-import { Presets } from 'ast-guard';
+import { Presets } from '@enclave-vm/ast';
 
-const rules = Presets.secured({
+const rules = Presets.secure({
   // Add more blocked identifiers
   additionalDisallowedIdentifiers: ['window', 'document', 'localStorage'],
 
@@ -260,7 +260,7 @@ const rules = Presets.secured({
   // Override default loop restrictions
   allowedLoops: {
     allowFor: true,
-    allowWhile: true, // Override: allow while in secured preset
+    allowWhile: true, // Override: allow while in the secure preset
     allowDoWhile: false,
     allowForIn: false,
     allowForOf: true,
@@ -268,7 +268,7 @@ const rules = Presets.secured({
 
   // Override default async restrictions
   allowAsync: {
-    allowAsyncFunctions: true, // Override: allow async in secured preset
+    allowAsyncFunctions: true, // Override: allow async in the secure preset
     allowAwait: true,
   },
 
@@ -295,7 +295,7 @@ const rules = Presets.secured({
 #### Example 1: Untrusted Code Sandbox
 
 ```typescript
-import { JSAstValidator, Presets } from 'ast-guard';
+import { JSAstValidator, Presets } from '@enclave-vm/ast';
 
 // Maximum security for untrusted user code
 const validator = new JSAstValidator(
@@ -334,11 +334,11 @@ if (result.valid) {
 #### Example 2: Plugin System
 
 ```typescript
-import { JSAstValidator, Presets } from 'ast-guard';
+import { JSAstValidator, Presets } from '@enclave-vm/ast';
 
 // Balanced security for plugin code
 const validator = new JSAstValidator(
-  Presets.balanced({
+  Presets.standard({
     requiredFunctions: ['registerPlugin'],
     additionalDisallowedIdentifiers: ['process', 'require', 'fs'],
   }),
@@ -357,11 +357,11 @@ const result = await validator.validate(pluginCode, {
 #### Example 3: Internal Automation Scripts
 
 ```typescript
-import { JSAstValidator, Presets } from 'ast-guard';
+import { JSAstValidator, Presets } from '@enclave-vm/ast';
 
 // Minimal security for trusted internal scripts
 const validator = new JSAstValidator(
-  Presets.naive({
+  Presets.permissive({
     requiredFunctions: ['execute'],
   }),
 );
@@ -425,7 +425,7 @@ message starts with `Invalid toolNamespaces:`.
 The AgentScript preset is specifically designed for safe AI agent orchestration. It provides security rules tailored for executing LLM-generated code that calls tools via `callTool()`.
 
 ```typescript
-import { JSAstValidator, createAgentScriptPreset } from 'ast-guard';
+import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
 // Basic usage - secure defaults for AgentScript
 const rules = createAgentScriptPreset();
@@ -494,7 +494,13 @@ const rules = createAgentScriptPreset({
 });
 ```
 
-The AgentScript preset is used internally by the `enclave-vm` package for secure code execution.
+The AgentScript preset is used internally by `@enclave-vm/core` for secure code execution.
+
+**Syntax allowlist.** The preset refuses every syntax node that is not on its allowlist (`AllowedSyntaxRule`, `AGENTSCRIPT_ALLOWED_NODE_TYPES`): `this`, classes, `new.target`, `import.meta`, `debugger`, `with`, `yield` and dynamic `import()` among them. Four constructs share their node type with an allowed one and are constructs of their own: `using` and `await using` declarations, `for await` loops and generator functions. They are refused, and `additionalAllowedSyntax` allows one only when it is listed under its own name: `UsingDeclaration`, `AwaitUsingDeclaration`, `ForAwaitStatement`, `GeneratorFunction`. The one function declaration a script may hold is the wrapper: `allowedFunctionNames` of `NoUserDefinedFunctionsRule` allows the first top-level declaration with the wrapper's shape (`async function __ag_main() { ... }`, no parameters) and no other, whatever its name.
+
+**`Object` is used directly.** The preset sets `requireDirectObjectUse` on `NoGlobalAccessRule`: the global `Object` may appear as `Object.name` with a name written in the source, as a call, a construction, or the operand of `typeof` / `instanceof`. An alias (`const O = Object`), passing or storing it, destructuring from it, a member name computed at run time and `Object.valueOf()` are refused with `OBJECT_INDIRECT_USE`. A reflection static of `Object` (`getPrototypeOf`, `defineProperty`, ...) is refused wherever it is read.
+
+**Reserved names.** `__ag_` and `__safe_` are always reserved; `reservedPrefixes` adds to them. `__maxIterations`, the runtime's name for the iteration limit, is reserved as well.
 
 ## Built-in Rules
 
@@ -503,7 +509,7 @@ The AgentScript preset is used internally by the `enclave-vm` package for secure
 Prevents usage of specific identifiers (e.g., `eval`, `Function`, `process`).
 
 ```typescript
-import { DisallowedIdentifierRule } from 'ast-guard';
+import { DisallowedIdentifierRule } from '@enclave-vm/ast';
 
 const rule = new DisallowedIdentifierRule({
   disallowed: ['eval', 'Function', 'process', 'require'],
@@ -516,7 +522,7 @@ const rule = new DisallowedIdentifierRule({
 Prevents usage of loop constructs. Configurable to allow specific loop types.
 
 ```typescript
-import { ForbiddenLoopRule } from 'ast-guard';
+import { ForbiddenLoopRule } from '@enclave-vm/ast';
 
 const rule = new ForbiddenLoopRule({
   allowFor: false,
@@ -533,7 +539,7 @@ const rule = new ForbiddenLoopRule({
 Ensures specific functions are called at least once.
 
 ```typescript
-import { RequiredFunctionCallRule } from 'ast-guard';
+import { RequiredFunctionCallRule } from '@enclave-vm/ast';
 
 const rule = new RequiredFunctionCallRule({
   required: ['callTool'],
@@ -562,7 +568,7 @@ const rule = new RequiredFunctionCallRule({
 Detects unreachable code (code after return/throw/break/continue).
 
 ```typescript
-import { UnreachableCodeRule } from 'ast-guard';
+import { UnreachableCodeRule } from '@enclave-vm/ast';
 
 const rule = new UnreachableCodeRule();
 // Automatically detects unreachable code
@@ -573,7 +579,7 @@ const rule = new UnreachableCodeRule();
 Validates function call arguments (count and types).
 
 ```typescript
-import { CallArgumentValidationRule } from 'ast-guard';
+import { CallArgumentValidationRule } from '@enclave-vm/ast';
 
 const rule = new CallArgumentValidationRule({
   functions: {
@@ -604,7 +610,7 @@ const rule = new CallArgumentValidationRule({
 Prevents usage of `eval()`, `Function()` constructor, and string-based `setTimeout`/`setInterval`.
 
 ```typescript
-import { NoEvalRule } from 'ast-guard';
+import { NoEvalRule } from '@enclave-vm/ast';
 
 const rule = new NoEvalRule();
 // Blocks: eval(), new Function(), setTimeout("code", ...)
@@ -615,7 +621,7 @@ const rule = new NoEvalRule();
 Prevents usage of async/await constructs.
 
 ```typescript
-import { NoAsyncRule } from 'ast-guard';
+import { NoAsyncRule } from '@enclave-vm/ast';
 
 const rule = new NoAsyncRule({
   allowAsyncFunctions: false,
@@ -629,7 +635,7 @@ const rule = new NoAsyncRule({
 Create your own validation rules by implementing the `ValidationRule` interface:
 
 ```typescript
-import { ValidationRule, ValidationContext, ValidationSeverity } from 'ast-guard';
+import { ValidationRule, ValidationContext, ValidationSeverity } from '@enclave-vm/ast';
 import * as walk from 'acorn-walk';
 
 class NoConsoleRule implements ValidationRule {
@@ -699,6 +705,11 @@ const result = await validator.validate(code, {
 error is on the list. While only warnings were found the remaining rules still run, because one of them may
 refuse the source, and further warnings are not collected. A result that was cut short has
 `incomplete: true`, and `valid` is `true` only when every rule ran and none reported an error.
+An `UNKNOWN_GLOBAL` issue states the list of allowed globals once per validation, in the first
+such issue; the following ones name the identifier only.
+
+`validate()` runs the pre-scanner before it parses, with the `standard` pre-scanner preset unless
+`preScan: { preset }` selects another one (see [Pre-Scanner](#pre-scanner)).
 
 ### Rule Management
 
@@ -742,24 +753,25 @@ interface ValidationIssue {
 
 ## Error Handling
 
-All errors extend `JSAstValidatorError` with specific error types:
+All errors extend `AstGuardError` with specific error types. `validate()` throws `InvalidSourceError` for a source that is not a string or is empty; a parse error is not thrown but returned as `result.parseError`, with a `PARSE_ERROR` issue:
 
 ```typescript
 import {
-  JSAstValidatorError,
+  AstGuardError,
   ParseError,
   RuleConfigurationError,
   ConfigurationError,
   RuleNotFoundError,
   InvalidSourceError,
-} from 'ast-guard';
+} from '@enclave-vm/ast';
 
 try {
   const result = await validator.validate(code);
+  if (result.parseError instanceof ParseError) {
+    console.error(`Parse error at line ${result.parseError.line}:`, result.parseError.message);
+  }
 } catch (error) {
-  if (error instanceof ParseError) {
-    console.error(`Parse error at line ${error.line}:`, error.message);
-  } else if (error instanceof InvalidSourceError) {
+  if (error instanceof InvalidSourceError) {
     console.error('Invalid source:', error.message);
   } else if (error instanceof RuleConfigurationError) {
     console.error(`Rule ${error.ruleName} misconfigured:`, error.message);
@@ -847,10 +859,7 @@ const validator = new JSAstValidator([
 
 ```bash
 # Run tests
-npm test
-
-# Run tests with coverage
-npm run test:coverage
+npx nx test ast
 ```
 
 ## Performance
@@ -872,6 +881,67 @@ if (score >= REDOS_THRESHOLDS.BLOCK) throw new Error('Pattern can backtrack cata
 
 It also exports `REDOS_PATTERNS`, `calculateStarHeight` and the `ReDoSAnalysisResult` type, the same as the package root.
 
+## Pre-Scanner
+
+The pre-scanner checks the source text before it is parsed: size, line and string limits, nesting depth, and, depending on the preset, regular-expression literals and Unicode characters. `JSAstValidator.validate()` runs it first, with the `standard` preset unless the `preScan` option selects another:
+
+```typescript
+const result = await validator.validate(code, {
+  preScan: { preset: 'agentscript' }, // default: 'standard'; { enabled: false } switches it off
+});
+```
+
+Used on its own, `PreScanner` takes `{ preset, config }`:
+
+```typescript
+import { PreScanner } from '@enclave-vm/ast';
+
+const scanner = new PreScanner({ preset: 'agentscript' }); // or PreScanner.forAgentScript()
+const scan = scanner.scan(code);
+if (!scan.success) {
+  console.error(scan.fatalIssue?.code, scan.fatalIssue?.message);
+}
+
+// Overrides go in `config`, on top of a preset
+const custom = new PreScanner({ preset: 'secure', config: { maxInputSize: 200 * 1024 } });
+```
+
+Without a `preset` the scanner uses `standard`. A configuration object passed in the place of the options, as in `new PreScanner(createPreScannerConfig('agentscript'))`, has no `preset` key and therefore builds the `standard` preset as well.
+
+| Check                            | `agentscript` | `strict` | `secure` | `standard` | `permissive` |
+| -------------------------------- | ------------- | -------- | -------- | ---------- | ------------ |
+| Input size                       | 100KB         | 500KB    | 1MB      | 5MB        | 10MB         |
+| Nesting depth                    | 20            | 30       | 40       | 50         | 100          |
+| Regex literals                   | refused       | analyzed | analyzed | analyzed   | allowed      |
+| Bidirectional control characters | refused       | refused  | refused  | allowed    | allowed      |
+| Invisible characters             | refused       | refused  | allowed  | allowed    | allowed      |
+| Look-alike letters               | refused       | refused  | refused  | refused    | allowed      |
+
+`@enclave-vm/core` validates without a `preScan` option, so an `Enclave` runs the `standard` pre-scanner whatever its AST preset is.
+
+## AgentScript Transformer and Transforms
+
+`transformAgentScript(code, config)` wraps a script in `async function __ag_main()`, renames `callTool` to `__safe_callTool` and guards its loops with an iteration counter.
+
+```typescript
+import { transformAgentScript } from '@enclave-vm/ast';
+
+const transformed = transformAgentScript(code, {
+  maxIterations: 10000, // Written into each loop check as a number
+  additionalIdentifiers: ['context'], // Custom globals keep their name
+});
+```
+
+With `maxIterations` the limit is a number in each loop's own check. Without it the check compares with the runtime's `__maxIterations`, and a script that uses that name is refused. A loop counter never has a name the script mentions.
+
+The transforms `@enclave-vm/core` applies after validation are exported as well:
+
+- `transformConcatenation(ast, options)` rewrites `a + b` to `__safe_concat(a, b)`. `compoundAssignment` (default `true`) rewrites `x += y` the same way, so that it is charged like `x + y`; `arraySpread` (default `false`) wraps array literals that contain a spread, for a runtime that defines the helpers for it.
+- `rewriteImports(code, config)` rewrites imports of npm packages to CDN URLs. The package allowlist applies to import declarations, re-exports and dynamic `import()` alike: a dynamic import of a listed package is rewritten, one of another package is refused, and a specifier computed at run time is refused. Versions with path or URL characters, and a base URL with credentials, a query or a fragment, are refused.
+- The validator's `transform` option with `transformComputed` prints a computed key it rewrites as one string literal, whatever characters the key holds.
+
+`UnicodeSecurityRule` reports the tag characters (U+E0000 to U+E007F) as invisible characters. No preset includes this rule.
+
 ## Comparison
 
 | Feature                | AST Guard      | ESLint       | TypeScript    |
@@ -885,7 +955,7 @@ It also exports `REDOS_PATTERNS`, `calculateStarHeight` and the `ReDoSAnalysisRe
 
 ## Defense-in-Depth Architecture
 
-AST Guard provides 4 layers of protection:
+AST Guard is the first two of four layers. The other two are the runtime's (`@enclave-vm/core`):
 
 ```text
 Layer 1: AST Validation
@@ -905,10 +975,10 @@ Layer 3: Runtime Proxy Layer
 ├── __safe_console() - Captures logs
 └── All proxied functions enforce security
 
-Layer 4: Worker Isolation
-├── Separate worker thread
-├── Sandboxed VM context
-└── No access to Node.js globals
+Layer 4: Runtime Sandbox (@enclave-vm/core)
+├── Double VM: a realm that holds only the allowed globals
+├── Membrane and limits around every value and call
+└── Optional worker pool: a heap limit per worker and a hard stop
 ```
 
 ### Known Limitations

@@ -9,8 +9,8 @@ Enclave is a production-ready JavaScript sandbox for executing AI-generated code
 
 When AI agents generate code, you need to execute it safely. Enclave provides:
 
-- **6-Layer Security** - Pre-scanning, AST validation, code transformation, AI scoring, runtime isolation, and output sanitization
-- **Real-time Streaming** - See execution output as it happens with tool call visualization
+- **6-Layer Security** - Pre-scanning, AST validation, code transformation, an optional heuristic scoring gate, runtime isolation, and output sanitization
+- **Real-time Streaming** - Follow a session's events, such as its tool calls, as they happen
 - **Tool Orchestration** - Connect external APIs and services through a controlled interface
 - **React Integration** - First-class hooks and components for building code execution UIs
 
@@ -32,7 +32,7 @@ When AI agents generate code, you need to execute it safely. Enclave provides:
     Secure JavaScript sandbox with AST validation, runtime isolation, and AI scoring gate
   </Card>
   <Card title="@enclave-vm/ast" icon="shield-check" href="/core-libraries/ast-guard/overview">
-    AST-based JavaScript validator with 16 security rules and code transformation
+    AST-based JavaScript validator with 21 built-in rules and code transformation
   </Card>
 </CardGroup>
 
@@ -53,7 +53,7 @@ Build real-time code execution UIs with streaming output, tool orchestration, an
 </CardGroup>
 
 <Card title="EnclaveJS Overview" icon="book-open" href="/enclavejs/overview">
-  Learn about the full streaming architecture including types, protocol, and runtime deployment
+  Learn about the streaming architecture: types, protocol, broker and clients
 </Card>
 
 ## Understand the System
@@ -95,13 +95,13 @@ Build real-time code execution UIs with streaming output, tool orchestration, an
 | Feature | Description |
 |---------|-------------|
 | **Production-ready Security** | 500+ security tests, 6 defense layers, comprehensive CVE coverage |
-| **Real-time Streaming** | NDJSON-based protocol for stdout, logs, and tool calls |
+| **Real-time Streaming** | NDJSON-based protocol for the events of a session: tool calls, progress, the result |
 | **Tool Orchestration** | Define tools with validation, handle calls during execution |
 | **React Integration** | First-class hooks for building interactive code execution UIs |
 | **Encryption Primitives** | ECDH + AES-256-GCM building blocks in `@enclave-vm/stream`; the client and broker do not encrypt, so sessions rely on HTTPS |
 | **TypeScript-first** | Full type safety and excellent developer experience |
-| **Multiple Isolation Modes** | VM sandbox, worker pool, and double-VM options |
-| **AI Scoring Gate** | Semantic pattern detection to block suspicious code |
+| **Multiple Isolation Modes** | Double VM by default, single VM, and a worker pool around either |
+| **AI Scoring Gate** | Optional heuristic risk score that can refuse a script before it runs |
 
 ## Quick Install
 

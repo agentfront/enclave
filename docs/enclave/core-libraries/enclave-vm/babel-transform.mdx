@@ -1,9 +1,9 @@
 ---
 title: 'Babel Transform'
-description: 'Transform TSX/JSX code to JavaScript inside the secure enclave sandbox'
+description: 'Transform TSX/JSX code to JavaScript from inside the enclave sandbox'
 ---
 
-The Babel transform feature enables secure TSX/JSX transformation inside the enclave sandbox. This allows LLM-generated React components to be compiled to JavaScript safely, without exposing the host system to code execution risks.
+The Babel transform feature lets a script inside the enclave sandbox turn TSX/JSX into JavaScript. The script calls a restricted `Babel.transform()`; the source it passes is parsed and printed as data and is never executed by the transform.
 
 ## Overview
 
@@ -11,7 +11,7 @@ The Babel transform feature enables secure TSX/JSX transformation inside the enc
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
 flowchart TB
     subgraph sandbox["Enclave Sandbox"]
-        TSX["TSX Input<br/>&lt;App /&gt;"] --> Babel["Babel Transform<br/>(Isolated)"]
+        TSX["TSX Input<br/>&lt;App /&gt;"] --> Babel["Babel Transform<br/>(host function)"]
         Babel --> JS["JS Output<br/>React.createElement"]
         Babel --> Security["Security Layer<br/>• Preset allow<br/>• Size limits<br/>• Timeout<br/>• No plugins"]
     end
@@ -56,16 +56,21 @@ enclave.dispose();
 
 ## Security Model
 
-The Babel transform runs in an isolated VM context with multiple security layers:
+The `Babel` global holds functions of the host, which the enclave hands to the script like any other function in `globals`. `@babel/standalone` is loaded into the host realm and runs there, with the host's intrinsics and the host's authority. It is called from a separate VM context, and what that context provides is the timeout of the call: it is not an isolation boundary, and it takes nothing away from Babel. A defect in Babel's parser or in a preset would be a defect in host code. A host that needs Babel isolated from its process runs the enclave in a process of its own.
 
-| Layer | Protection | Description |
-|-------|------------|-------------|
-| **Preset Whitelist** | Controlled transforms | Only allowed presets can be used (no arbitrary plugins) |
-| **Input Size Limit** | DoS prevention | Maximum source code size varies by security level |
-| **Output Size Limit** | Memory protection | Prevents output expansion attacks |
-| **Transform Timeout** | Resource control | Prevents infinite compilation loops |
-| **Isolated Context** | Sandbox escape | Babel runs without access to fs, process, require |
-| **No Plugins** | Code execution | Plugins are completely blocked (they execute arbitrary code) |
+What a script can make Babel do is restricted by what the wrapper passes on and checks:
+
+| Restriction | Description |
+|-------------|-------------|
+| **Source is data** | Babel parses and prints the text; it never executes it |
+| **Preset allowlist** | Only the presets of the security level can be used |
+| **No plugins** | Plugins are always none (a plugin is code that runs in the transform) |
+| **No configuration files, source maps or AST** | `babelrc` and `configFile` are off; the result is the code only |
+| **Input size limit** | Maximum source size, by security level |
+| **Output size limit** | Maximum output size, by security level; an output over the limit is refused before an import rewrite reads it, and the final text is checked again |
+| **Transform timeout** | Per transform, by security level |
+| **Sanitized file name** | Path separators, `..` and characters that are invalid in a file name are removed, and the name is cut to 255 characters |
+| **Bounded error text** | Babel's message for a failed transform is cut to 2,000 characters, with host paths and stack locations removed |
 
 ## Configuration
 
@@ -113,6 +118,7 @@ interface SafeTransformOptions {
   filename?: string;                    // For error messages (sanitized)
   presets?: string[];                   // Must be in allowed list
   sourceType?: 'module' | 'script';     // Default: 'module'
+  importRewrite?: ImportRewriteConfig;  // Rewrite npm imports to CDN URLs (see below)
 }
 
 interface SafeTransformResult {
@@ -130,14 +136,38 @@ const result = Babel.transform(code, options);
 | `filename` | `string` | `'input.tsx'` | Filename for error messages |
 | `presets` | `string[]` | `[]` | Babel presets to apply |
 | `sourceType` | `'module' \| 'script'` | `'module'` | How to parse the code |
+| `importRewrite` | `ImportRewriteConfig` | - | Rewrite imports of npm packages to URLs below `cdnBaseUrl` |
 
 <Warning>
-  The following Babel options are **blocked** for security:
-  - `plugins` - Completely blocked (execute arbitrary code)
-  - `sourceMaps` - Blocked (path leakage)
-  - `ast` - Blocked (not needed, reduces attack surface)
-  - `babelrc` / `configFile` - Blocked (no file system access)
+  The following Babel options are not passed on, whatever a script supplies:
+  - `plugins` - always none (a plugin is code that runs in the transform)
+  - `sourceMaps` - off (a source map names paths)
+  - `ast` - off (the result is the code only)
+  - `babelrc` / `configFile` - off (no configuration file is read)
 </Warning>
+
+### Timeout
+
+The transform timeout of the security level applies to each transform, not to an execution: a script that calls `Babel.transform()` several times, or `Babel.transformMultiple()` with several files, gets the timeout for every call and for every file. A transform that runs into it fails with `Babel transform timed out after <timeout>ms`.
+
+### Multiple Files
+
+`Babel.transformMultiple(files, options)` transforms a set of files that import each other and returns `{ files, dependencies, warnings, rewrittenImports }`:
+
+- A file name is at most 255 characters, relative, without `..`, made of letters, digits, `_`, `-`, `/` and `.`, and ends in `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts` or `.cts`. Any other name is refused.
+- The number of files and the total input and output size are limited by security level (3 files at `STRICT`, 10 at `SECURE`, 25 at `STANDARD`, 100 at `PERMISSIVE`).
+- `dependencies` lists each local file a file imports once, however many imports name it.
+
+### Import Rewriting
+
+With `importRewrite: { enabled: true, cdnBaseUrl, packageVersions }` the transformed code has its imports of npm packages rewritten to URLs below `cdnBaseUrl`:
+
+- Only allowed packages can be imported: the ones in `allowedPackages` when that list is given, otherwise the ones named in `packageVersions`. An import of another package fails the transform. This holds for import declarations, re-exports and dynamic `import()`.
+- A dynamic `import('pkg')` of an allowed package is rewritten like a static import. A dynamic import whose specifier is not written as a string (a string literal, or a template literal without substitutions) cannot be checked and is refused.
+- Local imports (`./foo`, `../bar`) are left as they are by default.
+- `cdnBaseUrl` must be an HTTPS URL without credentials, query or fragment, and a version is a version number, range or tag without path or URL characters.
+
+The allowlist belongs to whoever writes the configuration. A script that passes `importRewrite` to `Babel.transform()` itself chooses its own allowlist, so there the rewrite is a convenience and restricts nothing: treat the output as the script's own text.
 
 ## Common Use Cases
 
@@ -225,7 +255,7 @@ const result = await enclave.run(code);
 
 ## Error Handling
 
-Babel transform errors are sanitized to prevent path leakage:
+The message of a failed transform is `Babel transform failed: ` followed by Babel's message with host paths and stack locations removed, cut to 2,000 characters (Babel quotes the source around a syntax error, so its message can be as long as the source):
 
 ```ts
 const code = `
@@ -238,7 +268,7 @@ const code = `
 `;
 
 const result = await enclave.run(code);
-// Error message shows line/column but no file paths
+// The message names the problem; it holds no host path
 ```
 
 ### Common Errors
@@ -248,8 +278,9 @@ const result = await enclave.run(code);
 | `Preset "X" is not allowed` | Using disallowed preset | Use preset from allowed list |
 | `Code exceeds maximum size` | Input too large | Reduce input or use higher security level |
 | `Output exceeds maximum size` | Transform produced too much output | Simplify input code |
-| `Transform timed out` | Compilation taking too long | Simplify code or increase timeout |
-| `Code contains invalid null bytes` | Malicious input | Clean input before transform |
+| `Babel transform timed out after Nms` | One transform took longer than the level's transform timeout | Simplify the code or use a higher security level |
+| `Code contains invalid null bytes` | The source contains a null byte | Clean input before transform |
+| `Import rewrite failed: ...` | An import of a package that is not listed, a computed dynamic import, or an invalid version or base URL | List the package in `packageVersions` |
 
 ## Performance
 
@@ -309,7 +340,7 @@ console.log(result.code);
 ```
 
 <Warning>
-  The direct API still runs Babel in an isolated VM context, but doesn't provide the full enclave sandbox features (tool calls, iteration limits, etc.). Use the full enclave for LLM-generated code.
+  The direct API applies the same restrictions to a transform (preset allowlist, no plugins, size limits, the timeout). Babel runs in the host realm here as well. It transforms text and runs none of it; to run LLM-generated code, use the enclave.
 </Warning>
 
 ## Related

@@ -18,59 +18,68 @@ The main class for secure code execution.
 ### Constructor
 
 ```ts
-new Enclave(options?: EnclaveOptions)
+new Enclave(options?: CreateEnclaveOptions)
 ```
 
-### EnclaveOptions
+The constructor throws a `TypeError` for an option outside its type or range (a limit that is not a finite integer in range, a switch that is not a boolean, an unknown security level). An option passed as `undefined` has its default.
+
+### CreateEnclaveOptions
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `securityLevel` | `SecurityLevel` | `'STANDARD'` | Security preset |
-| `timeout` | `number` | `30000` | Execution timeout in ms |
-| `maxToolCalls` | `number` | `100` | Maximum tool calls per execution |
-| `maxIterations` | `number` | `10000` | Maximum loop iterations |
-| `memoryLimit` | `number` | `67108864` | Memory limit in bytes (64MB) |
+| `preset` | `AstPreset` | `'agentscript'` | AST validation preset |
+| `timeout` | `number` | `30000` (by level) | Execution timeout in ms, 1 to 4294967295. Cooperative in process; with the worker pool a script is terminated five seconds after it |
+| `toolCallGraceMs` | `number` | same as `timeout` | How long a tool call in progress at the timeout may still take |
+| `maxToolCalls` | `number` | `100` (by level) | Maximum tool calls per execution |
+| `maxIterations` | `number` | `10000` (by level) | Maximum loop iterations |
+| `memoryLimit` | `number` | `1048576` | Memory limit in bytes (1 MB), as the enclave counts it; `0` switches the tracking off |
 | `toolHandler` | `ToolHandler` | `undefined` | Tool execution function |
 | `toolNamespaces` | `ToolNamespaces` | `undefined` | Expose tools as `ns.method(args)` bindings that are `callTool()` calls |
 | `consoleHandler` | `ConsoleHandler` | `undefined` | Receive the script's console calls as `(level, message)` instead of the host console; allows `console` at every security level |
+| `maxConsoleCalls`, `maxConsoleOutputBytes` | `number` | by level | Limits on the script's console output |
 | `globals` | `Record<string, unknown>` | `{}` | Custom globals |
 | `allowFunctionsInGlobals` | `boolean` | by level | Allow functions in `globals` (calls are gated and results sanitized) |
 | `maxGlobalFunctionCalls` | `number` | 10 × `maxToolCalls` | Maximum calls into functions from `globals` |
-| `sanitizeStackTraces` | `boolean` | by level | Sanitize the stack of every returned error |
-| `scoringGate` | `ScoringGateOptions` | `undefined` | AI scoring configuration |
-| `adapter` | `'vm' \| 'worker_threads'` | `'vm'` | Built-in adapter; takes effect only with `doubleVm: { enabled: false }` |
+| `validate` | `boolean` | `true` | Validate the script before it runs. A dynamic import is refused also with `false` |
+| `transform` | `boolean` | `true` | Transform the script before it runs |
+| `realmGlobals` | `'allowlist' \| 'security-level'` | by preset | Which standard globals exist in the script's realm |
+| `sanitizeStackTraces` | `boolean` | by level | Sanitize the stack of a returned error that has one (errors made inside the sandbox have none) |
+| `maxSanitizeDepth`, `maxSanitizeProperties` | `number` | by level | Limits on values that cross the sandbox boundary |
+| `secureProxyConfig` | `Partial<SecureProxyLevelConfig>` | by level | Which property names the runtime refuses on every value |
+| `toolBridge` | `{ mode?, maxPayloadBytes?, acknowledgeInsecureDirect? }` | `{ mode: 'string', maxPayloadBytes: 5MB }` | How tool calls cross the sandbox boundary |
+| `sidecar` | `ReferenceSidecarOptions` | `undefined` | Reference sidecar configuration |
+| `scoringGate` | `ScoringGateConfig` | `undefined` | AI scoring configuration |
+| `doubleVm` | `PartialDoubleVmConfig` | `{ enabled: true }` | Double VM configuration |
+| `adapter` | `'vm' \| 'worker_threads'` | `'vm'` | Where the sandbox runs: in this process, or in a pool of worker threads. In both cases the script runs in the double VM (a single VM with `doubleVm: { enabled: false }`) |
+| `workerPoolConfig` | `Partial<WorkerPoolConfig>` | by level | Worker pool settings for `adapter: 'worker_threads'` |
 | `sandboxAdapter` | `SandboxAdapter` | `undefined` | Run scripts with this adapter instead of the double VM (for hosts without `node:vm`); not disposed by the enclave |
-| `verboseErrors` | `boolean` | `false` | Include detailed error info |
+
+See [Configuration](/core-libraries/enclave-vm/configuration) for the ranges and for what each limit covers.
 
 ### Methods
 
-#### run(code, options?)
+#### run(code, toolHandler?)
 
 Execute code in the sandbox.
 
 ```ts
-async run(code: string, options?: RunOptions): Promise<ExecutionResult>
+async run<T = unknown>(code: string, toolHandler?: ToolHandler): Promise<ExecutionResult<T>>
 ```
 
 **Parameters:**
-- `code` - JavaScript code to execute
-- `options` - Optional execution options
+- `code` - The script to execute, at most 5,242,880 characters
+- `toolHandler` - Optional tool handler for this run; replaces the one from the constructor
 
-**Returns:** `ExecutionResult`
+**Returns:** `ExecutionResult`. `run()` does not reject for a failing script: the failure is in the result.
 
 ```ts
-interface RunOptions {
-  timeout?: number;
-  context?: Record<string, unknown>;
-  maxToolCalls?: number;
-}
-
-interface ExecutionResult {
+interface ExecutionResult<T = unknown> {
   success: boolean;
-  value?: unknown;
+  value?: T;
   error?: ExecutionError;
-  stdout?: string;
-  stats?: ExecutionStats;
+  stats: ExecutionStats;
+  scoringResult?: ScoringGateResult;
 }
 ```
 
@@ -83,41 +92,33 @@ const result = await enclave.run(`
 console.log(result.value); // 3
 ```
 
-#### validate(code)
+#### initialize()
 
-Validate code without executing.
+Initialize the scoring gate, for a scorer that needs it (the `local-llm` scorer loads its model here). `run()` initializes the gate on first use when this was not called.
 
 ```ts
-async validate(code: string): Promise<ValidationResult>
+initialize(): Promise<void>
 ```
 
-**Returns:** `ValidationResult`
+#### getEffectiveConfig()
+
+The limits in effect, after the security level and the options were merged.
 
 ```ts
-interface ValidationResult {
-  valid: boolean;
-  issues: ValidationIssue[];
+getEffectiveConfig(): {
+  securityLevel: SecurityLevel;
+  timeout: number;
+  maxIterations: number;
+  maxToolCalls: number;
+  sanitizeStackTraces: boolean;
+  maxSanitizeDepth: number;
+  maxSanitizeProperties: number;
+  memoryLimit: number;
+  realmGlobals: 'allowlist' | 'security-level';
 }
-
-interface ValidationIssue {
-  rule: string;
-  message: string;
-  severity: 'error' | 'warning';
-  location?: {
-    line: number;
-    column: number;
-  };
-}
 ```
 
-**Example:**
-```ts
-const validation = await enclave.validate(`
-  eval('dangerous');
-`);
-// validation.valid === false
-// validation.issues[0].message === "Identifier 'eval' is not allowed"
-```
+`getSecurityLevel()` returns the level alone, and `getScoringStats()` the cache statistics of the scoring gate (`null` without a gate).
 
 #### dispose()
 
@@ -135,6 +136,29 @@ try {
 } finally {
   enclave.dispose();
 }
+```
+
+### Validating Without Executing
+
+`Enclave` has no method that only validates. Validation is the job of `@enclave-vm/ast`, which the enclave uses itself:
+
+```ts
+import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
+
+const validator = new JSAstValidator(createAgentScriptPreset());
+const validation = await validator.validate(`eval('dangerous');`);
+// validation.valid === false
+// validation.issues: [{ code, severity, message, location? }, ...]
+```
+
+The enclave validates the script after its own transform and with its own list of allowed globals, so a result from a validator you build yourself can differ from what `run()` decides. See the [@enclave-vm/ast reference](/api-reference/ast-guard).
+
+## runAgentScript(code, options?)
+
+Create an enclave, run one script and dispose the enclave.
+
+```ts
+function runAgentScript<T = unknown>(code: string, options?: CreateEnclaveOptions): Promise<ExecutionResult<T>>
 ```
 
 ## Types
@@ -179,23 +203,28 @@ const toolHandler: ToolHandler = async (name, args) => {
 
 ```ts
 interface ExecutionError {
-  code: ErrorCode;
   name: string;
   message: string;
+  code?: string;
   stack?: string;
   data?: Record<string, unknown>;
 }
-
-type ErrorCode =
-  | 'VALIDATION_ERROR'
-  | 'TIMEOUT'
-  | 'MAX_TOOL_CALLS'
-  | 'MAX_ITERATIONS'
-  | 'TOOL_ERROR'
-  | 'MEMORY_LIMIT_EXCEEDED'
-  | 'SCORING_BLOCKED'
-  | 'RUNTIME_ERROR';
 ```
+
+`name` and `message` are strings of bounded length (256 and 16,384 characters) whatever a script threw. An error made inside the sandbox has no `stack`. The values of `code`:
+
+| Code | Description |
+|------|-------------|
+| `VALIDATION_ERROR` | AST validation failed, or the script is too large or not a string |
+| `SECURITY_VIOLATION` | A dynamic import, or a blocked operation recorded at `STRICT` or `SECURE` |
+| `SCORING_BLOCKED` | Refused by the scoring gate; `data` holds `totalScore`, `riskLevel`, `signals` |
+| `DOUBLE_VM_EXECUTION_ERROR` | The script failed in the double VM: an error it did not catch, a failed tool call, the tool-call or iteration limit, a timeout |
+| `VM_EXECUTION_ERROR` | The same in the single VM; with either VM, the timeout of a script that was only waiting |
+| `MEMORY_LIMIT_EXCEEDED` | `memoryLimit` exceeded; `data` holds `usedBytes`, `limitBytes` |
+| `SERIALIZATION_LIMIT_EXCEEDED` | The returned value is larger than the memory limit allows |
+| `EXECUTION_ERROR` | The adapter itself failed (with the worker pool, `name` is the pool's error) |
+| `ENCLAVE_ERROR` | Any other failure outside the sandbox, such as a syntax error in the script |
+| `EXECUTION_TIMEOUT`, `STEP_LIMIT_EXCEEDED` | The timeout and the step budget of the `InterpreterAdapter` |
 
 ### ExecutionStats
 
@@ -204,100 +233,114 @@ interface ExecutionStats {
   duration: number;
   toolCallCount: number;
   iterationCount: number;
-  memoryUsage?: number;
+  memoryUsage?: number; // Peak tracked memory, when memoryLimit is set
+  startTime: number;
+  endTime: number;
 }
 ```
 
-### ScoringGateOptions
+### ScoringGateConfig
 
 ```ts
-interface ScoringGateOptions {
-  scorer: 'rule-based' | 'custom';
-  blockThreshold: number;
-  warnThreshold?: number;
-  onScore?: (result: ScoringResult) => void;
-  customScorer?: (code: string) => Promise<ScoringResult>;
+interface ScoringGateConfig {
+  scorer?: ScorerType; // 'disabled' (default) | 'rule-based' | 'local-llm' | 'external-api'
+  scoring?: ProgressiveScoringConfig; // Progressive mode: rule-based first, then a detailed scorer
+  blockThreshold?: number; // Default 70
+  warnThreshold?: number; // Default 40
+  failOpen?: boolean; // Default true
+  customRules?: Record<string, number>; // Base scores of the rule-based scorer by rule id
+  toolNamespaces?: ToolNamespaces; // Default: the enclave's (a normalized list is accepted as well)
+  localLlm?: LocalLlmConfig;
+  externalApi?: ExternalApiConfig;
+  cache?: ScoringCacheConfig;
+  verbose?: boolean;
 }
 
-interface ScoringResult {
-  score: number;
-  signals: string[];
-}
-```
-
-## Factory Functions
-
-### createWorkerPoolAdapter(options)
-
-Create a worker pool adapter for OS-level isolation.
-
-```ts
-function createWorkerPoolAdapter(options: WorkerPoolOptions): EnclaveAdapter
-```
-
-**Options:**
-```ts
-interface WorkerPoolOptions {
-  poolSize: number;
-  maxWorkerMemory?: number;
-  maxExecutionsPerWorker?: number;
-  idleTimeout?: number;
+interface ScoringGateResult {
+  allowed: boolean;
+  warned?: boolean;
+  totalScore?: number; // 0-100; absent when scoring failed
+  riskLevel?: 'none' | 'low' | 'medium' | 'high' | 'critical';
+  signals?: RiskSignal[]; // { id, score, description, level, context? }
+  reason?: string;
+  latencyMs: number;
+  cached: boolean;
 }
 ```
 
-**Example:**
-```ts
-import { Enclave, createWorkerPoolAdapter } from '@enclave-vm/core';
+See [AI Scoring Gate](/core-libraries/enclave-vm/ai-scoring).
 
-const enclave = new Enclave({
-  adapter: createWorkerPoolAdapter({
-    poolSize: 4,
-    maxWorkerMemory: 128 * 1024 * 1024,
-  }),
-});
+## Adapters
+
+### WorkerPoolAdapter
+
+The pool behind `adapter: 'worker_threads'`. Create one yourself to read its metrics, and pass it as `sandboxAdapter`:
+
+```ts
+import { Enclave, WorkerPoolAdapter } from '@enclave-vm/core';
+
+const pool = new WorkerPoolAdapter({ maxWorkers: 4, memoryLimitPerWorker: 128 * 1024 * 1024 }, 'STANDARD');
+const enclave = new Enclave({ securityLevel: 'STANDARD', sandboxAdapter: pool });
+
+console.log(pool.getMetrics());
+
+enclave.dispose();
+pool.dispose(); // An adapter you passed in is yours to dispose
 ```
 
-### createDoubleVmAdapter(options)
-
-Create a double-VM adapter for nested isolation.
-
 ```ts
-function createDoubleVmAdapter(options?: DoubleVmOptions): EnclaveAdapter
+new WorkerPoolAdapter(
+  config?: Partial<WorkerPoolConfig>,
+  securityLevel?: SecurityLevel, // Default 'STANDARD'
+  doubleVmConfig?: DoubleVmConfig, // Default: the double VM
+)
 ```
 
-**Options:**
+See [Worker Pool](/core-libraries/enclave-vm/worker-pool) for the options and for the errors an execution can end with.
+
+### InterpreterAdapter
+
+A tree-walking interpreter for hosts without `node:vm`:
+
 ```ts
-interface DoubleVmOptions {
-  outerTimeout?: number;
-  innerTimeout?: number;
-}
+import { Enclave, InterpreterAdapter } from '@enclave-vm/core';
+
+const enclave = new Enclave({ sandboxAdapter: new InterpreterAdapter() });
 ```
 
-## RuleBasedScorer Class
+See [The Interpreter Adapter](/core-libraries/enclave-vm/configuration#the-interpreter-adapter). The double VM is not an adapter you create: it is on by default and configured with the `doubleVm` option.
 
-Semantic pattern detection scorer.
+## Scoring Classes
+
+`ScoringGate` is the gate an enclave builds from `scoringGate`; it can be used on its own:
 
 ```ts
-import { RuleBasedScorer } from '@enclave-vm/core';
+import { ScoringGate } from '@enclave-vm/core';
 
-const scorer = new RuleBasedScorer();
-const result = scorer.score(code);
+const gate = new ScoringGate({ scorer: 'rule-based', blockThreshold: 70 });
+await gate.initialize();
 
-console.log(result.score);   // 0-100
-console.log(result.signals); // ['list-send-pattern', 'bulk-operation']
+const result = await gate.evaluate(code);
+console.log(result.allowed, result.totalScore, result.signals);
+
+gate.dispose();
 ```
 
-### Methods
-
-#### score(code)
+`RuleBasedScorer` scores features, not source text. `FeatureExtractor.extract(code)` produces them, and throws `FeatureExtractionError` for text it cannot parse:
 
 ```ts
-score(code: string): ScoringResult
+import { FeatureExtractor, RuleBasedScorer } from '@enclave-vm/core';
+
+const features = new FeatureExtractor().extract(code);
+const result = await new RuleBasedScorer().score(features);
+
+console.log(result.totalScore); // 0-100
+console.log(result.signals.map((signal) => signal.id)); // e.g. ['EXFIL_PATTERN', 'BULK_OPERATION']
 ```
 
 ## Reference Sidecar
 
-Handle large tool responses.
+Pass large strings between tools by reference.
 
 ```ts
 import { Enclave } from '@enclave-vm/core';
@@ -305,21 +348,27 @@ import { Enclave } from '@enclave-vm/core';
 const enclave = new Enclave({
   sidecar: {
     enabled: true,
-    threshold: 1024 * 1024, // 1MB
+    extractionThreshold: 1024 * 1024, // 1MB
   },
 });
 ```
 
-### SidecarOptions
+### ReferenceSidecarOptions
 
 ```ts
-interface SidecarOptions {
+interface ReferenceSidecarOptions {
   enabled: boolean;
-  threshold?: number; // Size threshold for reference creation
-  storage?: 'memory' | 'redis';
-  ttl?: number; // Time-to-live in ms
+  maxTotalSize?: number; // All stored references together
+  maxReferenceSize?: number; // One reference
+  extractionThreshold?: number; // Size from which a string is stored
+  maxResolvedSize?: number; // What one tool call resolves
+  maxTotalResolvedSize?: number; // What one execution resolves; default twice maxTotalSize
+  allowComposites?: boolean; // Concatenation with references
+  maxReferenceCount?: number; // References in one execution
 }
 ```
+
+The defaults follow the security level. See [Reference Sidecar](/core-libraries/enclave-vm/reference-sidecar).
 
 ## Process-Level Functions
 
@@ -358,7 +407,7 @@ Under `--unhandled-rejections=strict` Node.js raises the exception before it emi
 ## Complete Example
 
 ```ts
-import { Enclave, createWorkerPoolAdapter } from '@enclave-vm/core';
+import { Enclave } from '@enclave-vm/core';
 
 // Create enclave with full configuration
 const enclave = new Enclave({
@@ -382,20 +431,21 @@ const enclave = new Enclave({
     return { success: true };
   },
 
+  // Console output of the script
+  consoleHandler: (level, message) => console.log(`[script ${level}]`, message),
+
   // AI Scoring
   scoringGate: {
     scorer: 'rule-based',
     blockThreshold: 70,
     warnThreshold: 40,
-    onScore: (result) => {
-      console.log('Score:', result.score);
-    },
   },
 
-  // Worker pool isolation
-  adapter: createWorkerPoolAdapter({
-    poolSize: 4,
-  }),
+  // Run scripts in a pool of worker threads
+  adapter: 'worker_threads',
+  workerPoolConfig: {
+    maxWorkers: 4,
+  },
 });
 
 // Execute code
@@ -406,6 +456,7 @@ const result = await enclave.run(`
 `);
 
 console.log(result);
+console.log('Score:', result.scoringResult?.totalScore);
 
 // Clean up
 enclave.dispose();

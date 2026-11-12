@@ -121,7 +121,7 @@ const enclave = new Enclave({
 });
 ```
 
-When the limit is exceeded, execution fails with error code `MAX_TOOL_CALLS`.
+A call beyond the limit throws inside the script (`Maximum tool call limit exceeded (50)`). A script that does not catch it fails with that message; `error.code` is `DOUBLE_VM_EXECUTION_ERROR` with the default sandbox.
 
 ## Custom Globals
 

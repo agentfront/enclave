@@ -24,7 +24,7 @@ npm install @enclave-vm/core
 
 ### @enclave-vm/ast
 
-AST-based JavaScript validator with 100% CVE coverage.
+AST-based JavaScript validator: the static layer in front of the sandbox.
 
 ```bash
 npm install @enclave-vm/ast
@@ -58,7 +58,7 @@ npm install @enclave-vm/types
 
 #### @enclave-vm/stream
 
-Streaming protocol implementation with encryption support.
+NDJSON parsing and reconnection helpers. It also exports encryption primitives, which the client and the broker do not use.
 
 ```bash
 npm install @enclave-vm/stream
@@ -66,7 +66,7 @@ npm install @enclave-vm/stream
 
 #### @enclave-vm/broker
 
-Tool broker with session management and HTTP API.
+Tool broker with session management and HTTP API. It does not authenticate callers: put your own authentication in front of its routes.
 
 ```bash
 npm install @enclave-vm/broker
@@ -74,7 +74,7 @@ npm install @enclave-vm/broker
 
 #### @enclave-vm/client
 
-Browser and Node.js client SDK.
+Browser and Node.js client SDK. Requests and events are plain JSON over HTTP: use an `https:` base URL.
 
 ```bash
 npm install @enclave-vm/client
@@ -88,11 +88,11 @@ React hooks and components.
 npm install @enclave-vm/react
 ```
 
-**Peer dependency:** React >= 17.0.0
+**Peer dependency:** React >= 18.0.0
 
 #### @enclave-vm/runtime
 
-Standalone deployable runtime worker.
+Building blocks of a runtime worker (session bookkeeping and channels). It is not a runnable service and does not execute scripts yet: an `execute` request ends with `RuntimeNotImplementedError`. To run scripts, use `@enclave-vm/broker` or `@enclave-vm/core`.
 
 ```bash
 npm install @enclave-vm/runtime
@@ -106,7 +106,7 @@ npm install @enclave-vm/runtime
 import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({ securityLevel: 'SECURE' });
-const result = await enclave.execute('return 1 + 1');
+const result = await enclave.run('return 1 + 1');
 console.log(result.value); // 2
 ```
 
@@ -117,19 +117,22 @@ import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
 function App() {
   return (
-    <EnclaveProvider brokerUrl="http://localhost:3000">
+    <EnclaveProvider config={{ baseUrl: 'http://localhost:3000' }}>
       <CodeRunner />
     </EnclaveProvider>
   );
 }
 
 function CodeRunner() {
-  const { execute, stdout, result } = useEnclaveSession();
+  const { execute, isRunning, result } = useEnclaveSession();
 
   return (
-    <button onClick={() => execute('console.log("Hello!")')}>
-      Run
-    </button>
+    <div>
+      <button onClick={() => execute('return 1 + 1')} disabled={isRunning}>
+        Run
+      </button>
+      {result?.success && <pre>{JSON.stringify(result.value)}</pre>}
+    </div>
   );
 }
 ```
@@ -157,11 +160,12 @@ yarn test
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| @enclave-vm/core | 2.7.0 | Secure sandbox runtime |
-| @enclave-vm/ast | 2.4.0 | AST security validator |
-| @enclave-vm/types | 0.1.0 | Protocol types |
-| @enclave-vm/stream | 0.1.0 | Streaming protocol |
-| @enclave-vm/broker | 0.1.0 | Tool broker |
-| @enclave-vm/client | 0.1.0 | Client SDK |
-| @enclave-vm/react | 0.1.0 | React integration |
-| @enclave-vm/runtime | 0.1.0 | Runtime worker |
+| @enclave-vm/core | 2.19.1 | Secure sandbox runtime |
+| @enclave-vm/ast | 2.19.1 | AST security validator |
+| @enclave-vm/browser | 2.19.1 | Sandbox for browsers |
+| @enclave-vm/types | 2.19.1 | Protocol types |
+| @enclave-vm/stream | 2.19.1 | Streaming protocol helpers |
+| @enclave-vm/broker | 2.19.1 | Tool broker |
+| @enclave-vm/client | 2.19.1 | Client SDK |
+| @enclave-vm/react | 2.19.1 | React integration |
+| @enclave-vm/runtime | 2.19.1 | Runtime worker building blocks (does not execute yet) |

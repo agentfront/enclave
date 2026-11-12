@@ -390,17 +390,19 @@ async function safeToolExecute(
 
 ## Context-Aware Tools
 
-Pass execution context to tools:
+A tool handler receives the tool name and the arguments. To give tools the context of a run, build the handler for that run and pass it to `run()`:
 
 ```ts
-interface ExecutionContext {
+import type { ToolHandler } from '@enclave-vm/core';
+
+interface RequestContext {
   userId: string;
   tenantId: string;
   permissions: string[];
 }
 
-const enclave = new Enclave({
-  toolHandler: async (name, args, context: ExecutionContext) => {
+function createToolHandler(context: RequestContext): ToolHandler {
+  return async (name, args) => {
     // Check permissions
     const requiredPermission = getRequiredPermission(name);
     if (!context.permissions.includes(requiredPermission)) {
@@ -409,18 +411,23 @@ const enclave = new Enclave({
 
     // Pass context to tool
     return registry.execute(name, { ...args, _context: context });
-  },
-});
+  };
+}
 
-// Execute with context
-await enclave.run(code, {
-  context: {
+const enclave = new Enclave();
+
+// Execute with the handler of this request; it replaces the one from the constructor
+await enclave.run(
+  code,
+  createToolHandler({
     userId: 'user-123',
     tenantId: 'tenant-456',
     permissions: ['read:users', 'write:issues'],
-  },
-});
+  }),
+);
 ```
+
+The context stays on the host: the script cannot read it or change it.
 
 ## Tool Documentation for LLMs
 

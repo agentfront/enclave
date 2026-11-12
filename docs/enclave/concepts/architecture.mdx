@@ -22,23 +22,23 @@ flowchart LR
 ### @enclave-vm/ast
 
 Static analysis and validation layer:
-- **Pre-scanner** - Catches DoS attacks before parsing
+- **Pre-scanner** - Checks size, nesting and literals before parsing
 - **AST validation** - Blocks dangerous constructs
 - **Code transformation** - Wraps code for safe execution
 
 ### @enclave-vm/core
 
 Runtime execution layer:
-- **Sandboxed context** - Isolated JavaScript environment
-- **Resource limits** - Timeout, iteration, memory limits
+- **Sandboxed context** - A realm that holds only the allowed globals, behind a membrane
+- **Resource limits** - Timeout, iteration and tool-call limits, and memory accounting. In process the timeout and the memory limit are the enclave's own accounting; the worker pool adds the engine's heap limit and a hard stop
 - **Tool routing** - Controlled external interactions
 
 ### Tools
 
 Your application's capabilities exposed to scripts:
-- **Type-safe handlers** - Validate inputs, sanitize outputs
-- **Rate limiting** - Control how often tools are called
-- **Audit logging** - Track all tool invocations
+- **Your handlers** - Validate inputs and decide what a script may do; this is your code
+- **Call limits** - `maxToolCalls` and the operation rate limit of the double VM bound how often tools are called
+- **Audit logging** - Every tool call passes through your `toolHandler`, where you can log it
 
 ## Defense-in-Depth Layers
 
@@ -46,14 +46,14 @@ Enclave uses a 6-layer security model:
 
 | Layer | Component | Purpose |
 |-------|-----------|---------|
-| 0 | Pre-Scanner | Catch DoS before parsing |
+| 0 | Pre-Scanner | Bound the input before parsing |
 | 1 | AST Validation | Block dangerous syntax |
 | 2 | Code Transform | Wrap in safe runtime |
-| 3 | AI Scoring Gate | Detect attack patterns |
+| 3 | AI Scoring Gate | Optional heuristic risk score |
 | 4 | Runtime Sandbox | Isolate execution |
 | 5 | Output Sanitization | Clean return values |
 
-Each layer provides independent protection. Even if one layer is bypassed, subsequent layers catch the attack.
+The layers are built to hold independently of each other: the runtime does not rely on the validator having refused a script. What the sandbox does not deliver is listed in the [Security Model](/concepts/security-model#what-enclave-does-not-protect-against).
 
 ## Deployment Architectures
 
@@ -84,9 +84,9 @@ const enclave = new Enclave({
 
 **Best for:** Internal tools, low traffic, simplicity.
 
-### Worker Pool (Process Isolation)
+### Worker Pool (Worker Threads)
 
-Code runs in separate worker threads for stronger isolation:
+Code runs in the same sandbox, inside worker threads. A worker adds a heap limit that the engine enforces and a stop that does not depend on the script. A worker thread shares the process with your application: it is not process isolation.
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
@@ -127,52 +127,63 @@ const enclave = new Enclave({
 });
 ```
 
-**Best for:** Multi-tenant applications, untrusted code, memory isolation.
+**Best for:** Untrusted code that must be stoppable, and a heap limit per worker as a backstop. For tenants that must not share a process, or a host that must survive whatever a script allocates, run one enclave per process or container.
 
-### Distributed (3-Tier with EnclaveJS)
+### Client and Broker (EnclaveJS)
 
-For production applications with streaming and real-time features:
+For applications with a browser client and streamed events:
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
 flowchart LR
     subgraph client["Client (React)"]
-        C1["useEnclave"]
-        C2["Session"]
+        C1["useEnclaveSession"]
+        C2["EnclaveClient"]
     end
     subgraph broker["Broker (Express)"]
-        B1["Tool Router"]
-        B2["Session Mgr"]
+        B1["Tool Registry"]
+        B2["Session Manager"]
+        B3["Sandbox (@enclave-vm/core)"]
     end
-    subgraph runtime["Runtime (Worker)"]
-        R1["@enclave-vm/core"]
-    end
-    client -->|HTTP| broker
-    broker -->|WS| runtime
+    client -->|"HTTP (NDJSON)"| broker
     style client fill:#f0b865,stroke:#c78935,color:#333
     style broker fill:#e8a045,stroke:#c78935,color:#fff
-    style runtime fill:#e8a045,stroke:#c78935,color:#fff
 ```
 
-- **Client** - React hooks for real-time streaming UI
-- **Broker** - HTTP API, tool registry, session management
-- **Runtime** - Isolated code execution worker
+- **Client** - `@enclave-vm/client` and the React hooks of `@enclave-vm/react`: send a script, follow the events
+- **Broker** - `@enclave-vm/broker`: HTTP routes, tool registry, session management, and the sandbox, in one process
 
 ```ts
 // Broker
-import { createBroker } from '@enclave-vm/broker';
+import express from 'express';
+import { createBroker, createSessionHandler, registerExpressRoutes } from '@enclave-vm/broker';
+import { z } from 'zod';
 
-const broker = createBroker({
-  mode: 'extracted',
-  runtimeUrl: 'ws://runtime:3001',
-});
+const broker = createBroker({ enclave: { securityLevel: 'SECURE' } });
 
 broker.tool('users:list', {
-  handler: async () => db.users.findAll(),
+  description: 'List users',
+  argsSchema: z.object({ limit: z.number().optional() }),
+  handler: async ({ limit }) => db.users.findAll({ limit }),
 });
+
+const app = express();
+app.use(express.json());
+app.use(authenticate); // your authentication: the broker has none
+registerExpressRoutes(
+  app,
+  createSessionHandler({
+    broker,
+    identify: (request) => (request.raw as { user?: { id: string } }).user?.id,
+  }),
+);
 ```
 
-**Best for:** Production SaaS, real-time UIs, horizontal scaling.
+The broker does not authenticate callers, limit request rates or encrypt sessions, and the client does not encrypt either: use HTTPS, put your authentication in front of the routes, and give the routes an `identify` hook so that a session belongs to the caller that created it.
+
+A third tier, in which the broker hands execution to a separate runtime worker, is not implemented: the broker has no option for it, and `@enclave-vm/runtime` does not execute scripts yet. To scale out, run several brokers (a session lives in the broker that created it, so a reconnect has to reach the same one).
+
+**Best for:** Real-time UIs with tool calls on the server.
 
 ## Data Flow
 
@@ -181,10 +192,10 @@ broker.tool('users:list', {
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
 flowchart TD
-    S1["1. Code submitted"] --> S2["2. Pre-scanner checks<br/>(DoS protection)"]
-    S2 --> S3["3. AST validation<br/>(blocked constructs)"]
-    S3 --> S4["4. Code transformation<br/>(wrapping)"]
-    S4 --> S5["5. AI scoring<br/>(optional, attack detection)"]
+    S1["1. Code submitted"] --> S2["2. Code transformation<br/>(wrapping)"]
+    S2 --> S3["3. Pre-scanner checks<br/>(size, nesting)"]
+    S3 --> S4["4. AST validation<br/>(blocked constructs)"]
+    S4 --> S5["5. AI scoring<br/>(optional, heuristic)"]
     S5 --> S6["6. Sandbox execution"]
     S6 --> S7["7. Tool calls routed<br/>to handlers"]
     S7 --> S8["8. Output sanitization"]
@@ -227,9 +238,8 @@ flowchart TD
 | Prototyping | Single Process |
 | Internal tools | Single Process |
 | User scripts (single tenant) | Worker Pool |
-| Multi-tenant SaaS | Worker Pool or Distributed |
-| Real-time UI with streaming | Distributed |
-| Edge/serverless deployment | Distributed (Runtime as Lambda) |
+| Multi-tenant SaaS | One enclave (or broker) per process or container for tenants that must not share a process |
+| Real-time UI with streaming | Client and Broker |
 
 ## Related
 
