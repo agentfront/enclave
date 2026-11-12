@@ -28,7 +28,9 @@
  *    It holds for what a receiver holds as well. An object that is not an array can answer
  *    for its length and for each slot through an accessor, differently every time: where a
  *    decision rests on it, it is read here, once (its length, then each slot, with the object
- *    itself as the receiver of the read), and the built-in works on the plain copy. `flat`
+ *    itself as the receiver of the read), and the built-in works on the plain copy.
+ *    (`Array.from` and `Array.fromAsync` hand a mapping function one slot before they read the
+ *    next: of them the length is read here, once, and each slot when the built-in asks.) `flat`
  *    reads the elements of arrays too, and `concat` asks every value whether it is spread,
  *    which code of the script can answer, for an array as for anything else; so the result of
  *    these two is built in the pass that counts it, and the built-in does not run (for
@@ -216,14 +218,20 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
   }
 
   /**
-   * The same as an object that has a length and slots and nothing else: no prototype, so
-   * nothing to iterate it by. \`Array.from\` reads such a source by its length.
+   * What a built-in is given to read a source by its length: the length that was checked, and
+   * each slot when the built-in asks for it, read from the source itself. Nothing else (no
+   * prototype, no iterator), so the built-in can only read it that way, and it reads a slot
+   * when it gets to it, as it does on the source: what a mapping function changed in between
+   * is what it finds. The handler has no prototype either: what a proxy looks up on its
+   * handler is not looked up on an object a script can write to.
    */
   function slotsOf(source, length) {
-    var holder = objectCreate(null);
-    for (var i = 0; i < length; i++) holder[i] = source[i];
-    holder.length = length;
-    return holder;
+    var handler = objectCreate(null);
+    handler.get = function (target, key) {
+      if (key === 'length') return length;
+      return typeof key === 'string' ? source[key] : undefined;
+    };
+    return new ProxyCtor(objectCreate(null), handler);
   }
 
   /**
@@ -875,16 +883,17 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
           checkLength(given.length, 'Array');
         }
       };
-      guardedArray = new ProxyCtor(ArrayCtor, {
-        apply: function (target, self, given) {
-          slotsFor(given);
-          return apply(target, self, given);
-        },
-        construct: function (target, given, newTarget) {
-          slotsFor(given);
-          return construct(target, given, newTarget);
-        }
-      });
+      // (A handler without a prototype: the traps of the stand-in are these two and no other)
+      var arrayTraps = objectCreate(null);
+      arrayTraps.apply = function (target, self, given) {
+        slotsFor(given);
+        return apply(target, self, given);
+      };
+      arrayTraps.construct = function (target, given, newTarget) {
+        slotsFor(given);
+        return construct(target, given, newTarget);
+      };
+      guardedArray = new ProxyCtor(ArrayCtor, arrayTraps);
       try {
         defineProperty(globalThis, 'Array', { value: guardedArray, writable: true, enumerable: false, configurable: true });
       } catch (e) {
@@ -931,12 +940,7 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
         }
         if (!failed && length >= 0) {
           checkLength(length, 'Array.fromAsync');
-          try {
-            source = slotsOf(receiver, length);
-          } catch (error) {
-            failed = true;
-            failure = error;
-          }
+          source = slotsOf(receiver, length);
         }
         if (failed) {
           var raising = {};
