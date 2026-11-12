@@ -17,7 +17,7 @@
 
 import type { SecureProxyLevelConfig, SecurityLevel } from './types';
 import { createSafeError, isSafeError } from './safe-error';
-import { isBuiltinMethod } from './global-function-gate';
+import { builtinMethodHomes, hostFunctionText, isBuiltinMethod, isFunctionTextMethod } from './global-function-gate';
 
 // SECURITY (GHSA-3279 defense-in-depth): pin pristine reflection intrinsics at module load so the
 // membrane traps below never re-read a global that could be overwritten to capture a raw target.
@@ -649,6 +649,37 @@ const HOST_RECEIVER_MESSAGE =
   'A built-in method of a value passed in globals can only be called on a value passed in globals. ' +
   'Use the method of the same name of your own value.';
 
+/** What a script is told when it calls a built-in method of one kind of host value on another kind */
+const HOST_RECEIVER_KIND_MESSAGE =
+  'A built-in method of a value passed in globals can only be called on a value of the same kind ' +
+  '(an array method on an array, a Map method on a Map).';
+
+/**
+ * Whether a host value is of the kind a built-in method belongs to: one of the prototypes the
+ * method is defined on is in its prototype chain. The methods of `Object.prototype` are every
+ * object's. A value that cannot be asked is not of the kind.
+ */
+function isOfBuiltinKind(receiver: object, homes: readonly object[]): boolean {
+  for (let h = 0; h < homes.length; h++) {
+    const home = homes[h];
+    if (home === HostObjectPrototype) {
+      return true;
+    }
+    try {
+      let proto: unknown = ObjectGetPrototypeOf(receiver);
+      for (let depth = 0; depth < 32 && proto !== null; depth++) {
+        if (proto === home) {
+          return true;
+        }
+        proto = ObjectGetPrototypeOf(proto as object);
+      }
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 function passesHostValuesToCallbacks(fn: unknown, builtinMethod: boolean): boolean {
   return (
     builtinMethod ||
@@ -1140,6 +1171,13 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         const wrappedReceiver = receiverIsReference ? proxyToTarget.get(thisArg) : undefined;
         const unwrappedThis = wrappedReceiver !== undefined ? wrappedReceiver : thisArg;
 
+        // The text of a host function is a fixed form, never its source: asked of a function
+        // of the host, toString (and toLocaleString, which calls it) answer with that form.
+        // Before the gate: the answer is not a call into the function.
+        if (classifiesValues && typeof wrappedReceiver === 'function' && isFunctionTextMethod(target)) {
+          return hostFunctionText(wrappedReceiver);
+        }
+
         // Gated functions (host functions from `globals`) are called by the gate, which
         // enforces the limits and returns a value that is already safe for the sandbox.
         if (options.callGate && options.callGate.gates(target)) {
@@ -1154,9 +1192,19 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         // host code (a guard in place of a script object, a wrapper in place of a callback), and
         // on host data that is where they stay: nothing of the script is called with them except
         // through those guards.
-        const builtinMethod = isBuiltinMethod(target);
-        if (builtinMethod && heldBySandbox !== undefined && receiverIsReference && wrappedReceiver === undefined) {
-          throw createSafeError(HOST_RECEIVER_MESSAGE, 'TypeError');
+        //
+        // And on host data of its own kind: an array method on an array, a Date method on a
+        // Date. What a method reads off its receiver, returns and reports in an error is what
+        // the membrane expects of it only for the kind of value it is defined for.
+        const homes = builtinMethodHomes(target);
+        const builtinMethod = homes !== undefined;
+        if (builtinMethod && heldBySandbox !== undefined && receiverIsReference) {
+          if (wrappedReceiver === undefined) {
+            throw createSafeError(HOST_RECEIVER_MESSAGE, 'TypeError');
+          }
+          if (!isOfBuiltinKind(wrappedReceiver, homes)) {
+            throw createSafeError(HOST_RECEIVER_KIND_MESSAGE, 'TypeError');
+          }
         }
 
         // Call the original function

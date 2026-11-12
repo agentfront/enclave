@@ -327,6 +327,39 @@ describe('VmAdapter', () => {
         own: 'x-y',
       });
     });
+
+    it('should run a built-in method of a host value on a host value of the same kind', async () => {
+      const enclave = createVmAdapterEnclave({
+        globals: { items: ['a', 'b'], more: ['c', 'd'], when: new Date(0), lookup: new Map([['k', 1]]) },
+      });
+
+      const result = await enclave.run(`
+        const outcomes = {};
+        const attempt = (label, action) => {
+          try {
+            outcomes[label] = action();
+          } catch (e) {
+            outcomes[label] = e.name + ': ' + e.message;
+          }
+        };
+        attempt('array method on another array', () => items.join.call(more, '+'));
+        attempt('object method on a Date', () => items.hasOwnProperty.call(when, 'x'));
+        attempt('array method on a Date', () => items.join.call(when, '+'));
+        attempt('Map method on an array', () => lookup.get.call(items, 'k'));
+        return outcomes;
+      `);
+      enclave.dispose();
+
+      expect(result.error?.message).toBeUndefined();
+      const sameKind =
+        /^TypeError: A built-in method of a value passed in globals can only be called on a value of the same kind/;
+      expect(result.value).toEqual({
+        'array method on another array': 'c+d',
+        'object method on a Date': false,
+        'array method on a Date': expect.stringMatching(sameKind),
+        'Map method on an array': expect.stringMatching(sameKind),
+      });
+    });
   });
 
   describe('Protected Identifiers', () => {

@@ -413,6 +413,39 @@ describe('host-function globals', () => {
       });
     });
 
+    it('gives a host function a fixed text, and does not count reading it as a call', async () => {
+      let hostCalls = 0;
+      function describeTool(name: string) {
+        hostCalls++;
+        return { name };
+      }
+      const enclave = makeEnclave(adapter, {
+        allowFunctionsInGlobals: true,
+        maxGlobalFunctionCalls: 1,
+        globals: { describeTool, helpers: { lookUp: (id: number) => id } },
+      });
+
+      const result = await enclave.run(`
+        return {
+          toString: describeTool.toString(),
+          string: String(describeTool),
+          template: \`\${describeTool}\`,
+          method: String(helpers.lookUp),
+          called: describeTool('a').name,
+        };
+      `);
+
+      expect(result.error).toBeUndefined();
+      expect(result.value).toEqual({
+        toString: 'function describeTool() { [native code] }',
+        string: 'function describeTool() { [native code] }',
+        template: 'function describeTool() { [native code] }',
+        method: 'function lookUp() { [native code] }',
+        called: 'a',
+      });
+      expect(hostCalls).toBe(1);
+    });
+
     it('gates call, apply and bind on host functions', async () => {
       let hostCalls = 0;
       const enclave = makeEnclave(adapter, {

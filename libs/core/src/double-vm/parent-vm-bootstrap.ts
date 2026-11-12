@@ -1298,6 +1298,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     const hostIsBuiltinMethod = typeof __host_isBuiltinMethod__ === 'function' ? __host_isBuiltinMethod__ : function() { return false; };
     // Fail closed without the classifier: every built-in method of host data counts as mutating.
     const hostIsMutatingBuiltin = typeof __host_isMutatingBuiltin__ === 'function' ? __host_isMutatingBuiltin__ : function() { return true; };
+    // What a method of a host function answers in place of the function's source text, or
+    // undefined for a method that does not answer with it.
+    const hostFunctionText = typeof __host_functionText__ === 'function' ? __host_functionText__ : function() { return undefined; };
     const hostConsoleSink = typeof __host_consoleSink__ === 'function' ? __host_consoleSink__ : null;
     // Writes one line to the host console at a level. The host console OBJECT is never in this realm.
     const hostConsoleWrite = typeof __host_console_write__ === 'function' ? __host_console_write__ : function() {};
@@ -1316,6 +1319,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     try { delete globalThis.__host_invokeGlobal__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_isBuiltinMethod__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_isMutatingBuiltin__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_functionText__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_consoleSink__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_console_write__; } catch (e) { /* ignore */ }
 
@@ -1367,6 +1371,8 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   const __ag_ReflectGetPrototypeOf = Reflect.getPrototypeOf;
   const __ag_ArrayIsArray = Array.isArray;
   const __ag_hasOwnProperty = Object.prototype.hasOwnProperty;
+  const __ag_FunctionToString = Function.prototype.toString;
+  const __ag_ObjectToLocaleString = Object.prototype.toLocaleString;
   const __ag_Promise = Promise;
 
   /**
@@ -1583,6 +1589,11 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     var forwarder = (...args) => __ag_ReflectApply(method, holder, args);
     forwardedMethods.set(forwarder, method);
     return forwarder;
+  }
+
+  /** A function of this realm that answers with a fixed text (see hostFunctionText). */
+  function createTextAnswer(text) {
+    return function toString() { return text; };
   }
 
   /**
@@ -2069,6 +2080,19 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         // block constructor access. It is a closure rather than value.bind(obj): a bound
         // function keeps the realm of its target (see realmOwnedCallables).
         if (typeof value === 'function') {
+          // The text of a host function is a fixed form, never its source: toString (and
+          // toLocaleString, which calls it) read off a host function answer with that form. A
+          // forwarder stands for the host method it calls, and its own methods are this realm's.
+          if (host && typeof obj === 'function') {
+            var ownTextMethod = value === __ag_FunctionToString || value === __ag_ObjectToLocaleString;
+            var functionText = hostFunctionText(
+              ownTextMethod ? null : value,
+              forwardedMethods.has(obj) ? forwardedMethods.get(obj) : obj
+            );
+            if (typeof functionText === 'string') {
+              return createSecureProxy(createTextAnswer(functionText), depth + 1, false);
+            }
+          }
           var hostBuiltin = host && hostIsBuiltinMethod(value);
           // push, sort, Map.prototype.set, ... called on host data would write to the host's
           // own object without ever reaching the set trap.
