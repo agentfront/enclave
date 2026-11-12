@@ -18,6 +18,7 @@ import { globalFunctionLimitMessage, HOST_REGEXP_MESSAGE } from '../global-funct
 import { TOOL_NAMESPACE_FACTORY_SOURCE } from '../tool-namespaces';
 import { CONSOLE_FACTORY_SOURCE } from '../console-handler';
 import { realmTickSource } from '../deadline-guard';
+import { booleanLiteral, numericLiteral } from '../enclave-options';
 
 /**
  * Recursion backstop for the in-VM secure-proxy membranes.
@@ -1042,6 +1043,22 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     toolNamespaces = [],
     realmGlobalAllowlist,
   } = options;
+
+  // The limits and switches below are written into the script this function returns. Whatever
+  // checked them before, only a finite number or a boolean is: a parameter of any other type is
+  // refused here, so that no caller's value can become program text of the bootstrap.
+  numericLiteral('innerTimeout', innerTimeout);
+  numericLiteral('maxIterations', maxIterations);
+  numericLiteral('maxToolCalls', maxToolCalls);
+  numericLiteral('toolBridgeMaxPayloadBytes', toolBridgeMaxPayloadBytes);
+  numericLiteral('memoryLimit', memoryLimit);
+  numericLiteral('maxGlobalFunctionCalls', maxGlobalFunctionCalls);
+  booleanLiteral('sanitizeStackTraces', sanitizeStackTraces);
+  booleanLiteral('allowComposites', allowComposites);
+  booleanLiteral('throwOnBlocked', throwOnBlocked);
+  if (toolBridgeMode !== 'string' && toolBridgeMode !== 'direct') {
+    throw new TypeError(`Invalid toolBridgeMode: ${String(toolBridgeMode)}`);
+  }
 
   // Realm allowlist: the caller's names plus what the runtime itself needs there. Custom globals
   // are added inside the parent VM (it holds them), so the list is right whoever built it.

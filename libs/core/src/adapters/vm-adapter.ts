@@ -26,6 +26,7 @@ import { createGlobalFunctionGate, type SandboxRealmBridge } from '../global-fun
 import { realmTickSource } from '../deadline-guard';
 import { guardSandboxRejections } from '../sandbox-rejections';
 import { createRealmAirlock, type RealmMembrane } from '../realm-airlock';
+import { numericLiteral } from '../enclave-options';
 import {
   INNER_REALM_GUARD_SOURCE,
   INNER_REALM_SYMBOL_REGISTRY_SOURCE,
@@ -966,7 +967,7 @@ export class VmAdapter implements SandboxAdapter {
             // "this". In sloppy mode "this" was coerced to the realm's global object, and fill
             // RETURNED it.
             'use strict';
-            var memoryLimit = ${config.memoryLimit};
+            var memoryLimit = ${numericLiteral('memoryLimit', config.memoryLimit)};
             var trackMemory = __host_memory_track__;
 
             // A size is only usable when it is a positive number. NaN (a missing or non-numeric
@@ -1222,7 +1223,7 @@ export class VmAdapter implements SandboxAdapter {
             var promiseThen = Promise.prototype.then;
             var settled = Promise.resolve();
             var reflectApply = Reflect.apply;
-            var maxBytes = ${maxPayloadBytes};
+            var maxBytes = ${numericLiteral('toolBridge.maxPayloadBytes', maxPayloadBytes)};
             var limitMessage = ${JSON.stringify(limitMessage)};
 
             // Tool calls whose host bridge has not been started yet.

@@ -70,6 +70,7 @@ import { injectDeadlineChecks } from './deadline-guard';
 import { guardSandboxRejections } from './sandbox-rejections';
 import { createHostActivity, trackToolCalls } from './execution-deadline';
 import { assertNodeVmAvailable } from './node-vm';
+import { normalizeEnclaveOptions } from './enclave-options';
 
 /**
  * Default security level
@@ -215,7 +216,11 @@ export class Enclave {
   /** The adapter while it is being created: executions that start at once share it */
   private adapterCreation?: Promise<SandboxAdapter>;
 
-  constructor(options: CreateEnclaveOptions = {}) {
+  constructor(rawOptions: CreateEnclaveOptions = {}) {
+    // Every scalar option has its documented type and range, or the constructor refuses it; and
+    // an option that is `undefined` is an option that was not set (see ./enclave-options).
+    const options = normalizeEnclaveOptions(rawOptions);
+
     // Determine security level (default: STANDARD)
     this.securityLevel = options.securityLevel ?? DEFAULT_SECURITY_LEVEL;
 
