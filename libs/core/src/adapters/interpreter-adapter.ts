@@ -25,6 +25,7 @@ import type * as ESTree from 'estree';
 
 import { createConsoleSink } from '../console-handler';
 import {
+  DeadlineError,
   Interpreter,
   MAX_JOIN_LENGTH,
   StepLimitError,
@@ -215,6 +216,10 @@ export class InterpreterAdapter implements SandboxAdapter {
       throw sandboxError('The interpreter is not running');
     };
 
+    // The interpreter reads the clock itself while a script computes: a timer cannot fire then.
+    const timeout = context.config.timeout;
+    const deadlineAt = timeout && timeout > 0 ? Date.now() + timeout : undefined;
+
     let interpreter: Interpreter;
     // How a helper calls a function it was handed: through the interpreter, which applies the
     // checks of a call the script writes itself. Bound below, once the interpreter exists.
@@ -239,6 +244,7 @@ export class InterpreterAdapter implements SandboxAdapter {
         maxCallDepth: this.options.maxCallDepth ?? DEFAULT_MAX_CALL_DEPTH,
         maxPendingCalls: this.options.maxPendingCalls,
         signal: context.abortController.signal,
+        deadline: deadlineAt,
         charge,
       });
       const running = interpreter;
@@ -249,7 +255,6 @@ export class InterpreterAdapter implements SandboxAdapter {
     }
 
     // Wall-clock timeout drives the AbortSignal the interpreter checks per step.
-    const timeout = context.config.timeout;
     const timer = timeout && timeout > 0 ? setTimeout(() => context.abortController.abort(), timeout) : undefined;
 
     // The per-step signal check can't fire while the interpreter is parked on an
@@ -264,6 +269,17 @@ export class InterpreterAdapter implements SandboxAdapter {
             timeoutHandle = setTimeout(() => resolve(TIMED_OUT), timeout);
           })
         : undefined;
+    const running = interpreter;
+    const timedOut = (): ExecutionResult<T> =>
+      this.fail<T>(
+        new Error(`Execution timed out after ${timeout}ms`),
+        startTime,
+        stats.toolCallCount,
+        running.stepCount,
+        sanitizeStacks,
+        'TimeoutError',
+        'EXECUTION_TIMEOUT',
+      );
 
     try {
       const run = interpreter.run(program) as Promise<T>;
@@ -271,19 +287,12 @@ export class InterpreterAdapter implements SandboxAdapter {
       // can't surface as an unhandled rejection.
       run.catch(() => undefined);
       const outcome = deadline ? await Promise.race([run, deadline]) : await run;
-      if (outcome === TIMED_OUT) {
-        return this.fail<T>(
-          new Error(`Execution timed out after ${timeout}ms`),
-          startTime,
-          stats.toolCallCount,
-          interpreter.stepCount,
-          sanitizeStacks,
-          'TimeoutError',
-          'EXECUTION_TIMEOUT',
-        );
-      }
+      if (outcome === TIMED_OUT) return timedOut();
       return this.succeed<T>(outcome, context, startTime, stats.toolCallCount, interpreter.stepCount);
     } catch (error) {
+      // The deadline, met while the script was computing: the same outcome as when it is met
+      // while the script waits
+      if (error instanceof DeadlineError) return timedOut();
       const code2 = error instanceof StepLimitError ? 'STEP_LIMIT_EXCEEDED' : undefined;
       return this.fail<T>(
         error,
