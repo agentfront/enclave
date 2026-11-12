@@ -35,7 +35,10 @@
 // - every promise an interpreted function returns has a rejection handler, so a
 //   call nobody awaits cannot become an unhandled rejection of the host process;
 // - every loop the interpreter runs on a script's behalf counts against the
-//   step budget, and what evaluation allocates is charged to the host's budget.
+//   step budget, and what evaluation allocates is charged to the host's budget. A text is
+//   charged in full when it is made; the one exception is a variable that is appended to
+//   (`s += x`), which is charged for what is appended until its value is read for anything
+//   that could keep it or look into it, and in full then.
 
 import type * as ESTree from 'estree';
 
@@ -474,20 +477,37 @@ export function isScriptError(value: unknown): boolean {
   return typeof value === 'object' && value !== null && SCRIPT_ERRORS.has(value);
 }
 
+/** A variable of a script. */
+interface Slot {
+  value: unknown;
+  mutable: boolean;
+  /**
+   * Bytes that have not been charged for `value`, a text that was made by appending to the
+   * variable: the engine links such a text to the one it was appended to, and writes it out as
+   * a text of its own when something first looks into it. Whoever reads the variable for
+   * anything that could do that, or could keep the value, pays this first (see `Scope.get`).
+   */
+  owed: number;
+}
+
 /** A lexical scope with a parent chain and per-binding const protection. */
 class Scope {
-  private readonly vars = new Map<string, { value: unknown; mutable: boolean }>();
+  private readonly vars = new Map<string, Slot>();
   /**
    * How many calls deep the code of this scope runs: 0 for the program, and for the body of a
    * function one more than where it was called from. A block inside has the depth around it.
    */
   readonly depth: number;
+  /** Charges what is still owed for the value of a variable that is read */
+  private readonly settle: (bytes: number) => void;
 
   constructor(
     private readonly parent?: Scope,
     depth?: number,
+    settle?: (bytes: number) => void,
   ) {
     this.depth = depth ?? parent?.depth ?? 0;
+    this.settle = settle ?? parent?.settle ?? ((): void => undefined);
   }
 
   child(): Scope {
@@ -500,33 +520,58 @@ class Scope {
   }
 
   declare(name: string, value: unknown, mutable: boolean): void {
-    this.vars.set(name, { value, mutable });
+    this.vars.set(name, { value, mutable, owed: 0 });
   }
 
   has(name: string): boolean {
     return this.vars.has(name) || (this.parent?.has(name) ?? false);
   }
 
+  /**
+   * The variable as it is stored, or nothing when there is none. For the few readers that
+   * neither keep its value nor look into a text (its length, whether it is empty, appending to
+   * it): everything else reads through {@link get}.
+   */
+  slot(name: string): Slot | undefined {
+    return this.vars.get(name) ?? this.parent?.slot(name);
+  }
+
+  /** The value of a variable, for any use: what is still owed for it is charged first. */
   get(name: string): unknown {
-    const slot = this.vars.get(name);
-    if (slot) return slot.value;
-    if (this.parent) return this.parent.get(name);
-    throw new InterpreterError(`'${name}' is not defined`);
+    const slot = this.slot(name);
+    if (!slot) throw new InterpreterError(`'${name}' is not defined`);
+    if (slot.owed > 0) {
+      const owed = slot.owed;
+      slot.owed = 0;
+      this.settle(owed);
+    }
+    return slot.value;
   }
 
   set(name: string, value: unknown): void {
-    const slot = this.vars.get(name);
-    if (slot) {
-      if (!slot.mutable) throw new InterpreterError(`Assignment to constant '${name}'`);
-      slot.value = value;
-      return;
-    }
-    if (this.parent) {
-      this.parent.set(name, value);
-      return;
-    }
-    throw new InterpreterError(`'${name}' is not defined`);
+    this.append(name, value, 0);
   }
+
+  /** Assign a variable a text that was appended to its value, with what a reader still owes for it. */
+  append(name: string, value: unknown, owed: number): void {
+    const slot = this.slot(name);
+    if (!slot) throw new InterpreterError(`'${name}' is not defined`);
+    if (!slot.mutable) throw new InterpreterError(`Assignment to constant '${name}'`);
+    slot.value = value;
+    slot.owed = owed;
+  }
+}
+
+/** The operands that `node` appends to the variable `name` when it is `name + a + b…`, in order. */
+function appendedTo(name: string, node: ESTree.Expression): ESTree.Expression[] | undefined {
+  const operands: ESTree.Expression[] = [];
+  let first: ESTree.Expression | ESTree.PrivateIdentifier = node;
+  while (first.type === 'BinaryExpression' && first.operator === '+') {
+    operands.push(first.right);
+    first = first.left;
+  }
+  if (operands.length === 0 || first.type !== 'Identifier' || first.name !== name) return undefined;
+  return operands.reverse();
 }
 
 export interface InterpreterOptions {
@@ -658,7 +703,7 @@ export class Interpreter {
   }
 
   async run(program: ESTree.Program): Promise<unknown> {
-    const root = new Scope();
+    const root = new Scope(undefined, 0, (bytes) => this.charge(bytes));
     // Hoist function + var/const declarations so `__ag_main` is callable.
     for (const stmt of program.body) {
       if (stmt.type === 'FunctionDeclaration' && stmt.id) {
@@ -743,12 +788,25 @@ export class Interpreter {
       case 'FunctionDeclaration':
         if (node.id) scope.declare(node.id.name, this.makeFunction(node, scope), false);
         return undefined;
-      case 'ExpressionStatement':
-        return this.evalExpr(node.expression, scope);
+      case 'ExpressionStatement': {
+        // `s += x` and `s = s + x` as statements: appending to a variable (see execAppend)
+        const expression = node.expression;
+        if (expression.type === 'AssignmentExpression' && expression.left.type === 'Identifier') {
+          const name = expression.left.name;
+          const appended =
+            expression.operator === '+='
+              ? [expression.right]
+              : expression.operator === '='
+                ? appendedTo(name, expression.right)
+                : undefined;
+          if (appended !== undefined && scope.has(name)) return this.execAppend(name, appended, scope);
+        }
+        return this.evalExpr(expression, scope);
+      }
       case 'BlockStatement':
         return this.execBlock(node.body, scope.child());
       case 'IfStatement':
-        if (truthy(await this.evalExpr(node.test, scope))) return this.execStatement(node.consequent, scope);
+        if (await this.evalTest(node.test, scope)) return this.execStatement(node.consequent, scope);
         if (node.alternate) return this.execStatement(node.alternate, scope);
         return undefined;
       case 'ForOfStatement':
@@ -852,7 +910,7 @@ export class Interpreter {
       if (node.init.type === 'VariableDeclaration') await this.execStatement(node.init, inner);
       else await this.evalExpr(node.init, inner);
     }
-    while (node.test ? truthy(await this.evalExpr(node.test, inner)) : true) {
+    while (node.test ? await this.evalTest(node.test, inner) : true) {
       this.tick();
       if (!(await this.runLoopBody(node.body, inner.child()))) break;
       if (node.update) await this.evalExpr(node.update, inner);
@@ -860,7 +918,7 @@ export class Interpreter {
   }
 
   private async execWhile(node: ESTree.WhileStatement, scope: Scope): Promise<void> {
-    while (truthy(await this.evalExpr(node.test, scope))) {
+    while (await this.evalTest(node.test, scope)) {
       this.tick();
       if (!(await this.runLoopBody(node.body, scope.child()))) break;
     }
@@ -870,7 +928,7 @@ export class Interpreter {
     do {
       this.tick();
       if (!(await this.runLoopBody(node.body, scope.child()))) break;
-    } while (truthy(await this.evalExpr(node.test, scope)));
+    } while (await this.evalTest(node.test, scope));
   }
 
   private async execSwitch(node: ESTree.SwitchStatement, scope: Scope): Promise<void> {
@@ -1010,7 +1068,7 @@ export class Interpreter {
         return left ?? (await this.evalExpr(node.right, scope)); // ??
       }
       case 'ConditionalExpression':
-        return truthy(await this.evalExpr(node.test, scope))
+        return (await this.evalTest(node.test, scope))
           ? this.evalExpr(node.consequent, scope)
           : this.evalExpr(node.alternate, scope);
       case 'SequenceExpression': {
@@ -1043,6 +1101,63 @@ export class Interpreter {
       default:
         throw new InterpreterError(`Unsupported expression: ${node.type}`);
     }
+  }
+
+  /**
+   * `s += x` or `s = s + x…` as a statement: append to a variable.
+   *
+   * The engine does not copy a text to append to it: the new text links to the old one, and is
+   * written out as a text of its own when something first looks into it. A loop that appends to
+   * one variable therefore allocates what it appends, and is charged that. What is not charged
+   * yet, the length of the text that was appended to, stays owed on the variable: it is paid by
+   * the first read that could look into the new text or keep it (`Scope.get`), because from then
+   * on it can exist as a full copy next to the texts it was built from. Nothing else can get
+   * hold of the new text: as a statement, the assignment has no value.
+   */
+  private async execAppend(name: string, operands: ESTree.Expression[], scope: Scope): Promise<unknown> {
+    this.tick();
+    const variable = scope.slot(name);
+    if (!variable) throw new InterpreterError(`'${name}' is not defined`);
+    // Read as it is, without paying what is owed: the sum below is all that gets hold of it
+    const start: unknown = variable.value;
+    const owedAtStart = variable.owed;
+    let sum = start;
+    for (const operand of operands) {
+      const right = await this.evalExpr(operand, scope);
+      const left = sum;
+      sum = this.binary('+', left, right, true);
+      if (typeof sum === 'string') this.charge((sum.length - (typeof left === 'string' ? left.length : 0)) * 2);
+    }
+    let owed = 0;
+    if (typeof sum === 'string' && typeof start === 'string') {
+      // Still owed from earlier appends when nothing read the variable in between (not while
+      // the operands were evaluated either); otherwise the text that was appended to.
+      owed = owedAtStart > 0 && variable.owed === owedAtStart ? owedAtStart : start.length * 2;
+    }
+    scope.append(name, sum, owed);
+    return sum;
+  }
+
+  /**
+   * The variable an identifier names when it holds an appended text that is still owed for.
+   * For the readers that learn nothing but its length or that it is a text.
+   */
+  private appendedText(node: ESTree.Node, scope: Scope): string | undefined {
+    if (node.type !== 'Identifier') return undefined;
+    const variable = scope.slot(node.name);
+    return variable !== undefined && variable.owed > 0 && typeof variable.value === 'string'
+      ? variable.value
+      : undefined;
+  }
+
+  /** Evaluate a condition. Whether a text is empty is known from its length. */
+  private async evalTest(node: ESTree.Expression, scope: Scope): Promise<boolean> {
+    const text = this.appendedText(node, scope);
+    if (text !== undefined) {
+      this.tick();
+      return text.length > 0;
+    }
+    return truthy(await this.evalExpr(node, scope));
   }
 
   private async evalTemplate(node: ESTree.TemplateLiteral, scope: Scope): Promise<string> {
@@ -1079,6 +1194,13 @@ export class Interpreter {
       assertKeyAllowed(key);
       return delete (object as Record<string, unknown>)[key];
     }
+    if (node.operator === '!' || node.operator === 'typeof') {
+      const text = this.appendedText(node.argument, scope);
+      if (text !== undefined) {
+        this.tick();
+        return node.operator === '!' ? text.length === 0 : 'string';
+      }
+    }
     const v = await this.evalExpr(node.argument, scope);
     switch (node.operator) {
       case '!':
@@ -1103,6 +1225,21 @@ export class Interpreter {
 
   private async evalBinary(node: ESTree.BinaryExpression, scope: Scope): Promise<unknown> {
     if (node.left.type === 'PrivateIdentifier') throw new InterpreterError('Private names are not supported');
+    if (node.operator === '+') return this.evalSum(node, scope);
+    if (node.operator === '===' || node.operator === '!==') {
+      // An appended text and a literal that is not a text of the same length are not equal,
+      // and that is known without looking into the text (`s !== ''`).
+      const literal = node.left.type === 'Literal' ? node.left : node.right.type === 'Literal' ? node.right : undefined;
+      const text = this.appendedText(literal === node.left ? node.right : node.left, scope);
+      if (literal !== undefined && text !== undefined && !(literal as ESTree.RegExpLiteral).regex) {
+        const value: unknown = literal.value;
+        if (typeof value !== 'string' || value.length !== text.length) {
+          this.tick();
+          this.tick();
+          return node.operator === '!==';
+        }
+      }
+    }
     const l = await this.evalExpr(node.left, scope);
     const r = await this.evalExpr(node.right, scope);
     if (node.operator === 'in') {
@@ -1122,8 +1259,36 @@ export class Interpreter {
     return this.binary(node.operator, l, r);
   }
 
-  /** Apply a binary operator to two values. */
-  private binary(operator: string, left: unknown, right: unknown): unknown {
+  /**
+   * `a + b + c`: the operands from left to right, and one sum after the other. Only the last
+   * sum is a value the script gets hold of, and it is charged in full; the ones before it are
+   * part of it.
+   */
+  private async evalSum(node: ESTree.BinaryExpression, scope: Scope): Promise<unknown> {
+    const operands: ESTree.Expression[] = [];
+    let first: ESTree.Expression | ESTree.PrivateIdentifier = node;
+    while (first.type === 'BinaryExpression' && first.operator === '+') {
+      operands.push(first.right);
+      first = first.left;
+    }
+    if (first.type === 'PrivateIdentifier') throw new InterpreterError('Private names are not supported');
+    let sum = await this.evalExpr(first, scope);
+    for (let i = operands.length - 1; i >= 0; i--) {
+      // Each sum is a step (the outermost one was counted when this expression was reached)
+      if (i < operands.length - 1) this.tick();
+      const right = await this.evalExpr(operands[i], scope);
+      sum = this.binary('+', sum, right, i > 0);
+    }
+    return sum;
+  }
+
+  /**
+   * Apply a binary operator to two values.
+   *
+   * @param partOfSum - The result of `+` is an operand of the next `+` and nothing else: the
+   *   caller charges for the text that comes of it
+   */
+  private binary(operator: string, left: unknown, right: unknown, partOfSum = false): unknown {
     // Every operator but the two strict comparisons converts an array operand to text.
     if (operator !== '===' && operator !== '!==') assertArrayTextWithinLimit(left, right);
     const l = left as never;
@@ -1131,9 +1296,9 @@ export class Interpreter {
     switch (operator) {
       case '+': {
         const sum: unknown = (l as number) + (r as number);
-        // What the engine adds to an existing string is the new part (it keeps the old one and
-        // links to it), so a loop that appends to one string is charged its length once.
-        if (typeof sum === 'string') this.charge((sum.length - (typeof left === 'string' ? left.length : 0)) * 2);
+        // A text is charged in full: the engine links it to its operands at first, and writes
+        // it out as a text of its own as soon as something looks into it.
+        if (typeof sum === 'string' && !partOfSum) this.charge(sum.length * 2);
         return sum;
       }
       case '-':
@@ -1185,6 +1350,16 @@ export class Interpreter {
    */
   private async evalMemberTarget(node: ESTree.MemberExpression, scope: Scope): Promise<MemberTarget> {
     if (node.object.type === 'Super') throw new InterpreterError('super is not supported');
+    // The length of an appended text is read off the variable (a text has no other member that
+    // can be read without looking into it, and none that can be written)
+    const text =
+      !node.computed && node.property.type === 'Identifier' && node.property.name === 'length'
+        ? this.appendedText(node.object, scope)
+        : undefined;
+    if (text !== undefined) {
+      this.tick();
+      return { object: text, key: 'length' };
+    }
     const object = await this.evalExpr(node.object, scope);
     if (node.optional && (object === null || object === undefined)) throw new ChainShortCircuit();
     if (node.property.type === 'PrivateIdentifier') throw new InterpreterError('Private names are not supported');
