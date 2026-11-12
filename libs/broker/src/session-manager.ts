@@ -50,6 +50,10 @@ export interface SessionInfo {
   createdAt: number;
   expiresAt: number;
   isExpired: boolean;
+  /**
+   * The caller the session belongs to, if any
+   */
+  owner?: string;
 }
 
 /**
@@ -165,6 +169,7 @@ export class SessionManager {
       createdAt: session.createdAt,
       expiresAt: session.expiresAt,
       isExpired: session.isExpired(),
+      ...(session.owner !== undefined && { owner: session.owner }),
     }));
   }
 

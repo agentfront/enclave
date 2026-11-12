@@ -40,6 +40,8 @@ export interface BrokerConfig {
   limits?: Partial<SessionLimits>;
 }
 
+const KNOWN_CONFIG_KEYS = ['sessions', 'enclave', 'limits'];
+
 /**
  * Quick execution options
  */
@@ -93,6 +95,16 @@ export class Broker {
   private disposed = false;
 
   constructor(config: BrokerConfig = {}) {
+    // A key nothing reads is reported: an option written in the wrong place (a sandbox option
+    // belongs under `enclave`) must not be taken for an option that is in force.
+    for (const key of Object.keys(config)) {
+      if (!KNOWN_CONFIG_KEYS.includes(key)) {
+        console.warn(
+          `[@enclave-vm/broker] Broker: unknown configuration key ${JSON.stringify(key.slice(0, 64))} is ignored`,
+        );
+      }
+    }
+
     this.config = config;
     this.toolRegistry = createToolRegistry();
 

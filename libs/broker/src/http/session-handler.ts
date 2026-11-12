@@ -51,7 +51,42 @@ export interface SessionHandlerConfig {
    * @default ['*']
    */
   allowedOrigins?: string[];
+
+  /**
+   * Tells the routes who the caller of a request is.
+   *
+   * With this hook every session belongs to the caller that created it: the list holds the
+   * caller's own sessions, and reading, replaying and ending a session is answered only for its
+   * owner (another caller gets the answer of an id that does not exist). A request for which the
+   * hook returns no identity, or throws, is answered with 401.
+   *
+   * The hook receives the adapted request; `request.raw` is the request object of the HTTP
+   * framework, where an authentication middleware usually leaves its result. Return a stable,
+   * non-empty string per caller (a user id, a tenant id, an API key id).
+   *
+   * Without this hook the routes do not tell callers apart: whoever can reach them can list,
+   * read, replay and end every session. Mount them only where every caller is trusted alike.
+   */
+  identify?: CallerIdentifier;
+
+  /**
+   * Serve `GET /sessions` (the list of sessions).
+   * @default true
+   */
+  sessionList?: boolean;
 }
+
+/**
+ * Returns the identity of the caller of a request, or nothing when there is none.
+ */
+export type CallerIdentifier = (
+  request: BrokerRequest,
+) => string | null | undefined | Promise<string | null | undefined>;
+
+/**
+ * The longest caller identity the routes accept from the hook.
+ */
+const MAX_CALLER_LENGTH = 1024;
 
 /**
  * Route handler function type
@@ -67,11 +102,19 @@ export class SessionHandler {
   private readonly broker: Broker;
   private readonly cors: boolean;
   private readonly allowedOrigins: string[];
+  private readonly identify?: CallerIdentifier;
+  private readonly sessionList: boolean;
 
   constructor(config: SessionHandlerConfig) {
     this.broker = config.broker;
     this.cors = config.cors ?? true;
     this.allowedOrigins = config.allowedOrigins ?? ['*'];
+    if (config.identify !== undefined && typeof config.identify !== 'function') {
+      throw new TypeError('SessionHandler: "identify" must be a function');
+    }
+    this.identify = config.identify;
+    this.sessionList = config.sessionList ?? true;
+    warnUnknownKeys('SessionHandler', config, ['broker', 'cors', 'allowedOrigins', 'identify', 'sessionList']);
   }
 
   /**
@@ -88,9 +131,11 @@ export class SessionHandler {
       { method: 'GET', path: '/sessions/:sessionId', handler: this.getSession.bind(this) },
       { method: 'GET', path: '/sessions/:sessionId/stream', handler: this.streamSession.bind(this) },
       { method: 'DELETE', path: '/sessions/:sessionId', handler: this.terminateSession.bind(this) },
+      { method: 'POST', path: '/sessions/:sessionId/cancel', handler: this.terminateSession.bind(this) },
       { method: 'OPTIONS', path: '/sessions', handler: this.handleCors.bind(this) },
       { method: 'OPTIONS', path: '/sessions/:sessionId', handler: this.handleCors.bind(this) },
       { method: 'OPTIONS', path: '/sessions/:sessionId/stream', handler: this.handleCors.bind(this) },
+      { method: 'OPTIONS', path: '/sessions/:sessionId/cancel', handler: this.handleCors.bind(this) },
     ];
   }
 
@@ -126,15 +171,80 @@ export class SessionHandler {
   }
 
   /**
-   * List all active sessions
+   * Who the caller of a request is.
+   *
+   * Without an `identify` hook there is no caller identity and every request passes. With one,
+   * a request without an identity is answered with 401 here and `undefined` is returned.
+   */
+  private async callerOf(req: BrokerRequest, res: BrokerResponse): Promise<{ caller: string | undefined } | undefined> {
+    if (!this.identify) {
+      return { caller: undefined };
+    }
+
+    let caller: unknown;
+    try {
+      caller = await this.identify(req);
+    } catch {
+      caller = undefined;
+    }
+
+    if (typeof caller !== 'string' || caller.length === 0 || caller.length > MAX_CALLER_LENGTH) {
+      this.sendError(res, 401, 'UNAUTHORIZED', 'The caller of this request could not be identified');
+      return undefined;
+    }
+    return { caller };
+  }
+
+  /**
+   * Whether a caller may reach a session: always without an `identify` hook, otherwise only the
+   * caller that owns it. A session without an owner belongs to no caller.
+   */
+  private mayReach(session: { owner?: string }, caller: string | undefined): boolean {
+    if (!this.identify) return true;
+    return caller !== undefined && session.owner === caller;
+  }
+
+  /**
+   * The session a request names, if it exists and its caller may reach it. Otherwise the answer
+   * has been sent (401, 400 or 404) and `undefined` is returned. A session of another caller is
+   * answered exactly like an id that does not exist.
+   */
+  private async sessionOf(req: BrokerRequest, res: BrokerResponse): Promise<BrokerSession | undefined> {
+    const identity = await this.callerOf(req, res);
+    if (!identity) return undefined;
+
+    const sessionId = req.params['sessionId'] as SessionId | undefined;
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      this.sendError(res, 400, 'INVALID_REQUEST', 'Missing sessionId');
+      return undefined;
+    }
+
+    const session = this.broker.getSession(sessionId);
+    if (!session || !this.mayReach(session, identity.caller)) {
+      this.sendError(res, 404, 'NOT_FOUND', 'Session not found');
+      return undefined;
+    }
+    return session;
+  }
+
+  /**
+   * List sessions: all of them, or the caller's own when callers are identified
    *
    * GET /sessions
    */
   async listSessions(req: BrokerRequest, res: BrokerResponse): Promise<void> {
     this.addCorsHeaders(req, res);
 
+    if (!this.sessionList) {
+      this.sendError(res, 404, 'NOT_FOUND', 'Not found');
+      return;
+    }
+
+    const identity = await this.callerOf(req, res);
+    if (!identity) return;
+
     try {
-      const sessions = this.broker.listSessions();
+      const sessions = this.broker.listSessions().filter((info) => this.mayReach(info, identity.caller));
       const response: ListSessionsResponse = {
         sessions: sessions.map((info) => this.sessionInfoToResponse(info)),
         total: sessions.length,
@@ -156,6 +266,9 @@ export class SessionHandler {
    */
   async createSession(req: BrokerRequest, res: BrokerResponse): Promise<void> {
     this.addCorsHeaders(req, res);
+
+    const identity = await this.callerOf(req, res);
+    if (!identity) return;
 
     // Validate the request body as a whole before any part of it is used
     const parsed = parseCreateSessionRequest(req.body);
@@ -184,7 +297,7 @@ export class SessionHandler {
       }
 
       // Create session (an id that is in use is refused by the session manager)
-      session = this.broker.createSession({ sessionId, limits });
+      session = this.broker.createSession({ sessionId, limits, owner: identity.caller });
     } catch (error) {
       this.sendCreateFailure(res, error);
       return;
@@ -270,17 +383,8 @@ export class SessionHandler {
   async getSession(req: BrokerRequest, res: BrokerResponse): Promise<void> {
     this.addCorsHeaders(req, res);
 
-    const sessionId = req.params['sessionId'] as SessionId | undefined;
-    if (!sessionId) {
-      this.sendError(res, 400, 'INVALID_REQUEST', 'Missing sessionId');
-      return;
-    }
-
-    const session = this.broker.getSession(sessionId);
-    if (!session) {
-      this.sendError(res, 404, 'NOT_FOUND', `Session ${sessionId} not found`);
-      return;
-    }
+    const session = await this.sessionOf(req, res);
+    if (!session) return;
 
     res.status(200).json(this.sessionToInfo(session));
   }
@@ -293,17 +397,8 @@ export class SessionHandler {
   async streamSession(req: BrokerRequest, res: BrokerResponse): Promise<void> {
     this.addCorsHeaders(req, res);
 
-    const sessionId = req.params['sessionId'] as SessionId | undefined;
-    if (!sessionId) {
-      this.sendError(res, 400, 'INVALID_REQUEST', 'Missing sessionId');
-      return;
-    }
-
-    const session = this.broker.getSession(sessionId);
-    if (!session) {
-      this.sendError(res, 404, 'NOT_FOUND', `Session ${sessionId} not found`);
-      return;
-    }
+    const session = await this.sessionOf(req, res);
+    if (!session) return;
 
     // Parse stream options - validate fromSeq to handle NaN
     const parsedFromSeq = parseInt(req.query['fromSeq'] ?? '0', 10);
@@ -382,19 +477,18 @@ export class SessionHandler {
    * Terminate a session
    *
    * DELETE /sessions/:sessionId
+   * POST /sessions/:sessionId/cancel (the URL a session announces in its first event)
    */
   async terminateSession(req: BrokerRequest, res: BrokerResponse): Promise<void> {
     this.addCorsHeaders(req, res);
 
-    const sessionId = req.params['sessionId'] as SessionId | undefined;
-    if (!sessionId) {
-      this.sendError(res, 400, 'INVALID_REQUEST', 'Missing sessionId');
-      return;
-    }
+    const session = await this.sessionOf(req, res);
+    if (!session) return;
 
+    const sessionId = session.sessionId;
     const success = await this.broker.terminateSession(sessionId);
     if (!success) {
-      this.sendError(res, 404, 'NOT_FOUND', `Session ${sessionId} not found`);
+      this.sendError(res, 404, 'NOT_FOUND', 'Session not found');
       return;
     }
 
@@ -475,6 +569,20 @@ export class SessionHandler {
   private sendError(res: BrokerResponse, status: number, code: string, message: string): void {
     const error: ErrorResponse = { code, message };
     res.status(status).json(error);
+  }
+}
+
+/**
+ * Report configuration keys that nothing reads, so that an option written in the wrong place
+ * is not taken for an option that is in force.
+ */
+function warnUnknownKeys(owner: string, config: object, known: string[]): void {
+  for (const key of Object.keys(config)) {
+    if (!known.includes(key)) {
+      console.warn(
+        `[@enclave-vm/broker] ${owner}: unknown configuration key ${JSON.stringify(key.slice(0, 64))} is ignored`,
+      );
+    }
   }
 }
 

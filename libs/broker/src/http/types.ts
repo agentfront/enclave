@@ -46,6 +46,13 @@ export interface BrokerRequest {
    * Abort signal for cancellation
    */
   signal?: AbortSignal;
+
+  /**
+   * The request object of the HTTP framework this request was adapted from, when the adapter
+   * provides it. An `identify` hook finds there what an authentication middleware left on the
+   * request.
+   */
+  raw?: unknown;
 }
 
 /**

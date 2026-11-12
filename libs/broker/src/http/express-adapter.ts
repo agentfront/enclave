@@ -71,6 +71,7 @@ function adaptRequest(req: ExpressRequest): BrokerRequest {
     body: req.body,
     headers: req.headers,
     signal: abortController.signal,
+    raw: req,
   };
 }
 

@@ -44,6 +44,13 @@ export interface BrokerSessionConfig {
    * @default 15000
    */
   heartbeatIntervalMs?: number;
+
+  /**
+   * The caller this session belongs to. The HTTP routes set it from their `identify` hook and
+   * answer for a session only to its owner. A session created in process has no owner unless
+   * one is given here, and is then not reachable over routes that identify their callers.
+   */
+  owner?: string;
 }
 
 /**
@@ -56,6 +63,10 @@ export class BrokerSession {
   readonly sessionId: SessionId;
   readonly createdAt: number;
   readonly expiresAt: number;
+  /**
+   * The caller this session belongs to, if any.
+   */
+  readonly owner?: string;
 
   private readonly emitter: SessionEmitter;
   private readonly toolRegistry: ToolRegistry;
@@ -74,6 +85,12 @@ export class BrokerSession {
 
   constructor(toolRegistry: ToolRegistry, config: BrokerSessionConfig = {}) {
     this.sessionId = config.sessionId ?? generateSessionId();
+    if (config.owner !== undefined) {
+      if (typeof config.owner !== 'string' || config.owner.length === 0) {
+        throw new TypeError('Session owner must be a non-empty string');
+      }
+      this.owner = config.owner;
+    }
     this.createdAt = Date.now();
     this.toolRegistry = toolRegistry;
     this.abortController = new AbortController();
