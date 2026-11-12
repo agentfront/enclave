@@ -164,6 +164,39 @@ describe('VmAdapter', () => {
       expect(result.error?.message).toMatch(/maximum tool call limit/i);
     });
 
+    it('should provide the tool-call function as a frozen function of the sandbox', async () => {
+      const toolHandler: ToolHandler = async (_name, args) => ({ echoed: args['n'] });
+
+      const enclave = new Enclave({ toolHandler, doubleVm: { enabled: false }, validate: false, transform: false });
+      const result = await enclave.run(`
+        async function __ag_main() {
+          const viaCall = await __safe_callTool.call(undefined, 'echo', { n: 1 });
+          const viaApply = await __safe_callTool.apply(undefined, ['echo', { n: 2 }]);
+          const viaBind = await __safe_callTool.bind(undefined, 'echo')({ n: 3 });
+          return {
+            type: typeof __safe_callTool,
+            name: __safe_callTool.name,
+            length: __safe_callTool.length,
+            frozen: Object.isFrozen(__safe_callTool),
+            ownPromise: __safe_callTool('echo', { n: 0 }) instanceof Promise,
+            echoed: [viaCall.echoed, viaApply.echoed, viaBind.echoed],
+          };
+        }
+      `);
+      enclave.dispose();
+
+      expect(result.error?.message).toBeUndefined();
+      expect(result.value).toEqual({
+        type: 'function',
+        name: '__safe_callTool',
+        length: 3,
+        frozen: true,
+        ownPromise: true,
+        echoed: [1, 2, 3],
+      });
+      expect(result.stats.toolCallCount).toBe(4);
+    });
+
     it.each(['STRICT', 'SECURE', 'STANDARD', 'PERMISSIVE'] as const)(
       'should complete a tool call at the %s security level',
       async (securityLevel) => {
