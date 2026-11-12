@@ -446,8 +446,11 @@ export interface LocalLlmConfig {
 
   /**
    * Scoring mode
-   * - classification: Use text classification model for direct scoring
-   * - similarity: Use embeddings + VectoriaDB for similarity-based scoring
+   * - classification: the score is the `customAnalyzer`'s, or the built-in keyword heuristic
+   *   over the extracted features. No classification model is run.
+   * - similarity: additionally searches a VectoriaDB index for similar patterns. The index is
+   *   created empty and this configuration has no way to add patterns to it, so the search
+   *   finds nothing and the score is the same as in classification mode.
    * @default 'classification'
    */
   mode?: 'classification' | 'similarity';
@@ -494,8 +497,8 @@ export interface LocalLlmConfig {
    * Custom analyzer for external LLM or static code analysis
    *
    * If provided, this analyzer will be used instead of the built-in
-   * heuristic-based analysis. The HuggingFace pipeline will still be
-   * loaded for potential embedding support.
+   * heuristic-based analysis. The HuggingFace pipeline is still loaded
+   * when the optional dependency is installed; its output is not used.
    *
    * @example
    * ```typescript
