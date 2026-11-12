@@ -16,7 +16,10 @@
  * INNER_REALM_GUARD_SOURCE in ./double-vm/parent-vm-bootstrap): its target is a fresh object of
  * that realm, its traps are functions of that realm, and what those call is the handler built
  * here, which forwards to the secure proxy. The secure proxy keeps deciding what may be read and
- * called; this layer decides nothing except that host values are read-only.
+ * called. This layer decides two things only: host values are read-only, and what a script
+ * passes into a call goes on, and comes back, as the script holds it (an airlock proxy is never
+ * taken off a value on the way in; `call` and `apply` read off a host function are the sandbox
+ * realm's own).
  *
  * @packageDocumentation
  */
