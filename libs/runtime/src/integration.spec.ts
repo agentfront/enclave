@@ -5,97 +5,72 @@
  */
 
 import { createRuntimeWorker } from './runtime-worker';
-import { createSessionExecutor } from './session-executor';
+import { createSessionExecutor, RuntimeNotImplementedError } from './session-executor';
 import { createMemoryChannel, createMemoryChannelPair } from './channels/memory-channel';
-import type { StreamEvent } from '@enclave-vm/types';
 
 describe('Runtime Integration', () => {
   describe('Worker with Memory Channel', () => {
-    it('should handle full session lifecycle', async () => {
+    it('should answer an execute request with RuntimeNotImplementedError and end the session on the channel', async () => {
       const worker = createRuntimeWorker({ debug: false, maxSessions: 5 });
       await worker.start();
 
       const channel = createMemoryChannel();
-      const events: StreamEvent[] = [];
 
-      // Track events sent to channel
-      const originalSend = channel.send.bind(channel);
-      channel.send = (event: StreamEvent) => {
-        events.push(event);
-        originalSend(event);
-      };
+      await expect(
+        worker.handleRequest(
+          {
+            type: 'execute',
+            sessionId: 's_integration1' as `s_${string}`,
+            code: 'return 1 + 1',
+          },
+          channel,
+        ),
+      ).rejects.toBeInstanceOf(RuntimeNotImplementedError);
 
-      // Start a session
-      await worker.handleRequest(
-        {
-          type: 'execute',
-          sessionId: 's_integration1' as `s_${string}`,
-          code: 'return 1 + 1',
-        },
-        channel,
-      );
+      // The other end of the channel sees a session that started and ended with an error
+      const events = channel.getEvents();
+      expect(events.map((event) => event.type)).toEqual(['session_init', 'final']);
+      expect(events[1]).toMatchObject({ payload: { ok: false, error: { code: 'NOT_IMPLEMENTED' } } });
 
-      // Wait for session to process
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      // Verify session was created
-      const sessions = worker.getSessions();
-      expect(sessions.length).toBeGreaterThanOrEqual(0);
+      // Nothing is left behind
+      expect(worker.getSessions()).toHaveLength(0);
 
       await worker.stop();
     });
 
-    it('should handle multiple concurrent sessions', async () => {
+    it('should not keep sessions of requests it cannot serve', async () => {
       const worker = createRuntimeWorker({ debug: false, maxSessions: 10 });
       await worker.start();
 
-      const channels = [createMemoryChannel(), createMemoryChannel(), createMemoryChannel()];
+      const outcomes = await Promise.allSettled(
+        ['s_multi1', 's_multi2', 's_multi3'].map((sessionId) =>
+          worker.handleRequest(
+            { type: 'execute', sessionId: sessionId as `s_${string}`, code: 'return 1' },
+            createMemoryChannel(),
+          ),
+        ),
+      );
 
-      // Start multiple sessions
-      await Promise.all([
-        worker.handleRequest(
-          { type: 'execute', sessionId: 's_multi1' as `s_${string}`, code: 'return 1' },
-          channels[0],
-        ),
-        worker.handleRequest(
-          { type: 'execute', sessionId: 's_multi2' as `s_${string}`, code: 'return 2' },
-          channels[1],
-        ),
-        worker.handleRequest(
-          { type: 'execute', sessionId: 's_multi3' as `s_${string}`, code: 'return 3' },
-          channels[2],
-        ),
-      ]);
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(outcomes.map((outcome) => outcome.status)).toEqual(['rejected', 'rejected', 'rejected']);
+      for (const outcome of outcomes) {
+        expect((outcome as PromiseRejectedResult).reason).toBeInstanceOf(RuntimeNotImplementedError);
+      }
+      expect(worker.getStats().activeSessions).toBe(0);
 
       await worker.stop();
     });
 
-    it('should handle session cancellation', async () => {
+    it('should ignore a cancel request for a session it does not have', async () => {
       const worker = createRuntimeWorker({ debug: false });
       await worker.start();
 
-      const channel = createMemoryChannel();
-
-      // Start a session
-      await worker.handleRequest(
-        {
-          type: 'execute',
-          sessionId: 's_cancel1' as `s_${string}`,
-          code: 'while(true) {}', // Long-running code
-        },
-        channel,
-      );
-
-      // Cancel it
       await worker.handleRequest(
         {
           type: 'cancel',
           sessionId: 's_cancel1' as `s_${string}`,
           reason: 'Test cancellation',
         },
-        channel,
+        createMemoryChannel(),
       );
 
       await worker.stop();
@@ -174,17 +149,21 @@ describe('Runtime Integration', () => {
 
       const channel = createMemoryChannel();
 
-      await worker.handleRequest(
-        {
-          type: 'execute',
-          sessionId: 's_stats1' as `s_${string}`,
-          code: 'return 1',
-        },
-        channel,
-      );
+      await worker
+        .handleRequest(
+          {
+            type: 'execute',
+            sessionId: 's_stats1' as `s_${string}`,
+            code: 'return 1',
+          },
+          channel,
+        )
+        .catch(() => undefined);
 
+      // The request was counted, and its session is over
       const afterStats = worker.getStats();
       expect(afterStats.totalSessions).toBe(1);
+      expect(afterStats.activeSessions).toBe(0);
 
       await worker.stop();
     });
@@ -219,22 +198,18 @@ describe('Runtime Integration', () => {
   });
 
   describe('Error Handling', () => {
-    it('should handle execute request with invalid session ID format gracefully', async () => {
+    it('should reject a request that is not a request object', async () => {
       const worker = createRuntimeWorker({ debug: false });
       await worker.start();
 
       const channel = createMemoryChannel();
 
-      // Session IDs that don't match s_ prefix will still work
-      // (the validation is at a higher level)
-      await worker.handleRequest(
-        {
-          type: 'execute',
-          sessionId: 'invalid_id' as `s_${string}`,
-          code: 'return 1',
-        },
-        channel,
-      );
+      await expect(worker.handleRequest(null as never, channel)).rejects.toThrow(TypeError);
+      await expect(worker.handleRequest('execute' as never, channel)).rejects.toThrow(TypeError);
+      await expect(
+        worker.handleRequest({ type: 'execute', sessionId: 's_nocode' as `s_${string}`, code: 42 as never }, channel),
+      ).rejects.toThrow(TypeError);
+      expect(worker.getSessions()).toHaveLength(0);
 
       await worker.stop();
     });
@@ -282,15 +257,13 @@ describe('Runtime Integration', () => {
 
       const channels = [createMemoryChannel(), createMemoryChannel()];
 
-      // Start sessions
-      await worker.handleRequest(
-        { type: 'execute', sessionId: 's_shutdown1' as `s_${string}`, code: 'return 1' },
-        channels[0],
-      );
-      await worker.handleRequest(
-        { type: 'execute', sessionId: 's_shutdown2' as `s_${string}`, code: 'return 2' },
-        channels[1],
-      );
+      // Requests that end at once (executing is not implemented)
+      await worker
+        .handleRequest({ type: 'execute', sessionId: 's_shutdown1' as `s_${string}`, code: 'return 1' }, channels[0])
+        .catch(() => undefined);
+      await worker
+        .handleRequest({ type: 'execute', sessionId: 's_shutdown2' as `s_${string}`, code: 'return 2' }, channels[1])
+        .catch(() => undefined);
 
       // Stop worker
       await worker.stop();
