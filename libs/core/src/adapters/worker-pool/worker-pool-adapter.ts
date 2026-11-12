@@ -173,10 +173,12 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       for (let i = 0; i < this.config.minWorkers; i++) {
         spawnPromises.push(this.createAndAddSlot());
       }
-      try {
-        await Promise.all(spawnPromises);
-      } catch (error) {
-        // Clean up any workers that were created before the failure
+      // Every attempt is waited for, also after one has failed: a worker that finishes starting
+      // later would be added to a pool nobody keeps, and run on.
+      const attempts = await Promise.allSettled(spawnPromises);
+      const failure = attempts.find((attempt): attempt is PromiseRejectedResult => attempt.status === 'rejected');
+      if (failure) {
+        // Clean up the workers that did start
         await Promise.all(
           Array.from(this.slots.values()).map((slot) =>
             slot.terminate(false).catch(() => {
@@ -185,7 +187,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
           ),
         );
         this.slots.clear();
-        throw error;
+        throw failure.reason;
       }
     }
 

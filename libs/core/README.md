@@ -774,6 +774,12 @@ the expression from `source` and `flags` where the preset allows `RegExp`.
 
 A custom global cannot be named `Object`: the sandbox provides its own. The constructor throws.
 
+With the single VM, an object of the script's own that a host built-in hands back to a callback
+(the object a script gave `reduce` to collect into) stays the script's and stays writable. The
+runtime recognises it by its prototype chain, which ends in the sandbox's `Object.prototype`. An
+object without a prototype (`Object.create(null)`) carries nothing that says who made it and is
+treated as the host's, so it arrives read-only in the callback: collect into `{}` or an array.
+
 Inside arrays, Maps and Sets only plain data is allowed (primitives, plain objects, arrays, Maps, Sets,
 Dates, RegExps, typed arrays): the built-in methods of those collections (`forEach`, iteration, `get`)
 hand elements to the script directly, so a function (or an object with methods) stored there would be
@@ -994,6 +1000,7 @@ process, exactly as before.
 - Promises of `vm` contexts your application created itself are covered as well.
 - `disableSandboxRejectionGuard()` turns this off. Your `unhandledRejection` listener then has to
   ignore every promise for which `isHostPromise(promise)` is false, without touching the reason.
+  `disableSandboxRejectionGuard(false)` turns it back on from the next execution of an enclave.
 - Test runners that give tests a stand-in `process` object (Jest does) are not covered: there the
   runner reports a script's rejection as a failure of the test.
 - In the sandbox, `Symbol.for` refuses keys in the `nodejs.` namespace: Node.js looks up some of

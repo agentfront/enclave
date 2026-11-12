@@ -142,19 +142,25 @@ export function createRealmAirlock(realm: RealmMembrane): RealmAirlock {
     const callable = typeof hostProxy === 'function';
     const kind = callable ? 'function' : ArrayIsArray(hostProxy) ? 'array' : 'object';
 
+    // What a script reads for a key. The refusals apply on every read path: a method the get
+    // trap withholds must not be had from a property descriptor instead.
+    const readValue = (key: string | symbol): unknown => {
+      const value: unknown = ReflectGet(hostProxy, key, hostProxy);
+      if (typeof value === 'function') {
+        const method = unwrapSecureProxy(value);
+        if (isMutatingBuiltinMethod(method)) {
+          return refusedMethod;
+        }
+        if (isRegExpMatchMethod(method)) {
+          return refusedMatch;
+        }
+      }
+      return toRealm(value);
+    };
+
     const handler = {
       get(_shell: object, key: string | symbol): unknown {
-        const value: unknown = ReflectGet(hostProxy, key, hostProxy);
-        if (typeof value === 'function') {
-          const method = unwrapSecureProxy(value);
-          if (isMutatingBuiltinMethod(method)) {
-            return refusedMethod;
-          }
-          if (isRegExpMatchMethod(method)) {
-            return refusedMatch;
-          }
-        }
-        return toRealm(value);
+        return readValue(key);
       },
       has(_shell: object, key: string | symbol): boolean {
         return ReflectHas(hostProxy, key);
@@ -175,7 +181,7 @@ export function createRealmAirlock(realm: RealmMembrane): RealmAirlock {
         // (a proxy may not report a property its target lacks as non-configurable), and as plain
         // read-only data: the value the get trap would return.
         return {
-          value: toRealm(ReflectGet(hostProxy, key, hostProxy)),
+          value: readValue(key),
           writable: false,
           enumerable: descriptor.enumerable === true,
           configurable: true,

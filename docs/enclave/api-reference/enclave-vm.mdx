@@ -331,7 +331,7 @@ Node.js ends the process when a promise is rejected and nothing handles it, and 
 disableSandboxRejectionGuard(disabled?: boolean): void
 ```
 
-Leaves every rejection to Node.js and to your listeners (`false` turns the guard back on). It applies to the whole process, not to one enclave. Call it only when your application has an `unhandledRejection` listener that decides for itself; without one, a rejection a script leaves behind ends the process.
+Leaves every rejection to Node.js and to your listeners. It applies to the whole process, not to one enclave, and at once. `disableSandboxRejectionGuard(false)` undoes it, but not at once: the guard is active again from the next execution of any enclave, and until then rejections still reach your listeners. Call it only when your application has an `unhandledRejection` listener that decides for itself; without one, a rejection a script leaves behind ends the process.
 
 ### isHostPromise(promise)
 

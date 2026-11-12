@@ -1,6 +1,7 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
 import { analyzeScopes } from '../utils/scope-analysis';
+import { staticPropertyName } from '../utils/ast-walk';
 
 /**
  * Options for the NoRegexMethodsRule
@@ -280,6 +281,12 @@ export class NoRegexMethodsRule implements ValidationRule {
   }
 
   private getMethodName(callee: any): string | null {
+    // Every static spelling of a method name: obj.method(), obj['method'](), obj[`method`]()
+    const staticName = staticPropertyName(callee.property, callee.computed === true);
+    if (staticName !== undefined) {
+      return staticName;
+    }
+
     // obj.method() - identifier property
     if (callee.property?.type === 'Identifier') {
       return callee.property.name;

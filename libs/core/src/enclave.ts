@@ -923,7 +923,13 @@ export class Enclave {
         import('./double-vm/index.js'),
       ]);
       const pool = new WorkerPoolAdapter(this.config.workerPoolConfig, this.securityLevel, this.doubleVmConfig);
-      await pool.initialize();
+      try {
+        await pool.initialize();
+      } catch (error) {
+        // The pool is not kept, so dispose() of this enclave would never reach it
+        pool.dispose();
+        throw error;
+      }
       // With the double VM disabled this logs the same security warning as for the in-process
       // single VM, and returns the pool unchanged.
       return this.doubleVmConfig.enabled ? pool : wrapWithDoubleVm(pool, this.doubleVmConfig, this.securityLevel);

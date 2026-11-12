@@ -16,6 +16,7 @@ Draft for the maintainer. A security release of `@enclave-vm/core`, `@enclave-vm
 - The security tests moved out of this repository. Every suite that holds an attempt (the `ATK-*` suites and the other escape, bypass and exhaustion suites of `libs/ast`, `libs/core` and `libs/browser`), the per-test index and the attack write-ups of `libs/ast/docs` now live in a private repository, mounted here as the git submodule `security-tests`. `SECURITY-TESTS.md` keeps the public catalog of categories and invariants.
 - With the submodule checked out, `yarn test`, `npx nx test <library>` and `npx nx test-e2e browser` run the public and the private suites; without it they run the public ones. `yarn test:security` runs the private ones alone.
 - CI has a job "Security tests" that fetches the submodule with a read-only token and prints counts only, because its log is public.
+- `npx nx test core` builds `core` first: its worker tests and the test of the worker entry point read the built package.
 - `@enclave-vm/browser` has no changelog of its own: the host page no longer trusts its sandbox iframes (ATK-IFRAME in `SECURITY-TESTS.md`; see "Security Architecture" in the documentation of the package).
 - `@enclave-vm/browser`: the host page refuses a tool call whose arguments hold more than 1,000,000 array items and object keys, and does not relay a console line whose size it cannot measure.
 

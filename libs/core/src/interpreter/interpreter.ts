@@ -157,6 +157,19 @@ export function takesArraysAsData<F extends object>(fn: F): F {
   return fn;
 }
 
+const CONVERTED_ARGUMENTS = new WeakMap<object, number>();
+
+/**
+ * Declare that `fn` reads only its first `count` arguments (and may convert those to text or to
+ * a number): an array among the others is not measured. For functions whose code is known to
+ * ignore what it is given beyond that, such as the stand-ins of the standard globals; a script
+ * hands such a function three arguments when it uses it as the callback of `map`.
+ */
+export function convertsArguments<F extends object>(fn: F, count: number): F {
+  CONVERTED_ARGUMENTS.set(fn, count);
+  return fn;
+}
+
 const CALL_COSTS = new WeakMap<object, (args: readonly unknown[]) => number>();
 
 /**
@@ -437,6 +450,16 @@ export class Interpreter {
 
   constructor(private readonly options: InterpreterOptions) {
     this.globals = options.globals;
+  }
+
+  /**
+   * Call a function for a script, with the checks that apply to a call the script writes itself.
+   * For a host helper that is handed a callback (`parallel(items, fn)`): `fn` may be a function
+   * of the script, or a built-in or host function the script passed along.
+   */
+  call(fn: unknown, args: unknown[]): Promise<unknown> {
+    if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
+    return this.callFunction(fn, undefined, args);
   }
 
   /** Number of AST nodes evaluated so far (for execution stats). */
@@ -1163,13 +1186,14 @@ export class Interpreter {
     let arrayText = 0;
     if (!ARRAY_DATA_FUNCTIONS.has(fn)) {
       const isData = arrayMethod === undefined ? undefined : ARRAY_DATA_ARGUMENTS.get(arrayMethod);
+      const converted = CONVERTED_ARGUMENTS.get(fn) ?? args.length;
       let measure: TextMeasure | undefined;
       const measureArray = (value: unknown[]): void => {
         measure ??= newTextMeasure();
         measureArrayText(value, 1, measure, 0);
         if (measure.length > MAX_JOIN_LENGTH) throw new InterpreterError(TEXT_TOO_LONG);
       };
-      for (let i = 0; i < args.length; i++) {
+      for (let i = 0; i < args.length && i < converted; i++) {
         const arg: unknown = args[i];
         if (Array.isArray(arg) && !isData?.(i)) measureArray(arg);
       }
@@ -1334,7 +1358,14 @@ export class Interpreter {
    * iteration ticks the step budget.
    */
   private async callArrayMethod(arr: unknown[], method: string, args: unknown[]): Promise<unknown> {
-    const cb = args[0] as (value: unknown, index: number, array: unknown[]) => Promise<unknown>;
+    // A function of the script is called as it is. Anything else (a built-in such as `String`, a
+    // host function, a bound function) is called the way a call the script writes is: with the
+    // checks of {@link checkBuiltinCall}, and what it returns charged to the budget.
+    const callback: unknown = args[0];
+    const invoke: (...callbackArgs: unknown[]) => unknown = this.interpretedFunctions.has(callback as object)
+      ? (callback as (...callbackArgs: unknown[]) => unknown)
+      : (...callbackArgs: unknown[]) => this.callFunction(callback, undefined, callbackArgs);
+    const cb = invoke as (value: unknown, index: number, array: unknown[]) => Promise<unknown>;
     const each = (i: number): Promise<unknown> => {
       this.tick();
       return cb(arr[i], i, arr);

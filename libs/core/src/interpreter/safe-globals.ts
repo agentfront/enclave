@@ -12,6 +12,7 @@
 import {
   assertArrayTextWithinLimit,
   chargedBeforeCall,
+  convertsArguments,
   createScriptError,
   isBlockedKey,
   isScriptData,
@@ -333,6 +334,37 @@ const SAFE_GLOBALS: Readonly<Record<string, unknown>> = Object.freeze({
   decodeURI: Object.freeze((value: unknown): string => decodeURI(String(value))),
   decodeURIComponent: Object.freeze((value: unknown): string => decodeURIComponent(String(value))),
 });
+
+// How many arguments each of these converts. Used as the callback of `map` they are handed the
+// item, its index and the array: the array is not theirs to read, so it is not measured for them.
+convertsArguments(SafeString, 1);
+convertsArguments(SafeNumber, 1);
+convertsArguments(SafeDate, 0);
+for (const [name, count] of [
+  ['isFinite', 0],
+  ['isInteger', 0],
+  ['isNaN', 0],
+  ['isSafeInteger', 0],
+  ['parseFloat', 1],
+  ['parseInt', 2],
+] as const) {
+  convertsArguments((SafeNumber as unknown as Record<string, object>)[name], count);
+}
+convertsArguments((SafeDate as unknown as Record<string, object>)['now'], 0);
+convertsArguments((SafeDate as unknown as Record<string, object>)['parse'], 1);
+for (const [name, count] of [
+  ['isNaN', 1],
+  ['isFinite', 1],
+  ['parseFloat', 1],
+  ['parseInt', 2],
+  ['encodeURI', 1],
+  ['encodeURIComponent', 1],
+  ['decodeURI', 1],
+  ['decodeURIComponent', 1],
+] as const) {
+  convertsArguments(SAFE_GLOBALS[name] as object, count);
+}
+for (const [, type] of SAFE_ERRORS) convertsArguments(type.facade, 1);
 
 /**
  * The standard globals for one interpreter. The values are shared between interpreters: all of

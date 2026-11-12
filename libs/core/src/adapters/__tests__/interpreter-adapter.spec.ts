@@ -32,6 +32,18 @@ describe('InterpreterAdapter (SandboxAdapter)', () => {
     expect(res.stats.duration).toBeGreaterThanOrEqual(0);
   });
 
+  it('returns a value of more than 100 items when the context sets no sanitize limits', async () => {
+    // Without an Enclave nothing sets maxSanitizeProperties: the limit is the sanitizer's own
+    // default, as with the double VM, not a smaller one of this adapter.
+    const res = await adapter.execute(
+      main('const items = []; for (let i = 0; i < 500; i++) { items.push(i); } return items;'),
+      makeContext(),
+    );
+
+    expect(res.error).toBeUndefined();
+    expect((res.value as number[]).length).toBe(500);
+  });
+
   it('routes tool calls to the toolHandler and counts them', async () => {
     const calls: string[] = [];
     const toolHandler: ToolHandler = async (name) => {

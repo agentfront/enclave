@@ -56,6 +56,11 @@ const MAX_SERIALIZED_RESULT_BYTES = 50 * 1024 * 1024;
 const DEFAULT_MAX_CONSOLE_CALLS = 100;
 const DEFAULT_MAX_CONSOLE_OUTPUT_BYTES = 64 * 1024;
 
+/** How a runtime helper calls a function a script handed it (see `Interpreter.call`) */
+interface CallbackInvoker {
+  call(fn: unknown, args: unknown[]): unknown;
+}
+
 export interface InterpreterAdapterOptions {
   /** Override the instruction budget (default 5,000,000). */
   maxSteps?: number;
@@ -160,7 +165,14 @@ export class InterpreterAdapter implements SandboxAdapter {
       const safe = createSafeGlobals();
       // The helpers, namespaces and custom globals of this execution; none of them replaces a
       // standard global.
-      const runtime = this.runtimeGlobals(context, charge);
+      // How a helper calls a function it was handed: through the interpreter, which applies the
+      // checks of a call the script writes itself. Bound below, once the interpreter exists.
+      const callbacks: CallbackInvoker = {
+        call: () => {
+          throw sandboxError('The interpreter is not running');
+        },
+      };
+      const runtime = this.runtimeGlobals(context, charge, callbacks);
       for (const name of Object.keys(runtime)) {
         if (!Object.prototype.hasOwnProperty.call(safe.globals, name)) safe.globals[name] = runtime[name];
       }
@@ -173,6 +185,8 @@ export class InterpreterAdapter implements SandboxAdapter {
         signal: context.abortController.signal,
         charge,
       });
+      const running = interpreter;
+      callbacks.call = (fn, args) => running.call(fn, args);
     } catch (error) {
       return this.fail<T>(error, startTime, stats.toolCallCount, 0, sanitizeStacks);
     }
@@ -240,7 +254,11 @@ export class InterpreterAdapter implements SandboxAdapter {
    * What transformed AgentScript refers to beyond the standard globals: the helpers the
    * transformer emits, and the console, tool namespaces and custom globals of this execution.
    */
-  private runtimeGlobals(context: ExecutionContext, charge: (bytes: number) => void): Record<string, unknown> {
+  private runtimeGlobals(
+    context: ExecutionContext,
+    charge: (bytes: number) => void,
+    callbacks: CallbackInvoker,
+  ): Record<string, unknown> {
     const { config } = context;
     const callTool = this.createCallTool(context);
     const resolver =
@@ -309,17 +327,18 @@ export class InterpreterAdapter implements SandboxAdapter {
     // parallel(items, fn) and parallel([fn, fn, ...]): everything is started, all of it is
     // awaited, and the tool calls made on the way share the execution's tool-call limit.
     const parallel = async (first: unknown, second?: unknown): Promise<unknown[]> => {
+      // Every task is called through the interpreter: a task need not be a function of the
+      // script (`parallel(items, String)`), and a built-in gets the checks of a direct call.
       let tasks: Array<() => unknown>;
       if (typeof second === 'function') {
         if (!Array.isArray(first)) throw sandboxError('parallel requires an array of items', 'TypeError');
         const items = first;
-        const run = second as (item: unknown, index: number, all: unknown[]) => unknown;
-        tasks = items.map((item, index) => () => run(item, index, items));
+        tasks = items.map((item, index) => () => callbacks.call(second, [item, index, items]));
       } else {
         if (!Array.isArray(first) || !first.every((task) => typeof task === 'function')) {
           throw sandboxError('parallel requires an array of functions', 'TypeError');
         }
-        tasks = first as Array<() => unknown>;
+        tasks = first.map((task: unknown) => () => callbacks.call(task, []));
       }
       if (tasks.length > MAX_PARALLEL_ITEMS) {
         throw sandboxError(
@@ -498,9 +517,10 @@ export class InterpreterAdapter implements SandboxAdapter {
     }
 
     // The configured limits as they are, as in the double VM: a host that raised or lowered
-    // them gets the same result from this adapter.
-    const maxDepth = config.maxSanitizeDepth ?? 20;
-    const maxProperties = config.maxSanitizeProperties ?? 100;
+    // them gets the same result from this adapter. A context that sets none (the adapter used
+    // without an Enclave) gets the defaults of sanitizeValue, again as in the double VM.
+    const maxDepth = config.maxSanitizeDepth;
+    const maxProperties = config.maxSanitizeProperties;
     return {
       success: true,
       value: sanitizeValue(value, { maxDepth, maxProperties, allowDates: true, allowErrors: true }) as T,

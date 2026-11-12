@@ -1792,6 +1792,29 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
    * object, shared by every execution of the enclave: a script that could assign to it would
    * change what later executions and the host itself read, and could plant sandbox objects in it.
    */
+  /**
+   * What a script gets in place of a built-in method of host data that may not be called on it:
+   * one that changes its receiver (push, sort, Map.prototype.set, ... called on host data would
+   * write to the host's own object without ever reaching the set trap), or one that runs a
+   * regular expression (test, exec and the methods a string calls on one: the host's pattern is
+   * not run for the script, whatever the security level; a result that is silently undefined
+   * would read as "no match"). Null for every other method.
+   */
+  function refusedHostBuiltin(value, propName, depth) {
+    var refusedOnHostData = hostIsMutatingBuiltin(value);
+    if (refusedOnHostData === 'match') {
+      return createSecureProxy(function() {
+        throw createSafeError(hostRegExpMessage);
+      }, depth + 1, false);
+    }
+    if (refusedOnHostData) {
+      return createSecureProxy(function() {
+        return refuseHostWrite("Calling '" + propName + "' on the value", undefined);
+      }, depth + 1, false);
+    }
+    return null;
+  }
+
   function refuseHostWrite(action, whenIgnored) {
     if (throwOnBlocked) {
       throw createSafeError(
@@ -1923,19 +1946,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
           var hostBuiltin = host && hostIsBuiltinMethod(value);
           // push, sort, Map.prototype.set, ... called on host data would write to the host's
           // own object without ever reaching the set trap.
-          var refusedOnHostData = hostBuiltin && hostIsMutatingBuiltin(value);
-          // test, exec and the methods a string calls on a regular expression: the host's
-          // pattern is not run for the script, whatever the security level (a result that is
-          // silently undefined would read as "no match").
-          if (refusedOnHostData === 'match') {
-            return createSecureProxy(function() {
-              throw createSafeError(hostRegExpMessage);
-            }, depth + 1, false);
-          }
-          if (refusedOnHostData) {
-            return createSecureProxy(function() {
-              return refuseHostWrite("Calling '" + propName + "' on the value", undefined);
-            }, depth + 1, false);
+          var refusedMethod = hostBuiltin ? refusedHostBuiltin(value, propName, depth) : null;
+          if (refusedMethod) {
+            return refusedMethod;
           }
           var method = createMethodForwarder(value, obj);
           if (hostBuiltin) {
@@ -2083,13 +2096,18 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         }
 
         // Wrap object/function values so a descriptor read cannot hand back a raw reference that
-        // the get trap would otherwise have proxied.
+        // the get trap would otherwise have proxied. A built-in method the get trap withholds on
+        // host data (one that changes its receiver, or runs a regular expression) is withheld
+        // here in the same way: a descriptor is another way to read the same property.
         if (descriptor && 'value' in descriptor) {
           var value = descriptor.value;
           if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
             var wrapped = {};
             for (var dk in descriptor) { if (__ag_hasOwnProperty.call(descriptor, dk)) wrapped[dk] = descriptor[dk]; }
-            wrapped.value = createSecureProxy(value, depth + 1, host);
+            var refusedValue = (host && typeof value === 'function' && hostIsBuiltinMethod(value))
+              ? refusedHostBuiltin(value, propName, depth)
+              : null;
+            wrapped.value = refusedValue || createSecureProxy(value, depth + 1, host);
             return wrapped;
           }
         }
