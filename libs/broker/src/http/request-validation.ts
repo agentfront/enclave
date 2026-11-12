@@ -55,9 +55,9 @@ export const REQUEST_FILTER_LIMITS = {
   /** Characters of the JSON text in the `filter` query parameter */
   maxQueryLength: 8192,
   /** Time limit for the evaluation of one event, in milliseconds */
-  evaluationTimeoutMs: 50,
+  evaluationTimeoutMs: 100,
   /** Time all evaluations of one filter may take together, in milliseconds */
-  budgetMs: 250,
+  budgetMs: 500,
 } as const;
 
 /**

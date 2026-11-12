@@ -40,6 +40,13 @@ const DEFAULT_EVALUATION_TIMEOUT_MS = 100;
 const MAX_EVALUATION_TIMEOUT_MS = 10_000;
 
 /**
+ * How often the evaluation of one event is tried when the time limit was reached while the
+ * process got less than STARVED_CPU_SHARE of that time on a processor.
+ */
+const MAX_EVALUATION_ATTEMPTS = 3;
+const STARVED_CPU_SHARE = 0.5;
+
+/**
  * Event filter options.
  */
 export interface EventFilterOptions {
@@ -257,28 +264,44 @@ export class EventFilter {
   /**
    * Evaluate all rules, slow patterns included, under the time limit. Returns undefined when
    * the evaluation did not finish.
+   *
+   * The limit is a limit on elapsed time. When it is reached although the process got little
+   * processor time meanwhile (the machine was busy with something else), the evaluation is
+   * tried again, a bounded number of times, so that a busy machine does not drop events.
    */
   private evaluateWithinLimit(event: StreamEvent, subjects: Map<string, Subject>): boolean | undefined {
-    let limit = this.timeoutMs;
-    if (this.budgetMs !== undefined) {
-      limit = Math.max(1, Math.min(limit, Math.ceil(this.budgetMs - this.spentMs)));
-    }
+    for (let attempt = 1; ; attempt++) {
+      let limit = this.timeoutMs;
+      if (this.budgetMs !== undefined) {
+        limit = Math.max(1, Math.min(limit, Math.ceil(this.budgetMs - this.spentMs)));
+      }
 
-    const outcome = runBounded(() => {
-      const started = performance.now();
-      const matches = this.matchesAnyRule(event, subjects, true) === true;
-      return { matches, elapsed: performance.now() - started };
-    }, limit);
+      const cpuBefore = process.cpuUsage();
+      const outcome = runBounded(() => {
+        const started = performance.now();
+        const matches = this.matchesAnyRule(event, subjects, true) === true;
+        return { matches, elapsed: performance.now() - started };
+      }, limit);
 
-    if (!outcome.done) {
-      this.spentMs += limit;
+      if (outcome.done) {
+        this.spentMs += outcome.value.elapsed;
+        return outcome.value.matches;
+      }
+
       // The matchers were stopped in the middle of their work: build them again.
       this.recompileGlobs();
+
+      const cpu = process.cpuUsage(cpuBefore);
+      const cpuMs = (cpu.user + cpu.system) / 1000;
+      const starved = cpuMs < limit * STARVED_CPU_SHARE;
+      this.spentMs += starved ? cpuMs : limit;
+      if (starved && attempt < MAX_EVALUATION_ATTEMPTS && !this.budgetUsedUp()) {
+        continue;
+      }
+
       this.onError?.(new Error('Event filter evaluation exceeded its time limit'), event);
       return undefined;
     }
-    this.spentMs += outcome.value.elapsed;
-    return outcome.value.matches;
   }
 
   /**

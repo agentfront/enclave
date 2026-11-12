@@ -363,7 +363,7 @@ A rule matches when its type filter and its content filter both match; a filter 
 - Evaluating one event takes a bounded time: regular expressions and globs run under `regexTimeoutMs` (100 ms by default). The `budgetMs` option of `createEventFilter` bounds all evaluations of one filter together.
 - An event the filter could not evaluate (a pattern that does not compile, an evaluation that ran out of time) is not sent, in either mode.
 - In exclude mode a glob is matched as text: `*` also matches `/` and a leading dot. In include mode a glob follows path rules.
-- A filter that arrives in a request gets at most 50 ms per event and 250 ms per stream, and its globs are matched without brace and extglob expansion.
+- A filter that arrives in a request gets at most 100 ms per event and 500 ms per stream, and its globs are matched without brace and extglob expansion.
 
 ### Always-Allowed Events
 

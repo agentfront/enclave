@@ -200,7 +200,7 @@ session.onEvent((event) => {
 - Evaluating one event takes a bounded time: regular expressions and globs run under `regexTimeoutMs` (100 ms by default). `budgetMs` bounds all evaluations of one filter together.
 - An event a filter could not evaluate (a pattern that does not compile, an evaluation that ran out of time) is **not sent**, in either mode.
 - In exclude mode a glob is matched as text: `*` also matches `/` and a leading dot. In include mode a glob follows path rules, as before.
-- A filter that arrives in a request is validated, gets at most 50 ms per event and 250 ms per stream, and its globs are matched without brace and extglob expansion.
+- A filter that arrives in a request is validated, gets at most 100 ms per event and 500 ms per stream, and its globs are matched without brace and extglob expansion.
 
 A filter is a convenience for the client. **It is not a confidentiality control**: data a client must not see has to stay out of the events, that is, out of tool arguments and results.
 
