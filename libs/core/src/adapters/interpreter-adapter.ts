@@ -24,7 +24,13 @@ import * as acorn from 'acorn';
 import type * as ESTree from 'estree';
 
 import { createConsoleSink } from '../console-handler';
-import { Interpreter, StepLimitError, isBlockedKey, isScriptError } from '../interpreter/interpreter';
+import {
+  Interpreter,
+  StepLimitError,
+  isBlockedKey,
+  isScriptError,
+  takesArraysAsData,
+} from '../interpreter/interpreter';
 import { createSafeGlobals } from '../interpreter/safe-globals';
 import { MemoryTracker } from '../memory-tracker';
 import { isReferenceId } from '../sidecar/reference-config';
@@ -333,8 +339,10 @@ export class InterpreterAdapter implements SandboxAdapter {
       __safe_callTool: callTool,
       __safe_concat: concat,
       __safe_template: template,
-      __safe_forOf: forOf,
-      __safe_parallel: parallel,
+      // Both go through the items of an array they are given and never convert it to text, so
+      // the interpreter does not measure it first (as it does for a built-in that might).
+      __safe_forOf: takesArraysAsData(forOf),
+      __safe_parallel: takesArraysAsData(parallel),
       __maxIterations: maxIterations,
     };
 
@@ -489,8 +497,10 @@ export class InterpreterAdapter implements SandboxAdapter {
       }
     }
 
-    const maxDepth = Math.max(5, Math.min(50, config.maxSanitizeDepth ?? 20));
-    const maxProperties = Math.max(50, Math.min(1000, config.maxSanitizeProperties ?? 100));
+    // The configured limits as they are, as in the double VM: a host that raised or lowered
+    // them gets the same result from this adapter.
+    const maxDepth = config.maxSanitizeDepth ?? 20;
+    const maxProperties = config.maxSanitizeProperties ?? 100;
     return {
       success: true,
       value: sanitizeValue(value, { maxDepth, maxProperties, allowDates: true, allowErrors: true }) as T,

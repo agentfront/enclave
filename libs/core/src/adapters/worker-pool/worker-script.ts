@@ -280,6 +280,10 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
     }
   } finally {
     clearTimeout(timeoutId);
+    // The result has been sent. A callback the script left behind stops at its next check
+    // instead of running on until the deadline, in a worker that may be given the next script.
+    execution.aborted = true;
+    execution.abortController.abort();
     try {
       adapter?.dispose();
     } catch {

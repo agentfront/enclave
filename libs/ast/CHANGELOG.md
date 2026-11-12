@@ -16,7 +16,8 @@ A security release of the static layer. The invariants behind each item, and the
 - **Writes are checked like reads (ATK-GWRITE).** Assigning to a global or to a reserved runtime name is refused in every target position: a plain assignment, a destructuring pattern, a `for…of` or `for…in` head, `++`/`--` and `delete`. `ReservedPrefixRule` covers bindings and member targets in the same positions.
 - **Prototype chain and reflection by property name (ATK-PCHAIN, ATK-REFL).** `constructor`, `prototype` and `__proto__` are refused as property names in every statically resolvable spelling and position. `DisallowedIdentifierRule` also refuses the reflection entry points by property name (`AGENTSCRIPT_DISALLOWED_PROPERTIES`: the prototype and descriptor functions of `Object` and the legacy accessor methods), whatever object they are read from, and the `{ __proto__: x }` literal key. `NoComputedDestructuringRule` refuses the same names as destructuring keys.
 - **Direct use only (ATK-CTGT, ATK-JSONCB).** `callTool` and `JSON` may only appear as direct calls. An alias, `.call` / `.apply` / `.bind`, a tagged template, a spread, a sequence callee, a computed method name or passing the function as a value is refused, since each takes the call out of sight of the argument checks.
-- **Regular expressions from strings (ATK-RXSTR).** A string passed to `match`, `matchAll` or `search` is treated as the regular expression it becomes, also in the tagged-template form.
+- **JSON methods (ATK-JSONCB).** Of `JSON`, only `parse` and `stringify` may be called, and the callback check resolves the method name in every static spelling the direct-use check accepts. The direct-use check follows lexical scope: it applies to the global, not to a variable of the script that has the same name.
+- **Regular expressions from strings (ATK-RXSTR).** A string passed to `match`, `matchAll` or `search` is treated as the regular expression it becomes, also in the tagged-template form and when the argument is not a literal. A method of that name on a global (a tool namespace) and a call with an object literal of data keep the warning.
 - **Loop counters (ATK-LCTR).** The loop transform never hands out a counter name that the script mentions anywhere.
 
 ### Added
@@ -29,6 +30,11 @@ A security release of the static layer. The invariants behind each item, and the
 ### Changed
 
 - The AgentScript preset is stricter. A script that used a construct outside the allowlist, assigned to a global, shadowed a global in one scope and used it in another, or reached `callTool` or `JSON` other than through a direct call is now refused, with an issue that names the construct. Ordinary AgentScript is unaffected. The other presets change only where a host switches the new options on.
+- With the AgentScript preset, `text.match(pattern)`, `matchAll` and `search` are refused for any argument on a value of the script (they were a warning when the argument was not a literal), and `JSON` methods other than `parse` and `stringify` are refused.
+
+### Fixed
+
+- The identifier transform keeps the property key when it renames a destructuring target that has a default: `({ x = 1 } = source)` reads `x` from `source` as before.
 
 ## [2.4.0] - 2026-01-09
 

@@ -25,6 +25,7 @@ import {
   createHostGlobalFunctionInvoker,
   isBuiltinMethod,
   isMutatingBuiltinMethod,
+  isRegExpMatchMethod,
   resolveMaxGlobalFunctionCalls,
 } from '../global-function-gate';
 import type { DoubleVmConfig, SerializableParentValidationConfig, SerializableSuspiciousPattern } from './types';
@@ -306,9 +307,10 @@ export class DoubleVmWrapper implements SandboxAdapter {
     });
 
     // Built-in methods that change their receiver (push, sort, Map.prototype.set, ...): the parent
-    // VM refuses them on host data, which is read-only inside the sandbox.
+    // VM refuses them on host data, which is read-only inside the sandbox. The methods that run a
+    // regular expression are reported as 'match': those it refuses at every security level.
     Object.defineProperty(parentContext, '__host_isMutatingBuiltin__', {
-      value: (fn: unknown) => isMutatingBuiltinMethod(fn),
+      value: (fn: unknown) => (isRegExpMatchMethod(fn) ? 'match' : isMutatingBuiltinMethod(fn)),
       writable: false,
       configurable: true, // Allow deletion after capture for defense-in-depth
     });

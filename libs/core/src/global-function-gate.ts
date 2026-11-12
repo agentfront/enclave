@@ -169,6 +169,49 @@ export function isMutatingBuiltinMethod(fn: unknown): boolean {
   );
 }
 
+/**
+ * The `RegExp.prototype` methods that run the pattern: `test`, `exec`, and the ones the string
+ * methods call (`match`, `matchAll`, `replace`, `search`, `split` with the expression as argument).
+ *
+ * A regular expression passed in `globals` is the host's own object. Run from the sandbox it
+ * matches a text the script chooses with a pattern the script did not have to get past the
+ * validator or the realm's own rules, on the host's `RegExp.prototype`; and a match with the `g`
+ * or `y` flag writes `lastIndex` on the host's object, which the next execution reads.
+ */
+const REGEXP_MATCH_METHODS: WeakSet<object> = (() => {
+  const methods = new WeakSet<object>();
+  const keys: Array<string | symbol> = [
+    'test',
+    'exec',
+    Symbol.match,
+    Symbol.matchAll,
+    Symbol.replace,
+    Symbol.search,
+    Symbol.split,
+  ];
+  for (const key of keys) {
+    const descriptor = ObjectGetOwnPropertyDescriptor(RegExp.prototype, key);
+    if (descriptor && typeof descriptor.value === 'function') {
+      methods.add(descriptor.value);
+    }
+  }
+  return methods;
+})();
+
+/**
+ * Whether `fn` is a built-in method that runs a regular expression (see {@link REGEXP_MATCH_METHODS}).
+ */
+export function isRegExpMatchMethod(fn: unknown): boolean {
+  return (
+    (typeof fn === 'function' || (typeof fn === 'object' && fn !== null)) && REGEXP_MATCH_METHODS.has(fn as object)
+  );
+}
+
+/** What a script is told when it runs a regular expression of the host */
+export const HOST_REGEXP_MESSAGE =
+  'A regular expression passed in globals cannot be run in the sandbox. ' +
+  'Read its source and flags, or pass a function that does the matching.';
+
 /** Default `maxGlobalFunctionCalls` is this many times `maxToolCalls`. */
 export const DEFAULT_GLOBAL_FUNCTION_CALLS_PER_TOOL_CALL = 10;
 

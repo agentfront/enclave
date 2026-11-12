@@ -163,7 +163,7 @@ const enclave = new Enclave({
   sandboxAdapter: pool,
 });
 
-setInterval(() => {
+const monitor = setInterval(() => {
   const metrics = pool.getMetrics();
   console.log('Workers:', metrics.totalSlots, 'executing:', metrics.executingSlots);
   console.log('Queue depth:', metrics.queuedRequests);
@@ -171,10 +171,14 @@ setInterval(() => {
   console.log('Timed out:', metrics.timeoutExecutions, 'of', metrics.totalExecutions);
 }, 10_000);
 
-// An adapter you passed in is yours to dispose
+// On shutdown: stop the timer (it would keep the process alive and go on reporting a pool
+// that is gone), then dispose. An adapter you passed in is yours to dispose.
+clearInterval(monitor);
 enclave.dispose();
 pool.dispose();
 ```
+
+`memoryKills` counts every worker that was ended at its memory limit: by the engine, by the pool's own heap check, or by the memory monitor.
 
 A pool created this way runs each script in the double VM, like `adapter: 'worker_threads'` with default options; its third constructor argument takes a `doubleVm` configuration.
 

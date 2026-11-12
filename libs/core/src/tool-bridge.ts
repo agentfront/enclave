@@ -178,6 +178,23 @@ export function encodeToolBridgeFailure(name: string, message: string, code: str
   );
 }
 
+/** Error message for an exceeded `maxToolCalls` (shared by every place that enforces it). */
+export function toolCallLimitMessage(maxToolCalls: number): string {
+  return `Maximum tool call limit exceeded (${maxToolCalls}). This limit prevents runaway script execution.`;
+}
+
+export interface HostToolBridgeOptions {
+  /** Count the call in `stats.toolCallCount` here (false when the caller counted it already) */
+  updateStats: boolean;
+  /**
+   * The caller counted the call AND checked it against `maxToolCalls` where the script made it,
+   * and only passes on calls that were within the limit. The bridge then does not compare the
+   * running count again: by the time it runs, calls made later in the same tick have been
+   * counted too, and it would refuse a call that was within the limit when it was made.
+   */
+  limitChecked?: boolean;
+}
+
 /**
  * The tool bridge of an execution whose host is on another thread (see
  * `ExecutionContext.hostToolBridge`). The checks that depend on this thread's state run here: the
@@ -187,7 +204,7 @@ export function encodeToolBridgeFailure(name: string, message: string, code: str
  */
 function createRelayedToolBridge(
   executionContext: ExecutionContext,
-  options: { updateStats: boolean },
+  options: HostToolBridgeOptions,
   relay: (requestJson: string) => Promise<string>,
 ): (requestJson: string) => Promise<string> {
   const { config, stats } = executionContext;
@@ -217,10 +234,10 @@ function createRelayedToolBridge(
       if (options.updateStats) {
         stats.toolCallCount++;
       }
-      if (stats.toolCallCount > config.maxToolCalls) {
+      if (!options.limitChecked && stats.toolCallCount > config.maxToolCalls) {
         return encodeToolBridgeFailure(
           'ToolLimitError',
-          `Maximum tool call limit exceeded (${config.maxToolCalls}). This limit prevents runaway script execution.`,
+          toolCallLimitMessage(config.maxToolCalls),
           'MAX_TOOL_CALLS_EXCEEDED',
           maxPayloadBytes,
         );
@@ -245,7 +262,7 @@ function createRelayedToolBridge(
 
 export function createHostToolBridge(
   executionContext: ExecutionContext,
-  options: { updateStats: boolean },
+  options: HostToolBridgeOptions,
 ): (requestJson: string) => Promise<string> {
   if (typeof executionContext.hostToolBridge === 'function') {
     return createRelayedToolBridge(executionContext, options, executionContext.hostToolBridge);
@@ -303,14 +320,14 @@ export function createHostToolBridge(
         stats.toolCallCount++;
       }
 
-      if (stats.toolCallCount > config.maxToolCalls) {
+      if (!options.limitChecked && stats.toolCallCount > config.maxToolCalls) {
         return serializeResponse(
           {
             v: TOOL_BRIDGE_PROTOCOL_VERSION,
             ok: false,
             error: {
               name: 'ToolLimitError',
-              message: `Maximum tool call limit exceeded (${config.maxToolCalls}). This limit prevents runaway script execution.`,
+              message: toolCallLimitMessage(config.maxToolCalls),
               code: 'MAX_TOOL_CALLS_EXCEEDED',
             },
           },

@@ -213,6 +213,8 @@ It differs from the VM adapters in what isolates a script. There is one realm: t
 - Built-ins that would call a function of the script themselves are refused where the interpreter cannot wait for it (`JSON.parse` with a reviver, `Array.from` with a mapping function, `replace` with a function).
 - Regular expressions, classes, generators and labels are not available.
 - Custom `globals` must be JSON data; they are given to the script as frozen copies.
+- A built-in method works on the kind of value it belongs to: an array method on an array, a string method on a string (`[].join.call({ length: 3 })` is refused). `call`, `apply` and `bind` are resolved to the function they invoke, so a limit holds however a call is written.
+- One call cannot make more than a script may hold: an array of at most 1,000,000 items (`concat`, `flat`, `push`, `split`), a text of at most 16,000,000 chars when an array is joined or converted to text (`join`, `'' + array`, a template literal, an array given to a built-in that expects text), 1,000,000 chars from `repeat`, `padStart`, `padEnd` and from the replacements of `replace` / `replaceAll`. `JSON.stringify` counts its indentation, and what `JSON.parse` builds is charged to `maxAllocationBytes` before it is built.
 
 | Option | Default | Description |
 |--------|---------|-------------|

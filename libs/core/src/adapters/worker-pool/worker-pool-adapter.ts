@@ -31,6 +31,7 @@ import {
   WorkerMemoryError,
   TooManyPendingCallsError,
   QueueFullError,
+  ExecutionAbortedError,
 } from './errors';
 import { sanitizeStackTrace } from '../../stack-trace';
 import { createConsoleSink } from '../../console-handler';
@@ -112,6 +113,8 @@ export class WorkerPoolAdapter implements SandboxAdapter {
   private _workerRecycles = 0;
   private _forcedTerminations = 0;
   private _heapLimitKills = 0;
+  /** Workers already counted as a memory kill (by the memory monitor or as a heap-limit kill) */
+  private readonly memoryKilledSlots = new WeakSet<WorkerSlot>();
 
   /**
    * @param config Worker pool configuration
@@ -290,7 +293,12 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     // sends a message the protocol rejects. An 'error' event without a listener is thrown as an
     // uncaught exception in the host process, so the pool always listens, and keeps its books:
     // a worker that is gone no longer counts against the pool size.
-    slot.on('error', () => {
+    slot.on('error', (error) => {
+      // The engine ended the worker at its heap limit (the default enforcement): a memory kill
+      // like the ones the host's own checks count where they act.
+      if ((error as { code?: unknown } | null)?.code === 'ERR_WORKER_OUT_OF_MEMORY') {
+        this.countHeapLimitKill(slot);
+      }
       if (slot.status === 'terminated') {
         this.removeDeadSlot(slot);
       }
@@ -299,10 +307,11 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     // The slot's own heap check (used when the engine does not apply the worker's heap limit)
     // ended an execution: the slot fails it and terminates the worker; the pool keeps count.
     slot.on('heapLimitExceeded', () => {
-      this._heapLimitKills++;
+      this.countHeapLimitKill(slot);
       this._forcedTerminations++;
     });
 
+    let started = false;
     this.startingWorkers++;
     try {
       try {
@@ -320,8 +329,16 @@ export class WorkerPoolAdapter implements SandboxAdapter {
         await slot.terminate(false).catch(() => undefined);
         throw new WorkerPoolDisposedError();
       }
+      started = true;
     } finally {
       this.startingWorkers--;
+      // A worker that did not start gives its place back. An execution that queued because the
+      // pool was full while this worker was starting is told: it finds the pool below its size
+      // and starts a worker of its own. Nothing else would tell it before its time in the queue
+      // ran out.
+      if (!started && !this.disposed) {
+        this.executionQueue.notifySlotAvailable(slotId);
+      }
     }
 
     this.slots.set(slotId, slot);
@@ -329,6 +346,15 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       slot.acquire(executionId);
     }
     return slot;
+  }
+
+  /** One worker ended at its memory limit is one memory kill, whichever check saw it */
+  private countHeapLimitKill(slot: WorkerSlot): void {
+    if (this.memoryKilledSlots.has(slot)) {
+      return;
+    }
+    this.memoryKilledSlots.add(slot);
+    this._heapLimitKills++;
   }
 
   private async acquireSlot(signal?: AbortSignal, retryCount = 0): Promise<WorkerSlot> {
@@ -446,6 +472,8 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     // If slot is executing, we need to force terminate
     if (slot.isExecuting) {
       this._forcedTerminations++;
+      // Counted by the memory monitor; an engine error for the same worker is not a second kill
+      this.memoryKilledSlots.add(slot);
       // The execution that is waiting on this worker is told why it ends. A worker that is being
       // terminated reports nothing, so the execution would otherwise go on until its next tool
       // response failed to send ("has no worker") or its timeout expired.
@@ -504,6 +532,13 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     code: string,
     context: ExecutionContext,
   ): Promise<ExecutionResult<T>> {
+    // The execution was aborted while it waited for a worker (the pool was starting one, or the
+    // enclave's timeout passed). An abort event is not repeated for a listener added afterwards,
+    // so the worker would run the script with a deadline of its own, after the host's.
+    if (context.abortController?.signal.aborted) {
+      throw new ExecutionAbortedError('Execution aborted before it started');
+    }
+
     const requestId = `exec-${Date.now()}-${crypto.randomUUID()}`;
     const startTime = Date.now();
 

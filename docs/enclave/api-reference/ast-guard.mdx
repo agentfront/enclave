@@ -247,6 +247,34 @@ interface RuleContext {
 | `allowed-globals-only` | Only allow specified globals |
 | `static-tool-calls` | Require string literals for tool names |
 | `bounded-iterations` | Enforce iteration limits |
+| `allowed-syntax` | Only allow the listed ESTree node types (`AllowedSyntaxRule`) |
+
+### AllowedSyntaxRule
+
+A syntax allowlist: every node of the parsed script must have a type the rule was given, and any other construct is reported with the code `DISALLOWED_SYNTAX`. The [AgentScript preset](/core-libraries/ast-guard/agentscript-preset) uses it with `AGENTSCRIPT_ALLOWED_NODE_TYPES`, so a construct no other rule names (`this`, classes, `new.target`, `debugger`, generators) is refused rather than passed.
+
+```ts
+import { JSAstValidator, AllowedSyntaxRule, AGENTSCRIPT_ALLOWED_NODE_TYPES } from '@enclave-vm/ast';
+import type { AllowedSyntaxOptions } from '@enclave-vm/ast';
+
+// The AgentScript list, without template literals
+const options: AllowedSyntaxOptions = {
+  allowedNodeTypes: AGENTSCRIPT_ALLOWED_NODE_TYPES.filter(
+    (type) => type !== 'TemplateLiteral' && type !== 'TemplateElement' && type !== 'TaggedTemplateExpression',
+  ),
+};
+
+const validator = new JSAstValidator([new AllowedSyntaxRule(options)]);
+const result = await validator.validate('const greeting = `hello`;');
+// result.valid === false, result.issues[0].code === 'DISALLOWED_SYNTAX'
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `allowedNodeTypes` | `readonly string[]` | ESTree node types a script may contain; every other node type is refused |
+| `messageTemplate` | `string` | Message of an issue; `{nodeType}` and `{construct}` are replaced |
+
+`AGENTSCRIPT_ALLOWED_NODE_TYPES` is the list for AgentScript v1 as the transformer produces it (a script wrapped in `async function __ag_main()`, loops rewritten). A tagged template is a call that is not a `CallExpression`: a rule that checks how a function is called has to look at `TaggedTemplateExpression` as well.
 
 ## Code Transformation
 

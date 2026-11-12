@@ -14,7 +14,7 @@
 import type { NormalizedToolNamespace } from '@enclave-vm/ast';
 import type { SerializableParentValidationConfig, SerializableSuspiciousPattern } from './types';
 import type { SecurityLevel } from '../types';
-import { globalFunctionLimitMessage } from '../global-function-gate';
+import { globalFunctionLimitMessage, HOST_REGEXP_MESSAGE } from '../global-function-gate';
 import { TOOL_NAMESPACE_FACTORY_SOURCE } from '../tool-namespaces';
 import { CONSOLE_FACTORY_SOURCE } from '../console-handler';
 import { realmTickSource } from '../deadline-guard';
@@ -1500,6 +1500,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
 
   // Whether to throw errors instead of returning undefined for blocked properties
   const throwOnBlocked = ${throwOnBlocked};
+  const hostRegExpMessage = ${JSON.stringify(HOST_REGEXP_MESSAGE)};
 
   // Whether composite reference handles are allowed (for string concatenation)
   const allowComposites = ${allowComposites};
@@ -1922,7 +1923,16 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
           var hostBuiltin = host && hostIsBuiltinMethod(value);
           // push, sort, Map.prototype.set, ... called on host data would write to the host's
           // own object without ever reaching the set trap.
-          if (hostBuiltin && hostIsMutatingBuiltin(value)) {
+          var refusedOnHostData = hostBuiltin && hostIsMutatingBuiltin(value);
+          // test, exec and the methods a string calls on a regular expression: the host's
+          // pattern is not run for the script, whatever the security level (a result that is
+          // silently undefined would read as "no match").
+          if (refusedOnHostData === 'match') {
+            return createSecureProxy(function() {
+              throw createSafeError(hostRegExpMessage);
+            }, depth + 1, false);
+          }
+          if (refusedOnHostData) {
             return createSecureProxy(function() {
               return refuseHostWrite("Calling '" + propName + "' on the value", undefined);
             }, depth + 1, false);

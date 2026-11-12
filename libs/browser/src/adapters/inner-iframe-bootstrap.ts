@@ -541,15 +541,29 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
       consoleCalls++;
       if (consoleCalls > ${maxConsoleCalls}) return;
 
+      // Only JSON data is sent: an object as its JSON copy, a string, number or boolean as it is,
+      // and everything else (a BigInt, a symbol, a function) as its text. What is sent is then
+      // exactly what was measured, here and on the host page.
       var args = [];
       for (var i = 0; i < arguments.length; i++) {
         var arg = arguments[i];
-        try { args.push(typeof arg === 'object' ? JSON.parse(JSON.stringify(arg)) : arg); }
-        catch(e) { args.push(String(arg)); }
+        var kind = typeof arg;
+        try {
+          if (arg === null || arg === undefined || kind === 'string' || kind === 'number' || kind === 'boolean') {
+            args.push(arg);
+          } else if (kind === 'object') {
+            args.push(JSON.parse(JSON.stringify(arg)));
+          } else {
+            args.push(String(arg));
+          }
+        } catch(e) {
+          try { args.push(String(arg)); } catch(e2) { args.push('[unprintable]'); }
+        }
       }
 
-      var size = 0;
-      try { size = JSON.stringify(args).length; } catch(e) {}
+      // Output that cannot be measured is not within the limit: it is dropped, not sent uncounted.
+      var size;
+      try { size = JSON.stringify(args).length; } catch(e) { return; }
       consoleOutputBytes += size;
       if (consoleOutputBytes > ${maxConsoleOutputBytes}) return;
 

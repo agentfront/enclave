@@ -83,7 +83,6 @@
       "options": {
         "outputPath": "libs/core/dist/esm",
         "main": "libs/core/src/index.ts",
-        "additionalEntryPoints": ["libs/core/src/worker.ts"],
         "tsConfig": "libs/core/tsconfig.lib.json",
         "format": ["esm"],
         "declaration": false,
@@ -109,9 +108,39 @@
         }
       }
     },
+    "build-esm-worker": {
+      "executor": "@nx/esbuild:esbuild",
+      "dependsOn": ["build-esm"],
+      "outputs": ["{options.outputPath}/worker.mjs"],
+      "options": {
+        "outputPath": "libs/core/dist/esm",
+        "deleteOutputPath": false,
+        "main": "libs/core/src/worker.ts",
+        "tsConfig": "libs/core/tsconfig.lib.json",
+        "format": ["esm"],
+        "declaration": false,
+        "bundle": true,
+        "thirdParty": false,
+        "platform": "node",
+        "esbuildOptions": {
+          "outExtension": { ".js": ".mjs" },
+          "external": [
+            "@babel/standalone",
+            "@enclave-vm/types",
+            "@enclave-vm/ast",
+            "acorn",
+            "acorn-walk",
+            "astring",
+            "zod",
+            "@huggingface/transformers",
+            "vectoriadb"
+          ]
+        }
+      }
+    },
     "build": {
       "executor": "nx:run-commands",
-      "dependsOn": ["build-cjs", "build-esm"],
+      "dependsOn": ["build-cjs", "build-esm", "build-esm-worker"],
       "options": {
         "command": "node scripts/strip-dist-from-pkg.js libs/core/dist/package.json"
       }

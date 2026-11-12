@@ -23,6 +23,11 @@ Draft for the maintainer: a security release. The invariants each item restores,
 - **Interpreter adapter.** Tool arguments and results are copies, the returned value is sanitized, the standard globals are stand-ins, allocation is bounded, and regular expressions are refused (ATK-INTERP).
 - **Result path and sidecar.** The size check of a returned value is an upper bound and never calls into the value; a composite reference handle a script writes by hand is refused when composites are disabled (ATK-SIZE, ATK-SIDECAR).
 - **Engine.** On V8 13.x (Node.js 24), compiled sandbox code is never shared between realms, which could crash the process. A process started with `node --no-sparkplug` does not have the code in question and keeps sharing (ATK-ENGINE).
+- **Regular expressions of the host.** A regular expression passed in `globals` cannot be run from the sandbox, at any security level: neither `test` / `exec` nor as the pattern of a string method. Its `lastIndex` is not written (ATK-RXRT).
+- **Tool-call limit, single VM.** A call is counted and checked against `maxToolCalls` where the script makes it, so the limit is exact when several calls are in flight together (ATK-BRIDGE).
+- **Interpreter adapter, built-in calls.** A bound on what one built-in call may produce holds however the call is written (`call`, `apply`, `bind`, a method kept in a variable); a built-in method only works on the kind of value it belongs to; converting an array to text, a replacement pattern, `concat`, `flat`, `split` and indented `JSON.stringify` output are bounded, and what `JSON.parse` builds is charged before it is built (ATK-INTERP).
+- **Size check.** A `Map`, a `Set` and a regular expression are measured as what they are copied into (ATK-SIZE).
+- **Worker pool.** A script whose execution ended while it waited for a worker is never started; an execution that queued behind a worker that failed to start is told at once (ATK-WORKER).
 
 ### Changed
 
@@ -36,6 +41,12 @@ Draft for the maintainer: a security release. The invariants each item restores,
 - With the worker pool, an execution that is still running five seconds after its timeout is ended by terminating its worker (`WorkerTimeoutError`); pool statistics report the workers' memory.
 - A worker with `memoryLimitPerWorker` has a young generation of 24 MB (it was the engine's default: 192 MB on Node.js 24, 48 MB on Node.js 22), so the most it can hold is its limit plus 24 MB.
 - The interpreter adapter hands tools JSON copies, fails an execution that returns a function, and has an allocation budget. With a `consoleHandler` it gives the script a `console`, under the same `maxConsoleCalls` and `maxConsoleOutputBytes` as the VM adapters.
+- A regular expression passed in `globals` can be read (`source`, `flags`) but not run; a custom global cannot be named `Object` (the constructor throws).
+- With the single VM, a host built-in called with a callback (`reduce`, `forEach`, ...) hands the script's own objects back as they are: an accumulator the script created stays writable. Host values are behind the membrane as before.
+- With the single VM, calls beyond `maxToolCalls` are refused one by one where they are made; the calls within the limit run, also when all of them were made before the first one started.
+- Interpreter adapter: array methods need an array and string methods a string as their receiver; one call makes at most 1,000,000 array items and 16,000,000 chars of text from an array; `maxSanitizeDepth` and `maxSanitizeProperties` apply as configured (they were clamped to 5-50 and 50-1000).
+- Worker pool metrics: `memoryKills` also counts a worker the engine ended at its heap limit.
+- The `timeout` clock starts when the sandbox adapter is ready, not before it is created: the first `run()` of an enclave with the worker pool no longer spends its time starting the workers. With the pool, a script whose time has passed while it waited for a worker is not started (`ExecutionAbortedError`).
 - Cost, measured with a small script that makes one tool call (arm64): 5.9 ms per execution with the double VM on Node.js 24 and 2.7 ms on Node.js 22; 2.9 ms and 1.6 ms with the single VM. A call into the runtime checks the stack first (about 2.7 microseconds); a call into a host function or the console about 5.5.
 
 ### Added

@@ -3,6 +3,9 @@
  * `node:vm`. The enclave still validates and transforms every script first.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
+
 import { Enclave } from '../enclave';
 import { InterpreterAdapter } from '../adapters/interpreter-adapter';
 import type { ExecutionContext, ExecutionResult, SandboxAdapter } from '../types';
@@ -77,6 +80,18 @@ describe('sandboxAdapter', () => {
     expect(result.value).toBe(42);
     expect(execute).toHaveBeenCalledTimes(1);
     enclave.dispose();
+  });
+
+  it('ships the worker-safe entry point without Node.js built-ins, in both builds', () => {
+    // `@enclave-vm/core/worker` is for runtimes that have none (an edge worker, a browser
+    // bundle). Needs the built package: `npx nx build core`.
+    const dist = path.resolve(__dirname, '../../dist');
+    for (const file of ['worker.js', path.join('esm', 'worker.mjs')]) {
+      const source = fs.readFileSync(path.join(dist, file), 'utf8');
+
+      expect(source).not.toMatch(/from\s*["']node:/);
+      expect(source).not.toMatch(/require\(["'](?:node:)?(?:vm|fs|path|url|worker_threads|child_process)["']\)/);
+    }
   });
 
   it.each([{}, { execute: () => undefined }, null, 'vm'])('rejects %p at construction', (sandboxAdapter) => {

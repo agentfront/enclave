@@ -9,11 +9,70 @@
 // Each global here is a frozen stand-in that has only the members listed below, each of them a
 // function that returns data and changes nothing but data the script owns.
 
-import { createScriptError, isBlockedKey, isScriptData, isScriptError, MAX_ARRAY_LENGTH } from './interpreter';
+import {
+  assertArrayTextWithinLimit,
+  chargedBeforeCall,
+  createScriptError,
+  isBlockedKey,
+  isScriptData,
+  isScriptError,
+  MAX_ARRAY_LENGTH,
+  takesArraysAsData,
+} from './interpreter';
 import { checkSerializedSize } from '../value-sanitizer';
 
 /** The longest text `JSON.stringify` may produce */
 const MAX_JSON_TEXT_BYTES = 32 * 1024 * 1024;
+
+/** `JSON.stringify` indents by at most this many chars per level, whatever `space` says */
+const MAX_JSON_INDENT = 10;
+
+/**
+ * The chars an indentation of `indent` adds to the JSON text of `value`: for every array item and
+ * object member a line break and its indent, for a member the space after its colon, and for
+ * every array or object that is not empty the line of its closing bracket. Counted the way the
+ * text is written (a value that is reached twice is written twice); stops once past `limit`.
+ */
+function indentationSize(value: unknown, indent: number, limit: number, depth: number, path: Set<object>): number {
+  if (value === null || typeof value !== 'object' || path.has(value)) return 0;
+  const isArray = Array.isArray(value);
+  const keys = isArray ? undefined : Object.keys(value);
+  const count = isArray ? (value as unknown[]).length : (keys as string[]).length;
+  if (count === 0) return 0;
+
+  let size = count * (1 + indent * (depth + 1) + (isArray ? 0 : 1)) + 1 + indent * depth;
+  path.add(value);
+  for (let index = 0; index < count && size <= limit; index++) {
+    const item: unknown = isArray
+      ? (value as unknown[])[index]
+      : (value as Record<string, unknown>)[(keys as string[])[index]];
+    size += indentationSize(item, indent, limit - size, depth + 1, path);
+  }
+  path.delete(value);
+  return size;
+}
+
+/** How many chars `JSON.stringify` indents by for this `space` argument. */
+function indentOf(space: unknown): number {
+  if (typeof space === 'number') return Math.max(0, Math.min(MAX_JSON_INDENT, Math.floor(space) || 0));
+  if (typeof space === 'string') return Math.min(MAX_JSON_INDENT, space.length);
+  return 0;
+}
+
+/**
+ * What the values `JSON.parse` makes of `text` cost, in the interpreter's units (two bytes a
+ * char, eight an array item, sixteen an object member): every item and member takes at least one
+ * of the chars counted here. A char inside a string is counted too, which only adds.
+ */
+function parsedJsonCost(text: string): number {
+  let structural = 0;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    // , : [ {
+    if (code === 44 || code === 58 || code === 91 || code === 123) structural++;
+  }
+  return text.length * 2 + structural * 16;
+}
 
 /** What {@link createSafeGlobals} returns: the three tables the interpreter is configured with. */
 export interface SafeGlobals {
@@ -70,6 +129,7 @@ const SafeJSON = frozenRecord({
   parse(text: unknown, reviver?: unknown): unknown {
     // The engine would call a reviver for every value and use what it returns: a promise.
     if (reviver !== undefined) throw new TypeError('JSON.parse does not take a reviver in the sandbox');
+    // What the text becomes is charged to the budget before this runs (parsedJsonCost).
     return JSON.parse(String(text));
   },
   stringify(value: unknown, replacer?: unknown, space?: unknown): string | undefined {
@@ -79,6 +139,15 @@ const SafeJSON = frozenRecord({
     // A value that holds one large string many times is small in memory and huge as text.
     const size = checkSerializedSize(value, MAX_JSON_TEXT_BYTES);
     if (!size.ok) throw new RangeError(`JSON.stringify: the text would be too large (${size.error})`);
+    // With `space` every item and member gets a line of its own, indented by its depth: text
+    // the estimate above does not count.
+    const indent = indentOf(space);
+    if (indent > 0) {
+      const budget = MAX_JSON_TEXT_BYTES - size.estimatedBytes;
+      if (indentationSize(value, indent, budget, 0, new Set()) > budget) {
+        throw new RangeError('JSON.stringify: the text would be too large with this indentation');
+      }
+    }
     return JSON.stringify(
       value,
       Array.isArray(replacer) ? (replacer as Array<string | number>) : undefined,
@@ -86,6 +155,11 @@ const SafeJSON = frozenRecord({
     );
   },
 });
+
+// The engine builds the whole value in one step: the budget is asked first, from the text.
+chargedBeforeCall(SafeJSON['parse'] as object, (args) => parsedJsonCost(String(args[0])));
+// The value is data to `stringify` (measured above); it never converts an array to text itself.
+takesArraysAsData(SafeJSON['stringify'] as object);
 
 // ── Object ───────────────────────────────────────────────────────────────────
 const SafeObject = frozenRecord({
@@ -99,6 +173,7 @@ const SafeObject = frozenRecord({
     for (const entry of entries as Iterable<unknown>) {
       if (++count > MAX_ARRAY_LENGTH) tooLong();
       if (entry === null || typeof entry !== 'object') throw new TypeError('Each entry must be a [key, value] pair');
+      assertArrayTextWithinLimit((entry as Record<number, unknown>)[0]);
       const key = String((entry as Record<number, unknown>)[0]);
       if (!isBlockedKey(key)) result[key] = (entry as Record<number, unknown>)[1];
     }
@@ -121,10 +196,15 @@ const SafeObject = frozenRecord({
   isFrozen: (value: unknown): boolean => Object.isFrozen(value),
   is: (left: unknown, right: unknown): boolean => Object.is(left, right),
   hasOwn(value: unknown, key: unknown): boolean {
+    assertArrayTextWithinLimit(key);
     const name = String(key);
     return !isBlockedKey(name) && Object.prototype.hasOwnProperty.call(Object(value), name);
   },
 });
+
+// Arrays are data to every member of `Object` (a key that is an array is measured where it is
+// converted, above).
+for (const key of Object.keys(SafeObject)) takesArraysAsData(SafeObject[key] as object);
 
 // ── Array ────────────────────────────────────────────────────────────────────
 function makeArray(args: unknown[]): unknown[] {
@@ -154,6 +234,12 @@ const SafeArray = frozenFunction((...args: unknown[]): unknown[] => makeArray(ar
     return result;
   },
 });
+
+// `Array(a, b)`, `Array.of`, `Array.from` and `Array.isArray` keep the arrays they are given.
+takesArraysAsData(SafeArray);
+for (const key of Object.keys(SafeArray)) {
+  takesArraysAsData((SafeArray as unknown as Record<string, object>)[key]);
+}
 
 // ── String ───────────────────────────────────────────────────────────────────
 function toStringValue(value: unknown): string {

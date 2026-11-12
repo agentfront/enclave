@@ -33,6 +33,8 @@ const ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
 const ReflectOwnKeys = Reflect.ownKeys;
 const ReflectApply = Reflect.apply;
 const ReflectConstruct = Reflect.construct;
+const ObjectGetPrototypeOf = Object.getPrototypeOf;
+const HostObjectPrototype: object = Object.prototype;
 // The Reflect namespace itself, pinned so `createSafeReflect` proxies the pristine object rather
 // than whatever the `Reflect` binding resolves to when the safe runtime is assembled.
 const ReflectObject = Reflect;
@@ -467,6 +469,14 @@ export interface SecureProxyOptions {
    * a callback is called by host code, so what it receives does not come out of a trap.
    */
   exposeToSandbox?: (value: unknown) => unknown;
+
+  /**
+   * Whether an object was made in the sandbox realm (by the script, or for it). Such a value is
+   * the script's own: when a host built-in passes it to a callback (the object a script gave
+   * `reduce` to collect into) it goes back as it is instead of behind the membrane, where it
+   * would be read-only. The test must only say yes to what certainly is of that realm.
+   */
+  ownedBySandbox?: (value: object) => boolean;
 }
 
 /**
@@ -732,6 +742,17 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         // a safe error is inert and passes as it is; every other object or function is wrapped.
         const toSandbox = (value: unknown): unknown => {
           const laundered = launderHostError(value);
+          // A value of the script's own realm is the script's: the object it gave `reduce` to
+          // collect into comes back as it is, and stays writable. Everything else is the host's
+          // and goes behind the membrane.
+          if (
+            options.ownedBySandbox &&
+            isProxyable(laundered) &&
+            !proxySet.has(laundered) &&
+            options.ownedBySandbox(laundered)
+          ) {
+            return laundered;
+          }
           const wrapped =
             isProxyable(laundered) && !isSafeError(laundered) ? proxyWithDepth(laundered, depth + 1) : laundered;
           return options.exposeToSandbox ? options.exposeToSandbox(wrapped) : wrapped;
@@ -1125,6 +1146,30 @@ export function createSecureStandardLibrary(options: SecureProxyOptions = {}): R
     },
     options,
   );
+}
+
+/**
+ * Whether an object that is not a secure proxy belongs to the host: its prototype chain reaches
+ * the host's `Object.prototype`, or it has no prototype at all (the host builds such objects for
+ * its results; nothing of the sandbox realm comes out of a secure proxy without a prototype).
+ * Every other object was made in the sandbox realm, by the script or for it.
+ */
+export function isRawHostObject(value: object): boolean {
+  let current: unknown = value;
+  for (let depth = 0; depth < 32; depth++) {
+    try {
+      current = ObjectGetPrototypeOf(current as object);
+    } catch {
+      return true;
+    }
+    if (current === null) {
+      return depth === 0;
+    }
+    if (current === HostObjectPrototype) {
+      return true;
+    }
+  }
+  return true;
 }
 
 /**

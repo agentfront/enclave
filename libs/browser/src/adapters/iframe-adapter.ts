@@ -27,6 +27,7 @@ import {
   boundError,
   copyScriptResult,
   copyToolArguments,
+  ToolArgumentsTooLargeError,
   createOperationNameCheck,
   normalizeStats,
 } from './host-boundary';
@@ -179,10 +180,6 @@ export class IframeAdapter {
           return;
         }
 
-        // What the handler receives is a copy made here, of JSON data only, without the keys that
-        // reach Object.prototype when a handler merges or assigns its arguments.
-        const args = copyToolArguments(data.args);
-
         if (!context.toolHandler) {
           refuseToolCall(callId, 'No tool handler configured');
           return;
@@ -194,6 +191,20 @@ export class IframeAdapter {
         if (performance.now() - startedAt > totalTimeout) {
           refuseToolCall(callId, 'Execution aborted');
           return;
+        }
+
+        // What the handler receives is a copy made here, of JSON data only, without the keys that
+        // reach Object.prototype when a handler merges or assigns its arguments. It is made last:
+        // a call that is refused anyway does not cost the host page the copy.
+        let args: Record<string, unknown>;
+        try {
+          args = copyToolArguments(data.args);
+        } catch (error: unknown) {
+          if (error instanceof ToolArgumentsTooLargeError) {
+            refuseToolCall(callId, error.message);
+            return;
+          }
+          throw error;
         }
 
         // Execute tool handler and relay result/error. The timeout does not run while the host

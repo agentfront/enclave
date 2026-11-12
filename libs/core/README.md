@@ -742,8 +742,10 @@ The suspicious-sequence detectors only look at tool calls, so expose tools with 
 `callTool()`, not as functions. The `worker_threads` adapter never passes functions into the sandbox.
 
 A function is not started when the script calls it with the stack nearly full (less than 128 KB
-left): the call throws a `RangeError` in the script, and the function has not run. So a function
-either runs and its result reaches the script, or it was not started.
+left): the call throws a `RangeError` in the script, and the function has not run. The check only
+decides whether a function starts: it is never started halfway. It says nothing about a function
+that did start. An async function that is still in progress when `toolCallGraceMs` is over is left
+behind like a tool call, and `run()` ends without its result reaching the script.
 
 The validation of `globals` judges what a script can reach through a value, not only what the
 value has itself. The methods of a class are functions in `globals`: an instance of a class with
@@ -762,6 +764,15 @@ them, or call a built-in method that changes its receiver (`push`, `sort`, `Map.
 `Date.prototype.setTime`, ...): the attempt throws, or is ignored at `PERMISSIVE`. Reading works as
 before, and an array returned by a built-in method (`map`, `filter`, `slice`, ...) is the script's own
 copy, which it can sort or extend. To let scripts keep state, return it from a tool instead.
+
+A **regular expression** passed in `globals` can be read (`source`, `flags`, `global`, ...) but not
+run: `test`, `exec` and its use as the pattern of `match`, `matchAll`, `replace`, `search` or `split`
+throw, at every security level. A match would run the host's pattern on a text the script chooses,
+outside the rules that apply to the script's own expressions, and with the `g` or `y` flag it writes
+`lastIndex` on the host's object. Pass a function that does the matching, or let the script build
+the expression from `source` and `flags` where the preset allows `RegExp`.
+
+A custom global cannot be named `Object`: the sandbox provides its own. The constructor throws.
 
 Inside arrays, Maps and Sets only plain data is allowed (primitives, plain objects, arrays, Maps, Sets,
 Dates, RegExps, typed arrays): the built-in methods of those collections (`forEach`, iteration, `get`)
@@ -812,6 +823,10 @@ file locations in the remaining lines are redacted.
 
 ### How `timeout` Is Enforced
 
+- The time is the script's: the clock starts when the sandbox is ready to run it. Validation, the
+  transform and the creation of the sandbox adapter (once per enclave; with the worker pool that
+  starts the worker threads) come before it. Waiting for a free worker counts, and a script whose
+  time has passed while it waited is not started: `run()` returns `ExecutionAbortedError`.
 - Until the script's first `await`, Node's `vm` interrupts it at the deadline.
 - After that, the script checks the clock itself: the transformer inserts a check at the start of
   every function and loop body, so synchronous work, recursion and promise chains that never yield

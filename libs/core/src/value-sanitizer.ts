@@ -601,7 +601,48 @@ export function estimateSerializedSize(
         return 26; // ISO date string with quotes: "2024-01-01T00:00:00.000Z"
       }
       if (hasBrand(RegExpProtoSourceGetter, object)) {
-        return 2; // RegExp serializes to "{}" in JSON.stringify
+        // "{}" to JSON.stringify; sanitizeValue makes it the text `/source/flags`. The larger one.
+        return estimateStringSize(regExpToString(object));
+      }
+      // sanitizeValue copies a Map into an object of its string keys and a Set into an array of
+      // its items; neither has own keys, so the walk below would count each as "{}".
+      const isMap = hasBrand(MapProtoSizeGetter, object);
+      if (isMap || hasBrand(SetProtoSizeGetter, object)) {
+        currentPath.add(object);
+        try {
+          let size = 2; // braces or brackets
+          let first = true;
+          const add = (bytes: number): void => {
+            size += bytes;
+            if (maxBytes > 0 && size > maxBytes) {
+              throw new Error(
+                `${isMap ? 'Map' : 'Set'} serialization would exceed limit: estimated ${size}+ > ${maxBytes} bytes. ` +
+                  `This often indicates repeated references to large strings that expand during JSON serialization.`,
+              );
+            }
+          };
+          if (isMap) {
+            const entries = ReflectApply(MapProtoEntries, object, []) as IterableIterator<[unknown, unknown]>;
+            for (const [key, entryValue] of entries) {
+              if (typeof key !== 'string' || DANGEROUS_KEYS.has(key)) continue;
+              if (!first) size += 1; // comma
+              first = false;
+              add(estimateStringSize(key) + 1); // "key":
+              add(estimateSerializedSize(entryValue, maxBytes, depth + 1, maxDepth, currentPath));
+            }
+          } else {
+            const items = ReflectApply(SetProtoValues, object, []) as IterableIterator<unknown>;
+            for (const item of items) {
+              if (!first) size += 1; // comma
+              first = false;
+              // undefined, a function or a symbol becomes null in an array (4 bytes)
+              add(estimateSerializedSize(item, maxBytes, depth + 1, maxDepth, currentPath) || 4);
+            }
+          }
+          return size;
+        } finally {
+          currentPath.delete(object);
+        }
       }
     }
 

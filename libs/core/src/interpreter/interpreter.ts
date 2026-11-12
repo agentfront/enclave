@@ -65,8 +65,17 @@ export function isBlockedKey(key: string): boolean {
  */
 const MAX_STRING_OP_LENGTH = 1_000_000;
 
-/** Longest string `Array.prototype.join` may produce in one call (the budget still applies to it). */
+/**
+ * Longest text one conversion of an array may produce: `join`, `'' + array`, a template literal,
+ * an array given to a built-in function that expects text or a number (the budget still applies).
+ */
 const MAX_JOIN_LENGTH = 16_000_000;
+
+/** Deepest nesting of arrays that is followed when an array is turned into text */
+const MAX_TEXT_NESTING = 64;
+
+/** Most array items one conversion to text looks at before it is refused as too large */
+const MAX_TEXT_ITEMS = 8_000_000;
 
 /**
  * Longest array a script may make in one step: by assigning an index or `length`, or by
@@ -91,6 +100,180 @@ const HIGHER_ORDER_ARRAY_METHODS = new Set([
   'sort',
   'toSorted',
 ]);
+
+const FunctionProtoCall: unknown = Function.prototype.call;
+const FunctionProtoApply: unknown = Function.prototype.apply;
+const FunctionProtoBind: unknown = Function.prototype.bind;
+const FunctionProtoToString = Function.prototype.toString;
+
+/** The methods of a built-in prototype, with their names. */
+function methodsOf(prototype: object): ReadonlyMap<unknown, string> {
+  const methods = new Map<unknown, string>();
+  for (const name of Object.getOwnPropertyNames(prototype)) {
+    if (name === 'constructor') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+    if (descriptor && typeof descriptor.value === 'function') methods.set(descriptor.value, name);
+  }
+  return methods;
+}
+
+// A script reaches a built-in method as a value (`[].join`, `''.repeat`) and can call it through
+// `call`, `apply`, `bind` or a variable. What a call may do is therefore decided by WHICH function
+// is called, never by how the call is written.
+const ARRAY_METHODS = methodsOf(Array.prototype);
+const STRING_METHODS = methodsOf(String.prototype);
+
+/**
+ * The arguments an array method keeps as they are. Every other argument is a number or a text to
+ * the engine, which converts whatever it is given.
+ */
+const ARRAY_DATA_ARGUMENTS: ReadonlyMap<string, (index: number) => boolean> = new Map<
+  string,
+  (index: number) => boolean
+>([
+  ['push', () => true],
+  ['unshift', () => true],
+  ['concat', () => true],
+  ['includes', (index) => index === 0],
+  ['indexOf', (index) => index === 0],
+  ['lastIndexOf', (index) => index === 0],
+  ['fill', (index) => index === 0],
+  ['splice', (index) => index >= 2],
+  ['toSpliced', (index) => index >= 2],
+  ['with', (index) => index === 1],
+  ['reduce', (index) => index === 1],
+  ['reduceRight', (index) => index === 1],
+]);
+
+const ARRAY_DATA_FUNCTIONS = new WeakSet<object>();
+
+/**
+ * Declare that `fn` takes arrays as data and never converts one to text or to a number (the
+ * engine does that to an array wherever it expects a primitive). Arrays given to any other
+ * built-in or host function are measured first.
+ */
+export function takesArraysAsData<F extends object>(fn: F): F {
+  ARRAY_DATA_FUNCTIONS.add(fn);
+  return fn;
+}
+
+const CALL_COSTS = new WeakMap<object, (args: readonly unknown[]) => number>();
+
+/**
+ * Declare what a call of `fn` may allocate beyond the value it returns, in bytes, from its
+ * arguments. It is charged to the budget BEFORE the call: the engine builds the result in one
+ * step, and what is charged afterwards has already been allocated.
+ */
+export function chargedBeforeCall<F extends object>(fn: F, cost: (args: readonly unknown[]) => number): F {
+  CALL_COSTS.set(fn, cost);
+  return fn;
+}
+
+interface TextMeasure {
+  /** Chars written so far */
+  length: number;
+  /** Array items looked at so far */
+  items: number;
+  /** Arrays being converted: the engine writes nothing for one it is already converting */
+  active: Set<unknown[]>;
+  /** Text length of the functions seen */
+  functions: Map<unknown, number>;
+}
+
+function newTextMeasure(): TextMeasure {
+  return { length: 0, items: 0, active: new Set(), functions: new Map() };
+}
+
+/** Upper bound of the text of one array item that is neither a string nor an array. */
+function scalarTextLength(item: unknown, measure: TextMeasure): number {
+  switch (typeof item) {
+    case 'number':
+    case 'boolean':
+      return 32; // also covers a number in the longest locale format
+    case 'bigint':
+      return String(item).length;
+    case 'function': {
+      let length = measure.functions.get(item);
+      if (length === undefined) {
+        try {
+          length = (FunctionProtoToString.call(item) as string).length;
+        } catch {
+          length = 0;
+        }
+        measure.functions.set(item, length);
+      }
+      return length;
+    }
+    case 'object': {
+      if (isScriptError(item)) {
+        const error = item as { name?: unknown; message?: unknown };
+        return String(error.name).length + 2 + String(error.message).length;
+      }
+      return 96; // a date, or '[object Object]'
+    }
+    default:
+      return 0; // a symbol cannot be converted at all
+  }
+}
+
+/**
+ * Add to `measure` the chars the engine writes when it converts `array` to text: the items,
+ * `separatorLength` chars between them, and nested arrays joined by a comma. An array that is
+ * reached twice is counted twice, because it is written twice. Stops once the limit is passed.
+ */
+function measureArrayText(array: unknown[], separatorLength: number, measure: TextMeasure, depth: number): void {
+  if (depth > MAX_TEXT_NESTING) {
+    measure.length = Number.POSITIVE_INFINITY;
+    return;
+  }
+  measure.length += separatorLength * Math.max(0, array.length - 1);
+  measure.active.add(array);
+  for (let i = 0; i < array.length && measure.length <= MAX_JOIN_LENGTH; i++) {
+    if (++measure.items > MAX_TEXT_ITEMS) {
+      measure.length = Number.POSITIVE_INFINITY;
+      break;
+    }
+    const item: unknown = array[i];
+    if (typeof item === 'string') measure.length += item.length;
+    else if (item === null || item === undefined) continue;
+    else if (Array.isArray(item)) {
+      if (!measure.active.has(item)) measureArrayText(item, 1, measure, depth + 1);
+    } else measure.length += scalarTextLength(item, measure);
+  }
+  measure.active.delete(array);
+}
+
+/** Items of `array` after `flat(depth)`, or more than `limit`. */
+function flatLength(array: unknown[], depth: number, limit: number, nesting = 0): number {
+  if (nesting > MAX_TEXT_NESTING) return Number.POSITIVE_INFINITY;
+  let count = 0;
+  for (let i = 0; i < array.length && count <= limit; i++) {
+    const item: unknown = array[i];
+    if (depth >= 1 && Array.isArray(item)) count += flatLength(item, depth - 1, limit - count, nesting + 1);
+    else count++;
+  }
+  return count;
+}
+
+const TEXT_TOO_LONG = `An array cannot be turned into a text of more than ${MAX_JOIN_LENGTH} chars`;
+
+/**
+ * Refuse arrays that the engine would turn into more text than a script may make in one step.
+ * A built-in that converts its argument (`String(x)`, `Number(x)`, `x + ''`, a property key)
+ * joins an array's items, and the items of the arrays inside it: an array that holds another one
+ * many times is small in memory and huge as text.
+ *
+ * @throws InterpreterError when the text of the arrays among `values` is longer than the limit
+ */
+export function assertArrayTextWithinLimit(...values: unknown[]): void {
+  let measure: TextMeasure | undefined;
+  for (const value of values) {
+    if (!Array.isArray(value)) continue;
+    measure ??= newTextMeasure();
+    measureArrayText(value, 1, measure, 0);
+    if (measure.length > MAX_JOIN_LENGTH) throw new InterpreterError(TEXT_TOO_LONG);
+  }
+}
 
 /** Thrown when the instruction budget is exceeded (interrupts infinite loops). */
 export class StepLimitError extends Error {
@@ -584,7 +767,9 @@ export class Interpreter {
         return this.evalUnary(node, scope);
       case 'UpdateExpression': {
         const ref = await this.resolveReference(node.argument, scope);
-        const before = Number(ref.get());
+        const current = ref.get();
+        assertArrayTextWithinLimit(current);
+        const before = Number(current);
         const after = node.operator === '++' ? before + 1 : before - 1;
         ref.set(after);
         return node.prefix ? after : before;
@@ -637,7 +822,12 @@ export class Interpreter {
     let out = '';
     for (let i = 0; i < node.quasis.length; i++) {
       out += node.quasis[i].value.cooked ?? '';
-      if (i < node.expressions.length) out += String(await this.evalExpr(node.expressions[i], scope));
+      if (i < node.expressions.length) {
+        const value = await this.evalExpr(node.expressions[i], scope);
+        assertArrayTextWithinLimit(value);
+        out += String(value);
+        if (out.length > MAX_JOIN_LENGTH) throw new InterpreterError(TEXT_TOO_LONG);
+      }
     }
     this.charge(out.length * 2);
     return out;
@@ -666,12 +856,15 @@ export class Interpreter {
       case '!':
         return !truthy(v);
       case '-':
+        assertArrayTextWithinLimit(v);
         return -(v as number);
       case '+':
+        assertArrayTextWithinLimit(v);
         return +(v as number);
       case 'typeof':
         return typeof v;
       case '~':
+        assertArrayTextWithinLimit(v);
         return ~(v as number);
       case 'void':
         return undefined;
@@ -688,6 +881,7 @@ export class Interpreter {
       if (r === null || (typeof r !== 'object' && typeof r !== 'function')) {
         throw new InterpreterError("Cannot use 'in' on a value that is not an object");
       }
+      assertArrayTextWithinLimit(l);
       const key = String(l);
       if (BLOCKED_KEYS.has(key)) throw new InterpreterError(`Forbidden property access: ${key}`);
       return key in (r as object);
@@ -702,6 +896,8 @@ export class Interpreter {
 
   /** Apply a binary operator to two values. */
   private binary(operator: string, left: unknown, right: unknown): unknown {
+    // Every operator but the two strict comparisons converts an array operand to text.
+    if (operator !== '===' && operator !== '!==') assertArrayTextWithinLimit(left, right);
     const l = left as never;
     const r = right as never;
     switch (operator) {
@@ -765,7 +961,7 @@ export class Interpreter {
     if (node.optional && (object === null || object === undefined)) throw new ChainShortCircuit();
     if (node.property.type === 'PrivateIdentifier') throw new InterpreterError('Private names are not supported');
     const key = node.computed
-      ? String(await this.evalExpr(node.property, scope))
+      ? this.keyText(await this.evalExpr(node.property, scope))
       : (node.property as ESTree.Identifier).name;
     if (BLOCKED_KEYS.has(key)) throw new InterpreterError(`Forbidden property access: ${key}`);
     if (object == null) throw new InterpreterError(`Cannot read '${key}' of ${String(object)}`);
@@ -844,7 +1040,9 @@ export class Interpreter {
     const callee = await this.evalExpr(node.callee, scope);
     const construct = this.options.constructors?.get(callee);
     if (!construct) throw new InterpreterError('new works with the built-in types the sandbox provides only');
-    const value = construct(await this.evalArguments(node.arguments, scope));
+    const args = await this.evalArguments(node.arguments, scope);
+    if (!ARRAY_DATA_FUNCTIONS.has(callee as object)) assertArrayTextWithinLimit(...args);
+    const value = construct(args);
     this.chargeValue(value);
     return value;
   }
@@ -869,85 +1067,264 @@ export class Interpreter {
     }
 
     const args = await this.evalArguments(node.arguments, scope);
+    if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
+    return this.callFunction(fn, thisArg, args);
+  }
 
-    if (member) {
-      if (typeof member.object === 'string') {
-        // These build a regular expression from their STRING argument inside the engine: the
-        // same uninterruptible matching as a literal, without a literal.
-        if (member.key === 'match' || member.key === 'matchAll' || member.key === 'search') {
-          throw new InterpreterError(`String '${member.key}' is not supported: it runs a regular expression`);
-        }
-        // The engine would call the function for every match and use the promise it returns.
-        if ((member.key === 'replace' || member.key === 'replaceAll') && typeof args[1] === 'function') {
-          throw new InterpreterError(`String '${member.key}' does not take a function in the sandbox`);
-        }
-        // Every occurrence can be replaced by the whole replacement: the product bounds the result.
-        if (
-          (member.key === 'replace' || member.key === 'replaceAll') &&
-          typeof args[1] === 'string' &&
-          member.object.length * args[1].length > MAX_STRING_OP_LENGTH
-        ) {
-          throw new InterpreterError(
-            `String '${member.key}' could produce more than ${MAX_STRING_OP_LENGTH} chars with this replacement`,
-          );
-        }
-        // Cap string-amplifying ops whose allocation the step budget can't see.
-        if (member.key === 'repeat' || member.key === 'padStart' || member.key === 'padEnd') {
-          const n = Number(args[0]);
-          const produced =
-            member.key === 'repeat'
-              ? member.object.length * (n > 0 ? n : 0)
-              : Math.max(member.object.length, n > 0 ? n : 0);
-          if (produced > MAX_STRING_OP_LENGTH) {
-            throw new InterpreterError(
-              `String '${member.key}' would produce ${produced} chars, exceeding the ${MAX_STRING_OP_LENGTH} limit`,
-            );
-          }
-        }
+  /**
+   * Call a function with a receiver and arguments: an interpreted function, or a built-in or host
+   * function after the checks that apply to it. `call` and `apply` are resolved to the function
+   * they invoke first, so those checks cannot be passed by the way a call is written.
+   */
+  private async callFunction(fn: unknown, thisArg: unknown, args: unknown[]): Promise<unknown> {
+    for (let hops = 0; fn === FunctionProtoCall || fn === FunctionProtoApply || fn === FunctionProtoBind; hops++) {
+      const name = fn === FunctionProtoCall ? 'call' : fn === FunctionProtoApply ? 'apply' : 'bind';
+      if (typeof thisArg !== 'function' || hops >= 8) {
+        throw new InterpreterError(`'${name}' works on a function only`);
       }
-      // `join` writes every item and a separator between them into one string, in one step.
-      if (Array.isArray(member.object) && member.key === 'join') {
-        const separator = args.length === 0 || args[0] === undefined ? ',' : String(args[0]);
-        let produced = separator.length * Math.max(0, member.object.length - 1);
-        for (let i = 0; i < member.object.length && produced <= MAX_JOIN_LENGTH; i++) {
-          const item: unknown = member.object[i];
-          if (typeof item === 'string') produced += item.length;
-        }
-        if (produced > MAX_JOIN_LENGTH) {
-          throw new InterpreterError(`Array 'join' would produce more than ${MAX_JOIN_LENGTH} chars`);
-        }
+      // Generic built-ins write to their receiver (`[].push.call(target, value)` sets
+      // `target[n]`), and the built-in functions are objects the whole host process shares: a
+      // function is never accepted as that receiver.
+      if (typeof args[0] === 'function') {
+        throw new InterpreterError(`'${name}' cannot make a function the receiver of a call`);
       }
-      // Higher-order array methods must AWAIT the (async) interpreter callbacks —
-      // native Array.map/filter/sort don't await, so run our own implementations.
-      if (Array.isArray(member.object) && HIGHER_ORDER_ARRAY_METHODS.has(member.key) && typeof args[0] === 'function') {
-        return this.callArrayMethod(member.object as unknown[], member.key, args);
-      }
+      const target: unknown = thisArg;
+      if (fn === FunctionProtoBind) return this.bindFunction(target, args[0], args.slice(1));
+      thisArg = args[0];
+      args = fn === FunctionProtoCall ? args.slice(1) : this.argumentList(args[1]);
+      fn = target;
     }
     if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
-
-    // `call`, `apply` and `bind` choose the receiver of a function. Generic built-ins write to
-    // their receiver (`[].push.call(target, value)` sets `target[n]`), and the built-in functions
-    // are objects the whole host process shares: a function is never accepted as that receiver.
-    if (
-      member &&
-      typeof member.object === 'function' &&
-      (member.key === 'call' || member.key === 'apply' || member.key === 'bind') &&
-      typeof args[0] === 'function'
-    ) {
-      throw new InterpreterError(`'${member.key}' cannot make a function the receiver of a call`);
-    }
 
     if (++this.callDepth > this.options.maxCallDepth) {
       this.callDepth--;
       throw new InterpreterError(`Max call depth exceeded (${this.options.maxCallDepth})`);
     }
     try {
-      const result = await (fn as (...a: unknown[]) => unknown).apply(thisArg, args);
       // What an interpreted function returns was charged when it was made.
-      if (!this.interpretedFunctions.has(fn)) this.chargeValue(result);
+      if (this.interpretedFunctions.has(fn)) {
+        return await (fn as (...a: unknown[]) => unknown).apply(thisArg, args);
+      }
+
+      args = this.checkBuiltinCall(fn, thisArg, args);
+      // Higher-order array methods must AWAIT the (async) interpreter callbacks —
+      // native Array.map/filter/sort don't await, so run our own implementations.
+      const arrayMethod = ARRAY_METHODS.get(fn);
+      if (arrayMethod !== undefined && HIGHER_ORDER_ARRAY_METHODS.has(arrayMethod) && typeof args[0] === 'function') {
+        return await this.callArrayMethod(thisArg as unknown[], arrayMethod, args);
+      }
+      const result = await (fn as (...a: unknown[]) => unknown).apply(thisArg, args);
+      if (arrayMethod === undefined && STRING_METHODS.get(fn) === 'split' && Array.isArray(result)) {
+        if (result.length > MAX_ARRAY_LENGTH) {
+          throw new InterpreterError(`An array cannot be longer than ${MAX_ARRAY_LENGTH} items`);
+        }
+      }
+      this.chargeValue(result);
       return result;
     } finally {
       this.callDepth--;
+    }
+  }
+
+  /** The argument list of `apply`: an array, or nothing. */
+  private argumentList(value: unknown): unknown[] {
+    if (value === null || value === undefined) return [];
+    if (!Array.isArray(value)) throw new InterpreterError("'apply' takes its arguments as an array");
+    this.charge(value.length * 8);
+    return [...value];
+  }
+
+  /**
+   * `fn.bind(receiver, ...args)`: a function that calls `fn` through {@link callFunction}, so
+   * that what is checked for a call of `fn` is checked for a call of the bound function too.
+   */
+  private bindFunction(target: unknown, boundThis: unknown, boundArgs: unknown[]): (...rest: unknown[]) => unknown {
+    this.charge((boundArgs.length + 2) * 8);
+    return (...rest: unknown[]): Promise<unknown> => {
+      const result = this.callFunction(target, boundThis, [...boundArgs, ...rest]);
+      // As for an interpreted function: a call nobody awaits must not become an unhandled rejection.
+      result.then(undefined, ignoreRejection);
+      return result;
+    };
+  }
+
+  /**
+   * The checks before a built-in or host function runs. The engine performs such a call in one
+   * step, out of reach of the step budget, and what the call allocates is only known to the
+   * budget when it exists: whatever could make that large is refused here, from the arguments.
+   *
+   * @returns The arguments to call the function with
+   */
+  private checkBuiltinCall(fn: object, thisArg: unknown, args: unknown[]): unknown[] {
+    const arrayMethod = ARRAY_METHODS.get(fn);
+    const stringMethod = arrayMethod === undefined ? STRING_METHODS.get(fn) : undefined;
+
+    // Arrays where the function takes a text or a number: the engine joins them.
+    let arrayText = 0;
+    if (!ARRAY_DATA_FUNCTIONS.has(fn)) {
+      const isData = arrayMethod === undefined ? undefined : ARRAY_DATA_ARGUMENTS.get(arrayMethod);
+      let measure: TextMeasure | undefined;
+      const measureArray = (value: unknown[]): void => {
+        measure ??= newTextMeasure();
+        measureArrayText(value, 1, measure, 0);
+        if (measure.length > MAX_JOIN_LENGTH) throw new InterpreterError(TEXT_TOO_LONG);
+      };
+      for (let i = 0; i < args.length; i++) {
+        const arg: unknown = args[i];
+        if (Array.isArray(arg) && !isData?.(i)) measureArray(arg);
+      }
+      if (arrayMethod === undefined && stringMethod === undefined && Array.isArray(thisArg)) measureArray(thisArg);
+      arrayText = (measure as TextMeasure | undefined)?.length ?? 0;
+    }
+
+    if (stringMethod !== undefined) args = this.checkStringMethod(stringMethod, thisArg, args, arrayText);
+    else if (arrayMethod !== undefined) this.checkArrayMethod(arrayMethod, thisArg, args);
+
+    const cost = CALL_COSTS.get(fn);
+    if (cost) this.charge(cost(args));
+    return args;
+  }
+
+  private checkStringMethod(name: string, receiver: unknown, args: unknown[], arrayText: number): unknown[] {
+    // These methods accept any receiver and convert it; a script has no use for that.
+    if (typeof receiver !== 'string') throw new InterpreterError(`String '${name}' works on a string only`);
+
+    // These build a regular expression from their STRING argument inside the engine: the
+    // same uninterruptible matching as a literal, without a literal.
+    if (name === 'match' || name === 'matchAll' || name === 'search') {
+      throw new InterpreterError(`String '${name}' is not supported: it runs a regular expression`);
+    }
+
+    if (name === 'replace' || name === 'replaceAll') {
+      const replacement: unknown = args[1];
+      // The engine would call the function for every match and use the promise it returns.
+      if (typeof replacement === 'function') {
+        throw new InterpreterError(`String '${name}' does not take a function in the sandbox`);
+      }
+      if (typeof replacement === 'object' && replacement !== null) {
+        throw new InterpreterError(`String '${name}' takes a text as the replacement`);
+      }
+      const text = String(replacement);
+      // The replacement is written once per match, and each `$` in it can stand for a part of
+      // the receiver as long as the receiver itself (`$&`, the text before or after the match).
+      const search: unknown = args[0];
+      const searchLength = typeof search === 'string' ? search.length : 0;
+      const matches =
+        name === 'replace' ? 1 : searchLength > 0 ? Math.floor(receiver.length / searchLength) : receiver.length + 1;
+      let dollars = 0;
+      for (let at = text.indexOf('$'); at !== -1; at = text.indexOf('$', at + 1)) dollars++;
+      const perMatch = text.length + dollars * receiver.length;
+      if (matches * perMatch > MAX_STRING_OP_LENGTH) {
+        throw new InterpreterError(
+          `String '${name}' could produce more than ${MAX_STRING_OP_LENGTH} chars with this replacement`,
+        );
+      }
+      return args;
+    }
+
+    // Cap string-amplifying ops whose allocation the step budget can't see.
+    if (name === 'repeat' || name === 'padStart' || name === 'padEnd') {
+      const n = Number(args[0]);
+      const produced = name === 'repeat' ? receiver.length * (n > 0 ? n : 0) : Math.max(receiver.length, n > 0 ? n : 0);
+      if (produced > MAX_STRING_OP_LENGTH) {
+        throw new InterpreterError(
+          `String '${name}' would produce ${produced} chars, exceeding the ${MAX_STRING_OP_LENGTH} limit`,
+        );
+      }
+      return args;
+    }
+
+    // One call appends every argument; with a spread that is one string, many times.
+    if (name === 'concat') {
+      let produced = receiver.length + arrayText;
+      for (let i = 0; i < args.length && produced <= MAX_JOIN_LENGTH; i++) {
+        const arg: unknown = args[i];
+        if (typeof arg === 'string') produced += arg.length;
+        else if (!Array.isArray(arg)) produced += scalarTextLength(arg, newTextMeasure());
+      }
+      if (produced > MAX_JOIN_LENGTH) {
+        throw new InterpreterError(`String 'concat' would produce more than ${MAX_JOIN_LENGTH} chars`);
+      }
+      return args;
+    }
+
+    // The engine stops at the limit it is given: the array it builds is never longer than a
+    // script's arrays may be, plus the one item that shows the limit was passed.
+    if (name === 'split') {
+      const asked = args[1] === undefined ? Number.POSITIVE_INFINITY : Number(args[1]) >>> 0;
+      return [args[0], Math.min(asked, MAX_ARRAY_LENGTH + 1)];
+    }
+
+    return args;
+  }
+
+  private checkArrayMethod(name: string, receiver: unknown, args: unknown[]): void {
+    // These methods accept any receiver with a `length`: `{ length: 1e9 }` is no array, and the
+    // engine would work through it as if it were one.
+    if (!Array.isArray(receiver)) throw new InterpreterError(`Array '${name}' works on an array only`);
+
+    const tooLong = (): never => {
+      throw new InterpreterError(`An array cannot be longer than ${MAX_ARRAY_LENGTH} items`);
+    };
+
+    switch (name) {
+      // `join` writes every item and a separator between them into one string, in one step; so
+      // do the two conversions to text.
+      case 'join':
+      case 'toString':
+      case 'toLocaleString': {
+        const separator = name !== 'join' || args.length === 0 || args[0] === undefined ? ',' : String(args[0]);
+        const measure = newTextMeasure();
+        measureArrayText(receiver, separator.length, measure, 0);
+        if (measure.length > MAX_JOIN_LENGTH) {
+          throw new InterpreterError(`Array '${name}' would produce more than ${MAX_JOIN_LENGTH} chars`);
+        }
+        return;
+      }
+      // Without a comparison function the engine compares the items as text: strings as they
+      // are, and an array among the items joined, again for every comparison.
+      case 'sort':
+      case 'toSorted': {
+        if (typeof args[0] === 'function') return;
+        const measure = newTextMeasure();
+        for (let i = 0; i < receiver.length && measure.length <= MAX_JOIN_LENGTH; i++) {
+          const item: unknown = receiver[i];
+          if (Array.isArray(item)) measureArrayText(item, 1, measure, 1);
+        }
+        if (measure.length > MAX_JOIN_LENGTH) throw new InterpreterError(TEXT_TOO_LONG);
+        return;
+      }
+      // Growth by the arguments (a spread makes them many): charged before it happens.
+      case 'push':
+      case 'unshift':
+        if (receiver.length + args.length > MAX_ARRAY_LENGTH) tooLong();
+        this.charge(args.length * 8);
+        return;
+      case 'splice':
+      case 'toSpliced': {
+        const added = Math.max(0, args.length - 2);
+        if (receiver.length + added > MAX_ARRAY_LENGTH) tooLong();
+        if (name === 'splice') this.charge(added * 8);
+        return;
+      }
+      // A new array of the receiver and every array among the arguments: one array, given many
+      // times, is small in memory and large once copied.
+      case 'concat': {
+        let length = receiver.length;
+        for (let i = 0; i < args.length && length <= MAX_ARRAY_LENGTH; i++) {
+          const arg: unknown = args[i];
+          length += Array.isArray(arg) ? arg.length : 1;
+        }
+        if (length > MAX_ARRAY_LENGTH) tooLong();
+        return;
+      }
+      case 'flat': {
+        const depth = args[0] === undefined ? 1 : Number(args[0]);
+        if (flatLength(receiver, Number.isNaN(depth) ? 0 : depth, MAX_ARRAY_LENGTH) > MAX_ARRAY_LENGTH) tooLong();
+        return;
+      }
+      default:
+        return;
     }
   }
 
@@ -1197,8 +1574,14 @@ export class Interpreter {
     return interpreted;
   }
 
+  /** A computed property key as text. An array as a key is its items, joined. */
+  private keyText(value: unknown): string {
+    assertArrayTextWithinLimit(value);
+    return String(value);
+  }
+
   private async propKey(prop: ESTree.Property, scope: Scope): Promise<string> {
-    if (prop.computed) return String(await this.evalExpr(prop.key as ESTree.Expression, scope));
+    if (prop.computed) return this.keyText(await this.evalExpr(prop.key as ESTree.Expression, scope));
     if (prop.key.type === 'Identifier') return prop.key.name;
     if (prop.key.type === 'Literal') return String(prop.key.value);
     throw new InterpreterError('Unsupported property key');

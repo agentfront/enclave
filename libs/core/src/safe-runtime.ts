@@ -58,6 +58,8 @@ export interface SafeRuntimeOptions {
    * Passed to the secure proxies this runtime creates (see `SecureProxyOptions.exposeToSandbox`).
    */
   exposeToSandbox?: (value: unknown) => unknown;
+  /** Passed to the secure proxies this runtime creates (see `SecureProxyOptions.ownedBySandbox`). */
+  ownedBySandbox?: (value: object) => boolean;
 
   /**
    * Whether the result includes the host's standard library (`Math`, `JSON`, `Array`, `Object`,
@@ -106,6 +108,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
   const proxyOptions: SecureProxyOptions = {
     ...(secureProxyConfig ? { levelConfig: secureProxyConfig } : {}),
     ...(options?.exposeToSandbox ? { exposeToSandbox: options.exposeToSandbox } : {}),
+    ...(options?.ownedBySandbox ? { ownedBySandbox: options.ownedBySandbox } : {}),
   };
 
   /**

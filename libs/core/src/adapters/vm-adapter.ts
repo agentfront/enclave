@@ -19,7 +19,7 @@ import {
 } from '../secure-proxy';
 import { createSafeError } from '../safe-error';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
-import { createHostToolBridge } from '../tool-bridge';
+import { createHostToolBridge, encodeToolBridgeFailure, toolCallLimitMessage } from '../tool-bridge';
 import { checkSerializedSize, sanitizeValue } from '../value-sanitizer';
 import { sanitizeStackTrace } from '../stack-trace';
 import { createGlobalFunctionGate, type SandboxRealmBridge } from '../global-function-gate';
@@ -921,6 +921,7 @@ export class VmAdapter implements SandboxAdapter {
         memoryTracker, // Pass tracker for allocation monitoring
         globalFunctionGate,
         exposeToSandbox: airlock.toRealm,
+        ownedBySandbox: airlock.isRealmValue,
         hostObjects: false,
       });
 
@@ -1168,18 +1169,35 @@ export class VmAdapter implements SandboxAdapter {
       // communicate with the host tool handler via JSON string envelopes.
       if (config.toolBridge?.mode === 'string') {
         const maxPayloadBytes = config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
-        // The call is counted where the script makes it; the bridge itself is started from a
-        // microtask (see callBridge below), so it does not count again.
-        const hostToolBridge = createHostToolBridge(executionContext, { updateStats: false });
+        // The call is counted, and checked against maxToolCalls, where the script makes it. The
+        // bridge itself is started from a microtask (see callBridge below): by then every call
+        // of the same tick has been counted, so the bridge neither counts nor compares again.
+        const hostToolBridge = createHostToolBridge(executionContext, { updateStats: false, limitChecked: true });
+        const limitMessage = toolCallLimitMessage(config.maxToolCalls);
+        // Calls that were within the limit when they were made and are not started yet. A start
+        // uses one up: the host starts no more calls than it admitted, whatever asks for it.
+        let admitted = 0;
 
         // Both are functions of the realm around the host's (see REALM_GUARD_SCRIPT).
         Object.defineProperty(baseSandbox, '__host_callToolBridge__', {
           value: {
-            count: realmMembrane.wrap(() => {
+            count: realmMembrane.wrap((): boolean => {
               stats.toolCallCount++;
+              if (stats.toolCallCount > config.maxToolCalls) {
+                return false;
+              }
+              admitted++;
+              return true;
             }, false),
             start: realmMembrane.wrap(
               (requestJson: string, resolve: (responseJson: string) => void, reject: (error: unknown) => void) => {
+                if (admitted <= 0) {
+                  resolve(
+                    encodeToolBridgeFailure('ToolLimitError', limitMessage, 'MAX_TOOL_CALLS_EXCEEDED', maxPayloadBytes),
+                  );
+                  return;
+                }
+                admitted--;
                 hostToolBridge(requestJson).then(resolve, (reason: unknown) => {
                   reject(createSafeError(reason instanceof Error ? reason.message : 'Tool bridge failed'));
                 });
@@ -1205,6 +1223,7 @@ export class VmAdapter implements SandboxAdapter {
             var settled = Promise.resolve();
             var reflectApply = Reflect.apply;
             var maxBytes = ${maxPayloadBytes};
+            var limitMessage = ${JSON.stringify(limitMessage)};
 
             // Tool calls whose host bridge has not been started yet.
             var pending = [];
@@ -1310,7 +1329,11 @@ export class VmAdapter implements SandboxAdapter {
                 throw makeError('Tool request exceeds maximum size (' + maxBytes + ' bytes)', 'RangeError');
               }
 
-              countCall();
+              // Counted here, where the call is made: the first maxToolCalls calls are the ones
+              // that run, also when several are made before any of them is started.
+              if (countCall() !== true) {
+                throw makeError(limitMessage, 'ToolLimitError');
+              }
               var responseJson = await callBridge(requestJson);
               if (typeof responseJson !== 'string') {
                 throw makeError('Tool bridge returned invalid response', 'Error');
@@ -1427,6 +1450,7 @@ export class VmAdapter implements SandboxAdapter {
                     levelConfig: executionContext.secureProxyConfig,
                     callGate: globalFunctionGate,
                     exposeToSandbox: airlock.toRealm,
+                    ownedBySandbox: airlock.isRealmValue,
                   }),
                 )
               : value;

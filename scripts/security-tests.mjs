@@ -125,8 +125,11 @@ function runSpecs(libraries) {
       '--roots',
       directory,
     ];
-    const report = summary ? resultFile(`specs-${library}.json`) : undefined;
-    if (report) args.push('--json', '--outputFile', report, '--silent');
+    // The counts are read in both modes: an exit code of 0 also means "nothing failed because
+    // nothing ran" (every test skipped, or a name filter that matches none).
+    const report = resultFile(`specs-${library}.json`);
+    args.push('--json', '--outputFile', report);
+    if (summary) args.push('--silent');
     const result = run([...args, ...forwarded], {
       cwd: path.join(root, 'libs', library),
       // What `nx test <library>` sets, for the TypeScript loader of jest.config.ts.
@@ -139,7 +142,6 @@ function runSpecs(libraries) {
       },
     });
     if (result.code !== 0) exitCode = 1;
-    if (!report) continue;
 
     const json = readJson(report);
     if (!json || typeof json.numTotalTestSuites !== 'number') {
@@ -151,13 +153,20 @@ function runSpecs(libraries) {
     } else {
       // Jest counts a suite that could not be loaded among the failed ones.
       const failedSuites = json.numFailedTestSuites;
-      say(
-        `${label}: ${json.numPassedTestSuites} of ${json.numTotalTestSuites} suites passed` +
-          (failedSuites > 0 ? `, ${failedSuites} failed` : '') +
-          `; ${json.numTotalTests} tests: ${json.numPassedTests} passed, ${json.numFailedTests} failed, ` +
-          `${json.numPendingTests + (json.numTodoTests ?? 0)} skipped`,
-      );
-      if (result.code === 0 && (failedSuites > 0 || json.numFailedTests > 0)) exitCode = 1;
+      if (summary) {
+        say(
+          `${label}: ${json.numPassedTestSuites} of ${json.numTotalTestSuites} suites passed` +
+            (failedSuites > 0 ? `, ${failedSuites} failed` : '') +
+            `; ${json.numTotalTests} tests: ${json.numPassedTests} passed, ${json.numFailedTests} failed, ` +
+            `${json.numPendingTests + (json.numTodoTests ?? 0)} skipped`,
+        );
+      }
+      if (failedSuites > 0 || json.numFailedTests > 0) exitCode = 1;
+      // A run in which no test passed has checked nothing, whatever its exit code.
+      if (!(json.numPassedTests > 0)) {
+        say(`${label}: no test passed`);
+        exitCode = 1;
+      }
     }
   }
   return exitCode;
@@ -181,16 +190,16 @@ function runBrowserSpecs() {
     '--project',
     BROWSER_PROJECT,
   ];
-  const env = {};
-  const report = summary ? resultFile('specs-browser.json') : undefined;
-  if (report) {
+  // The counts are read in both modes (see runSpecs): the JSON reporter writes them to a file.
+  const report = resultFile('specs-browser.json');
+  const env = { PLAYWRIGHT_JSON_OUTPUT_FILE: report, PLAYWRIGHT_JSON_OUTPUT_NAME: report };
+  if (summary) {
     // No trace, no report and no attachment is kept where the log is public.
     args.push('--reporter', 'json', '--trace', 'off', '--output', path.join(scratch, 'playwright-output'));
-    env.PLAYWRIGHT_JSON_OUTPUT_FILE = report;
-    env.PLAYWRIGHT_JSON_OUTPUT_NAME = report;
+  } else {
+    args.push('--reporter', 'list,json');
   }
   const result = run([...args, ...forwarded], { cwd: path.join(root, 'libs', 'browser'), env });
-  if (!report) return result.code === 0 ? 0 : 1;
 
   const stats = readJson(report)?.stats;
   if (!stats || typeof stats.expected !== 'number') {
@@ -202,9 +211,16 @@ function runBrowserSpecs() {
     say(`${label}: no spec was found`);
     return 1;
   }
-  say(
-    `${label}: ${total} tests: ${stats.expected} passed, ${stats.unexpected} failed, ${stats.flaky} flaky, ${stats.skipped} skipped`,
-  );
+  if (summary) {
+    say(
+      `${label}: ${total} tests: ${stats.expected} passed, ${stats.unexpected} failed, ${stats.flaky} flaky, ${stats.skipped} skipped`,
+    );
+  }
+  // A run in which no test passed has checked nothing, whatever its exit code.
+  if (!(stats.expected > 0)) {
+    say(`${label}: no test passed`);
+    return 1;
+  }
   return result.code === 0 && stats.unexpected === 0 ? 0 : 1;
 }
 

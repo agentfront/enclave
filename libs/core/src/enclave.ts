@@ -233,6 +233,11 @@ export class Enclave {
         // function in globals
         classConstructorsReachable: !securityConfig.secureProxyConfig.blockConstructor,
       });
+      // The sandbox installs its own `Object`, without the methods that redefine properties. A
+      // custom global of that name would either replace it or make every run fail at setup.
+      if (Object.hasOwn(options.globals, 'Object')) {
+        throw new TypeError('A custom global cannot be named "Object": the sandbox provides its own Object');
+      }
     }
 
     if (options.consoleHandler !== undefined) {
@@ -595,7 +600,10 @@ export class Enclave {
       // synchronous work after an `await` never lets it fire, so the flag alone would stay false
       // for as long as the script kept the thread. Reading the clock makes the checks hold from
       // the deadline on, timer or not.
-      const deadline = Date.now() + this.config.timeout;
+      //
+      // The clock starts when the sandbox is ready (see below), not here: creating the adapter is
+      // the host's work, done once, and with the worker pool it starts the worker threads.
+      let deadline = Number.POSITIVE_INFINITY;
       let abortRequested = false;
       // What the host has in flight for the script (tool calls, async host functions). A script
       // that is still waiting at the deadline, with nothing of the host's in flight, can only be
@@ -636,17 +644,21 @@ export class Enclave {
         context.abortController.abort();
       };
 
-      // Set up timeout
-      const timeoutId = setTimeout(() => {
-        context.aborted = true;
-        context.abortController.abort();
-        hostActivity.deadlinePassed();
-      }, this.config.timeout);
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
       const ONLY_WAITING = Symbol('only waiting');
 
       try {
         // Step 4: Execute in sandbox
         const adapter = await this.getAdapter();
+        // Set up timeout. From here on the time is the script's: with a pool that was still
+        // starting its workers, a short timeout would otherwise be over before the script began,
+        // and a script is never started once its deadline has passed.
+        deadline = Date.now() + this.config.timeout;
+        timeoutId = setTimeout(() => {
+          context.aborted = true;
+          context.abortController.abort();
+          hostActivity.deadlinePassed();
+        }, this.config.timeout);
         // A promise rejection the script leaves unhandled must not end the host process (the
         // built-in adapters do this themselves; a host-supplied adapter may not)
         guardSandboxRejections();

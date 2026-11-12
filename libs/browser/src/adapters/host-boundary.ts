@@ -40,8 +40,27 @@ export interface CopyLimits {
   maxProperties: number;
 }
 
-/** Tool arguments are JSON; this is far beyond what a tool takes and well within the stack */
-const TOOL_ARGUMENT_LIMITS: CopyLimits = { maxDepth: 100, maxProperties: Number.POSITIVE_INFINITY };
+/**
+ * Most array items and object keys in the arguments of one tool call. The host page copies the
+ * arguments on its own thread before a handler sees them, so the copy has an end the script does
+ * not choose. Far beyond what a tool takes.
+ */
+export const MAX_TOOL_ARGUMENT_PROPERTIES = 1_000_000;
+
+/** Tool arguments are JSON; the depth is far beyond what a tool takes and well within the stack */
+const TOOL_ARGUMENT_LIMITS: CopyLimits = { maxDepth: 100, maxProperties: MAX_TOOL_ARGUMENT_PROPERTIES };
+
+/**
+ * The arguments of a tool call are larger than the host copies. Unlike a
+ * {@link ProtocolViolationError} this is something a script can do by itself, so the call is
+ * refused and the execution goes on.
+ */
+export class ToolArgumentsTooLargeError extends Error {
+  constructor() {
+    super(`Tool arguments hold more than ${MAX_TOOL_ARGUMENT_PROPERTIES} array items and object keys`);
+    this.name = 'ToolArgumentsTooLargeError';
+  }
+}
 
 /** Keys that are never copied out of a script's result (the inner iframe drops the same two) */
 const RESULT_KEYS_DROPPED: ReadonlySet<string> = new Set(['__proto__', 'constructor']);
@@ -51,6 +70,8 @@ const ARGUMENT_KEYS_DROPPED: ReadonlySet<string> = new Set(['__proto__', 'constr
 
 interface CopyState {
   properties: number;
+  /** Thrown in place of a ProtocolViolationError when `maxProperties` is exceeded */
+  tooLarge?: () => Error;
 }
 
 /**
@@ -114,7 +135,9 @@ function copySandboxData(
 function countProperties(count: number, limits: CopyLimits, state: CopyState, what: string): void {
   state.properties += count;
   if (state.properties > limits.maxProperties) {
-    throw new ProtocolViolationError(`${what} with more than ${limits.maxProperties} properties`);
+    throw state.tooLarge
+      ? state.tooLarge()
+      : new ProtocolViolationError(`${what} with more than ${limits.maxProperties} properties`);
   }
 }
 
@@ -135,13 +158,15 @@ export function copyScriptResult(value: unknown, limits: CopyLimits): unknown {
  * `__proto__`, `constructor` or `prototype` key at any depth.
  *
  * @throws ProtocolViolationError for arguments that are not JSON data
+ * @throws ToolArgumentsTooLargeError for more than {@link MAX_TOOL_ARGUMENT_PROPERTIES} items and
+ *   keys; the copy stops there
  */
 export function copyToolArguments(args: Record<string, unknown>): Record<string, unknown> {
   return copySandboxData(
     args,
     0,
     TOOL_ARGUMENT_LIMITS,
-    { properties: 0 },
+    { properties: 0, tooLarge: () => new ToolArgumentsTooLargeError() },
     ARGUMENT_KEYS_DROPPED,
     'tool arguments',
   ) as Record<string, unknown>;
@@ -238,11 +263,13 @@ export class ConsoleBudget {
     if (this.calls > this.maxCalls) {
       return false;
     }
-    let size = 0;
+    let size: number;
     try {
       size = JSON.stringify(args).length;
     } catch {
-      // Not measurable as JSON (the inner iframe only sends JSON data); counted as nothing
+      // Not measurable as JSON (a BigInt, a cycle). The inner iframe only sends what it measured
+      // itself; output whose size is unknown is not within any limit.
+      return false;
     }
     this.bytes += size;
     return this.bytes <= this.maxBytes;

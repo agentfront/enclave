@@ -221,9 +221,16 @@ function transformFreeReferences(ast: acorn.Node, prefix: string, whitelist: Set
     if (!shouldTransformIdentifier(ref.name, 'whitelist', whitelist)) continue;
     ref.node.name = `${prefix}${ref.name}`;
     // `{ x }` prints only its value; once the value is renamed the key must be written out, or the
-    // property itself would be renamed to `{ __safe_x }`.
-    if (ref.parent?.type === 'Property' && ref.parent.shorthand && ref.parent.value === ref.node) {
-      ref.parent.shorthand = false;
+    // property itself would be renamed to `{ __safe_x }`. The same holds for a target with a
+    // default, `({ x = 1 } = obj)`.
+    const property = ref.parent;
+    if (
+      property?.type === 'Property' &&
+      property.shorthand &&
+      (property.value === ref.node ||
+        (property.value?.type === 'AssignmentPattern' && property.value.left === ref.node))
+    ) {
+      property.shorthand = false;
     }
   }
 }

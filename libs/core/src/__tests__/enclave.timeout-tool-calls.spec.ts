@@ -12,6 +12,9 @@ import { Enclave } from '../enclave';
 
 const slowTool = (ms: number) => () => new Promise<string>((resolve) => setTimeout(() => resolve('done'), ms));
 
+/** A tool that never answers. No timer: nothing is left running when the test is over. */
+const hangingTool = () => new Promise<string>(() => undefined);
+
 describe('timeout and tool calls', () => {
   let enclave: Enclave;
 
@@ -39,7 +42,7 @@ describe('timeout and tool calls', () => {
   });
 
   it('ends the execution when a tool call is still in progress after the grace', async () => {
-    const hanging = new Enclave({ timeout: 200, toolHandler: slowTool(60_000) });
+    const hanging = new Enclave({ timeout: 200, toolHandler: hangingTool });
     try {
       const started = Date.now();
       const result = await hanging.run("return await callTool('slow', {});");

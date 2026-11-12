@@ -1,5 +1,6 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
+import { analyzeScopes } from '../utils/scope-analysis';
 
 /**
  * Options for the NoRegexMethodsRule
@@ -51,6 +52,9 @@ const DEFAULT_STRING_METHODS = [
  * regex ban for these three. (`split`, `replace` and `replaceAll` treat a string literally.)
  */
 const PATTERN_COMPILING_STRING_METHODS = new Set(['match', 'matchAll', 'search']);
+
+/** Members with which an object decides what it is as a text */
+const CONVERSION_KEYS = new Set(['toString', 'valueOf']);
 
 /**
  * Default methods on regex objects
@@ -115,9 +119,15 @@ export class NoRegexMethodsRule implements ValidationRule {
   }
 
   validate(context: ValidationContext): void {
+    // The identifiers that name a global (what the host provides), not a variable of the script
+    const freeReferences = new Set<unknown>();
+    if (!this.allowStringArguments) {
+      for (const ref of analyzeScopes(context.ast).freeReferences) freeReferences.add(ref.node);
+    }
+
     walk.simple(context.ast as any, {
       CallExpression: (node: any) => {
-        this.checkMethodCall(node, context);
+        this.checkMethodCall(node, context, freeReferences);
       },
       // str.match`pattern` calls the method with the template strings: the same regex path as a
       // call, written without a CallExpression.
@@ -137,7 +147,7 @@ export class NoRegexMethodsRule implements ValidationRule {
     });
   }
 
-  private checkMethodCall(node: any, context: ValidationContext): void {
+  private checkMethodCall(node: any, context: ValidationContext, freeReferences: ReadonlySet<unknown>): void {
     const callee = node.callee;
 
     // Only check member expressions: obj.method()
@@ -182,6 +192,28 @@ export class NoRegexMethodsRule implements ValidationRule {
         return;
       }
 
+      // The same three methods with an argument that is not a literal: on a string, whatever it
+      // evaluates to (a string, a regular expression) is run as a regular expression. A method of
+      // that name on an object of the host (`docs.search(args)`, a tool namespace) is not a
+      // string method, and neither is a call whose argument is an object literal: those stay
+      // with the warning below.
+      if (
+        !this.allowStringArguments &&
+        PATTERN_COMPILING_STRING_METHODS.has(methodName) &&
+        node.arguments.length > 0 &&
+        this.couldCompilePattern(node, freeReferences)
+      ) {
+        context.report({
+          code: 'NO_REGEX_METHOD',
+          message:
+            `Use of .${methodName}() with a non-literal argument is not allowed: the argument is used as a ` +
+            `regular expression (ReDoS risk). Use .includes(), .indexOf(), .startsWith() or .endsWith() instead.`,
+          location: this.getLocation(callee),
+          data: { method: methodName, form: 'dynamic-pattern' },
+        });
+        return;
+      }
+
       // For dynamic arguments, we need to be cautious
       // If we can't prove it's safe, report a warning
       if (!this.hasStringArgument(node) && node.arguments.length > 0) {
@@ -215,6 +247,36 @@ export class NoRegexMethodsRule implements ValidationRule {
         });
       }
     }
+  }
+
+  /**
+   * Whether `receiver.match(arg)` / `matchAll` / `search` with a non-literal argument could be a
+   * string turning that argument into a regular expression. It could not when:
+   * - the receiver names a global: a value of the host (a tool namespace, a custom global), not
+   *   a string the script made;
+   * - the argument is an object literal that defines no conversion of its own: as a pattern it
+   *   is the text `[object Object]`;
+   * - the argument is a number, boolean or null literal.
+   */
+  private couldCompilePattern(node: any, freeReferences: ReadonlySet<unknown>): boolean {
+    const receiver = node.callee.object;
+    if (receiver?.type === 'Identifier' && freeReferences.has(receiver)) {
+      return false;
+    }
+
+    const argument = node.arguments[0];
+    if (argument.type === 'Literal' && !argument.regex && typeof argument.value !== 'string') {
+      return false;
+    }
+    if (argument.type === 'ObjectExpression') {
+      return !argument.properties.every(
+        (property: any) =>
+          property.type === 'Property' &&
+          !property.computed &&
+          !CONVERSION_KEYS.has(property.key.type === 'Identifier' ? property.key.name : String(property.key.value)),
+      );
+    }
+    return true;
   }
 
   private getMethodName(callee: any): string | null {

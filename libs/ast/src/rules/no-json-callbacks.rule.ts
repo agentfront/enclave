@@ -1,6 +1,7 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
 import { walkAll, staticPropertyName, type AnyNode } from '../utils/ast-walk';
+import { analyzeScopes } from '../utils/scope-analysis';
 
 /**
  * Options for the NoJsonCallbacksRule
@@ -22,10 +23,11 @@ export interface NoJsonCallbacksOptions {
    * Require `JSON` to be used only as `JSON.parse(...)` / `JSON.stringify(...)`, called directly.
    *
    * The callback check only sees calls written exactly that way. With this option every other use
-   * of the `JSON` object is refused, since it would move the call out of sight: an alias
+   * of the global `JSON` object is refused, since it would move the call out of sight: an alias
    * (`const J = JSON`), `JSON.stringify.call(...)`, a method read without a call
-   * (`const s = JSON.stringify`), a runtime-computed method name (`JSON[name](...)`), passing
-   * `JSON` as a value, and destructuring from it. `typeof JSON` and `typeof JSON.parse` stay allowed.
+   * (`const s = JSON.stringify`), a runtime-computed method name (`JSON[name](...)`), a call of any
+   * other method (`JSON.valueOf()` returns the object), passing `JSON` as a value, and destructuring
+   * from it. `typeof JSON` and `typeof JSON.parse` stay allowed.
    *
    * Default: false
    */
@@ -110,12 +112,20 @@ export class NoJsonCallbacksRule implements ValidationRule {
   }
 
   /**
-   * Refuse every use of the `JSON` object other than a direct `JSON.<method>(...)` call with a
-   * statically-known method name.
+   * Refuse every use of the `JSON` object other than a direct `JSON.parse(...)` or
+   * `JSON.stringify(...)` call with a statically-known method name.
    */
   private checkDirectUse(context: ValidationContext): void {
+    // Only a reference that reaches the global is the JSON object. A local variable of that name
+    // (`const JSON = {...}`) is the script's own value: it can only hold the JSON object through a
+    // free reference, and that reference is refused here.
+    const free = new Set<AnyNode>();
+    for (const ref of analyzeScopes(context.ast).freeReferences) {
+      if (ref.name === 'JSON') free.add(ref.node);
+    }
+
     walkAll(context.ast, (node, ancestors, key) => {
-      if (node.type !== 'Identifier' || node.name !== 'JSON') return;
+      if (node.type !== 'Identifier' || node.name !== 'JSON' || !free.has(node)) return;
 
       const parent: AnyNode | undefined = ancestors[ancestors.length - 1];
       const grandparent: AnyNode | undefined = ancestors[ancestors.length - 2];
@@ -134,8 +144,16 @@ export class NoJsonCallbacksRule implements ValidationRule {
         key === 'object' &&
         staticPropertyName(parent.property, parent.computed) !== undefined;
       if (isStaticMember) {
-        // JSON.parse(...) / JSON.stringify(...)
-        if (grandparent?.type === 'CallExpression' && grandparent.callee === parent) return;
+        // JSON.parse(...) / JSON.stringify(...): the two methods whose arguments are checked. Any
+        // other method is refused; `JSON.valueOf()` for one returns the JSON object itself.
+        const method = staticPropertyName(parent.property, parent.computed);
+        if (
+          grandparent?.type === 'CallExpression' &&
+          grandparent.callee === parent &&
+          (method === 'parse' || method === 'stringify')
+        ) {
+          return;
+        }
         // `typeof JSON.stringify`
         if (grandparent?.type === 'UnaryExpression' && grandparent.operator === 'typeof') return;
       }
@@ -275,6 +293,13 @@ export class NoJsonCallbacksRule implements ValidationRule {
   }
 
   private getMethodName(callee: any): string | null {
+    // Every static spelling the direct-use check accepts, so that both passes agree on the method:
+    // JSON.method(), JSON['method'](), JSON[`method`]()
+    const staticName = staticPropertyName(callee.property, callee.computed === true);
+    if (staticName !== undefined) {
+      return staticName;
+    }
+
     // JSON.method() - identifier property
     if (callee.property?.type === 'Identifier') {
       return callee.property.name;

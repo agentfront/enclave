@@ -217,9 +217,9 @@ The host page does not take the iframes' word for anything. It listens only to t
 The limits that protect the host are enforced by the host as well as inside the sandbox:
 
 - **Tool calls**: no more than `maxToolCalls` reach your tool handler, and a tool name that `allowedOperationPattern` or `blockedOperationPatterns` refuse does not reach it.
-- **Tool arguments**: the handler receives a copy made by the host, of JSON data only, without `__proto__`, `constructor` or `prototype` keys at any depth.
+- **Tool arguments**: the handler receives a copy made by the host, of JSON data only, without `__proto__`, `constructor` or `prototype` keys at any depth. A call whose arguments hold more than 1,000,000 array items and object keys is refused (the script's `callTool` rejects) and the handler is not called.
 - **Results**: a returned value is copied into plain host data (primitives, arrays, dates and plain objects, within `maxSanitizeDepth` and `maxSanitizeProperties`); anything else ends the execution. Error texts are cut to a bounded length.
-- **Console**: no more than `maxConsoleCalls` lines and `maxConsoleOutputBytes` reach the host console.
+- **Console**: no more than `maxConsoleCalls` lines and `maxConsoleOutputBytes` reach the host console. A line is counted by its JSON text; one that has none is dropped. The sandbox sends objects as their JSON copy and a BigInt, symbol or function as its text.
 
 ## What's Blocked
 

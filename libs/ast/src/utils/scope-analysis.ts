@@ -131,7 +131,9 @@ export function analyzeScopes(ast: unknown): ScopeAnalysis {
         visitPattern(node.argument, scope, role, kind, node);
         return;
       case 'AssignmentPattern':
-        visitPattern(node.left, scope, role, kind, node);
+        // `({ x = 1 } = obj)`: the target keeps the Property as its parent, as `({ x } = obj)` does,
+        // so that a consumer that renames the target can still write the key out.
+        visitPattern(node.left, scope, role, kind, parent?.type === 'Property' ? parent : node);
         visit(node.right, scope, node);
         return;
       default:

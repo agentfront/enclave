@@ -11,6 +11,9 @@
  * language grew a construct the interpreter does not have yet: both are caught here rather than
  * by a host that picked the interpreter for a runtime without `node:vm`.
  *
+ * The cases in which a script runs into a limit or names a blocked key are compared the same way
+ * in the private suite `security-tests/specs/core/interpreter-conformance.security.spec.ts`.
+ *
  * @packageDocumentation
  */
 
@@ -138,12 +141,6 @@ const CORPUS: Array<[string, string]> = [
     `const data = { users: [{ name: 'a', tags: ['x'] }, { name: 'b', tags: [] }] }; const names = data.users.filter((u) => u.tags.length > 0).map((u) => u.name); data.users[1].tags.push('y'); return [names, data.users[1].tags.length];`,
   ],
   ['a Date', `const d = new Date(86400000); return [d.getTime(), d.toISOString()];`],
-  ['the iteration limit', `let n = 0; for (let i = 0; i < 100000000; i++) { n += 1; } return n;`],
-  [
-    'the tool-call limit',
-    `for (let i = 0; i < 50; i++) { await callTool('math:add', { a: i, b: 1 }); } return 'done';`,
-  ],
-  ['a blocked key built at run time', `const o = {}; const k = 'const' + 'ructor'; return typeof o[k];`],
   ['returning a function', `return { label: 'x', run: () => 1 };`],
   ['returning nothing', `const x = 1;`],
 ];

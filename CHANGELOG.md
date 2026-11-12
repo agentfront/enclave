@@ -17,6 +17,7 @@ Draft for the maintainer. A security release of `@enclave-vm/core`, `@enclave-vm
 - With the submodule checked out, `yarn test`, `npx nx test <library>` and `npx nx test-e2e browser` run the public and the private suites; without it they run the public ones. `yarn test:security` runs the private ones alone.
 - CI has a job "Security tests" that fetches the submodule with a read-only token and prints counts only, because its log is public.
 - `@enclave-vm/browser` has no changelog of its own: the host page no longer trusts its sandbox iframes (ATK-IFRAME in `SECURITY-TESTS.md`; see "Security Architecture" in the documentation of the package).
+- `@enclave-vm/browser`: the host page refuses a tool call whose arguments hold more than 1,000,000 array items and object keys, and does not relay a console line whose size it cannot measure.
 
 ## 2026-01-09
 

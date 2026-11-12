@@ -321,6 +321,40 @@ interface SidecarOptions {
 }
 ```
 
+## Process-Level Functions
+
+Node.js ends the process when a promise is rejected and nothing handles it, and that rule covers the promises of a sandbox: an async function of a script that throws and is not awaited, a failing tool call nobody awaits. The enclave therefore answers the process events `unhandledRejection` and `rejectionHandled` itself for every promise that is not one of the host realm. Your own rejections reach your listeners, or end the process, as before. Two functions are for a host that wants this in its own hands.
+
+### disableSandboxRejectionGuard(disabled?)
+
+```ts
+disableSandboxRejectionGuard(disabled?: boolean): void
+```
+
+Leaves every rejection to Node.js and to your listeners (`false` turns the guard back on). It applies to the whole process, not to one enclave. Call it only when your application has an `unhandledRejection` listener that decides for itself; without one, a rejection a script leaves behind ends the process.
+
+### isHostPromise(promise)
+
+```ts
+isHostPromise(promise: unknown): boolean
+```
+
+Whether a promise was made by the host's `Promise` (or a subclass of it). A script cannot make its promise pass this test. With the guard disabled, your listener has to ignore every promise for which it returns `false`, and must not touch the reason: it is a value of the script.
+
+```ts
+import { disableSandboxRejectionGuard, isHostPromise } from '@enclave-vm/core';
+
+disableSandboxRejectionGuard();
+
+process.on('unhandledRejection', (reason, promise) => {
+  if (!isHostPromise(promise)) return; // a script's promise: not the application's, do not read the reason
+  logger.error('Unhandled rejection', reason);
+  process.exitCode = 1;
+});
+```
+
+Under `--unhandled-rejections=strict` Node.js raises the exception before it emits anything, and under `=warn` it prints its warning first: use the default mode (`throw`) or `none`.
+
 ## Complete Example
 
 ```ts

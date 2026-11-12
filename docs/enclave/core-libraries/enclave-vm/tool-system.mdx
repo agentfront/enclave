@@ -157,6 +157,8 @@ Arguments are copied into plain host data before the function runs, the way tool
 
 Values passed in `globals` are read-only inside the sandbox. A script cannot assign to them, add or delete properties, freeze them, or call a built-in method that changes its receiver (`push`, `sort`, `Map.prototype.set`, ...); an array returned by `map`, `filter` or `slice` is the script's own copy. To let scripts keep state, return it from a tool.
 
+A regular expression in `globals` can be read (`source`, `flags`) but not run: `test`, `exec` and its use as the pattern of `match`, `matchAll`, `replace`, `search` or `split` throw at every security level. Pass a function that does the matching instead. A custom global cannot be named `Object`.
+
 Functions (and objects with methods) are refused inside arrays, Maps and Sets, because the built-in methods of those collections hand elements to the script directly; keep them as properties of plain objects. Promises, WeakMaps, iterators and generators are refused anywhere in `globals`.
 
 ## One-Shot Execution
