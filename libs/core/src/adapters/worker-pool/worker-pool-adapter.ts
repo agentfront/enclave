@@ -47,6 +47,7 @@ import { createHostToolBridge, encodeToolBridgeFailure, encodeToolBridgeRequest 
 import { serializePatterns } from '../../double-vm/suspicious-patterns';
 import type { DoubleVmConfig } from '../../double-vm/types';
 import { DEFAULT_DOUBLE_VM_CONFIG } from '../../types';
+import { MAX_TIMEOUT_MS } from '../../enclave-options';
 
 /**
  * The double VM configuration in the form that can be sent to a worker: regular expressions as
@@ -795,7 +796,8 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       };
 
       // Set up watchdog timeout (VM timeout + buffer)
-      const watchdogTimeout = context.config.timeout + 5000;
+      // Kept within what a timer holds: a longer delay would fire at once
+      const watchdogTimeout = Math.min(context.config.timeout + 5000, MAX_TIMEOUT_MS);
       const watchdogId: ReturnType<typeof setTimeout> = setTimeout(() => {
         this._forcedTerminations++;
         slot.terminate(false).catch((error) => {

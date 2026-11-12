@@ -29,7 +29,7 @@ The constructor throws a `TypeError` for an option outside its type or range (a 
 |----------|------|---------|-------------|
 | `securityLevel` | `SecurityLevel` | `'STANDARD'` | Security preset |
 | `preset` | `AstPreset` | `'agentscript'` | AST validation preset |
-| `timeout` | `number` | `30000` (by level) | Execution timeout in ms, 1 to 4294967295. Cooperative in process; with the worker pool a script is terminated five seconds after it |
+| `timeout` | `number` | `30000` (by level) | Execution timeout in ms, 1 to 2147483647. Cooperative in process; with the worker pool a script is terminated five seconds after it |
 | `toolCallGraceMs` | `number` | same as `timeout` | How long a tool call in progress at the timeout may still take |
 | `maxToolCalls` | `number` | `100` (by level) | Maximum tool calls per execution |
 | `maxIterations` | `number` | `10000` (by level) | Maximum loop iterations |

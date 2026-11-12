@@ -129,7 +129,7 @@ interface CreateEnclaveOptions {
 
 The constructor checks its options and throws a `TypeError` for a value outside the documented type or range:
 
-- A limit is a finite integer in its range: `timeout` from 1 to 4294967295; `maxIterations`, `maxSanitizeDepth` and `maxSanitizeProperties` at least 1; `maxToolCalls`, `maxConsoleCalls`, `maxConsoleOutputBytes`, `maxGlobalFunctionCalls` and `memoryLimit` at least 0. `Infinity`, `NaN` and a value of another type (a numeric string, `null`) are refused. The one exception is `toolCallGraceMs`, a number of at least 0 for which `Infinity` means "wait without limit".
+- A limit is a finite integer in its range: `timeout` from 1 to 2147483647 (the longest delay a timer holds); `maxIterations`, `maxSanitizeDepth` and `maxSanitizeProperties` at least 1; `maxToolCalls`, `maxConsoleCalls`, `maxConsoleOutputBytes`, `maxGlobalFunctionCalls` and `memoryLimit` at least 0. `Infinity`, `NaN` and a value of another type (a numeric string, `null`) are refused. The one exception is `toolCallGraceMs`, a number of at least 0 for which `Infinity` means "wait without limit".
 - A switch is a boolean: `validate`, `transform`, `sanitizeStackTraces`, `allowFunctionsInGlobals`, `allowBuiltins`, `doubleVm.enabled`, and the switches of `secureProxyConfig` and `doubleVm.parentValidation`.
 - `securityLevel` is one of the four levels.
 - An option passed as `undefined` is an option that was not set: it has its default, which is the security level's value where the level sets one. A wrapper can forward `{ maxIterations: opts.maxIterations }` whether or not its caller set it.

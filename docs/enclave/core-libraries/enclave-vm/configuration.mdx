@@ -62,7 +62,7 @@ The constructor checks the options below and throws a `TypeError` for a value ou
 | Option | Accepted values |
 |--------|-----------------|
 | `securityLevel` | `'STRICT'`, `'SECURE'`, `'STANDARD'`, `'PERMISSIVE'` |
-| `timeout` | Integer from 1 to 4294967295 |
+| `timeout` | Integer from 1 to 2147483647 (the longest delay a timer holds) |
 | `maxIterations`, `maxSanitizeDepth`, `maxSanitizeProperties` | Integer of at least 1 |
 | `maxToolCalls`, `maxConsoleCalls`, `maxConsoleOutputBytes`, `maxGlobalFunctionCalls` | Integer of at least 0 |
 | `memoryLimit` | Integer of at least 0 (`0`: no memory limit) |
@@ -74,7 +74,7 @@ The constructor checks the options below and throws a `TypeError` for a value ou
 | `toolBridge.mode` | `'string'` (default) or `'direct'`; `'direct'` without `toolBridge.acknowledgeInsecureDirect: true` throws an `Error` |
 | `toolBridge.maxPayloadBytes` | Positive finite number |
 | `doubleVm.enabled`, `doubleVm.parentValidation.validateOperationNames`, `.blockSuspiciousSequences` | `true` or `false` |
-| `doubleVm.parentTimeoutBuffer` | Integer from 0 to 4294967295 |
+| `doubleVm.parentTimeoutBuffer` | Integer from 0 to 2147483647 |
 | `doubleVm.parentValidation.maxOperationsPerSecond` | Finite number of at least 1 |
 | `doubleVm.parentValidation.rapidEnumerationThreshold`, each value of `.rapidEnumerationOverrides` | Integer of at least 1 |
 

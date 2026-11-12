@@ -17,8 +17,12 @@
 import { SECURITY_LEVEL_CONFIGS } from './types';
 import type { CreateEnclaveOptions, SecurityLevel } from './types';
 
-/** The largest timeout `vm` accepts (an unsigned 32-bit integer). */
-const MAX_TIMEOUT_MS = 0xffffffff;
+/**
+ * The largest timeout: the longest delay a timer holds. `setTimeout` fires after 1 ms for a
+ * longer one, which would end a script at once. (`vm` itself would take up to 2^32 - 1, and the
+ * sum of a timeout and `doubleVm.parentTimeoutBuffer` stays below that.)
+ */
+export const MAX_TIMEOUT_MS = 0x7fffffff;
 
 /** A copy of `value` with the own properties whose value is not `undefined`. */
 export function withoutUndefined<T extends object>(value: T): T {
@@ -124,7 +128,7 @@ const PRE_SCAN_REGEX_ANALYSIS_LEVELS = ['catastrophic', 'polynomial'] as const;
 
 /** The limits that are counts or sizes, with the smallest value each may have. */
 const INTEGER_OPTIONS: ReadonlyArray<readonly [keyof CreateEnclaveOptions, number, number?]> = [
-  // `vm` takes a timeout as a positive unsigned 32-bit integer
+  // What a timer can hold (see MAX_TIMEOUT_MS)
   ['timeout', 1, MAX_TIMEOUT_MS],
   ['maxIterations', 1],
   ['maxToolCalls', 0],

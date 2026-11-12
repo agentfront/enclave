@@ -486,10 +486,15 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
               checkLength(total, 'Array.concat');
               if (!array) handed = snapshot(item, length, true);
               else if (i < 0) own = length;
+            } else if (array && i < 0) {
+              // The receiver, when it is an array, stays the receiver: the result is of its
+              // kind. The built-in asks it again whether it is spread, so it is counted as
+              // what it holds: whichever answer it gives then, the count covers it.
+              var held = toLength(item.length);
+              total += held > 1 ? held : 1;
             } else {
               total += 1;
-              // The receiver, when it is an array, stays the receiver: the result is of its kind
-              if (!(array && i < 0)) handed = [item];
+              handed = [item];
             }
           } else {
             total += 1;
