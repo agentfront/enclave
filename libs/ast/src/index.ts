@@ -5,7 +5,7 @@
  */
 
 // Core validator
-export { JSAstValidator } from './validator';
+export { JSAstValidator, DEFAULT_MAX_ISSUES } from './validator';
 
 // Transformer
 export { transformAst, generateCode, transformCode } from './transformer';

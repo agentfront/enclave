@@ -672,10 +672,16 @@ const result = await validator.validate(code, {
   // Stop on first error
   stopOnFirstError: false,
 
-  // Maximum number of issues (0 = unlimited)
+  // Maximum number of issues to collect (default: 100, 0 = unlimited)
   maxIssues: 100,
 });
 ```
+
+`maxIssues` bounds what one validation builds from a source the host did not write. It defaults to
+`DEFAULT_MAX_ISSUES` (100); pass `0` to collect every issue. At the cap the validation stops as soon as an
+error is on the list. While only warnings were found the remaining rules still run, because one of them may
+refuse the source, and further warnings are not collected. A result that was cut short has
+`incomplete: true`, and `valid` is `true` only when every rule ran and none reported an error.
 
 ### Rule Management
 
@@ -700,8 +706,10 @@ validator.unregisterRule('no-eval');
 
 ```typescript
 interface ValidationResult {
-  valid: boolean; // true if no errors
-  issues: ValidationIssue[]; // All issues found
+  valid: boolean; // true if every rule ran and none reported an error
+  issues: ValidationIssue[]; // The issues found, at most maxIssues
+  incomplete?: boolean; // true if the list was cut at maxIssues or the validation stopped early
+  rulesExecuted?: number; // Rules that were started
   ast?: acorn.Node; // Parsed AST (if parsing succeeded)
   parseError?: Error; // Parse error (if parsing failed)
 }
