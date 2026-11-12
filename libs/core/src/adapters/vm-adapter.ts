@@ -1071,29 +1071,8 @@ export class VmAdapter implements SandboxAdapter {
               return chargeActual(originalPadEnd.call(this, targetLength, padString), estimatedSize, 'String.padEnd');
             };
 
-            // Patch array fill - converts sparse arrays to dense (allocates memory)
-            // Vector 1110/1170: Array(dynamicSize).fill() can exhaust memory
-            // Estimate: each element uses ~8 bytes (pointer) for objects/primitives
-            var originalFill = arrayProto.fill;
-            arrayProto.fill = function(value, start, end) {
-              // Calculate actual fill range
-              var len = this.length >>> 0;
-              var relativeStart = start === undefined ? 0 : (start >> 0);
-              var relativeEnd = end === undefined ? len : (end >> 0);
-              var k = relativeStart < 0 ? Math.max(len + relativeStart, 0) : Math.min(relativeStart, len);
-              var finalEnd = relativeEnd < 0 ? Math.max(len + relativeEnd, 0) : Math.min(relativeEnd, len);
-              var fillCount = Math.max(0, finalEnd - k);
-
-              // Estimate memory: 8 bytes per element (pointer size)
-              var estimatedSize = fillCount * 8;
-              if (estimatedSize > memoryLimit) {
-                throw new RangeError('Array.fill would exceed memory limit: ' +
-                  Math.round(estimatedSize / 1024 / 1024) + 'MB > ' +
-                  Math.round(memoryLimit / 1024 / 1024) + 'MB');
-              }
-              trackMemory(estimatedSize);
-              return originalFill.call(this, value, start, end);
-            };
+            // Array.prototype.fill is accounted for with the other array operations (see
+            // ../realm-memory), where its range is worked out by the built-in's own rules.
 
             // Array.from and Array.of build an array of any size in one call: charged for what
             // they built (8 bytes per element), on the realm's own Array, so that the constructor
