@@ -402,7 +402,9 @@ export interface AgentScriptOptions {
    * Syntax node types to allow in addition to `AGENTSCRIPT_ALLOWED_NODE_TYPES`.
    *
    * AgentScript refuses every construct that is not on its syntax allowlist (`this`, classes,
-   * `new.target`, `debugger`, ...). Listing a node type here re-enables it.
+   * `new.target`, `debugger`, ...). Listing a node type here re-enables it. A construct that
+   * shares its node type with an allowed one is listed under its own name: `UsingDeclaration`,
+   * `AwaitUsingDeclaration`, `ForAwaitStatement`, `GeneratorFunction`.
    * Each of the refused constructs is refused for a security reason (see
    * `AGENTSCRIPT_ALLOWED_NODE_TYPES`), so only do this for a host that does not run untrusted code.
    *

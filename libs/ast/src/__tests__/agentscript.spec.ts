@@ -559,6 +559,58 @@ describe('AgentScript Preset', () => {
       const result = await validator.validate(code);
       expect(result.valid).toBe(true);
     });
+
+    it('should allow the wrapper name for the wrapper only', async () => {
+      const validator = new JSAstValidator(createAgentScriptPreset());
+      const codes = async (code: string) => (await validator.validate(code)).issues.map((issue) => issue.code);
+
+      // A function of the script that carries the name is a user function like any other
+      expect(await codes('async function __ag_main() { function __ag_main(a) { return a; } return 1; }')).toContain(
+        'NO_USER_FUNCTION_DECLARATION',
+      );
+      // So is a top-level function of that name with another shape, and a second wrapper
+      expect(await codes('function __ag_main() { return 1; }')).toContain('NO_USER_FUNCTION_DECLARATION');
+      expect(await codes('async function __ag_main(a) { return a; }')).toContain('NO_USER_FUNCTION_DECLARATION');
+      expect(
+        await codes('async function __ag_main() { return 1; }\nasync function __ag_main() { return 2; }'),
+      ).toContain('NO_USER_FUNCTION_DECLARATION');
+    });
+  });
+
+  describe('Syntax allowlist: constructs that share a node type', () => {
+    const wrap = (body: string) => `async function __ag_main() { ${body} }`;
+
+    it.each([
+      ['a `using` declaration', 'using resource = null; return 1;', 'UsingDeclaration'],
+      ['an `await using` declaration', 'await using resource = null; return 1;', 'AwaitUsingDeclaration'],
+      ['a `for await` loop', 'for await (const item of []) { } return 1;', 'ForAwaitStatement'],
+    ])('should block %s and allow it when it is listed by name', async (_name, body, variant) => {
+      const result = await new JSAstValidator(createAgentScriptPreset()).validate(wrap(body));
+      expect(result.valid).toBe(false);
+      expect(result.issues.find((issue) => issue.code === 'DISALLOWED_SYNTAX')?.data).toMatchObject({ variant });
+
+      const relaxed = new JSAstValidator(createAgentScriptPreset({ additionalAllowedSyntax: [variant] }));
+      expect((await relaxed.validate(wrap(body))).valid).toBe(true);
+    });
+
+    it('should block generator functions as syntax', async () => {
+      const result = await new JSAstValidator(createAgentScriptPreset()).validate(
+        wrap('const g = function* () { }; return 1;'),
+      );
+
+      expect(result.issues.find((issue) => issue.code === 'DISALLOWED_SYNTAX')?.data).toEqual({
+        nodeType: 'FunctionExpression',
+        variant: 'GeneratorFunction',
+      });
+    });
+
+    it('should keep allowing var, let, const and for-of', async () => {
+      const result = await new JSAstValidator(createAgentScriptPreset()).validate(
+        wrap('var a = 1; let b = 2; const c = 3; for (const item of [a, b, c]) { } return 1;'),
+      );
+
+      expect(result.valid).toBe(true);
+    });
   });
 
   describe('Blocked: Dangerous Identifiers', () => {
