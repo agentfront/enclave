@@ -115,6 +115,56 @@ describe('Multi-file Babel Transform', () => {
       expect(result.warnings.some((w) => w.includes('Circular dependency'))).toBe(true);
     });
 
+    it('should list a dependency once, however many imports name it', () => {
+      const babel = createRestrictedBabel(defaultBabelConfig);
+      const files: MultiFileInput = {
+        'a.ts': `import { b } from './b'; import { c } from './b'; const later = () => import('./b');`,
+        'b.ts': `export const b = 1; export const c = 2;`,
+      };
+
+      const result = transformMultiple(files, { presets: ['typescript'] }, defaultLimits, babel.transform);
+
+      expect(result.dependencies['a.ts']).toEqual(['b.ts']);
+    });
+
+    it('should warn once about a circular dependency that is imported twice', () => {
+      const babel = createRestrictedBabel(defaultBabelConfig);
+      const files: MultiFileInput = {
+        'a.ts': `import { b } from './b'; import { b2 } from './b'; export const a = 1;`,
+        'b.ts': `import { a } from './a'; import { a as a2 } from './a'; export const b = 1; export const b2 = 2;`,
+      };
+
+      const result = transformMultiple(files, { presets: ['typescript'] }, defaultLimits, babel.transform);
+
+      expect(result.warnings.filter((w) => w.includes('Circular dependency'))).toEqual([
+        'Circular dependency detected: a.ts -> b.ts -> a.ts',
+      ]);
+    });
+
+    it('should resolve imports relative to the importing file', () => {
+      const identity = (code: string) => ({ code });
+      const files: MultiFileInput = {
+        'index.ts': `import './lib'; import './lib/util'; import './missing';`,
+        'lib/index.ts': `import './util'; import '../index'; import '../';`,
+        'lib/util.ts': `import '../lib/deep/x'; import './deep/../util';`,
+        'lib/deep/x.ts': `import '../../index.ts'; import '../util.ts'; import '../../lib';`,
+      };
+
+      const result = transformMultiple(files, {}, defaultLimits, identity);
+
+      expect(result.dependencies).toEqual({
+        'index.ts': ['lib/index.ts', 'lib/util.ts'],
+        'lib/index.ts': ['lib/util.ts', 'index.ts'],
+        'lib/util.ts': ['lib/deep/x.ts'],
+        'lib/deep/x.ts': ['index.ts', 'lib/util.ts', 'lib/index.ts'],
+      });
+      expect(result.warnings.filter((w) => w.startsWith('Unresolved import'))).toEqual([
+        'Unresolved import "./missing" in index.ts',
+        'Unresolved import "../" in lib/index.ts',
+        'Unresolved import "./deep/../util" in lib/util.ts',
+      ]);
+    });
+
     it('should warn about unresolved imports', () => {
       const babel = createRestrictedBabel(defaultBabelConfig);
       const files: MultiFileInput = {
@@ -290,6 +340,29 @@ describe('Multi-file Babel Transform', () => {
           babel.transform,
         ),
       ).toThrow(/absolute paths not allowed/);
+    });
+
+    it('should reject a filename longer than 255 characters', () => {
+      const babel = createRestrictedBabel(defaultBabelConfig);
+      const longName = 'a'.repeat(253) + '.ts';
+
+      expect(() =>
+        transformMultiple(
+          { [longName]: 'export const x = 1;' },
+          { presets: ['typescript'] },
+          defaultLimits,
+          babel.transform,
+        ),
+      ).toThrow(/Invalid filename "a{32}\.\.\.": longer than 255 characters/);
+    });
+
+    it('should apply the output limit to what a single-file transform returns', () => {
+      const output = 'export const x = 1;';
+      const limits: MultiFileLimits = { ...defaultLimits, maxTotalOutputSize: output.length - 1 };
+
+      expect(() => transformMultiple({ 'a.ts': 'x' }, {}, limits, () => ({ code: output }))).toThrow(
+        /Failed to transform "a.ts": Total output size exceeds limit: 19 bytes > 18 bytes/,
+      );
     });
 
     it('should reject empty file set', () => {

@@ -19,6 +19,7 @@
 import * as vm from 'vm';
 import * as BabelStandalone from '@babel/standalone';
 import { rewriteImports, type ImportRewriteConfig } from '@enclave-vm/ast';
+import { removeStackLocations } from './text-scan';
 
 /**
  * Safe transform options that can be passed by sandbox code
@@ -93,6 +94,32 @@ function sanitizeFilename(filename: string): string {
     .slice(0, 255); // Limit length
 
   return sanitized || 'input.tsx';
+}
+
+/**
+ * Longest error text of a failed transform that is cleaned and passed on. Babel quotes the
+ * source around a syntax error in its message, so the message can be as long as the source; a
+ * script gets the diagnosis, not a copy of its text.
+ */
+const MAX_ERROR_MESSAGE_LENGTH = 2000;
+
+/**
+ * The message of a failed transform without host paths, stack locations and VM internals.
+ * The text is cut to `MAX_ERROR_MESSAGE_LENGTH` before anything is applied to it and again
+ * afterwards, and each step is linear in its length.
+ */
+function sanitizeTransformErrorMessage(message: unknown): string {
+  const text = typeof message === 'string' && message.length > 0 ? message : 'Unknown transform error';
+  const truncated = text.length > MAX_ERROR_MESSAGE_LENGTH;
+  const bounded = truncated ? text.slice(0, MAX_ERROR_MESSAGE_LENGTH) : text;
+
+  const sanitized = removeStackLocations(bounded.replace(/\/[^\s:]+/g, '<path>')) // Remove file paths, stack locations
+    .replace(/evalmachine\.<anonymous>/g, '<transform>') // Remove VM internals
+    .trim();
+
+  return sanitized.length > MAX_ERROR_MESSAGE_LENGTH || truncated
+    ? sanitized.slice(0, MAX_ERROR_MESSAGE_LENGTH) + '...'
+    : sanitized;
 }
 
 /**
@@ -432,29 +459,27 @@ export function createRestrictedBabel(config: BabelWrapperConfig): {
 
         // Get the result
         result = (isolatedContext as Record<string, unknown>)['__babel_result__'] as { code: string };
-
-        // Clean up temporary variables
-        delete (isolatedContext as Record<string, unknown>)['__babel_code__'];
-        delete (isolatedContext as Record<string, unknown>)['__babel_options__'];
-        delete (isolatedContext as Record<string, unknown>)['__babel_result__'];
       } catch (error) {
-        // Re-throw with sanitized message (remove file paths)
-        const err = error as Error;
-        const sanitizedMessage = (err.message || 'Unknown transform error')
-          .replace(/\/[^\s:]+/g, '<path>') // Remove file paths
-          .replace(/at\s+[^\s]+\s+\([^)]+\)/g, '') // Remove stack locations
-          .replace(/evalmachine\.<anonymous>/g, '<transform>') // Remove VM internals
-          .trim();
+        const message = (error as { message?: unknown } | null)?.message;
 
         // Check for timeout
-        if (err.message?.includes('Script execution timed out')) {
+        if (typeof message === 'string' && message.includes('Script execution timed out')) {
           throw new Error(
             `Babel transform timed out after ${config.transformTimeout}ms. ` +
               `The code may be too complex or contain infinite loops.`,
           );
         }
 
-        throw new Error(`Babel transform failed: ${sanitizedMessage}`);
+        // Re-throw with sanitized message (remove file paths)
+        throw new Error(`Babel transform failed: ${sanitizeTransformErrorMessage(message)}`);
+      } finally {
+        // Clean up temporary variables, also after a failed transform: the context is shared,
+        // and the source text of one call is not kept on it for the next
+        if (isolatedContext) {
+          delete (isolatedContext as Record<string, unknown>)['__babel_code__'];
+          delete (isolatedContext as Record<string, unknown>)['__babel_options__'];
+          delete (isolatedContext as Record<string, unknown>)['__babel_result__'];
+        }
       }
 
       // 9. Validate output
@@ -464,8 +489,17 @@ export function createRestrictedBabel(config: BabelWrapperConfig): {
         throw new Error('Transform produced invalid output');
       }
 
-      // 10. Apply import rewriting if configured
+      // 10. Apply import rewriting if configured. The output limit holds for the text the
+      // rewrite is about to read, not only for the text it produces.
       if (options?.importRewrite?.enabled) {
+        const transformedBytes = Buffer.byteLength(outputCode, 'utf-8');
+        if (transformedBytes > config.maxOutputSize) {
+          throw new Error(
+            `Output exceeds maximum size (${transformedBytes} bytes > ${config.maxOutputSize} bytes). ` +
+              `The transformed code is too large.`,
+          );
+        }
+
         try {
           const rewriteResult = rewriteImports(outputCode, options.importRewrite);
           outputCode = rewriteResult.code;
