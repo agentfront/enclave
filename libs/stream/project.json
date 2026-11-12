@@ -6,6 +6,16 @@
   "tags": ["scope:publishable", "type:lib", "versioning:independent"],
   "implicitDependencies": ["types"],
   "targets": {
+    "test": {
+      "inputs": [
+        "default",
+        "^production",
+        "{workspaceRoot}/jest.preset.js",
+        { "externalDependencies": ["jest", "@nx/jest", "ts-jest"] },
+        { "dependentTasksOutputFiles": "**/*.d.ts", "transitive": true },
+        "securitySpecs"
+      ]
+    },
     "build-cjs": {
       "executor": "@nx/esbuild:esbuild",
       "dependsOn": ["^build"],
