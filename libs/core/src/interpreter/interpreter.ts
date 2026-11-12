@@ -27,6 +27,11 @@
 // - the engine never calls a function for a script: data of a script holds no function under
 //   a name the engine looks up by itself (to convert a value, to serialize it, to await it), so
 //   whatever runs for a script runs where the script wrote a call, with the checks of a call;
+// - what a script can call is listed: its own functions, the functions the host provides as
+//   globals, and the methods of the values it holds (arrays, strings, numbers, booleans,
+//   BigInts, dates, objects), each on its own kind of value. A built-in the list does not know
+//   is refused, and an engine built-in is handed a function only where it keeps it as data: a
+//   callback is always called by the interpreter;
 // - every promise an interpreted function returns has a rejection handler, so a
 //   call nobody awaits cannot become an unhandled rejection of the host process;
 // - every loop the interpreter runs on a script's behalf counts against the
@@ -156,11 +161,11 @@ const FunctionProtoApply: unknown = Function.prototype.apply;
 const FunctionProtoBind: unknown = Function.prototype.bind;
 const FunctionProtoToString = Function.prototype.toString;
 
-/** The methods of a built-in prototype, with their names. */
+/** The methods of a built-in prototype, with their names. A name no script may use is no method here. */
 function methodsOf(prototype: object): ReadonlyMap<unknown, string> {
   const methods = new Map<unknown, string>();
   for (const name of Object.getOwnPropertyNames(prototype)) {
-    if (name === 'constructor') continue;
+    if (isBlockedKey(name)) continue;
     const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
     if (descriptor && typeof descriptor.value === 'function') methods.set(descriptor.value, name);
   }
@@ -172,6 +177,60 @@ function methodsOf(prototype: object): ReadonlyMap<unknown, string> {
 // is called, never by how the call is written.
 const ARRAY_METHODS = methodsOf(Array.prototype);
 const STRING_METHODS = methodsOf(String.prototype);
+
+/** The other kinds of value a script holds whose methods it may call */
+type ValueKind = 'Number' | 'Boolean' | 'BigInt' | 'Date' | 'Object';
+
+interface KindMethod {
+  kind: ValueKind;
+  name: string;
+}
+
+/** The methods of the other built-in prototypes, each with the kind of value it belongs to. */
+const OTHER_METHODS: ReadonlyMap<unknown, KindMethod> = (() => {
+  const prototypes: Array<[ValueKind, object]> = [
+    ['Number', Number.prototype],
+    ['Boolean', Boolean.prototype],
+    ['BigInt', BigInt.prototype],
+    ['Date', Date.prototype],
+    ['Object', Object.prototype],
+  ];
+  const methods = new Map<unknown, KindMethod>();
+  for (const [kind, prototype] of prototypes) {
+    for (const [method, name] of methodsOf(prototype)) {
+      if (!methods.has(method)) methods.set(method, { kind, name });
+    }
+  }
+  return methods;
+})();
+
+/**
+ * The value a method of each kind works on. The methods of `Object.prototype` take any value,
+ * except `valueOf`: on a primitive it returns an object that wraps it, a kind of value a script
+ * has no other way to make and that nothing here measures as what it holds.
+ */
+const RECEIVERS: Readonly<Record<ValueKind, { noun: string; accepts(receiver: unknown, name: string): boolean }>> = {
+  Number: { noun: 'a number', accepts: (receiver) => typeof receiver === 'number' },
+  Boolean: { noun: 'a boolean', accepts: (receiver) => typeof receiver === 'boolean' },
+  BigInt: { noun: 'a BigInt', accepts: (receiver) => typeof receiver === 'bigint' },
+  Date: { noun: 'a date', accepts: (receiver) => receiver instanceof Date },
+  Object: {
+    noun: 'an object',
+    accepts: (receiver, name) =>
+      name !== 'valueOf' || (receiver !== null && (typeof receiver === 'object' || typeof receiver === 'function')),
+  },
+};
+
+/**
+ * `next` of the iterator that `values()`, `keys()` and `entries()` of an array return. It is the
+ * one method of an iterator a script may call: the interpreter goes through an iterator itself
+ * (`for…of`, a spread, a destructuring), and whatever else an engine puts on its iterators
+ * (methods that take a callback among them) is not on the list.
+ */
+const ARRAY_ITERATOR_NEXT: unknown = (Object.getPrototypeOf([][Symbol.iterator]()) as { next?: unknown }).next;
+
+/** Functions this library puts on a value it hands to a script, rather than under a global name */
+const LIBRARY_FUNCTIONS = new WeakSet<object>();
 
 /**
  * The arguments an array method keeps as they are. Every other argument is a number or a text to
@@ -399,12 +458,11 @@ export function createScriptError(name: string, message: string, code?: string):
   error['name'] = name;
   error['message'] = message;
   if (code !== undefined) error['code'] = code;
-  Object.defineProperty(error, 'toString', {
-    value: function toString(): string {
-      return message ? `${name}: ${message}` : name;
-    },
-    enumerable: false,
-  });
+  const toString = function toString(): string {
+    return message ? `${name}: ${message}` : name;
+  };
+  LIBRARY_FUNCTIONS.add(toString);
+  Object.defineProperty(error, 'toString', { value: toString, enumerable: false });
   SCRIPT_ERRORS.add(error);
   return Object.freeze(error);
 }
@@ -549,11 +607,31 @@ export class Interpreter {
   /** The error that ended the run (step budget, abort, allocation budget); set once, never caught */
   private fatal: unknown;
   private readonly interpretedFunctions = new WeakSet<object>();
+  /** The functions the host provides: the globals, their members, and what `bind` made of them */
+  private readonly provided = new WeakSet<object>();
   private readonly errorCopies = new WeakMap<object, object>();
 
   constructor(private readonly options: InterpreterOptions) {
     this.globals = options.globals;
     this.maxPendingCalls = options.maxPendingCalls ?? DEFAULT_MAX_PENDING_CALLS;
+    this.provide(this.globals, 2);
+  }
+
+  /**
+   * Remember the functions among the properties of `holder`, `depth` levels down: a global
+   * (`parseInt`) or a member of one (`Math.max`, a method of a tool namespace). Read from the
+   * property itself, so that nothing of the host runs for it. An array holds data.
+   */
+  private provide(holder: unknown, depth: number): void {
+    if (holder === null || (typeof holder !== 'object' && typeof holder !== 'function') || Array.isArray(holder))
+      return;
+    for (const name of Object.getOwnPropertyNames(holder)) {
+      const descriptor = Object.getOwnPropertyDescriptor(holder, name);
+      if (!descriptor || !('value' in descriptor)) continue;
+      const value: unknown = descriptor.value;
+      if (typeof value === 'function') this.provided.add(value);
+      if (depth > 1) this.provide(value, depth - 1);
+    }
   }
 
   /**
@@ -1331,7 +1409,7 @@ export class Interpreter {
    */
   private bindFunction(target: unknown, boundThis: unknown, boundArgs: unknown[]): (...rest: unknown[]) => unknown {
     this.charge((boundArgs.length + 2) * 8);
-    return (...rest: unknown[]): Promise<unknown> => {
+    const bound = (...rest: unknown[]): Promise<unknown> => {
       // The bound function is called as a built-in is: one call deep where it is called from,
       // and the function it stands for one deeper.
       const result = this.callFunction(target, boundThis, [...boundArgs, ...rest], this.callerDepth);
@@ -1339,6 +1417,8 @@ export class Interpreter {
       result.then(undefined, ignoreRejection);
       return result;
     };
+    this.provided.add(bound);
+    return bound;
   }
 
   /**
@@ -1351,6 +1431,25 @@ export class Interpreter {
   private checkBuiltinCall(fn: object, thisArg: unknown, args: unknown[]): unknown[] {
     const arrayMethod = ARRAY_METHODS.get(fn);
     const stringMethod = arrayMethod === undefined ? STRING_METHODS.get(fn) : undefined;
+    const otherMethod = arrayMethod === undefined && stringMethod === undefined ? OTHER_METHODS.get(fn) : undefined;
+    const engineMethod = arrayMethod !== undefined || stringMethod !== undefined || otherMethod !== undefined;
+
+    // What a script can call is listed. A function that is neither a method of a value a script
+    // holds nor provided by the host is one the engine added somewhere a script can reach
+    // (on its iterators, for one): nothing here knows what it does with its arguments.
+    if (
+      !engineMethod &&
+      fn !== ARRAY_ITERATOR_NEXT &&
+      fn !== FunctionProtoToString &&
+      !this.provided.has(fn) &&
+      !LIBRARY_FUNCTIONS.has(fn)
+    ) {
+      throw new InterpreterError('This built-in function is not available in the sandbox');
+    }
+    if (otherMethod !== undefined && !RECEIVERS[otherMethod.kind].accepts(thisArg, otherMethod.name)) {
+      const { kind, name } = otherMethod;
+      throw new InterpreterError(`${kind} '${name}' works on ${RECEIVERS[kind].noun} only`);
+    }
 
     // Arrays where the function takes a text or a number: the engine joins them.
     let arrayText = 0;
@@ -1373,6 +1472,22 @@ export class Interpreter {
 
     if (stringMethod !== undefined) args = this.checkStringMethod(stringMethod, thisArg, args, arrayText);
     else if (arrayMethod !== undefined) args = this.checkArrayMethod(arrayMethod, thisArg, args);
+
+    // An engine built-in gets a function only where it keeps it as data (an item to push, a
+    // value to look for). A callback of an array method is called by the interpreter, which
+    // awaits it and checks the call; any other built-in would call it by itself, or turn it
+    // into text.
+    const callbackTaken =
+      arrayMethod !== undefined && HIGHER_ORDER_ARRAY_METHODS.has(arrayMethod) && typeof args[0] === 'function';
+    if (engineMethod && !callbackTaken) {
+      const isData = arrayMethod === undefined ? undefined : ARRAY_DATA_ARGUMENTS.get(arrayMethod);
+      for (let i = 0; i < args.length; i++) {
+        if (typeof args[i] !== 'function' || isData?.(i)) continue;
+        const kind = arrayMethod !== undefined ? 'Array' : stringMethod !== undefined ? 'String' : otherMethod?.kind;
+        const name = arrayMethod ?? stringMethod ?? otherMethod?.name;
+        throw new InterpreterError(`${kind} '${name}' does not take a function in the sandbox`);
+      }
+    }
 
     const convert = ARGUMENT_CONVERSIONS.get(fn);
     if (convert) args = convert(args);
