@@ -1353,6 +1353,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   const __ag_defineProperties = Object.defineProperties;
   const __ag_setPrototypeOf = Object.setPrototypeOf;
   const __ag_objectCreate = Object.create;
+  const __ag_ParentProxy = Proxy;
   const __ag_objectFreeze = Object.freeze;
   const __ag_ReflectGet = Reflect.get;
   const __ag_ReflectSet = Reflect.set;
@@ -1712,6 +1713,10 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
       return value;
     }
+    // An argument guard on its way back is the script's own value again.
+    if (guardedHostArguments.has(value)) {
+      return guardedHostArguments.get(value);
+    }
     if (membraneProxies.has(value) || belongsToInnerRealm(value)) {
       return value;
     }
@@ -1719,16 +1724,28 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   }
 
   /**
-   * Arguments for a built-in method of host data. Such a method (map, forEach, sort, find, ...)
-   * calls a script callback with the elements, the index and the collection itself, and those
-   * are raw host objects: each callback is replaced by one that receives them wrapped.
+   * Arguments for a built-in method of host data. Such a method runs in the host's realm, and
+   * whatever of the script it calls, it calls with the host's own values:
+   *
+   * - a callback (map, forEach, sort, find, ...) receives the elements, the index and the
+   *   collection itself: each callback is replaced by one that receives them wrapped;
+   * - a method of an object argument (the set operations ask the other collection has(element)
+   *   for each element of the receiver): the object is replaced by a guard, see
+   *   guardObjectForHost.
    */
   function guardCallbacksForHost(args) {
     var guardedArgs = [];
     for (var i = 0; i < args.length; i++) {
-      guardedArgs[i] = typeof args[i] === 'function' ? guardCallbackForHost(args[i]) : args[i];
+      guardedArgs[i] = guardArgumentForHost(args[i]);
     }
     return guardedArgs;
+  }
+
+  function guardArgumentForHost(value) {
+    if (typeof value === 'function') {
+      return guardedHostArguments.has(value) ? value : guardCallbackForHost(value);
+    }
+    return guardObjectForHost(value);
   }
 
   function guardCallbackForHost(callback) {
@@ -1738,6 +1755,84 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       }
       return __ag_ReflectApply(callback, undefined, hostArgs);
     };
+  }
+
+  // The guard of an object of the script, and what each guard stands for (so that a guard a
+  // built-in hands back, as an element of its result say, is the script's own value again).
+  const hostArgumentGuards = new WeakMap();
+  const guardedHostArguments = new WeakMap();
+
+  /**
+   * An object of the script on its way into a built-in method of host data.
+   *
+   * The built-in may look up a method on it and call that method with host values. So it gets a
+   * guard instead: an object of this realm that answers every property read from the script's
+   * object, with a function member replaced by one that passes its arguments through
+   * toSandboxValue (and keeps the script's object as its receiver), and an object member or
+   * result guarded the same way. Its own properties are listed as they are, so a built-in that
+   * copies or serializes the object sees the same data. An array is data to every built-in and
+   * is passed as it is, as is a value that is behind the membrane already.
+   */
+  function guardObjectForHost(value) {
+    if (value === null || typeof value !== 'object') {
+      return value;
+    }
+    if (membraneProxies.has(value) || guardedHostArguments.has(value) || __ag_ArrayIsArray(value)) {
+      return value;
+    }
+    var existing = hostArgumentGuards.get(value);
+    if (existing) {
+      return existing;
+    }
+    // Over an empty object of this realm, not over the script's object: a frozen member of the
+    // target would have to be reported as it is (proxy invariant), unguarded.
+    var guard = new __ag_ParentProxy(__ag_objectCreate(null), {
+      get: function(_shell, property) {
+        return guardMemberForHost(__ag_ReflectGet(value, property, value), value);
+      },
+      has: function(_shell, property) {
+        return __ag_ReflectHas(value, property);
+      },
+      // A built-in that lists the object (to copy or to serialize it) sees the script's own
+      // properties, each as a data property holding what a read of it gives.
+      ownKeys: function() {
+        return __ag_ReflectOwnKeys(value);
+      },
+      getOwnPropertyDescriptor: function(_shell, property) {
+        var descriptor = __ag_ReflectGetOwnPropertyDescriptor(value, property);
+        if (!descriptor) {
+          return undefined;
+        }
+        return {
+          value: guardMemberForHost(__ag_ReflectGet(value, property, value), value),
+          writable: true,
+          enumerable: descriptor.enumerable === true,
+          configurable: true
+        };
+      },
+      // What a built-in stores in the object is a host value like any other.
+      set: function(_shell, property, stored) {
+        return __ag_ReflectSet(value, property, toSandboxValue(stored), value);
+      }
+    });
+    hostArgumentGuards.set(value, guard);
+    guardedHostArguments.set(guard, value);
+    return guard;
+  }
+
+  function guardMemberForHost(member, holder) {
+    if (typeof member !== 'function') {
+      return guardObjectForHost(member);
+    }
+    var method = function() {
+      var hostArgs = [];
+      for (var i = 0; i < arguments.length; i++) {
+        hostArgs[i] = toSandboxValue(arguments[i]);
+      }
+      return guardArgumentForHost(__ag_ReflectApply(member, holder, hostArgs));
+    };
+    guardedHostArguments.set(method, member);
+    return method;
   }
 
   /**
@@ -1790,6 +1885,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   function wrapHostBuiltinResult(result) {
     if (result === null || (typeof result !== 'object' && typeof result !== 'function')) {
       return result;
+    }
+    if (guardedHostArguments.has(result)) {
+      result = guardedHostArguments.get(result);
     }
     if (membraneProxies.has(result)) {
       return result;
@@ -1882,6 +1980,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     // Idempotent in both modes: a membrane proxy is never wrapped again.
     if (membraneProxies.has(obj)) {
       return obj;
+    }
+
+    // An argument guard (see guardObjectForHost) that a built-in of host data kept in what it
+    // returned stands for a value of the script: that value is what the script gets back.
+    if (guardedHostArguments.has(obj)) {
+      return guardedHostArguments.get(obj);
     }
 
     // Check cache
