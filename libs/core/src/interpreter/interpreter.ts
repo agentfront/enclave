@@ -270,6 +270,7 @@ const FunctionProtoApply: unknown = Function.prototype.apply;
 const FunctionProtoBind: unknown = Function.prototype.bind;
 const FunctionProtoToString = Function.prototype.toString;
 const ArrayProtoToLocaleString: unknown = Array.prototype.toLocaleString;
+const StringProtoIndexOf = String.prototype.indexOf;
 
 /** The methods of a built-in prototype, with their names. A name no script may use is no method here. */
 function methodsOf(prototype: object): ReadonlyMap<unknown, string> {
@@ -1811,10 +1812,15 @@ export class Interpreter {
 
       let result = this.searchInPieces(arrayMethod, stringMethod, thisArg, args);
       if (result === NOT_SEARCHED) {
+        // Whether a text is in a text is asked as where it is: how far the engine went is
+        // then known (see countSearched)
+        const asIndex = stringMethod === 'includes' && typeof thisArg === 'string';
         // A function of the script that the built-in invokes while it starts is its callee
-        const builtin = fn as (...a: unknown[]) => unknown;
+        const builtin = (asIndex ? StringProtoIndexOf : fn) as (...a: unknown[]) => unknown;
         const builtinArgs = args;
         result = await this.withCallerDepth(own, () => builtin.apply(thisArg, builtinArgs));
+        this.countSearched(arrayMethod, stringMethod, thisArg, args, result);
+        if (asIndex) result = result !== -1;
       }
       if (stringMethod === 'split' && Array.isArray(result)) {
         if (result.length > MAX_ARRAY_LENGTH) {
@@ -1847,9 +1853,14 @@ export class Interpreter {
   ): void {
     let read = 0;
     if (typeof receiver === 'string') {
-      if (stringMethod === undefined || !CONSTANT_STRING_METHODS.has(stringMethod)) read += receiver.length;
+      // A search for a place is counted by how far it goes, when it has answered
+      const counted = stringMethod === undefined || !ARRAY_SEARCHES.has(stringMethod);
+      if (counted && (stringMethod === undefined || !CONSTANT_STRING_METHODS.has(stringMethod))) {
+        read += receiver.length;
+      }
     } else if (Array.isArray(receiver)) {
-      if (arrayMethod === undefined || !CONSTANT_ARRAY_METHODS.has(arrayMethod)) read += receiver.length;
+      const counted = arrayMethod !== 'indexOf' && arrayMethod !== 'lastIndexOf';
+      if (counted && (arrayMethod === undefined || !CONSTANT_ARRAY_METHODS.has(arrayMethod))) read += receiver.length;
     } else if (typeof receiver === 'bigint') {
       // Its own methods write it out
       this.bigIntAsText(receiver);
@@ -1871,6 +1882,47 @@ export class Interpreter {
         Math.min(receiver.length, typeof other === 'string' ? other.length : receiver.length) * LOCALE_COMPARE_WORK;
     }
     this.work(read);
+  }
+
+  /**
+   * Count a search for a place by how far the engine went: from where it started to where it
+   * found what it looked for, or to the end. A script that goes through a long text with
+   * `indexOf(text, position)` pays for the text once, not once per call.
+   *
+   * @param index - What the engine answered: the place, or -1
+   */
+  private countSearched(
+    arrayMethod: string | undefined,
+    stringMethod: string | undefined,
+    receiver: unknown,
+    args: unknown[],
+    index: unknown,
+  ): void {
+    if (typeof index !== 'number') return;
+    const position: unknown = args[1];
+    if (typeof receiver === 'string' && stringMethod !== undefined && ARRAY_SEARCHES.has(stringMethod)) {
+      const length = receiver.length;
+      if (stringMethod === 'lastIndexOf') {
+        // Without a position, or with one that is not a number, the search starts at the end
+        const given = Number(position);
+        const from = Number.isNaN(given) ? length : Math.min(Math.max(Math.trunc(given), 0), length);
+        this.work(index === -1 ? from : from - index);
+      } else {
+        const from = Math.min(Math.max(integerOf(position), 0), length);
+        this.work(index === -1 ? length - from : index - from);
+      }
+    } else if (Array.isArray(receiver) && (arrayMethod === 'indexOf' || arrayMethod === 'lastIndexOf')) {
+      const length = receiver.length;
+      if (arrayMethod === 'lastIndexOf') {
+        const given = args.length > 1 ? integerOf(position) : length - 1;
+        const from = given >= 0 ? Math.min(given, length - 1) : length + given;
+        this.work(index === -1 ? from + 1 : from - index);
+      } else {
+        const given = integerOf(position);
+        const from = Math.min(given >= 0 ? given : Math.max(length + given, 0), length);
+        this.work(index === -1 ? length - from : index - from);
+      }
+    }
   }
 
   /**
@@ -1914,12 +1966,16 @@ export class Interpreter {
     const last = text.length - pattern.length;
     const starts = Math.max(1, Math.floor(SEARCH_PIECE_WORK / pattern.length));
     for (let at = from; at <= last; at += starts) {
-      this.tick();
-      this.checkClock();
+      // Between two pieces: a step, and a look at the clock
+      if (at !== from) {
+        this.tick();
+        this.checkClock();
+      }
       // The part of the text a match that starts in this piece can cover
       const end = Math.min(at + starts - 1, last) + pattern.length;
-      this.work(end - at);
       const found = text.substring(at, end).indexOf(pattern);
+      // Counted as far as the engine went: to the match, or through the piece
+      this.work(found === -1 ? end - at : found + pattern.length);
       if (found !== -1) return at + found;
     }
     return -1;
@@ -1929,12 +1985,14 @@ export class Interpreter {
   private findBackward(text: string, pattern: string, from: number): number {
     const starts = Math.max(1, Math.floor(SEARCH_PIECE_WORK / pattern.length));
     for (let high = from; high >= 0; high -= starts) {
-      this.tick();
-      this.checkClock();
+      if (high !== from) {
+        this.tick();
+        this.checkClock();
+      }
       const low = Math.max(0, high - starts + 1);
       const end = high + pattern.length;
-      this.work(end - low);
       const found = text.substring(low, end).lastIndexOf(pattern);
+      this.work(found === -1 ? end - low : end - low - found);
       if (found !== -1) return low + found;
     }
     return -1;
