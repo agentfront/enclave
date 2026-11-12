@@ -928,7 +928,12 @@ export class VmAdapter implements SandboxAdapter {
 
       // Every call into a host function passed in `globals` goes through this gate
       // (abort check, maxGlobalFunctionCalls, result sanitization, safe errors).
-      const globalFunctionGate = createGlobalFunctionGate(executionContext, realmBridge, unwrapHostValue);
+      const globalFunctionGate = createGlobalFunctionGate(
+        executionContext,
+        realmBridge,
+        unwrapHostValue,
+        airlock.isRealmValue,
+      );
 
       // The host side of the runtime: only the direct-mode tool call function and the value
       // globals. The sandbox realm has intrinsics of its own; it is given none of the host's.
@@ -940,6 +945,7 @@ export class VmAdapter implements SandboxAdapter {
         globalFunctionGate,
         exposeToSandbox: airlock.toRealm,
         ownedBySandbox: airlock.isRealmValue,
+        heldBySandbox: airlock.isAirlockProxy,
         hostObjects: false,
       });
 
@@ -1160,19 +1166,6 @@ export class VmAdapter implements SandboxAdapter {
         } catch {
           // Best-effort only; codeGeneration.strings=false still blocks execution.
         }
-      }
-
-      // The Reflect global of a level that has one: the realm's own namespace without the
-      // methods the level does not get. (STRICT has none; removeDangerousGlobals deletes it.)
-      if (this.securityLevel !== 'STRICT') {
-        Object.defineProperty(baseSandbox, 'Reflect', {
-          value: realmRuntime.createSafeReflect(
-            this.securityLevel === 'SECURE' ? 'setPrototypeOf,apply,defineProperty' : 'setPrototypeOf',
-          ),
-          writable: false,
-          configurable: false,
-          enumerable: true,
-        });
       }
 
       // TOOL BRIDGE (string mode): define __safe_callTool inside the VM realm and
@@ -1400,17 +1393,23 @@ export class VmAdapter implements SandboxAdapter {
           })()
         `);
 
-        const vmSafeCallTool = bridgeInitScript.runInContext(baseSandbox) as unknown as object;
-        const proxiedVmSafeCallTool = createSecureProxy(vmSafeCallTool, {
-          levelConfig: executionContext.secureProxyConfig,
-        });
-
-        // The secure proxy decides what a script may read off the function and off the promise
-        // it returns, but it is a HOST Proxy: handed to the script as it is, its traps were host
-        // functions entered straight from script code, and a call at a full stack gave the script
-        // a host RangeError. Like every other secure proxy, it goes behind the airlock.
+        // The script gets a function of its own realm, frozen, like the other runtime helpers
+        // above; it returns a promise of that realm. Nothing of the host is in it to keep behind
+        // a membrane (the two host functions it closes over are wrapped by the realm's half),
+        // and a membrane around it would treat a function of the script's realm, and every
+        // method read off it or off its promise, as host code.
+        //
+        // The realm's half wraps it for the stack reserve: a call with the stack nearly full
+        // fails where it is made, with a RangeError of the realm, before the bridge has counted
+        // or queued anything.
+        const realmCallTool = realmMembrane.wrap(
+          bridgeInitScript.runInContext(baseSandbox) as (...args: unknown[]) => unknown,
+          true,
+        );
+        Object.defineProperty(realmCallTool, 'name', { value: '__safe_callTool', configurable: true });
+        Object.defineProperty(realmCallTool, 'length', { value: 3, configurable: true });
         Object.defineProperty(baseSandbox, '__safe_callTool', {
-          value: airlock.toRealm(proxiedVmSafeCallTool),
+          value: Object.freeze(realmCallTool),
           writable: false,
           configurable: false,
           enumerable: true,
@@ -1423,6 +1422,21 @@ export class VmAdapter implements SandboxAdapter {
         } catch {
           // ignore
         }
+      }
+
+      // The Reflect global of a level that has one: the realm's own namespace without the
+      // methods the level does not get. (STRICT has none; removeDangerousGlobals deletes it.)
+      // Installed after the tool bridge above: that script captures the realm's own
+      // Reflect.apply, which the namespace of SECURE does not have.
+      if (this.securityLevel !== 'STRICT') {
+        Object.defineProperty(baseSandbox, 'Reflect', {
+          value: realmRuntime.createSafeReflect(
+            this.securityLevel === 'SECURE' ? 'setPrototypeOf,apply,defineProperty' : 'setPrototypeOf',
+          ),
+          writable: false,
+          configurable: false,
+          enumerable: true,
+        });
       }
 
       // Add safe runtime functions to the isolated context as non-writable, non-configurable
@@ -1461,6 +1475,7 @@ export class VmAdapter implements SandboxAdapter {
                     callGate: globalFunctionGate,
                     exposeToSandbox: airlock.toRealm,
                     ownedBySandbox: airlock.isRealmValue,
+                    heldBySandbox: airlock.isAirlockProxy,
                   }),
                 )
               : value;

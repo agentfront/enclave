@@ -163,6 +163,58 @@ describe('VmAdapter', () => {
       expect(result.success).toBe(false);
       expect(result.error?.message).toMatch(/maximum tool call limit/i);
     });
+
+    it('should provide the tool-call function as a frozen function of the sandbox', async () => {
+      const toolHandler: ToolHandler = async (_name, args) => ({ echoed: args['n'] });
+
+      const enclave = new Enclave({ toolHandler, doubleVm: { enabled: false }, validate: false, transform: false });
+      const result = await enclave.run(`
+        async function __ag_main() {
+          const viaCall = await __safe_callTool.call(undefined, 'echo', { n: 1 });
+          const viaApply = await __safe_callTool.apply(undefined, ['echo', { n: 2 }]);
+          const viaBind = await __safe_callTool.bind(undefined, 'echo')({ n: 3 });
+          return {
+            type: typeof __safe_callTool,
+            name: __safe_callTool.name,
+            length: __safe_callTool.length,
+            frozen: Object.isFrozen(__safe_callTool),
+            ownPromise: __safe_callTool('echo', { n: 0 }) instanceof Promise,
+            echoed: [viaCall.echoed, viaApply.echoed, viaBind.echoed],
+          };
+        }
+      `);
+      enclave.dispose();
+
+      expect(result.error?.message).toBeUndefined();
+      expect(result.value).toEqual({
+        type: 'function',
+        name: '__safe_callTool',
+        length: 3,
+        frozen: true,
+        ownPromise: true,
+        echoed: [1, 2, 3],
+      });
+      expect(result.stats.toolCallCount).toBe(4);
+    });
+
+    it.each(['STRICT', 'SECURE', 'STANDARD', 'PERMISSIVE'] as const)(
+      'should complete a tool call at the %s security level',
+      async (securityLevel) => {
+        const toolHandler: ToolHandler = async (_name, args) => ({ echoed: args['n'] });
+
+        const enclave = createVmAdapterEnclave({ securityLevel, toolHandler });
+        const result = await enclave.run(`
+          const first = await callTool('echo', { n: 7 });
+          const second = await callTool('echo', { n: first.echoed + 1 });
+          return [first.echoed, second.echoed];
+        `);
+        enclave.dispose();
+
+        expect(result.error?.message).toBeUndefined();
+        expect(result.value).toEqual([7, 8]);
+        expect(result.stats.toolCallCount).toBe(2);
+      },
+    );
   });
 
   describe('Custom Globals', () => {
@@ -207,6 +259,106 @@ describe('VmAdapter', () => {
 
       expect(result.success).toBe(true);
       expect(result.value).toBe(50);
+    });
+
+    it("should hand back a script's own values that went through a host array", async () => {
+      const items = [{ id: 1 }, { id: 2 }];
+      const enclave = createVmAdapterEnclave({ globals: { items } });
+
+      const result = await enclave.run(`
+        const double = (list) => list.map((n) => n * 2);
+        const mine = { count: 1 };
+        const functions = items.map(() => double);
+        const objects = items.map(() => mine);
+        objects[0].count = 5;
+        return {
+          sameFunction: functions[0] === double,
+          called: functions[0]([1, 2, 3]),
+          sameObject: objects[0] === mine,
+          count: mine.count,
+        };
+      `);
+      enclave.dispose();
+
+      expect(result.error?.message).toBeUndefined();
+      expect(result.value).toEqual({ sameFunction: true, called: [2, 4, 6], sameObject: true, count: 5 });
+      expect(items).toEqual([{ id: 1 }, { id: 2 }]);
+    });
+
+    it('should hand a host value on to a callback as the value the script passed', async () => {
+      const enclave = createVmAdapterEnclave({ globals: { items: [{ id: 1 }], settings: { factor: 3 } } });
+
+      const result = await enclave.run(`
+        const viaReduce = items.reduce((acc) => acc, settings);
+        const viaConcat = items.concat(settings);
+        return {
+          reduce: viaReduce === settings,
+          concat: viaConcat[1] === settings,
+          element: viaConcat[0].id,
+          factor: viaReduce.factor,
+        };
+      `);
+      enclave.dispose();
+
+      expect(result.error?.message).toBeUndefined();
+      expect(result.value).toEqual({ reduce: true, concat: true, element: 1, factor: 3 });
+    });
+
+    it('should run a built-in method of a host value on host values only', async () => {
+      const enclave = createVmAdapterEnclave({ globals: { items: ['a', 'b'] } });
+
+      const result = await enclave.run(`
+        const onHostValue = items.join('-');
+        const mine = { 0: 'x', 1: 'y', length: 2, join: items.join };
+        let onOwnValue = 'no error';
+        try {
+          mine.join('-');
+        } catch (e) {
+          onOwnValue = e.name + ': ' + e.message;
+        }
+        return { onHostValue, onOwnValue, own: ['x', 'y'].join('-') };
+      `);
+      enclave.dispose();
+
+      expect(result.error?.message).toBeUndefined();
+      expect(result.value).toEqual({
+        onHostValue: 'a-b',
+        onOwnValue: expect.stringMatching(/^TypeError: A built-in method of a value passed in globals/),
+        own: 'x-y',
+      });
+    });
+
+    it('should run a built-in method of a host value on a host value of the same kind', async () => {
+      const enclave = createVmAdapterEnclave({
+        globals: { items: ['a', 'b'], more: ['c', 'd'], when: new Date(0), lookup: new Map([['k', 1]]) },
+      });
+
+      const result = await enclave.run(`
+        const outcomes = {};
+        const attempt = (label, action) => {
+          try {
+            outcomes[label] = action();
+          } catch (e) {
+            outcomes[label] = e.name + ': ' + e.message;
+          }
+        };
+        attempt('array method on another array', () => items.join.call(more, '+'));
+        attempt('object method on a Date', () => items.hasOwnProperty.call(when, 'x'));
+        attempt('array method on a Date', () => items.join.call(when, '+'));
+        attempt('Map method on an array', () => lookup.get.call(items, 'k'));
+        return outcomes;
+      `);
+      enclave.dispose();
+
+      expect(result.error?.message).toBeUndefined();
+      const sameKind =
+        /^TypeError: A built-in method of a value passed in globals can only be called on a value of the same kind/;
+      expect(result.value).toEqual({
+        'array method on another array': 'c+d',
+        'object method on a Date': false,
+        'array method on a Date': expect.stringMatching(sameKind),
+        'Map method on an array': expect.stringMatching(sameKind),
+      });
     });
   });
 

@@ -24,7 +24,9 @@ import { guardSandboxRejections } from '../sandbox-rejections';
 import { describeThrown, isMemoryLimitPayload, THROWN_WITHOUT_MESSAGE } from '../thrown-value';
 import {
   createHostGlobalFunctionInvoker,
+  hostFunctionText,
   isBuiltinMethod,
+  isFunctionTextMethod,
   isMutatingBuiltinMethod,
   isRegExpMatchMethod,
   resolveMaxGlobalFunctionCalls,
@@ -316,6 +318,17 @@ export class DoubleVmWrapper implements SandboxAdapter {
     // regular expression are reported as 'match': those it refuses at every security level.
     Object.defineProperty(parentContext, '__host_isMutatingBuiltin__', {
       value: (fn: unknown) => (isRegExpMatchMethod(fn) ? 'match' : isMutatingBuiltinMethod(fn)),
+      writable: false,
+      configurable: true, // Allow deletion after capture for defense-in-depth
+    });
+
+    // The source text of a host function stays in the host. For a method that would answer with
+    // it (toString, and toLocaleString, which calls it) the parent VM gets the fixed form here
+    // and hands that to the script; for every other method it gets undefined. `method` is null
+    // when the parent VM has recognised the method itself (its own realm's, on a forwarder).
+    Object.defineProperty(parentContext, '__host_functionText__', {
+      value: (method: unknown, fn: unknown) =>
+        method === null || isFunctionTextMethod(method) ? hostFunctionText(fn) : undefined,
       writable: false,
       configurable: true, // Allow deletion after capture for defense-in-depth
     });
