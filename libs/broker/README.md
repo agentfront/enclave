@@ -145,11 +145,15 @@ const handler = createSessionHandler({
 
 The hook identifies; it does not authenticate. Verify the credential in your own middleware, or in the hook itself.
 
+It separates sessions, not data: a tool handler receives its arguments and a context with the id of its session, not the caller. A tool that reads data restricted per caller applies that restriction itself, with the owner of its session (`broker.getSession(context.sessionId as SessionId)?.owner`, the caller the hook returned), or leaves it to the data store.
+
 ### Cross-origin requests
 
 CORS headers are on by default with `Access-Control-Allow-Origin: *`, so a page of any origin can call a broker its visitor's browser can reach, including one on `localhost` or an internal network. Set `allowedOrigins` to the origins of your application, or `cors: false`, for anything that is not a public demo.
 
 A cross-origin page may send `Content-Type`, `Accept`, `Last-Event-ID` and `Authorization`. If your clients send another header (an API-key header through the client's `headers` option, say), name it in `allowedHeaders`: a browser does not send a header the preflight answer does not list.
+
+The routes answer the preflight (`OPTIONS`) themselves, and a browser sends it without the credential: authentication in front of the routes has to let `OPTIONS` requests through to them.
 
 ### Limits
 

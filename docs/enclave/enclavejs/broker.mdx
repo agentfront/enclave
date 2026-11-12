@@ -251,6 +251,8 @@ const handler = createSessionHandler({
 
 The hook identifies a caller; it does not verify a credential. Do that in your own middleware or inside the hook.
 
+It separates sessions, not data: a tool handler receives its arguments and a context with the id of its session, not the caller. A tool that reads data restricted per caller applies that restriction itself, with the owner of its session (`broker.getSession(context.sessionId as SessionId)?.owner`, the caller the hook returned), or leaves it to the data store.
+
 ### Handler Options
 
 ```typescript
@@ -271,6 +273,8 @@ const config: SessionHandlerConfig = {
 <Warning>
 CORS is on by default for every origin: a page of any origin can call a broker its visitor's browser can reach. Set `allowedOrigins`, or `cors: false`, for anything but a public demo.
 </Warning>
+
+The routes answer the preflight (`OPTIONS`) themselves, and a browser sends it without the credential: authentication in front of the routes has to let `OPTIONS` requests through to them.
 
 - `maxStreamsPerSession` bounds the streams one session has open (the request that created it and the replay streams). A further one is answered with `429`.
 - `maxBufferedBytes`: a reader that falls behind by more is disconnected. When it is the creator of the session, the session is cancelled.
