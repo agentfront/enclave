@@ -162,7 +162,7 @@ export {
   ARRAY_WRITE_SLOT_FN,
 } from './transforms';
 
-export type { ArrayWriteGuardResult } from './transforms';
+export type { ArrayWriteGuardOptions, ArrayWriteGuardResult } from './transforms';
 
 export type {
   StringExtractionConfig,

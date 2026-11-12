@@ -86,7 +86,10 @@ export const ARRAY_SLOT_FN = '__safe_slot';
  *
  * Evaluate it in the sandbox realm before any script code and before the realm's prototypes are
  * frozen, where `__host_memory_track__` is the realm-side function that charges the execution's
- * memory tracker. With `memoryLimit` 0 the helpers are defined and count nothing.
+ * memory tracker. With `memoryLimit` 0 the helpers are defined and count nothing. With a limit,
+ * the statement throws where a part of the accounting cannot be put in place (a global or a
+ * method of the realm that cannot be replaced any more): the realm is then not set up, and no
+ * script runs in it with a part of the checks off.
  *
  * @param memoryLimit The execution's memory limit in bytes, 0 for none
  */
@@ -239,6 +242,13 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
     return construct(kind, [0]);
   }
 
+  // The accounting is installed in full or the realm is not set up. A part of it that cannot
+  // be put in place (a global or a method that cannot be replaced any more) is not skipped:
+  // the checks that rest on it would be off, and nothing would say so.
+  function cannotInstall(what) {
+    throw new TypeErrorCtor('Array accounting: ' + what + ' of the realm cannot be replaced');
+  }
+
   // A proxy a script makes answers for its length and its slots as its handler likes, and
   // \`Array.isArray\` says yes to a proxy of an array. Where a realm leaves a script the Proxy
   // constructor (the double VM at STANDARD and PERMISSIVE), the script gets a stand-in for it
@@ -246,7 +256,8 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
   // as an array: it is read once, like any object that states a length.
   var scriptProxies = null;
   var proxyMade = false;
-  if (limited && ProxyCtor !== undefined && typeof WeakSet === 'function') {
+  if (limited && ProxyCtor !== undefined) {
+    if (typeof WeakSet !== 'function') cannotInstall('Proxy');
     var remember = WeakSet.prototype.add;
     var remembered = WeakSet.prototype.has;
     var makeRevocable = ProxyCtor.revocable;
@@ -274,7 +285,7 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
     try {
       defineProperty(globalThis, 'Proxy', { value: ProxyStandIn, writable: true, enumerable: false, configurable: true });
     } catch (e) {
-      scriptProxies = null;
+      cannotInstall('Proxy');
     }
   }
 
@@ -432,7 +443,9 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
     } catch (e) { /* left as it is */ }
     try {
       defineProperty(holder, name, { value: replacement, writable: true, enumerable: false, configurable: true });
-    } catch (e) { /* frozen already: left as it is */ }
+    } catch (e) {
+      cannotInstall(name);
+    }
   }
 
   if (limited) {
@@ -851,7 +864,9 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
         return apply(original, this === guardedArray ? ArrayCtor : this, arguments);
       };
     });
-    if (ProxyCtor !== undefined) {
+    // (Without a Proxy constructor in the realm there is nothing to put the global behind.)
+    if (ProxyCtor === undefined) cannotInstall('Array');
+    {
       var slotsFor = function (given) {
         if (given.length === 1 && typeof given[0] === 'number') {
           checkLength(given[0], 'Array');
@@ -873,7 +888,7 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
       try {
         defineProperty(globalThis, 'Array', { value: guardedArray, writable: true, enumerable: false, configurable: true });
       } catch (e) {
-        guardedArray = null;
+        cannotInstall('Array');
       }
     }
 

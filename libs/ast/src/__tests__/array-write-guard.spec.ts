@@ -92,4 +92,76 @@ describe('guardArrayWrites', () => {
     expect(guardedCount).toBe(4);
     expect(bound).toBe(true);
   });
+
+  describe('a limit that holds fewer than 64 slots', () => {
+    const guarded = (code: string, unguardedBelow?: number): number => {
+      const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
+      return guardArrayWrites(ast, unguardedBelow === undefined ? undefined : { unguardedBelow }).guardedCount;
+    };
+
+    it('a literal index is left as it is only below the number of slots the limit holds', () => {
+      expect(guarded('a[7] = v;', 8)).toBe(0);
+      expect(guarded('a[8] = v;', 8)).toBe(1);
+      expect(guarded('a[8]++;', 8)).toBe(1);
+      expect(guarded('[a[8]] = p;', 8)).toBe(1);
+      expect(guarded('a[0] = v;', 1)).toBe(0);
+      expect(guarded('a[1] = v;', 1)).toBe(1);
+    });
+
+    it('with no slot at all every literal index is guarded', () => {
+      expect(guarded('a[0] = v;', 0)).toBe(1);
+    });
+
+    it('a limit that holds more does not widen what is left as it is', () => {
+      expect(guarded('a[63] = v;', 1000)).toBe(0);
+      expect(guarded('a[64] = v;', 1000)).toBe(1);
+      expect(guarded('a[63] = v;')).toBe(0);
+      expect(guarded('a[64] = v;')).toBe(1);
+    });
+
+    it.each([-1, 1.5, NaN, Infinity, '8'])('refuses %p as the number', (value) => {
+      const ast = acorn.parse('a[k] = v;', { ecmaVersion: 'latest', sourceType: 'script' });
+      expect(() => guardArrayWrites(ast, { unguardedBelow: value as number })).toThrow(TypeError);
+    });
+  });
+
+  describe('a program that begins with directives', () => {
+    it('keeps them first: the bindings follow the directive prologue', () => {
+      const ast = acorn.parse(`'use strict'; 'another directive'; a[k] = v;`, {
+        ecmaVersion: 'latest',
+        sourceType: 'script',
+      }) as unknown as { body: Array<{ type: string; directive?: string }> };
+      guardArrayWrites(ast as unknown as acorn.Node);
+
+      expect(ast.body.map((statement) => statement.directive ?? statement.type)).toEqual([
+        'use strict',
+        'another directive',
+        'VariableDeclaration',
+        'ExpressionStatement',
+      ]);
+    });
+
+    it('the rewritten program is still strict', () => {
+      const ast = acorn.parse(`'use strict'; holder[key] = function () { return this === undefined; };`, {
+        ecmaVersion: 'latest',
+        sourceType: 'script',
+      });
+      guardArrayWrites(ast);
+      // In sloppy code the function would be called with the global object as its receiver
+      const holder: Record<string, () => boolean> = {};
+      const set = (target: Record<string, unknown>, key: string, value: unknown) => (target[key] = value);
+      new Function('holder', 'key', '__safe_set', '__safe_slot', generate(ast))(holder, 'probe', set, undefined);
+      const probe = holder['probe'];
+      expect(probe()).toBe(true);
+    });
+
+    it('a string statement that is not a directive stays where it is, after the bindings', () => {
+      const ast = acorn.parse(`a[k] = v; 'use strict';`, {
+        ecmaVersion: 'latest',
+        sourceType: 'script',
+      }) as unknown as { body: Array<{ type: string }> };
+      guardArrayWrites(ast as unknown as acorn.Node);
+      expect(ast.body[0]?.type).toBe('VariableDeclaration');
+    });
+  });
 });

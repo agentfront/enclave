@@ -78,6 +78,7 @@ import { normalizeEnclaveOptions } from './enclave-options';
 import { describeThrown, normalizeErrorText } from './thrown-value';
 import { refuseDynamicImport } from './dynamic-import';
 import { separateAsyncContexts } from './async-context';
+import { ARRAY_ELEMENT_BYTES } from './realm-memory';
 
 /**
  * Parse code for one of the transforms that run after validation.
@@ -976,7 +977,10 @@ export class Enclave {
    */
   private applyArrayWriteGuard(code: string): string {
     const ast = parseValidatedCode(code);
-    const { guardedCount } = guardArrayWrites(ast);
+    // A write to a small literal index is left as it is where it cannot take an array past the
+    // limit: below the number of slots the limit holds (the transform leaves at most 64)
+    const slots = Math.floor((this.config.memoryLimit ?? 0) / ARRAY_ELEMENT_BYTES);
+    const { guardedCount } = guardArrayWrites(ast, { unguardedBelow: slots });
     return guardedCount === 0 ? code : generate(ast);
   }
 

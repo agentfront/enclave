@@ -45,5 +45,6 @@ export {
   guardArrayWrites,
   ARRAY_WRITE_SET_FN,
   ARRAY_WRITE_SLOT_FN,
+  type ArrayWriteGuardOptions,
   type ArrayWriteGuardResult,
 } from './array-write-guard.transform';
