@@ -2,6 +2,7 @@ import type * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
 import type { ValidationRule, ValidationContext } from '../interfaces';
 import { ValidationSeverity } from '../interfaces';
+import { analyzeScopes, type BindingKind } from '../utils/scope-analysis';
 
 /**
  * Configuration options for NoCallTargetAssignmentRule
@@ -21,6 +22,21 @@ export type NoCallTargetAssignmentErrorType =
   | 'catch-parameter'
   | 'import';
 
+/**
+ * How a declaration that the per-shape checks did not see is reported. A plain `const` / `let` /
+ * `var` name is seen by those checks, so one that reaches this table sits in a pattern.
+ */
+const BINDING_ERROR_TYPES: Record<BindingKind, NoCallTargetAssignmentErrorType> = {
+  var: 'destructuring',
+  let: 'destructuring',
+  const: 'destructuring',
+  function: 'function-declaration',
+  class: 'class-declaration',
+  param: 'parameter',
+  catch: 'catch-parameter',
+  import: 'import',
+};
+
 export interface NoCallTargetAssignmentOptions {
   /**
    * List of protected call targets that cannot be assigned or shadowed
@@ -38,9 +54,12 @@ export interface NoCallTargetAssignmentOptions {
  * NoCallTargetAssignmentRule - Blocks assignment and shadowing of protected call targets
  *
  * This rule prevents user code from:
- * - Reassigning protected identifiers like `callTool`
- * - Shadowing protected identifiers via declarations
- * - Destructuring to shadow protected identifiers
+ * - Reassigning protected identifiers like `callTool`, in every position a variable can be
+ *   written in: `=` and the compound operators, a destructuring assignment, the head of a
+ *   `for…of` / `for…in` loop, `++` and `--`
+ * - Shadowing protected identifiers via declarations, in every position a variable can be
+ *   declared in: declarations, parameters, catch clauses, function and class names, and the
+ *   patterns inside any of them
  *
  * **Purpose:**
  * - Protect the integrity of core API functions
@@ -76,6 +95,8 @@ export class NoCallTargetAssignmentRule implements ValidationRule {
 
   private readonly protectedTargets: Set<string>;
   private readonly customMessage?: string;
+  /** Per validation: the identifiers already reported */
+  private readonly reportedNodes = new WeakMap<ValidationContext, Set<unknown>>();
 
   constructor(options: NoCallTargetAssignmentOptions = {}) {
     this.protectedTargets = new Set(options.protectedTargets || ['callTool']);
@@ -84,6 +105,11 @@ export class NoCallTargetAssignmentRule implements ValidationRule {
 
   validate(context: ValidationContext): void {
     const { ast } = context;
+
+    // The identifiers reported by the per-shape checks, so that the pass over every binding and
+    // every write below adds only what those checks did not see
+    const reported = new Set<unknown>();
+    this.reportedNodes.set(context, reported);
 
     walk.simple(ast, {
       // Block: callTool = malicious
@@ -162,6 +188,21 @@ export class NoCallTargetAssignmentRule implements ValidationRule {
         }
       },
     });
+
+    // The checks above each name a shape. This pass names none: every identifier that declares a
+    // variable and every identifier that is written, wherever it stands (a pattern inside a catch
+    // clause or behind a default value, a destructuring assignment, a loop head, `++`).
+    const { bindings, references } = analyzeScopes(ast);
+    for (const binding of bindings) {
+      if (this.protectedTargets.has(binding.name) && !reported.has(binding.node)) {
+        this.reportError(binding.node, BINDING_ERROR_TYPES[binding.kind], context);
+      }
+    }
+    for (const reference of references) {
+      if (reference.write && this.protectedTargets.has(reference.name) && !reported.has(reference.node)) {
+        this.reportError(reference.node, 'assignment', context);
+      }
+    }
   }
 
   /**
@@ -255,6 +296,7 @@ export class NoCallTargetAssignmentRule implements ValidationRule {
     context: ValidationContext,
   ): void {
     const targetName = node.name;
+    this.reportedNodes.get(context)?.add(node);
 
     const typeMessages: Record<string, string> = {
       assignment: `Cannot assign to protected identifier "${targetName}"`,

@@ -8,6 +8,7 @@ import {
   NoEvalRule,
   NoAsyncRule,
   NoGlobalAccessRule,
+  NoCallTargetAssignmentRule,
 } from '../rules';
 import { ValidationSeverity } from '../interfaces';
 
@@ -356,6 +357,59 @@ describe('Validation Rules', () => {
       it('should not apply without the option', async () => {
         expect(await codes(new NoGlobalAccessRule(), 'const O = Object;')).toEqual([]);
       });
+    });
+  });
+
+  describe('NoCallTargetAssignmentRule', () => {
+    const issuesOf = async (source: string) =>
+      (await new JSAstValidator([new NoCallTargetAssignmentRule()]).validate(source)).issues;
+
+    it.each([
+      ['an assignment', 'callTool = other;', 'assignment'],
+      ['a compound assignment', 'callTool ||= other;', 'assignment'],
+      ['a declaration', 'const callTool = other;', 'declaration'],
+      ['a destructuring declaration', 'const { callTool } = other;', 'destructuring'],
+      ['a function declaration', 'function callTool() {}', 'function-declaration'],
+      ['a parameter', 'const f = (callTool) => 1;', 'parameter'],
+      ['a catch parameter', 'try { } catch (callTool) { }', 'catch-parameter'],
+    ])('should detect %s', async (_name, source, type) => {
+      const issues = await issuesOf(source);
+
+      expect(issues.map((issue) => issue.code)).toEqual(['NO_CALL_TARGET_ASSIGNMENT']);
+      expect(issues[0].data).toMatchObject({ target: 'callTool', type });
+    });
+
+    it.each([
+      ['an object-destructuring assignment', '({ a: callTool } = other);'],
+      ['an array-destructuring assignment', '[callTool] = other;'],
+      ['a rest element of a destructuring assignment', '[...callTool] = other;'],
+      ['a default in a destructuring assignment', '({ a: callTool = 1 } = other);'],
+      ['a for-of head', 'for (callTool of other) { }'],
+      ['a for-in head', 'for (callTool in other) { }'],
+      ['an increment', 'callTool++;'],
+      ['a decrement', '--callTool;'],
+    ])('should detect %s as an assignment', async (_name, source) => {
+      const issues = await issuesOf(source);
+
+      expect(issues.map((issue) => issue.code)).toEqual(['NO_CALL_TARGET_ASSIGNMENT']);
+      expect(issues[0].data).toMatchObject({ target: 'callTool', type: 'assignment' });
+    });
+
+    it.each([
+      ['a pattern in a catch clause', 'try { } catch ({ callTool }) { }'],
+      ['an array pattern in a catch clause', 'try { } catch ([callTool]) { }'],
+      ['a pattern behind a default value', 'const { a: { callTool } = {} } = other;'],
+      ['a pattern in a parameter default', 'const f = ({ a: [callTool] = [] }) => 1;'],
+      ['a class expression name', 'const C = class callTool {};'],
+      ['a loop declaration', 'for (const callTool of other) { }'],
+    ])('should detect %s as shadowing', async (_name, source) => {
+      const issues = await issuesOf(source);
+
+      expect(issues.map((issue) => issue.code)).toEqual(['NO_CALL_TARGET_ASSIGNMENT']);
+    });
+
+    it('should allow using the protected target', async () => {
+      expect(await issuesOf("const result = callTool('name', { callTool: 1 }); other.callTool = result;")).toEqual([]);
     });
   });
 
