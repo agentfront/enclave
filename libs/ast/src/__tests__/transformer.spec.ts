@@ -366,6 +366,28 @@ describe('AST Transformer', () => {
   });
 
   describe('Whitelist mode edge cases', () => {
+    it('keeps the property key when a destructuring target with a default is renamed', async () => {
+      const validator = new JSAstValidator([]);
+      const result = await validator.validate('({ count = 1 } = source);', {
+        parseOptions: { ecmaVersion: 'latest', sourceType: 'script' },
+        transform: { enabled: true, prefix: '__safe_', mode: 'whitelist', whitelistedIdentifiers: [] },
+      });
+
+      // The target is renamed; the property that is read from `source` is still `count`
+      expect(result.transformedCode).toContain('count: __safe_count = 1');
+      expect(result.transformedCode).toContain('__safe_source');
+    });
+
+    it('keeps the property key when a plain shorthand target is renamed', async () => {
+      const validator = new JSAstValidator([]);
+      const result = await validator.validate('({ count } = source);', {
+        parseOptions: { ecmaVersion: 'latest', sourceType: 'script' },
+        transform: { enabled: true, prefix: '__safe_', mode: 'whitelist', whitelistedIdentifiers: [] },
+      });
+
+      expect(result.transformedCode).toContain('count: __safe_count');
+    });
+
     it('should not transform function declarations in whitelist mode', async () => {
       const validator = new JSAstValidator([]);
       const code = `

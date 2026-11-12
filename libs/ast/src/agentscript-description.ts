@@ -126,7 +126,7 @@ return results.sort((a, b) => b.totalAmount - a.totalAmount);
 ## Limits
 - Max 10,000 iterations per loop
 - 30 second execution timeout
-- No try/catch (errors propagate to runtime)`;
+- An uncaught error ends the script; wrap a tool call in try/catch to handle its failure`;
 
 /**
  * Default export - the medium description is recommended for most use cases

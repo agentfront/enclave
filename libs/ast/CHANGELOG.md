@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A security release of the static layer. The invariants behind each item, and the categories of the tests that pin them, are listed under "Layer 1: static" in `SECURITY-TESTS.md`; nothing here says more than that file does.
+
+### Security
+
+- **Syntax allowlist (ATK-SYNTAX).** The AgentScript preset refuses every syntax node that is not part of the language, through the new `AllowedSyntaxRule` and `AGENTSCRIPT_ALLOWED_NODE_TYPES`. `this`, classes, `new.target`, `import.meta`, `debugger`, `with`, generators and dynamic `import()` are refused because they are not on the list, not because a rule names each of them, so syntax nobody thought of is refused too.
+- **Globals are resolved by lexical scope (ATK-SCOPE).** `UnknownGlobalRule` and the identifier transform no longer keep one set of declared names for the whole program. A declaration in a block, an arrow function or a catch clause makes a name local only there. Where two readings of the language disagree, the narrower one is used.
+- **Writes are checked like reads (ATK-GWRITE).** Assigning to a global or to a reserved runtime name is refused in every target position: a plain assignment, a destructuring pattern, a `for…of` or `for…in` head, `++`/`--` and `delete`. `ReservedPrefixRule` covers bindings and member targets in the same positions.
+- **Prototype chain and reflection by property name (ATK-PCHAIN, ATK-REFL).** `constructor`, `prototype` and `__proto__` are refused as property names in every statically resolvable spelling and position. `DisallowedIdentifierRule` also refuses the reflection entry points by property name (`AGENTSCRIPT_DISALLOWED_PROPERTIES`: the prototype and descriptor functions of `Object` and the legacy accessor methods), whatever object they are read from, and the `{ __proto__: x }` literal key. `NoComputedDestructuringRule` refuses the same names as destructuring keys.
+- **Direct use only (ATK-CTGT, ATK-JSONCB).** `callTool` and `JSON` may only appear as direct calls. An alias, `.call` / `.apply` / `.bind`, a tagged template, a spread, a sequence callee, a computed method name or passing the function as a value is refused, since each takes the call out of sight of the argument checks.
+- **JSON methods (ATK-JSONCB).** Of `JSON`, only `parse` and `stringify` may be called, and the callback check resolves the method name in every static spelling the direct-use check accepts. The direct-use check follows lexical scope: it applies to the global, not to a variable of the script that has the same name.
+- **Method names in every static spelling (ATK-RXSTR, ATK-RSRC).** `NoRegexMethodsRule` and the `repeat` / `join` / `fill` checks of `ResourceExhaustionRule` resolve a method name written as `x.name`, `x['name']` or a template literal without substitutions; they read only the first form, or the first two.
+- **Regular expressions from strings (ATK-RXSTR).** A string passed to `match`, `matchAll` or `search` is treated as the regular expression it becomes, also in the tagged-template form and when the argument is not a literal. A method of that name on a global the host declared as an object (`hostObjectGlobals` of the preset: a tool namespace, say) and a call with an object literal of data keep the warning. A global that is not declared may be a string, and is treated as one.
+- **Loop counters (ATK-LCTR).** The loop transform never hands out a counter name that the script mentions anywhere.
+
+### Added
+
+- `AllowedSyntaxRule` with `AllowedSyntaxOptions`, `AGENTSCRIPT_ALLOWED_NODE_TYPES` and `AGENTSCRIPT_DISALLOWED_PROPERTIES`.
+- AgentScript preset option `additionalAllowedSyntax`, which re-enables a node type for a host that does not run untrusted code.
+- Rule options, all off by default outside the AgentScript preset: `disallowedProperties` and `blockProtoInObjectLiterals` (`DisallowedIdentifierRule`), `requireDirectCall` (`StaticCallTargetRule`), `requireDirectUse` (`NoJsonCallbacksRule`), `additionalDangerousKeys` (`NoComputedDestructuringRule`) and `allowGlobalAssignment` (`UnknownGlobalRule`).
+- `NoComputedDestructuringRule` and `NoJsonCallbacksRule`, with their option types, are exported from the package entry.
+- AgentScript preset option `hostObjectGlobals`, and `hostObjectNames` of `NoRegexMethodsRule`: the globals that are objects of the host, on which a method called `match`, `matchAll` or `search` is the host's own.
+
+### Changed
+
+- The AgentScript preset is stricter. A script that used a construct outside the allowlist, assigned to a global, shadowed a global in one scope and used it in another, or reached `callTool` or `JSON` other than through a direct call is now refused, with an issue that names the construct. Ordinary AgentScript is unaffected. The other presets change only where a host switches the new options on.
+- With the AgentScript preset, `text.match(pattern)`, `matchAll` and `search` are refused for any argument on a value of the script (they were a warning when the argument was not a literal), and `JSON` methods other than `parse` and `stringify` are refused.
+
+### Fixed
+
+- The identifier transform keeps the property key when it renames a destructuring target that has a default: `({ x = 1 } = source)` reads `x` from `source` as before.
+
 ## [2.4.0] - 2026-01-09
 
 ### Added

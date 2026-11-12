@@ -268,9 +268,14 @@ export class BrowserEnclave {
   private readonly transformCode: boolean;
   private readonly customGlobalNames: string[];
   private readonly toolNamespaces: NormalizedToolNamespace[];
+  /** The names of the custom globals when the enclave was created */
+  private readonly globalNames: string[];
+  /** Those of them that held a string then */
+  private readonly stringGlobalNames: Set<string>;
   private readonly adapter: IframeAdapter;
   private readonly config: {
     timeout: number;
+    toolCallGraceMs: number;
     maxIterations: number;
     maxToolCalls: number;
     maxConsoleOutputBytes: number;
@@ -297,9 +302,16 @@ export class BrowserEnclave {
       ...(options.secureProxyConfig ?? {}),
     };
 
+    const timeout = options.timeout ?? levelConfig.timeout;
+    const toolCallGraceMs = options.toolCallGraceMs ?? timeout;
+    if (typeof toolCallGraceMs !== 'number' || Number.isNaN(toolCallGraceMs) || toolCallGraceMs < 0) {
+      throw new TypeError('toolCallGraceMs must be a non-negative number (Infinity to wait without limit)');
+    }
+
     // Build config
     this.config = {
-      timeout: options.timeout ?? levelConfig.timeout,
+      timeout,
+      toolCallGraceMs,
       maxIterations: options.maxIterations ?? levelConfig.maxIterations,
       maxToolCalls: options.maxToolCalls ?? levelConfig.maxToolCalls,
       maxConsoleOutputBytes: options.maxConsoleOutputBytes ?? levelConfig.maxConsoleOutputBytes,
@@ -314,7 +326,7 @@ export class BrowserEnclave {
     };
 
     // Fails fast on a global that cannot reach the sandbox; run() serializes again to pick up later changes.
-    serializeGlobals(this.config.globals);
+    const initialGlobals = serializeGlobals(this.config.globals);
 
     // Tool namespaces: validated here so an unsafe name fails at construction (same rules as
     // @enclave-vm/core). A namespace may not collide with a custom global.
@@ -322,6 +334,7 @@ export class BrowserEnclave {
     this.toolNamespaces = normalizeToolNamespaces(options.toolNamespaces, { reservedNames: globalNames });
 
     // Extract custom global names (and the namespace names, which are bound the same way)
+    this.globalNames = globalNames;
     this.customGlobalNames = [...globalNames, ...this.toolNamespaces.map((ns) => ns.name)];
     const customAllowedGlobals = this.customGlobalNames.flatMap((name) => [name, `__safe_${name}`]);
 
@@ -341,7 +354,16 @@ export class BrowserEnclave {
       );
     }
 
-    this.validator = this.createValidator(presetName, customAllowedGlobals);
+    // The globals that are objects of the host: the tool namespaces, and every custom global
+    // that is not a string (see `hostObjectGlobals` of the AgentScript preset). The validator is
+    // built once, for the globals as they are now; run() checks that this still holds.
+    // Judged on what reaches the script: a Date global arrives there as a string.
+    this.stringGlobalNames = new Set(globalNames.filter((name) => typeof initialGlobals[name] === 'string'));
+    const hostObjectGlobals = [
+      ...globalNames.filter((name) => !this.stringGlobalNames.has(name)),
+      ...this.toolNamespaces.map((ns) => ns.name),
+    ];
+    this.validator = this.createValidator(presetName, customAllowedGlobals, hostObjectGlobals);
 
     // Config flags
     this.validateCode = options.validate !== false;
@@ -400,6 +422,35 @@ export class BrowserEnclave {
         }
       }
 
+      // run() serializes the globals again to pick up what the host changed inside them. Which of
+      // them are strings is part of what the script was validated against (a method called
+      // `search` on a string takes a pattern; on an object of the host it is the host's), so a
+      // global that became a string, or stopped being one, ends the run before it starts.
+      const globals = serializeGlobals(this.config.globals);
+      const changedKind = this.globalNames.find(
+        (name) => (typeof globals[name] === 'string') !== this.stringGlobalNames.has(name),
+      );
+      if (changedKind !== undefined) {
+        const was = this.stringGlobalNames.has(changedKind) ? 'a string' : 'not a string';
+        return {
+          success: false,
+          error: {
+            name: 'Error',
+            message:
+              `Custom global "${changedKind}" was ${was} when the enclave was created and is not any more. ` +
+              'Create a new enclave to change what kind of value a global holds.',
+            code: 'GLOBALS_CHANGED',
+          },
+          stats: {
+            duration: Date.now() - startTime,
+            toolCallCount: 0,
+            iterationCount: 0,
+            startTime,
+            endTime: Date.now(),
+          },
+        };
+      }
+
       // Step 3: Build serialized config for iframes
       const serializedConfig: SerializedIframeConfig = {
         timeout: this.config.timeout,
@@ -415,7 +466,7 @@ export class BrowserEnclave {
         blockedProperties: getBlockedProperties(this.config.secureProxyConfig),
         throwOnBlocked: this.config.secureProxyConfig.throwOnBlocked,
         allowComposites: false,
-        globals: serializeGlobals(this.config.globals),
+        globals,
         toolNamespaces: this.toolNamespaces,
       };
 
@@ -437,6 +488,7 @@ export class BrowserEnclave {
       const executionContext: IframeExecutionContext = {
         config: serializedConfig,
         toolHandler: toolHandler || this.config.toolHandler,
+        toolCallGraceMs: this.config.toolCallGraceMs,
         securityLevel: this.securityLevel,
         doubleIframeConfig: this.doubleIframeConfig,
         secureProxyConfig: this.config.secureProxyConfig,
@@ -491,7 +543,11 @@ export class BrowserEnclave {
   /**
    * Create a validator based on the selected preset
    */
-  private createValidator(presetName: AstPreset, customAllowedGlobals: string[]): JSAstValidator {
+  private createValidator(
+    presetName: AstPreset,
+    customAllowedGlobals: string[],
+    hostObjectGlobals: string[],
+  ): JSAstValidator {
     const securityLevelGlobals = getAgentScriptGlobals(this.securityLevel);
     const enclaveSpecificGlobals = [
       'parallel',
@@ -509,6 +565,7 @@ export class BrowserEnclave {
           createAgentScriptPreset({
             securityLevel: this.securityLevel,
             allowedGlobals: allAllowedGlobals,
+            hostObjectGlobals,
             allowDynamicArrayFill: this.config.memoryLimit > 0,
           }),
         );

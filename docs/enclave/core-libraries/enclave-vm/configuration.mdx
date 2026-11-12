@@ -36,7 +36,8 @@ const enclave = new Enclave({
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `securityLevel` | string | `'STANDARD'` | Preset: `STRICT`, `SECURE`, `STANDARD`, `PERMISSIVE` |
-| `timeout` | number | 30000 | Maximum execution time in milliseconds. A tool call in progress when it passes is not cut off; the script's next tool call then fails with `Execution aborted` (same in `@enclave-vm/browser`) |
+| `timeout` | number | 30000 | Maximum execution time in milliseconds. Script code is stopped at the deadline, also after an `await` (it checks the clock at every function entry and loop iteration). A tool call in progress when it passes is not cut off; the script's next tool call then fails with `Execution aborted` (same in `@enclave-vm/browser`). How long that call may still take is `toolCallGraceMs`. A script that is only waiting for something of its own when the deadline passes (a thenable that never calls back) is ended with the timeout error |
+| `toolCallGraceMs` | number | same as `timeout` | How long, after `timeout` has passed, a tool call (or an async function from `globals`) that was in progress may still take to deliver its result. Then the execution ends with the timeout error and `error.data.pendingHostCalls` says how many calls were left running. `0` ends every execution at the deadline; `Infinity` waits for the handler however long it takes (the behaviour up to 2.18). Not used by the `worker_threads` adapter |
 | `maxToolCalls` | number | 100 | Maximum tool calls per execution |
 | `maxIterations` | number | 10000 | Maximum loop iterations (prevents infinite loops) |
 | `toolHandler` | function | - | Async function that handles `callTool()` invocations |
@@ -46,6 +47,9 @@ const enclave = new Enclave({
 | `maxGlobalFunctionCalls` | number | 10 × `maxToolCalls` | Maximum calls into functions from `globals` per execution |
 | `validate` | boolean | true | Validate code with ast-guard before execution |
 | `transform` | boolean | true | Transform code before execution |
+| `realmGlobals` | string | varies | Which standard globals exist in the script's realm. `'allowlist'`: only the names the validator allows (the default with the `agentscript` or `babel` preset while `validate` is on); every other global, including `Function`, `globalThis`, `Proxy`, `Reflect`, `Symbol`, `Promise` and `RegExp`, is removed and regular expressions cannot run. `'security-level'`: only the dangerous globals listed for the security level are removed (the default otherwise) |
+
+Scripts run in strict mode at every security level: `this` is `undefined` outside a method call, an assignment to an undeclared name is an error, and a write that cannot happen (over a built-in method, or to a frozen object) throws a `TypeError` instead of being ignored.
 
 ## Console
 
@@ -71,7 +75,7 @@ await enclave.run(`console.info('users', { count: 2 }); return 1;`);
 - `maxConsoleCalls` and `maxConsoleOutputBytes` are checked before the handler runs. Past a limit, the script's call throws and the handler is not called.
 - The handler's return value is ignored, and anything it throws or rejects with is swallowed: the script sees neither.
 - The script's `console` is a frozen, null-prototype object built inside the sandbox. It holds no reference the script can reach to the handler or to any host object.
-- Supported by the double VM (default), the `vm` adapter and the `worker_threads` adapter. A [custom sandbox adapter](#custom-sandbox-adapter) receives the handler as `context.consoleHandler`; the built-in `InterpreterAdapter` has no `console`, so a script that uses it fails there (`'__safe_console' is not defined`). `@enclave-vm/browser` has its own options and is unchanged.
+- Supported by the double VM (default), the `vm` adapter and the `worker_threads` adapter. A [custom sandbox adapter](#custom-sandbox-adapter) receives the handler as `context.consoleHandler`; the built-in `InterpreterAdapter` passes it one line of text per call and applies the same two limits, like the other adapters. `@enclave-vm/browser` has its own options and is unchanged.
 - A `consoleHandler` cannot be combined with a `console` entry in `globals` (the constructor throws a `TypeError`).
 
 ## Memory Tracking
@@ -163,10 +167,10 @@ const enclave = new Enclave({
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `adapter` | string | `'vm'` | Adapter: `vm` or `worker_threads`. Takes effect only with `doubleVm: { enabled: false }`; with the double VM on (the default), scripts run in the double VM |
+| `adapter` | string | `'vm'` | Where the sandbox runs: `vm` (in this process) or `worker_threads` (in a pool of worker threads). In both cases the script runs in the double VM, or in a single VM with `doubleVm: { enabled: false }` |
 | `workerPoolConfig.minWorkers` | number | 2 | Minimum workers to keep warm |
 | `workerPoolConfig.maxWorkers` | number | 8 | Maximum concurrent workers |
-| `workerPoolConfig.memoryLimitPerWorker` | number | 256MB | Memory limit per worker |
+| `workerPoolConfig.memoryLimitPerWorker` | number | 256MB | Heap limit per worker, enforced by the engine; a worker that exceeds it is terminated and replaced |
 | `workerPoolConfig.maxExecutionsPerWorker` | number | 1000 | Executions before worker recycle |
 | `workerPoolConfig.maxQueueSize` | number | 100 | Maximum pending executions |
 | `workerPoolConfig.maxMessagesPerSecond` | number | 1000 | Message flood protection |
@@ -174,7 +178,6 @@ const enclave = new Enclave({
 ```ts
 const enclave = new Enclave({
   adapter: 'worker_threads',
-  doubleVm: { enabled: false },
   workerPoolConfig: {
     minWorkers: 2,
     maxWorkers: 16,
@@ -198,6 +201,26 @@ const enclave = new Enclave({ sandboxAdapter: new InterpreterAdapter() });
 ```
 
 The enclave still validates and transforms every script before calling `execute`, but isolation is then the adapter's job: it receives the `ExecutionContext` (limits, tool handler, stats, abort signal) and must enforce it. The caller owns the adapter: `enclave.dispose()` does not dispose it, so one adapter can serve several enclaves. In a browser, `@enclave-vm/browser` is usually the better fit.
+
+### The Interpreter Adapter
+
+`InterpreterAdapter` is a tree-walking interpreter for AgentScript with no dependency on `node:vm`, QuickJS or WASM, for runtimes that have none of them. It runs the language the validator accepts, and a conformance suite compares it with the default sandbox script by script. Tool calls go through the same host bridge as in the other adapters (JSON both ways, the tool-call limit, sanitized arguments and results), and the returned value is copied into plain data.
+
+It differs from the VM adapters in what isolates a script. There is one realm: the script works on ordinary objects of the host, and the interpreter decides, operation by operation, what it may do with them. So:
+
+- The standard globals are frozen stand-ins with a fixed set of members (`Object.keys` exists, `Object.getPrototypeOf` does not), and nothing but data the script created can be changed.
+- Calls are awaited as they are made: a function of the script cannot run in the background.
+- Built-ins that would call a function of the script themselves are refused where the interpreter cannot wait for it (`JSON.parse` with a reviver, `Array.from` with a mapping function, `replace` with a function).
+- Regular expressions, classes, generators and labels are not available.
+- Custom `globals` must be JSON data; they are given to the script as frozen copies.
+- A built-in method works on the kind of value it belongs to: an array method on an array, a string method on a string (`[].join.call({ length: 3 })` is refused). `call`, `apply` and `bind` are resolved to the function they invoke, so a limit holds however a call is written.
+- One call cannot make more than a script may hold: an array of at most 1,000,000 items (`concat`, `flat`, `push`, `split`), a text of at most 16,000,000 chars when an array is joined or converted to text (`join`, `'' + array`, a template literal, an array given to a built-in that expects text), 1,000,000 chars from `repeat`, `padStart`, `padEnd` and from the replacements of `replace` / `replaceAll`. `JSON.stringify` counts its indentation, and what `JSON.parse` builds is charged to `maxAllocationBytes` before it is built.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `maxSteps` | `5000000` | Evaluated nodes before the execution is ended (bounds loops) |
+| `maxCallDepth` | `256` | Nested calls of script functions |
+| `maxAllocationBytes` | `67108864` | What a script may allocate, as the interpreter estimates it; the execution's `memoryLimit` applies when it is lower |
 
 ## Security Options
 

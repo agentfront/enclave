@@ -16,7 +16,8 @@
  */
 
 import type { SecureProxyLevelConfig, SecurityLevel } from './types';
-import { createSafeError } from './safe-error';
+import { createSafeError, isSafeError } from './safe-error';
+import { isBuiltinMethod } from './global-function-gate';
 
 // SECURITY (GHSA-3279 defense-in-depth): pin pristine reflection intrinsics at module load so the
 // membrane traps below never re-read a global that could be overwritten to capture a raw target.
@@ -32,6 +33,8 @@ const ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
 const ReflectOwnKeys = Reflect.ownKeys;
 const ReflectApply = Reflect.apply;
 const ReflectConstruct = Reflect.construct;
+const ObjectGetPrototypeOf = Object.getPrototypeOf;
+const HostObjectPrototype: object = Object.prototype;
 // The Reflect namespace itself, pinned so `createSafeReflect` proxies the pristine object rather
 // than whatever the `Reflect` binding resolves to when the safe runtime is assembled.
 const ReflectObject = Reflect;
@@ -356,6 +359,36 @@ export function createSafeReflect(securityLevel: SecurityLevel): typeof Reflect 
 }
 
 /**
+ * What sandbox code may catch from a call through the membrane.
+ *
+ * An error raised inside a host function (a `TypeError` from a built-in, a `MemoryLimitError` from
+ * the tracker) is a host object with a live prototype chain: handing it to a script's `catch` block
+ * is the same leak as handing out the function that threw it. Such an error is replaced by a safe
+ * error with the same name, message and string `code`.
+ *
+ * Only an `Error` of THIS realm is replaced. `instanceof` is false for a value the sandbox created
+ * (what a script callback threw travels through unchanged) and for a safe error (it has no
+ * prototype).
+ */
+function launderHostError(error: unknown): unknown {
+  let isHostError = false;
+  try {
+    isHostError = error instanceof Error;
+  } catch {
+    // A hostile getPrototypeOf trap: the value is the script's own, pass it on.
+  }
+  if (!isHostError) {
+    return error;
+  }
+  const hostError = error as Error & { code?: unknown };
+  return createSafeError(
+    String(hostError.message),
+    String(hostError.name || 'Error'),
+    typeof hostError.code === 'string' ? hostError.code : undefined,
+  );
+}
+
+/**
  * Properties that are specifically dangerous on Function objects
  */
 const FUNCTION_BLOCKED_PROPERTIES = new Set([
@@ -428,6 +461,22 @@ export interface SecureProxyOptions {
     gates(target: unknown): boolean;
     call(target: unknown, thisArg: unknown, args: unknown[]): unknown;
   };
+
+  /**
+   * Applied to every value this membrane passes INTO a script callback (the arguments and the
+   * receiver a host built-in calls it with), after the value has been wrapped. The single-VM
+   * adapter uses it to put its airlock in front of those values as well (see ./realm-airlock):
+   * a callback is called by host code, so what it receives does not come out of a trap.
+   */
+  exposeToSandbox?: (value: unknown) => unknown;
+
+  /**
+   * Whether an object was made in the sandbox realm (by the script, or for it). Such a value is
+   * the script's own: when a host built-in passes it to a callback (the object a script gave
+   * `reduce` to collect into) it goes back as it is instead of behind the membrane, where it
+   * would be read-only. The test must only say yes to what certainly is of that realm.
+   */
+  ownedBySandbox?: (value: object) => boolean;
 }
 
 /**
@@ -513,14 +562,18 @@ function getFullCacheKey(options: SecureProxyOptions): string {
 }
 
 /**
- * Built-in objects that have internal slots and should NOT be proxied
- * These objects use internal mechanisms that don't work through proxies
+ * Built-in objects whose methods and accessors read internal slots, so they only work on the
+ * original instance and never on a Proxy of it.
  *
- * NOTE: Promise is intentionally NOT in this list - we proxy Promises to block
- * constructor access attacks. Method binding is handled specially in the get handler.
+ * These used to be handed to the sandbox UNWRAPPED ("not proxyable"): a Map or a typed array
+ * passed in `globals`, the iterator a host array's `entries()` returns, a generator. Each one was
+ * a raw host object in the script's hands, with the host's prototype chain behind it. They are
+ * proxied like everything else; what makes them work is that the membrane always runs their
+ * code against the original instance: a method call restores the instance as `this` (see the
+ * apply trap), and a property read uses the instance as the receiver (see the get trap), which
+ * is what an accessor such as `Map.prototype.size` or a typed array's `length` needs.
  */
-const NON_PROXYABLE_TYPES = new Set([
-  // Map/Set have internal slots but we may need to proxy them in the future
+const INTERNAL_SLOT_BUILTINS = new Set([
   '[object Map]',
   '[object Set]',
   '[object WeakMap]',
@@ -535,21 +588,22 @@ const NON_PROXYABLE_TYPES = new Set([
   '[object Uint16Array]',
   '[object Int32Array]',
   '[object Uint32Array]',
+  '[object Float16Array]',
   '[object Float32Array]',
   '[object Float64Array]',
   '[object BigInt64Array]',
   '[object BigUint64Array]',
-  // Generators and iterators use internal slots
+  '[object Date]',
+  '[object RegExp]',
+  // Generators and iterators
   '[object Generator]',
   '[object AsyncGenerator]',
-  '[object GeneratorFunction]',
-  '[object AsyncGeneratorFunction]',
-  // Built-in iterators
   '[object Array Iterator]',
   '[object String Iterator]',
   '[object Map Iterator]',
   '[object Set Iterator]',
   '[object RegExp String Iterator]',
+  '[object Iterator Helper]',
 ]);
 
 /**
@@ -560,22 +614,42 @@ const NON_PROXYABLE_TYPES = new Set([
 const INTERNAL_SLOT_TYPES = new Set(['[object Promise]']);
 
 /**
- * Check if a value is a proxyable target (object or function)
- * Excludes built-in objects with internal slots that don't work through proxies
+ * Host functions that call a callback with values of the host realm: the built-in methods of
+ * host data (`forEach`, `map`, `sort`, `reduce`, a Map's `forEach`, ...), their bound forms, and
+ * the JSON functions (a reviver or replacer is called with the holder object). The callbacks a
+ * script passes to these are guarded (see guardCallbackArguments).
+ */
+const boundBuiltinMethods = new WeakSet<object>();
+const JsonParse = JSON.parse;
+const JsonStringify = JSON.stringify;
+
+function passesHostValuesToCallbacks(fn: unknown): boolean {
+  return (
+    isBuiltinMethod(fn) ||
+    fn === JsonParse ||
+    fn === JsonStringify ||
+    (typeof fn === 'function' && boundBuiltinMethods.has(fn))
+  );
+}
+
+/**
+ * Check if a value is a proxyable target (object or function). Every object and function is:
+ * a value of the host realm that reached the sandbox unwrapped would bring the host's prototype
+ * chain with it.
  */
 function isProxyable(value: unknown): value is object {
-  if (value === null) return false;
-  if (typeof value !== 'object' && typeof value !== 'function') return false;
+  return value !== null && (typeof value === 'object' || typeof value === 'function');
+}
 
-  // Check for built-in types that have internal slots
+/** The `Object.prototype.toString` tag of a value (through pinned intrinsics). */
+function builtinTag(value: object): string {
   // ReflectApply, not `.call`: `.call` resolves Function.prototype.call live, which a
   // shared-realm attacker can replace to intercept every tag check.
-  const tag = ReflectApply(ObjectToString, value, []);
-  if (NON_PROXYABLE_TYPES.has(tag)) {
-    return false;
+  try {
+    return ReflectApply(ObjectToString, value, []) as string;
+  } catch {
+    return '';
   }
-
-  return true;
 }
 
 /**
@@ -651,6 +725,43 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
       );
     }
 
+    // Whether this object's own code reads internal slots (see INTERNAL_SLOT_BUILTINS)
+    const hasInternalSlots = INTERNAL_SLOT_BUILTINS.has(builtinTag(obj));
+
+    /**
+     * Arguments for a host function that calls its callbacks with host values (see
+     * passesHostValuesToCallbacks): every function the script passed is replaced by one that
+     * receives those values, and its receiver, behind the membrane. Without this, the third
+     * argument of a `forEach` callback is the raw host array.
+     */
+    const guardCallbackArguments = (args: unknown[]): unknown[] =>
+      args.map((arg) => {
+        if (typeof arg !== 'function' || proxySet.has(arg)) return arg;
+        const callback = arg;
+        // A host error (a rejection reason, say) arrives as a safe error, as a thrown one does;
+        // a safe error is inert and passes as it is; every other object or function is wrapped.
+        const toSandbox = (value: unknown): unknown => {
+          const laundered = launderHostError(value);
+          // A value of the script's own realm is the script's: the object it gave `reduce` to
+          // collect into comes back as it is, and stays writable. Everything else is the host's
+          // and goes behind the membrane.
+          if (
+            options.ownedBySandbox &&
+            isProxyable(laundered) &&
+            !proxySet.has(laundered) &&
+            options.ownedBySandbox(laundered)
+          ) {
+            return laundered;
+          }
+          const wrapped =
+            isProxyable(laundered) && !isSafeError(laundered) ? proxyWithDepth(laundered, depth + 1) : laundered;
+          return options.exposeToSandbox ? options.exposeToSandbox(wrapped) : wrapped;
+        };
+        return function guardedCallback(this: unknown, ...hostArgs: unknown[]): unknown {
+          return ReflectApply(callback, toSandbox(this), hostArgs.map(toSandbox));
+        };
+      });
+
     const proxy = new Proxy(obj, {
       get(target: U, property: string | symbol, receiver: unknown): unknown {
         // Convert symbol to string for checking
@@ -708,19 +819,23 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
           return undefined;
         }
 
-        // Get the actual value
-        const value = ReflectGet(target, property, receiver);
+        // Get the actual value. An accessor of a built-in with internal slots (a Map's size, a
+        // typed array's length) must run against the instance itself, not against this proxy.
+        const value = ReflectGet(target, property, hasInternalSlots ? target : receiver);
 
         // For methods on objects with internal slots (like Promise), we need to:
         // 1. Bind the method to the original object so internal slot checks pass
         // 2. Proxy the bound method to block constructor access
         // This prevents attacks like: callTool(...).then.constructor
         if (typeof value === 'function') {
-          const tag = ReflectApply(ObjectToString, target, []);
+          const tag = builtinTag(target);
           if (INTERNAL_SLOT_TYPES.has(tag)) {
             // Bind to original object so methods like .then() work correctly
             // Then proxy the bound function to block .constructor access
             const boundMethod = ReflectApply(FunctionBind, value, [target]);
+            if (isBuiltinMethod(value)) {
+              boundBuiltinMethods.add(boundMethod);
+            }
             return proxyWithDepth(boundMethod, depth + 1);
           }
         }
@@ -904,11 +1019,24 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         // Gated functions (host functions from `globals`) are called by the gate, which
         // enforces the limits and returns a value that is already safe for the sandbox.
         if (options.callGate && options.callGate.gates(target)) {
-          return options.callGate.call(target, unwrappedThis, argArray);
+          // Only a receiver this membrane wrapped (the host object the method was read from) is
+          // passed on. A script value as `this` never reaches a host function, for the same
+          // reason its arguments are copied first (see sanitizeArguments in global-function-gate).
+          const hostReceiver = unwrappedThis !== thisArg ? unwrappedThis : undefined;
+          return options.callGate.call(target, hostReceiver, argArray);
         }
 
         // Call the original function
-        const result = ReflectApply(target, unwrappedThis, argArray);
+        let result: unknown;
+        try {
+          result = ReflectApply(
+            target,
+            unwrappedThis,
+            passesHostValuesToCallbacks(target) ? guardCallbackArguments(argArray) : argArray,
+          );
+        } catch (error) {
+          throw launderHostError(error);
+        }
 
         // Proxy the return value if it's an object or function
         if (isProxyable(result)) {
@@ -931,7 +1059,12 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
 
         // When invoked as `new (proxy)(...)`, newTarget is the proxy itself; reading its
         // blocked `.prototype` would fail, so fall back to the original constructor.
-        const instance = ReflectConstruct(target, argArray, newTarget === proxy ? target : newTarget);
+        let instance: unknown;
+        try {
+          instance = ReflectConstruct(target, argArray, newTarget === proxy ? target : newTarget);
+        } catch (error) {
+          throw launderHostError(error);
+        }
 
         // Proxy the instance so the created object stays behind the security barrier.
         if (isProxyable(instance)) {
@@ -1016,13 +1149,38 @@ export function createSecureStandardLibrary(options: SecureProxyOptions = {}): R
 }
 
 /**
+ * Whether an object that is not a secure proxy belongs to the host: its prototype chain reaches
+ * the host's `Object.prototype`, or it has no prototype at all (the host builds such objects for
+ * its results; nothing of the sandbox realm comes out of a secure proxy without a prototype).
+ * Every other object was made in the sandbox realm, by the script or for it.
+ */
+export function isRawHostObject(value: object): boolean {
+  let current: unknown = value;
+  for (let depth = 0; depth < 32; depth++) {
+    try {
+      current = ObjectGetPrototypeOf(current as object);
+    } catch {
+      return true;
+    }
+    if (current === null) {
+      return depth === 0;
+    }
+    if (current === HostObjectPrototype) {
+      return true;
+    }
+  }
+  return true;
+}
+
+/**
  * Check if an object is a secure proxy
  *
  * @param obj Object to check
  * @returns true if the object is wrapped in a secure proxy
  */
 export function isSecureProxy(obj: unknown): boolean {
-  if (obj === null || typeof obj !== 'object') {
+  // A proxied function is a secure proxy too (its typeof is 'function', not 'object')
+  if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) {
     return false;
   }
   return proxySet.has(obj as object);

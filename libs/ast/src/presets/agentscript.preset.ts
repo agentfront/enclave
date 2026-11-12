@@ -17,6 +17,8 @@ import {
   InfiniteLoopRule,
   ResourceExhaustionRule,
   NoJsonCallbacksRule,
+  AllowedSyntaxRule,
+  AGENTSCRIPT_ALLOWED_NODE_TYPES,
 } from '../rules';
 
 // =============================================================================
@@ -240,6 +242,43 @@ export const AGENTSCRIPT_DISALLOWED_IDENTIFIERS: readonly string[] = Object.free
 ]);
 
 /**
+ * Names AgentScript refuses as PROPERTY names (`obj.name`, `obj['name']`, `const { name } = obj`),
+ * whatever object they are read from. They stay usable as variable names.
+ *
+ * These are the reflection entry points that reach a prototype or a property descriptor without
+ * naming `constructor`, `__proto__` or `prototype`:
+ * - the legacy accessors, where `obj.__lookupGetter__('__proto__')` is a `getPrototypeOf` in disguise
+ *   and `obj.__defineGetter__(...)` installs an accessor on any object it is called on;
+ * - the `Object` statics that read or rewrite prototypes and descriptors. Matching the property name
+ *   rather than the call `Object.<name>(...)` is what makes the check hold for an alias
+ *   (`const O = Object; O.getPrototypeOf(x)`), a literal key (`Object['getPrototypeOf']`), a method
+ *   passed as a value (`list.map(Object.getPrototypeOf)`) and `Object.getPrototypeOf.call(...)`.
+ *
+ * Mirrors the prototype and descriptor categories of the runtime membrane, so the static layer and
+ * the runtime layer refuse the same names.
+ */
+export const AGENTSCRIPT_DISALLOWED_PROPERTIES: readonly string[] = Object.freeze([
+  // Legacy accessor API
+  '__defineGetter__',
+  '__defineSetter__',
+  '__lookupGetter__',
+  '__lookupSetter__',
+
+  // Prototype reads and writes
+  'getPrototypeOf',
+  'setPrototypeOf',
+
+  // Property descriptors
+  'getOwnPropertyDescriptor',
+  'getOwnPropertyDescriptors',
+  'defineProperty',
+  'defineProperties',
+
+  // Symbols are not part of AgentScript; this is how to obtain one without naming `Symbol`
+  'getOwnPropertySymbols',
+]);
+
+/**
  * Configuration options for AgentScript preset
  */
 export interface AgentScriptOptions {
@@ -269,6 +308,18 @@ export interface AgentScriptOptions {
    * Default: Based on securityLevel (see getAgentScriptGlobals)
    */
   allowedGlobals?: string[];
+
+  /**
+   * Names of the globals in `allowedGlobals` that are objects of the host and not strings: tool
+   * namespaces, custom globals that hold an object or a function. A method called `match`,
+   * `matchAll` or `search` on one of them (`docs.search(args)`) is the host's method, not the
+   * string method that compiles its argument into a regular expression, and is accepted with any
+   * argument. On every other value those three are refused. Each name is accepted with and
+   * without the `__safe_` prefix the transformer adds.
+   *
+   * Default: []
+   */
+  hostObjectGlobals?: string[];
 
   /**
    * Additional identifiers to block beyond the default dangerous set.
@@ -346,6 +397,18 @@ export interface AgentScriptOptions {
    * Default: false
    */
   requireCallTool?: boolean;
+
+  /**
+   * Syntax node types to allow in addition to `AGENTSCRIPT_ALLOWED_NODE_TYPES`.
+   *
+   * AgentScript refuses every construct that is not on its syntax allowlist (`this`, classes,
+   * `new.target`, `debugger`, ...). Listing a node type here re-enables it.
+   * Each of the refused constructs is refused for a security reason (see
+   * `AGENTSCRIPT_ALLOWED_NODE_TYPES`), so only do this for a host that does not run untrusted code.
+   *
+   * Default: []
+   */
+  additionalAllowedSyntax?: string[];
 
   /**
    * Allow dynamic (computed) array size for .fill() operations
@@ -459,6 +522,15 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   // 1. Block all eval-like constructs
   rules.push(new NoEvalRule());
 
+  // 1b. Syntax allowlist: refuse every node type AgentScript is not made of. The rules below each
+  // name what they block; this one names what is allowed, so a construct none of them thought of
+  // (`this`, classes, `new.target`, `debugger`, future syntax) is refused too.
+  rules.push(
+    new AllowedSyntaxRule({
+      allowedNodeTypes: [...AGENTSCRIPT_ALLOWED_NODE_TYPES, ...(options.additionalAllowedSyntax ?? [])],
+    }),
+  );
+
   // 2. Block reserved internal prefixes
   rules.push(
     new ReservedPrefixRule({
@@ -508,7 +580,15 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
       ...(options.additionalDisallowedIdentifiers || []),
     ]),
   ];
-  rules.push(new DisallowedIdentifierRule({ disallowed: filteredDangerousIdentifiers }));
+  rules.push(
+    new DisallowedIdentifierRule({
+      disallowed: filteredDangerousIdentifiers,
+      // Reflection entry points, refused by property name on any object (alias-proof)
+      disallowedProperties: [...AGENTSCRIPT_DISALLOWED_PROPERTIES],
+      // `{ __proto__: x }` sets a prototype; it is the one key that is not a plain property
+      blockProtoInObjectLiterals: true,
+    }),
+  );
 
   // 7. Configure loop restrictions
   rules.push(
@@ -551,6 +631,8 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
       new StaticCallTargetRule({
         targetFunctions: ['callTool', '__safe_callTool'],
         allowedToolNames: options.staticCallTarget?.allowedToolNames,
+        // The tool name is only checkable on a direct call, so nothing else may be done with callTool
+        requireDirectCall: true,
       }),
     );
   }
@@ -579,13 +661,14 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   rules.push(
     new NoRegexMethodsRule({
       allowStringArguments: false, // Block even string arguments for maximum security
+      hostObjectNames: (options.hostObjectGlobals ?? []).flatMap((name) => [name, `__safe_${name}`]),
     }),
   );
 
   // 14. Block computed property names in destructuring patterns
   // This prevents runtime property name construction attacks like:
   //   const {['const'+'ructor']:Func} = callTool;  // Bypasses static analysis!
-  rules.push(new NoComputedDestructuringRule());
+  rules.push(new NoComputedDestructuringRule({ additionalDangerousKeys: [...AGENTSCRIPT_DISALLOWED_PROPERTIES] }));
 
   // 15. Detect resource exhaustion patterns (CPU/memory DoS)
   // - Large BigInt exponentiation (bypasses VM timeout)
@@ -609,7 +692,9 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
   // Prevents "Native Walker" attacks where replacer/reviver functions are used
   // to enumerate and leak internal sandbox globals or sensitive object properties.
   // Vector 960: JSON.stringify(this, walker) can walk and leak global scope properties.
-  rules.push(new NoJsonCallbacksRule());
+  // requireDirectUse: JSON may only appear as JSON.parse(...) / JSON.stringify(...), so the callback
+  // check cannot be sidestepped through an alias, .call/.apply or a computed method name.
+  rules.push(new NoJsonCallbacksRule({ requireDirectUse: true }));
 
   return rules;
 }

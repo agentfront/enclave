@@ -14,6 +14,7 @@ import * as walk from 'acorn-walk';
 import { generate } from 'astring';
 import { transformAst } from './transformer';
 import type { TransformConfig } from './interfaces';
+import { walkAll } from './utils/ast-walk';
 
 /**
  * Configuration for AgentScript transformation
@@ -275,6 +276,20 @@ function wrapInMainFunction(ast: any): any {
 function transformLoopsInAst(ast: any, prefix = '__safe_'): void {
   let iterCounterIndex = 0;
 
+  // Hygiene: a loop counter must be a name the script cannot mention. The counter lives in the
+  // script's own scope, so if the script could name it, `__iter_0 = 0` inside the loop body would
+  // reset the limit on every pass. Collect every identifier the script uses (in ANY position)
+  // before anything is injected, and never hand out one of those names.
+  const scriptIdentifiers = new Set<string>();
+  walkAll(ast, (node) => {
+    if (node.type === 'Identifier' && typeof node.name === 'string') scriptIdentifiers.add(node.name);
+  });
+  const nextCounterName = (): string => {
+    let name = `__iter_${iterCounterIndex++}`;
+    while (scriptIdentifiers.has(name)) name = `__iter_${iterCounterIndex++}`;
+    return name;
+  };
+
   /**
    * Create the iteration check statement to inject at the start of loop body
    * `if (++__iter_N > __maxIterations) throw new Error(...)`
@@ -408,7 +423,7 @@ function transformLoopsInAst(ast: any, prefix = '__safe_'): void {
   // Transform collected loops (in reverse order to preserve indices when inserting)
   for (let i = loopsToTransform.length - 1; i >= 0; i--) {
     const { node, ancestors } = loopsToTransform[i];
-    const counterName = `__iter_${iterCounterIndex++}`;
+    const counterName = nextCounterName();
 
     // Inject iteration check at start of loop body
     injectIterationCheck(node, counterName);

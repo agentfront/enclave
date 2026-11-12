@@ -5,7 +5,16 @@ export default [
   ...nx.configs['flat/typescript'],
   ...nx.configs['flat/javascript'],
   {
-    ignores: ['**/dist', '**/*.spec.ts', '**/__tests__/**', '**/vendor/**', '**/e2e/fixtures/**'],
+    ignores: [
+      '**/dist',
+      '**/*.spec.ts',
+      '**/__tests__/**',
+      '**/vendor/**',
+      '**/e2e/fixtures/**',
+      // The private security case suite (git submodule): AgentScript files with top-level
+      // return/await, some invalid on purpose, and a runner that is linted in its own repository
+      'security-tests/**',
+    ],
   },
   {
     files: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx'],

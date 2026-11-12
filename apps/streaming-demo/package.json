@@ -16,7 +16,7 @@
     "@enclave-vm/core": "2.18.0",
     "@enclave-vm/types": "2.18.0",
     "express": "^4.21.0",
-    "zod": "^3.24.0"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

@@ -401,4 +401,47 @@ describe('Enclave Performance', () => {
       expect(delta).toBeLessThan(20 * 1024 * 1024); // Less than 20MB
     });
   });
+
+  describe('Sustained Load', () => {
+    /** Average time of `count` executions in milliseconds. */
+    async function averageMs(enclave: Enclave, count: number, nextScript: () => string): Promise<number> {
+      const start = performance.now();
+      for (let i = 0; i < count; i++) {
+        const result = await enclave.run(nextScript());
+        if (!result.success) throw new Error(`execution failed: ${result.error?.message}`);
+      }
+      return (performance.now() - start) / count;
+    }
+
+    // The engine keeps every script it compiled for several garbage collections and looks each
+    // new source up among them. Sources it cannot tell apart by their hash (V8 hashes a long
+    // string by its length alone) are compared in full, so an execution used to get slower with
+    // every earlier execution whose bootstrap had the same length: the same script again on an
+    // engine where compiled code is not shared (see sandbox-script.ts), or scripts that differ
+    // in a few characters on any engine.
+    it.each([
+      ['one script, repeated', 'repeated', () => 'return 42'],
+      ['different scripts of one length', 'same_length', (i: number) => `return ${100000 + i}`],
+    ] as const)('execution time does not grow as executions accumulate (%s)', async (_name, key, script) => {
+      const enclave = new Enclave({ securityLevel: 'STANDARD' });
+      let executions = 0;
+      const next = () => script(executions++);
+
+      await averageMs(enclave, 50, next); // warmup
+      const early = await averageMs(enclave, 150, next);
+      await averageMs(enclave, 1000, next);
+      const late = await averageMs(enclave, 150, next);
+
+      enclave.dispose();
+
+      const ratio = late / early;
+      console.log(`\nSustained load (${_name}):`);
+      console.log(`  executions 50-200: ${early.toFixed(2)}ms avg`);
+      console.log(`  executions 1200-1350: ${late.toFixed(2)}ms avg (${ratio.toFixed(2)}x)`);
+
+      recordMetric(`sustained_load_${key}`, `sustained_load_${key}_slowdown`, ratio, 'x', 2);
+
+      expect(ratio).toBeLessThan(2);
+    });
+  });
 });

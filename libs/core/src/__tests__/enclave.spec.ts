@@ -373,6 +373,81 @@ describe('Enclave', () => {
 
       enclave.dispose();
     });
+
+    describe.each([
+      ['the double VM', {}],
+      ['the single VM', { doubleVm: { enabled: false } }],
+    ] as const)('in %s', (_sandbox, sandbox) => {
+      let warn: jest.SpyInstance;
+      beforeAll(() => {
+        warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      });
+      afterAll(() => {
+        warn.mockRestore();
+      });
+
+      it('lets a script collect host data into an object of its own with reduce and forEach', async () => {
+        const enclave = new Enclave({
+          ...sandbox,
+          globals: {
+            rows: [
+              { id: 'a', score: 1 },
+              { id: 'b', score: 2 },
+            ],
+          },
+        });
+
+        const result = await enclave.run(`
+          const byId = rows.reduce((collected, row) => { collected[row.id] = row.score; return collected; }, {});
+          const doubled = [];
+          rows.forEach((row) => { doubled.push(row.score * 2); });
+          return { byId, doubled };
+        `);
+
+        expect(result.error).toBeUndefined();
+        expect(result.value).toEqual({ byId: { a: 1, b: 2 }, doubled: [2, 4] });
+        enclave.dispose();
+      });
+
+      it('lets a script read a regular expression from globals, and refuses to run it', async () => {
+        const enclave = new Enclave({ ...sandbox, globals: { pattern: /a+b/gi } });
+
+        const read = await enclave.run('return [pattern.source, pattern.flags];');
+        expect(read.error).toBeUndefined();
+        expect(read.value).toEqual(['a+b', 'gi']);
+
+        const run = await enclave.run("return pattern.test('aab');");
+        expect(run.success).toBe(false);
+        expect(run.error?.message).toMatch(/A regular expression passed in globals cannot be run in the sandbox/);
+        enclave.dispose();
+      });
+
+      it('tells a global that is an object from one that is a string, for a method called search', async () => {
+        const enclave = new Enclave({
+          ...sandbox,
+          toolNamespaces: { docs: ['search'] },
+          toolHandler: async (name, args) => ({ tool: name, q: args['q'] }),
+          globals: { text: 'some text' },
+        });
+
+        // On a tool namespace it is the host's method, with any argument
+        const tool = await enclave.run("const args = { q: 'needle' }; return await docs.search(args);");
+        expect(tool.error).toBeUndefined();
+        expect(tool.value).toEqual({ tool: 'docs.search', q: 'needle' });
+
+        // On a string it is the string method, which takes its argument as a pattern
+        const text = await enclave.run("const pattern = 'some'; return text.search(pattern);");
+        expect(text.success).toBe(false);
+        expect(text.error?.message).toContain('NO_REGEX_METHOD');
+        enclave.dispose();
+      });
+
+      it('refuses a custom global named Object', () => {
+        expect(() => new Enclave({ ...sandbox, globals: { Object: { marker: 1 } } })).toThrow(
+          'A custom global cannot be named "Object": the sandbox provides its own Object',
+        );
+      });
+    });
   });
 
   describe('runAgentScript convenience function', () => {

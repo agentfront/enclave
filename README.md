@@ -30,7 +30,7 @@
 
 ## Why Enclave?
 
-- **Extensive security testing** - See [security audit](./libs/enclave-vm/SECURITY-AUDIT.md) for details
+- **Extensive security testing** - See [security audit](./libs/core/SECURITY-AUDIT.md) for details
 - **Defense in depth** - 6 security layers for LLM-generated code
 - **Streaming runtime** - Real-time event streaming with tool call support
 - **Zero-config** - Works out of the box with sensible defaults

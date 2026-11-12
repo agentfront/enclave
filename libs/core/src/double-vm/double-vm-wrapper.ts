@@ -18,12 +18,17 @@ import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 import { createHostToolBridge } from '../tool-bridge';
 import { sanitizeStackTrace } from '../stack-trace';
 import { createConsoleSink } from '../console-handler';
+import { hasHostStackReserve } from '../stack-reserve';
+import { compileSandboxScript, SandboxScript } from '../sandbox-script';
+import { guardSandboxRejections } from '../sandbox-rejections';
 import {
   createHostGlobalFunctionInvoker,
   isBuiltinMethod,
+  isMutatingBuiltinMethod,
+  isRegExpMatchMethod,
   resolveMaxGlobalFunctionCalls,
 } from '../global-function-gate';
-import type { DoubleVmConfig, SerializableParentValidationConfig } from './types';
+import type { DoubleVmConfig, SerializableParentValidationConfig, SerializableSuspiciousPattern } from './types';
 import { generateParentVmBootstrap } from './parent-vm-bootstrap';
 import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-patterns';
 
@@ -37,9 +42,18 @@ import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-pat
 export class DoubleVmWrapper implements SandboxAdapter {
   private parentContext?: vm.Context;
 
+  /**
+   * @param config Double VM configuration
+   * @param securityLevel Security level of the enclave
+   * @param serializedCustomPatterns The custom suspicious patterns of `config`, already
+   *   serialized. A worker receives them in this form (a detector is a function, and functions
+   *   do not cross a thread boundary); when given, `config.parentValidation.suspiciousPatterns`
+   *   is not read.
+   */
   constructor(
     private readonly config: DoubleVmConfig,
     private readonly securityLevel: SecurityLevel,
+    private readonly serializedCustomPatterns?: readonly SerializableSuspiciousPattern[],
   ) {}
 
   /**
@@ -50,6 +64,9 @@ export class DoubleVmWrapper implements SandboxAdapter {
     const startTime = Date.now();
     const isStrictOrSecure = this.securityLevel === 'STRICT' || this.securityLevel === 'SECURE';
     const policyViolation: { type?: string } = {};
+
+    // A promise rejection the script leaves unhandled must not end the host process
+    guardSandboxRejections();
 
     // Create memory tracker if memory limit is configured
     const memoryTracker =
@@ -75,8 +92,9 @@ export class DoubleVmWrapper implements SandboxAdapter {
       // Generate the parent VM bootstrap script
       const parentScript = this.buildParentScript(code, executionContext);
 
-      // Compile and execute in parent VM
-      const script = new vm.Script(parentScript, {
+      // Compile and execute in parent VM. (Compiled so that no compiled code is shared with an
+      // earlier execution on engines where that can crash the process: see ../sandbox-script.)
+      const script = compileSandboxScript(parentScript, {
         filename: 'parent-vm.js',
       });
 
@@ -246,9 +264,11 @@ export class DoubleVmWrapper implements SandboxAdapter {
     // CRITICAL: Only expose createContext and Script, nothing else
     // NOTE: configurable: true allows parent-vm-bootstrap.ts to delete this
     // reference after use, preventing access if child VM escapes to parent context
+    // (The Script class is the one from ../sandbox-script: every script the parent VM compiles
+    // for the inner realm is compiled without sharing compiled code with an earlier execution.)
     const safeVm = {
       createContext: vm.createContext.bind(vm),
-      Script: vm.Script,
+      Script: SandboxScript,
     };
 
     Object.defineProperty(parentContext, '__host_vm_module__', {
@@ -282,6 +302,15 @@ export class DoubleVmWrapper implements SandboxAdapter {
     // host functions the parent VM lets through ungated; this tells it which ones they are.
     Object.defineProperty(parentContext, '__host_isBuiltinMethod__', {
       value: (fn: unknown) => isBuiltinMethod(fn),
+      writable: false,
+      configurable: true, // Allow deletion after capture for defense-in-depth
+    });
+
+    // Built-in methods that change their receiver (push, sort, Map.prototype.set, ...): the parent
+    // VM refuses them on host data, which is read-only inside the sandbox. The methods that run a
+    // regular expression are reported as 'match': those it refuses at every security level.
+    Object.defineProperty(parentContext, '__host_isMutatingBuiltin__', {
+      value: (fn: unknown) => (isRegExpMatchMethod(fn) ? 'match' : isMutatingBuiltinMethod(fn)),
       writable: false,
       configurable: true, // Allow deletion after capture for defense-in-depth
     });
@@ -379,12 +408,37 @@ export class DoubleVmWrapper implements SandboxAdapter {
       });
     }
 
-    // Add console for parent VM (for debugging only, not a security risk since
-    // user code runs in the inner VM, not the parent VM)
-    Object.defineProperty(parentContext, 'console', {
-      value: console,
+    // The parent VM writes the script's console output (without a consoleHandler) through this
+    // function. It gets a function that takes a level and a line, NOT the host `console` object:
+    // that object used to stay on the parent realm's global for the whole execution, where any
+    // code reaching the parent realm could walk from it to the host's Function constructor.
+    // Like the other bridges, the parent captures this one and removes it from its global.
+    //
+    // It answers false, and writes nothing, when the script calls it with the stack nearly full
+    // (see ../stack-reserve): a write to the host's stream that is cut off halfway leaves the
+    // stream unusable. The parent VM turns that answer into a RangeError for the script.
+    Object.defineProperty(parentContext, '__host_console_write__', {
+      value: (level: unknown, line: unknown): boolean | void => {
+        if (typeof line !== 'string') return;
+        try {
+          if (!hasHostStackReserve()) return false;
+        } catch {
+          return false;
+        }
+        // Looked up at call time, so a console method replaced after this point (a test spy, a
+        // logger that patches console) still receives the output.
+        const method =
+          level === 'error'
+            ? console.error
+            : level === 'warn'
+              ? console.warn
+              : level === 'info'
+                ? console.info
+                : console.log;
+        method.call(console, line);
+      },
       writable: false,
-      configurable: false,
+      configurable: true, // Allow deletion after capture for defense-in-depth
     });
 
     return parentContext;
@@ -491,8 +545,10 @@ export class DoubleVmWrapper implements SandboxAdapter {
     const serializableConfig = this.serializeValidationConfig();
 
     // Get all suspicious patterns (defaults + custom)
-    const allPatterns = [...DEFAULT_SUSPICIOUS_PATTERNS, ...(this.config.parentValidation.suspiciousPatterns || [])];
-    const serializedPatterns = serializePatterns(allPatterns);
+    const serializedPatterns = [
+      ...serializePatterns(DEFAULT_SUSPICIOUS_PATTERNS),
+      ...(this.serializedCustomPatterns ?? serializePatterns(this.config.parentValidation.suspiciousPatterns || [])),
+    ];
 
     // Get blocked properties for secure proxy
     // Use explicit secureProxyConfig override if available, otherwise use security level defaults
@@ -538,6 +594,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
       toolBridgeMaxPayloadBytes,
       maxGlobalFunctionCalls: resolveMaxGlobalFunctionCalls(config),
       toolNamespaces: executionContext.toolNamespaces ?? [],
+      realmGlobalAllowlist: executionContext.realmGlobalAllowlist,
     });
   }
 

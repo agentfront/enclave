@@ -4,12 +4,19 @@
  * @packageDocumentation
  */
 
+import { hasHostStackReserve } from './stack-reserve';
+
 /** A console method a script can call. */
 export type ConsoleLevel = 'log' | 'info' | 'warn' | 'error' | 'debug';
 
 /**
  * Receives each console call of a script as its level and formatted line. Its return value is
  * ignored and anything it throws or rejects with is swallowed.
+ *
+ * It is not called for a console call a script makes with the stack nearly full (less than
+ * HOST_STACK_RESERVE_BYTES left, see ./stack-reserve): that line is dropped. A handler that
+ * started there would be cut off wherever the stack ends, which for one that writes to
+ * `process.stdout` leaves the stream unusable for the rest of the process.
  */
 export type ConsoleHandler = (level: ConsoleLevel, message: string) => void;
 
@@ -39,6 +46,7 @@ export function createConsoleSink(
     totalLength += message.length;
     if (callCount > limits.maxConsoleCalls || totalLength > limits.maxConsoleOutputBytes) return;
     try {
+      if (!hasHostStackReserve()) return;
       Promise.resolve(handler(level as ConsoleLevel, message)).catch(ignoreRejection);
     } catch {
       // The handler's errors never reach the script.

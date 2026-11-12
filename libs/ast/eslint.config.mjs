@@ -24,6 +24,10 @@ export default [
         'error',
         {
           ignoredFiles: ['{projectRoot}/eslint.config.{js,cjs,mjs,ts,cts,mts}'],
+          ignoredDependencies: [
+            'eslint', // Test-only: locates eslint-scope for the differential scope-analysis test
+            'eslint-scope', // Test-only: the reference analyzer of that test
+          ],
         },
       ],
     },

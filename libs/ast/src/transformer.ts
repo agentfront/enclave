@@ -2,6 +2,7 @@ import type * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
 import { generate } from 'astring';
 import type { TransformConfig } from './interfaces';
+import { analyzeScopes } from './utils/scope-analysis';
 
 /**
  * JavaScript keywords that should never be transformed
@@ -54,64 +55,6 @@ const JS_KEYWORDS = new Set([
   // Special identifiers that are not really identifiers
   'arguments',
 ]);
-
-/**
- * Recursively collect all binding identifiers from patterns (destructuring, etc.)
- *
- * Handles:
- * - Identifier: `const x = ...`
- * - ObjectPattern: `const { a, b } = ...`
- * - ArrayPattern: `const [a, b] = ...`
- * - AssignmentPattern: `const { a = defaultVal } = ...`
- * - RestElement: `const { ...rest } = ...` or `const [...rest] = ...`
- *
- * @param pattern The pattern node to collect identifiers from
- * @param identifiers Set to add collected identifier names to
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- acorn doesn't export specific pattern node types
-function collectPatternIdentifiers(pattern: any, identifiers: Set<string>): void {
-  if (!pattern) return;
-
-  switch (pattern.type) {
-    case 'Identifier':
-      identifiers.add(pattern.name);
-      break;
-
-    case 'ObjectPattern':
-      if (pattern.properties) {
-        for (const prop of pattern.properties) {
-          if (prop.type === 'Property') {
-            // { key: value } - the value is the binding
-            collectPatternIdentifiers(prop.value, identifiers);
-          } else if (prop.type === 'RestElement') {
-            // { ...rest }
-            collectPatternIdentifiers(prop.argument, identifiers);
-          }
-        }
-      }
-      break;
-
-    case 'ArrayPattern':
-      if (pattern.elements) {
-        for (const elem of pattern.elements) {
-          if (elem) {
-            collectPatternIdentifiers(elem, identifiers);
-          }
-        }
-      }
-      break;
-
-    case 'AssignmentPattern':
-      // { a = defaultValue } - the left side is the binding
-      collectPatternIdentifiers(pattern.left, identifiers);
-      break;
-
-    case 'RestElement':
-      // [...rest] or { ...rest }
-      collectPatternIdentifiers(pattern.argument, identifiers);
-      break;
-  }
-}
 
 /**
  * Determine if an identifier should be transformed
@@ -179,70 +122,10 @@ export function transformAst(ast: acorn.Node, config: TransformConfig): void {
     JS_KEYWORDS.forEach((kw) => targetSet.add(kw));
   }
 
-  // Track locally-declared variables for whitelist mode
-  // In whitelist mode, we should NOT transform references to locally-declared variables
-  const localBindings = new Set<string>();
-
   if (mode === 'whitelist') {
-    // First pass: collect all locally-declared identifiers
-    // This includes destructuring patterns (ObjectPattern, ArrayPattern, etc.)
-    walk.simple(ast, {
-      VariableDeclarator: (node: any) => {
-        // Use collectPatternIdentifiers to handle all patterns including destructuring
-        collectPatternIdentifiers(node.id, localBindings);
-      },
-      FunctionDeclaration: (node: any) => {
-        if (node.id && node.id.type === 'Identifier') {
-          localBindings.add(node.id.name);
-        }
-        // Add function parameters (including destructuring)
-        if (node.params) {
-          node.params.forEach((param: any) => {
-            collectPatternIdentifiers(param, localBindings);
-          });
-        }
-      },
-      FunctionExpression: (node: any) => {
-        if (node.id && node.id.type === 'Identifier') {
-          localBindings.add(node.id.name);
-        }
-        // Add function parameters (including destructuring)
-        if (node.params) {
-          node.params.forEach((param: any) => {
-            collectPatternIdentifiers(param, localBindings);
-          });
-        }
-      },
-      ArrowFunctionExpression: (node: any) => {
-        // Add arrow function parameters (including destructuring)
-        if (node.params) {
-          node.params.forEach((param: any) => {
-            collectPatternIdentifiers(param, localBindings);
-          });
-        }
-      },
-      CatchClause: (node: any) => {
-        // Add catch clause parameter (including destructuring)
-        if (node.param) {
-          collectPatternIdentifiers(node.param, localBindings);
-        }
-      },
-      // For-in / For-of loop variables
-      ForInStatement: (node: any) => {
-        if (node.left.type === 'VariableDeclaration') {
-          node.left.declarations.forEach((decl: any) => {
-            collectPatternIdentifiers(decl.id, localBindings);
-          });
-        }
-      },
-      ForOfStatement: (node: any) => {
-        if (node.left.type === 'VariableDeclaration') {
-          node.left.declarations.forEach((decl: any) => {
-            collectPatternIdentifiers(decl.id, localBindings);
-          });
-        }
-      },
-    });
+    transformFreeReferences(ast, prefix, targetSet);
+    transformComputedMemberKeys(ast, config, mode, prefix, targetSet);
+    return;
   }
 
   // Walk the AST and transform matching identifiers
@@ -315,19 +198,58 @@ export function transformAst(ast: acorn.Node, config: TransformConfig): void {
         }
       }
 
-      // In whitelist mode, don't transform locally-declared variables
-      if (mode === 'whitelist' && localBindings.has(node.name)) {
-        return;
-      }
-
       if (shouldTransformIdentifier(node.name, mode, targetSet)) {
         node.name = `${prefix}${node.name}`;
       }
     },
+  });
 
-    // Transform computed member expressions (e.g., obj['eval'])
+  transformComputedMemberKeys(ast, config, mode, prefix, targetSet);
+}
+
+/**
+ * WHITELIST MODE: prefix every identifier that reaches a global.
+ *
+ * Resolution is lexical: a reference is left alone only when a declaration of that name is in
+ * scope AT THE REFERENCE. (A flat "declared somewhere" set let `{ let globalThis; } globalThis`
+ * keep the outer, global `globalThis` unprefixed.) Assignment targets are references too, so
+ * `x = 1`, `[x] = y` and `for (x of y)` are prefixed exactly like a read of `x`.
+ */
+function transformFreeReferences(ast: acorn.Node, prefix: string, whitelist: Set<string>): void {
+  const { freeReferences } = analyzeScopes(ast);
+  for (const ref of freeReferences) {
+    if (!shouldTransformIdentifier(ref.name, 'whitelist', whitelist)) continue;
+    ref.node.name = `${prefix}${ref.name}`;
+    // `{ x }` prints only its value; once the value is renamed the key must be written out, or the
+    // property itself would be renamed to `{ __safe_x }`. The same holds for a target with a
+    // default, `({ x = 1 } = obj)`.
+    const property = ref.parent;
+    if (
+      property?.type === 'Property' &&
+      property.shorthand &&
+      (property.value === ref.node ||
+        (property.value?.type === 'AssignmentPattern' && property.value.left === ref.node))
+    ) {
+      property.shorthand = false;
+    }
+  }
+}
+
+/**
+ * Transform statically-known computed member keys (e.g. `obj['eval']`) when `transformComputed` is set.
+ */
+function transformComputedMemberKeys(
+  ast: acorn.Node,
+  config: TransformConfig,
+  mode: 'blacklist' | 'whitelist',
+  prefix: string,
+  targetSet: Set<string>,
+): void {
+  if (!config.transformComputed) return;
+
+  walk.simple(ast, {
     MemberExpression: (node: any) => {
-      if (config.transformComputed && node.computed && node.property) {
+      if (node.computed && node.property) {
         // Handle string literals like obj['eval']
         if (node.property.type === 'Literal' && typeof node.property.value === 'string') {
           const propValue = node.property.value;

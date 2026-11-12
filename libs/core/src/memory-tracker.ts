@@ -154,6 +154,21 @@ export class MemoryTracker {
    * @throws {MemoryLimitError} If memory limit is exceeded
    */
   track(bytes: number): void {
+    // The size comes from arithmetic done inside the sandbox, so it is untrusted. NaN is the
+    // dangerous case: `NaN <= 0` is false, and adding it would turn the running total into NaN,
+    // after which `trackedBytes > memoryLimit` is false forever and the limit is silently off.
+    // A value that is not a number at all, or NaN, is therefore refused when a limit is set
+    // (fail closed) and ignored otherwise.
+    if (typeof bytes !== 'number' || Number.isNaN(bytes)) {
+      if (this.config.memoryLimit > 0) {
+        throw new MemoryLimitError(
+          'Memory limit exceeded: allocation size is not a number',
+          this.trackedBytes,
+          this.config.memoryLimit,
+        );
+      }
+      return;
+    }
     if (bytes <= 0) return;
 
     this.trackedBytes += bytes;
@@ -215,6 +230,8 @@ export class MemoryTracker {
    * @param bytes Number of bytes to release
    */
   release(bytes: number): void {
+    // Same reasoning as track(): never let NaN (or a negative "release") into the running total.
+    if (typeof bytes !== 'number' || !(bytes > 0)) return;
     this.trackedBytes = Math.max(0, this.trackedBytes - bytes);
   }
 

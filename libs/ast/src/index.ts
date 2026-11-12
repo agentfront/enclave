@@ -60,6 +60,10 @@ export {
   StaticCallTargetRule,
   NoRegexLiteralRule,
   NoRegexMethodsRule,
+  NoComputedDestructuringRule,
+  NoJsonCallbacksRule,
+  AllowedSyntaxRule,
+  AGENTSCRIPT_ALLOWED_NODE_TYPES,
 } from './rules';
 
 // Rule options types
@@ -79,6 +83,9 @@ export type { NoUserDefinedFunctionsOptions } from './rules/no-user-functions.ru
 export type { StaticCallTargetOptions } from './rules/static-call-target.rule';
 export type { NoRegexLiteralOptions } from './rules/no-regex-literal.rule';
 export type { NoRegexMethodsOptions } from './rules/no-regex-methods.rule';
+export type { NoComputedDestructuringOptions } from './rules/no-computed-destructuring.rule';
+export type { NoJsonCallbacksOptions } from './rules/no-json-callbacks.rule';
+export type { AllowedSyntaxOptions } from './rules/allowed-syntax.rule';
 
 // Presets
 export {
@@ -96,6 +103,7 @@ export {
   AGENTSCRIPT_STANDARD_GLOBALS,
   AGENTSCRIPT_PERMISSIVE_GLOBALS,
   AGENTSCRIPT_DISALLOWED_IDENTIFIERS,
+  AGENTSCRIPT_DISALLOWED_PROPERTIES,
   AGENTSCRIPT_BASE_GLOBALS, // Legacy alias for STRICT
   getAgentScriptGlobals,
   // Babel preset for TSX/JSX transformation

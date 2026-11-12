@@ -1,9 +1,11 @@
 ---
 title: 'Worker Pool'
-description: 'OS-level memory isolation using worker threads for enhanced security'
+description: 'Run the sandbox in worker threads: a heap limit per worker and a hard stop'
 ---
 
-For OS-level memory isolation, use the worker threads adapter. This provides stronger isolation than the default VM context by running code in separate Node.js worker threads.
+The worker threads adapter runs each script in a worker thread taken from a pool. Inside the worker the script runs in the same sandbox as in process (the [double VM](/core-libraries/enclave-vm/double-vm) by default). The worker adds two things a separate thread can provide: a heap limit that the engine enforces, and a stop that does not depend on the script.
+
+A worker thread is not a sandbox by itself and not process isolation: it has the Node.js API and shares the process with the host. For tenants that must not share a process, run one enclave per process or container.
 
 ## Basic Usage
 
@@ -12,7 +14,6 @@ import { Enclave } from '@enclave-vm/core';
 
 const enclave = new Enclave({
   adapter: 'worker_threads',
-  doubleVm: { enabled: false }, // `adapter` takes effect only with the double VM off
   workerPoolConfig: {
     minWorkers: 2,
     maxWorkers: 8,
@@ -24,10 +25,12 @@ const enclave = new Enclave({
 ## Worker Pool Features
 
 - **Pool management** - Auto-scaling with min/max workers
-- **Memory monitoring** - Workers recycled when exceeding limits
-- **Hard halt** - Force terminate via `worker.terminate()`
+- **Heap limit** - A worker that exceeds `memoryLimitPerWorker` is terminated and replaced: by the engine, or by the pool when the process runs with `--max-old-space-size` (see [The heap limit](#the-heap-limit))
+- **Memory monitoring** - A worker that holds more than its limit allows (its own heap and external memory, not the size of the process) is recycled
+- **Hard halt** - A script that is still running five seconds after its `timeout` is terminated with its worker
 - **Rate limiting** - Message flood protection
-- **Dual-layer sandbox** - Worker thread + VM context isolation
+- **The same sandbox** - The double VM runs inside the worker; tool calls go through the host's tool bridge
+- **Untrusted workers** - The host checks every message from a worker against the protocol schema
 
 ## Worker Pool Presets
 
@@ -66,60 +69,71 @@ const customEnclave = new Enclave({
 interface WorkerPoolConfig {
   // Pool sizing
   minWorkers: number;        // Minimum workers to keep warm
-  maxWorkers: number;        // Maximum concurrent workers
+  maxWorkers: number;        // Maximum concurrent workers; further executions wait in the queue
 
   // Resource limits
-  memoryLimitPerWorker: number;  // Memory limit per worker (bytes)
+  memoryLimitPerWorker: number;  // Heap limit per worker (bytes); 0 for none
   maxExecutionsPerWorker: number; // Executions before worker recycle
 
   // Queue management
   maxQueueSize: number;      // Maximum pending executions
-  queueTimeout: number;      // Queue wait timeout (ms)
+  queueTimeoutMs: number;    // Queue wait timeout (ms)
 
   // Rate limiting
   maxMessagesPerSecond: number;  // Message flood protection
 
   // Lifecycle
-  idleTimeout: number;       // Time before idle worker shutdown
-  gracefulShutdownTimeout: number; // Shutdown wait time
+  idleTimeoutMs: number;     // Time before idle worker shutdown
+  gracefulShutdownTimeoutMs: number; // Shutdown wait time
 }
 ```
 
-## Memory Isolation Benefits
+## What a Worker Adds
 
-Worker threads provide stronger isolation than VM contexts alone:
+1. **Separate V8 heap** - Each worker has its own heap, with its own limit (`resourceLimits`)
+2. **Memory limit** - A script that outgrows the limit loses its worker, and the pool goes on with a new one
+3. **Hard stop** - `worker.terminate()` ends a script that nothing else can interrupt
+4. **Recovery** - A worker that is terminated or dies is removed from the pool and replaced
 
-1. **Separate V8 heap** - Each worker has its own memory space
-2. **Hard memory limits** - OS-level enforcement via `--max-old-space-size`
-3. **Process-like isolation** - Worker crash doesn't affect main process
-4. **Clean termination** - `worker.terminate()` guarantees cleanup
+### The heap limit
+
+`memoryLimitPerWorker` limits the worker's old generation. The engine allows the young generation on top of it, which the pool sets to 24 MB, so the most a worker can hold is the sum of the two.
+
+- **A heap flag on the process replaces it.** When the host process runs with `--max-old-space-size` (on the command line or in `NODE_OPTIONS`), that value becomes the heap limit of every worker thread, whatever limit a worker was created with. The pool reads the actual limit of each new worker. When the engine does not apply the configured one, it logs a warning once and enforces the limit itself: it reads the worker's heap every 100 ms while the worker executes and terminates it past its limit (`WorkerMemoryError`). This is approximate, and it needs Node.js 22.16 or later; on an older 22.x the pool can only warn that the limit is not enforced.
+- **It is not a guarantee that the host process survives.** A worker thread shares the process, and Node.js states that a process may still abort with these limits set: an allocation burst that outruns the engine's shutdown of the worker is a fatal out-of-memory error for the whole process. Inside the sandbox, with the worker's limit in effect, this has not been observed, and by default the sandbox's own `memoryLimit` stops a script long before the worker's limit. A host that must survive whatever a script allocates runs the enclave in a child process or a container with a memory limit of the operating system.
+
+## What Is Different From In-Process Execution
+
+- **Custom globals** reach a worker as JSON data. Functions in `globals` are not available there.
+- **Tool names** must start with a letter and contain only letters, digits, `:`, `.`, `_` and `-`. A call with another name fails with an error the script can catch.
+- **Console output** without a `consoleHandler` is printed by the host with a `[Worker]` prefix.
+- **`toolBridge.mode: 'direct'`** does not apply: tool requests and responses cross as strings.
 
 ## When to Use Worker Pool
 
 Use the worker pool adapter when:
 
 - Running code from completely untrusted sources
-- Memory isolation is critical
-- You need hard termination guarantees
+- You need a script to be stopped even if it cannot be interrupted
+- A heap limit per worker is wanted as a backstop behind the sandbox's own `memoryLimit`
 - Processing many concurrent executions
 
 Use the default VM adapter when:
 
-- Memory isolation is less critical
 - You need lower latency
 - Running trusted or semi-trusted code
 - Simpler deployment is preferred
 
-## Dual-Layer Sandbox
+## Layers
 
-The worker pool provides two layers of isolation:
+The script runs in the double VM, inside a worker thread:
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8a045', 'primaryTextColor': '#fff', 'primaryBorderColor': '#c78935', 'lineColor': '#c78935', 'secondaryColor': '#f0b865', 'tertiaryColor': '#fff5e6'}}}%%
 flowchart TB
     subgraph main["Main Process"]
         subgraph worker["Worker Thread"]
-            subgraph vm["VM Context (User Code Runs)"]
+            subgraph vm["Double VM (parent realm + inner realm)"]
                 code["Sandboxed Code"]
             end
         end
@@ -130,33 +144,43 @@ flowchart TB
     style code fill:#c78935,stroke:#c78935,color:#fff
 ```
 
-1. **Worker Thread** - OS-level process isolation
-2. **VM Context** - JavaScript-level sandboxing
+1. **Worker Thread** - Heap limit, hard stop
+2. **Double VM** - The sandbox: allowed globals only, membrane, tool gate, limits
 
 Messages between the worker and the main thread are JSON. The script's return value is converted as on the in-process adapters (same `maxSanitizeDepth` and `maxSanitizeProperties` limits, `'[Circular]'`, BigInt to string, Map to object, Set to array), and the values JSON cannot carry (`Date`, `NaN`, `Infinity`, `undefined`) are sent alongside it and restored, so a `Date` comes back as a `Date`.
 
 ## Monitoring Worker Health
 
+The pool has no callbacks. It keeps counters, which you read from the pool object, so create the pool yourself and hand it to the enclave as its adapter:
+
 ```ts
+import { Enclave, WorkerPoolAdapter } from '@enclave-vm/core';
+
+const pool = new WorkerPoolAdapter({ maxWorkers: 8, memoryLimitPerWorker: 256 * 1024 * 1024 }, 'STANDARD');
+
 const enclave = new Enclave({
-  adapter: 'worker_threads',
-  workerPoolConfig: {
-    maxWorkers: 8,
-    memoryLimitPerWorker: 256 * 1024 * 1024,
-
-    // Callback when worker is recycled
-    onWorkerRecycled: (reason) => {
-      console.log('Worker recycled:', reason);
-    },
-
-    // Callback for pool stats
-    onStatsUpdate: (stats) => {
-      console.log('Active workers:', stats.activeWorkers);
-      console.log('Queue depth:', stats.queueDepth);
-    },
-  },
+  securityLevel: 'STANDARD', // the same level as the pool
+  sandboxAdapter: pool,
 });
+
+const monitor = setInterval(() => {
+  const metrics = pool.getMetrics();
+  console.log('Workers:', metrics.totalSlots, 'executing:', metrics.executingSlots);
+  console.log('Queue depth:', metrics.queuedRequests);
+  console.log('Recycled:', metrics.workerRecycles, 'ended for memory:', metrics.memoryKills);
+  console.log('Timed out:', metrics.timeoutExecutions, 'of', metrics.totalExecutions);
+}, 10_000);
+
+// On shutdown: stop the timer (it would keep the process alive and go on reporting a pool
+// that is gone), then dispose. An adapter you passed in is yours to dispose.
+clearInterval(monitor);
+enclave.dispose();
+pool.dispose();
 ```
+
+`memoryKills` counts every worker that was ended at its memory limit: by the engine, by the pool's own heap check, or by the memory monitor.
+
+A pool created this way runs each script in the double VM, like `adapter: 'worker_threads'` with default options; its third constructor argument takes a `doubleVm` configuration.
 
 ## Related
 

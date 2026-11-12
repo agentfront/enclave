@@ -1,5 +1,7 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
+import { analyzeScopes } from '../utils/scope-analysis';
+import { staticPropertyName } from '../utils/ast-walk';
 
 /**
  * Options for the NoRegexMethodsRule
@@ -27,6 +29,17 @@ export interface NoRegexMethodsOptions {
   allowStringArguments?: boolean;
 
   /**
+   * Names of globals that are objects of the host and not strings: tool namespaces, custom
+   * globals that hold an object or a function. A method called `match`, `matchAll` or `search`
+   * on one of them (`docs.search(args)`) is not a string method, so with
+   * `allowStringArguments: false` a call with a non-literal argument keeps the warning instead
+   * of being refused. A global that is not listed is treated like any other value: it may be a
+   * string the host passed in.
+   * Default: []
+   */
+  hostObjectNames?: string[];
+
+  /**
    * Custom error message template.
    * Placeholders: {method}
    */
@@ -44,6 +57,16 @@ const DEFAULT_STRING_METHODS = [
   'replaceAll', // str.replaceAll(regex, replacement)
   'split', // str.split(regex)
 ];
+
+/**
+ * String methods that COMPILE a string argument into a regular expression.
+ * `'text'.match('(a+)+$')` builds and runs the regex `/(a+)+$/`: a string is not a way around the
+ * regex ban for these three. (`split`, `replace` and `replaceAll` treat a string literally.)
+ */
+const PATTERN_COMPILING_STRING_METHODS = new Set(['match', 'matchAll', 'search']);
+
+/** Members with which an object decides what it is as a text */
+const CONVERSION_KEYS = new Set(['toString', 'valueOf']);
 
 /**
  * Default methods on regex objects
@@ -98,9 +121,11 @@ export class NoRegexMethodsRule implements ValidationRule {
   private readonly blockedStringMethods: Set<string>;
   private readonly blockedRegexMethods: Set<string>;
   private readonly allowStringArguments: boolean;
+  private readonly hostObjectNames: ReadonlySet<string>;
   private readonly messageTemplate: string;
 
   constructor(options: NoRegexMethodsOptions = {}) {
+    this.hostObjectNames = new Set(options.hostObjectNames ?? []);
     this.blockedStringMethods = new Set(options.blockedStringMethods ?? DEFAULT_STRING_METHODS);
     this.blockedRegexMethods = new Set(options.blockedRegexMethods ?? DEFAULT_REGEX_METHODS);
     this.allowStringArguments = options.allowStringArguments ?? true;
@@ -108,14 +133,38 @@ export class NoRegexMethodsRule implements ValidationRule {
   }
 
   validate(context: ValidationContext): void {
+    // The identifiers that name a global the host declared as an object (a tool namespace, say),
+    // not a variable of the script that happens to have the same name
+    const freeReferences = new Set<unknown>();
+    if (!this.allowStringArguments && this.hostObjectNames.size > 0) {
+      for (const ref of analyzeScopes(context.ast).freeReferences) {
+        if (this.hostObjectNames.has(ref.name)) freeReferences.add(ref.node);
+      }
+    }
+
     walk.simple(context.ast as any, {
       CallExpression: (node: any) => {
-        this.checkMethodCall(node, context);
+        this.checkMethodCall(node, context, freeReferences);
+      },
+      // str.match`pattern` calls the method with the template strings: the same regex path as a
+      // call, written without a CallExpression.
+      TaggedTemplateExpression: (node: any) => {
+        const tag = node.tag;
+        if (tag?.type !== 'MemberExpression') return;
+        const methodName = this.getMethodName(tag);
+        if (methodName && (this.blockedStringMethods.has(methodName) || this.blockedRegexMethods.has(methodName))) {
+          context.report({
+            code: 'NO_REGEX_METHOD',
+            message: `Use of .${methodName}() as a template tag is not allowed (the template is used as a regex, ReDoS risk)`,
+            location: this.getLocation(tag),
+            data: { method: methodName, form: 'tagged-template' },
+          });
+        }
       },
     });
   }
 
-  private checkMethodCall(node: any, context: ValidationContext): void {
+  private checkMethodCall(node: any, context: ValidationContext, freeReferences: ReadonlySet<unknown>): void {
     const callee = node.callee;
 
     // Only check member expressions: obj.method()
@@ -139,6 +188,46 @@ export class NoRegexMethodsRule implements ValidationRule {
       // Check if argument is a regex literal or RegExp constructor
       if (this.hasRegexArgument(node)) {
         this.report(node, methodName, context);
+        return;
+      }
+
+      // match / matchAll / search turn a string argument into a regex, so when string arguments
+      // are not accepted as proof of safety, a string here is a regex by another spelling.
+      if (
+        !this.allowStringArguments &&
+        PATTERN_COMPILING_STRING_METHODS.has(methodName) &&
+        this.hasStringArgument(node)
+      ) {
+        context.report({
+          code: 'NO_REGEX_METHOD',
+          message:
+            `Use of .${methodName}() with a string is not allowed: the string is compiled into a regular ` +
+            `expression (ReDoS risk). Use .includes(), .indexOf(), .startsWith() or .endsWith() instead.`,
+          location: this.getLocation(callee),
+          data: { method: methodName, form: 'string-pattern' },
+        });
+        return;
+      }
+
+      // The same three methods with an argument that is not a literal: on a string, whatever it
+      // evaluates to (a string, a regular expression) is run as a regular expression. A method of
+      // that name on a global the host declared as an object (`docs.search(args)`, a tool
+      // namespace) is not a string method, and neither is a call whose argument is an object
+      // literal: those stay with the warning below.
+      if (
+        !this.allowStringArguments &&
+        PATTERN_COMPILING_STRING_METHODS.has(methodName) &&
+        node.arguments.length > 0 &&
+        this.couldCompilePattern(node, freeReferences)
+      ) {
+        context.report({
+          code: 'NO_REGEX_METHOD',
+          message:
+            `Use of .${methodName}() with a non-literal argument is not allowed: the argument is used as a ` +
+            `regular expression (ReDoS risk). Use .includes(), .indexOf(), .startsWith() or .endsWith() instead.`,
+          location: this.getLocation(callee),
+          data: { method: methodName, form: 'dynamic-pattern' },
+        });
         return;
       }
 
@@ -177,7 +266,43 @@ export class NoRegexMethodsRule implements ValidationRule {
     }
   }
 
+  /**
+   * Whether `receiver.match(arg)` / `matchAll` / `search` with a non-literal argument could be a
+   * string turning that argument into a regular expression. It could not when:
+   * - the receiver names a global that `hostObjectNames` lists: an object of the host (a tool
+   *   namespace), not a string;
+   * - the argument is an object literal that defines no conversion of its own: as a pattern it
+   *   is the text `[object Object]`;
+   * - the argument is a number, boolean or null literal.
+   */
+  private couldCompilePattern(node: any, freeReferences: ReadonlySet<unknown>): boolean {
+    const receiver = node.callee.object;
+    if (receiver?.type === 'Identifier' && freeReferences.has(receiver)) {
+      return false;
+    }
+
+    const argument = node.arguments[0];
+    if (argument.type === 'Literal' && !argument.regex && typeof argument.value !== 'string') {
+      return false;
+    }
+    if (argument.type === 'ObjectExpression') {
+      return !argument.properties.every(
+        (property: any) =>
+          property.type === 'Property' &&
+          !property.computed &&
+          !CONVERSION_KEYS.has(property.key.type === 'Identifier' ? property.key.name : String(property.key.value)),
+      );
+    }
+    return true;
+  }
+
   private getMethodName(callee: any): string | null {
+    // Every static spelling of a method name: obj.method(), obj['method'](), obj[`method`]()
+    const staticName = staticPropertyName(callee.property, callee.computed === true);
+    if (staticName !== undefined) {
+      return staticName;
+    }
+
     // obj.method() - identifier property
     if (callee.property?.type === 'Identifier') {
       return callee.property.name;

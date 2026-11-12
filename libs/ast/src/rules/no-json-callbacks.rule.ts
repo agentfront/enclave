@@ -1,5 +1,7 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
+import { walkAll, staticPropertyName, type AnyNode } from '../utils/ast-walk';
+import { analyzeScopes } from '../utils/scope-analysis';
 
 /**
  * Options for the NoJsonCallbacksRule
@@ -16,6 +18,20 @@ export interface NoJsonCallbacksOptions {
    * Default: true
    */
   blockParseReviver?: boolean;
+
+  /**
+   * Require `JSON` to be used only as `JSON.parse(...)` / `JSON.stringify(...)`, called directly.
+   *
+   * The callback check only sees calls written exactly that way. With this option every other use
+   * of the global `JSON` object is refused, since it would move the call out of sight: an alias
+   * (`const J = JSON`), `JSON.stringify.call(...)`, a method read without a call
+   * (`const s = JSON.stringify`), a runtime-computed method name (`JSON[name](...)`), a call of any
+   * other method (`JSON.valueOf()` returns the object), passing `JSON` as a value, and destructuring
+   * from it. `typeof JSON` and `typeof JSON.parse` stay allowed.
+   *
+   * Default: false
+   */
+  requireDirectUse?: boolean;
 
   /**
    * Custom error message template.
@@ -72,11 +88,13 @@ export class NoJsonCallbacksRule implements ValidationRule {
 
   private readonly blockStringifyReplacer: boolean;
   private readonly blockParseReviver: boolean;
+  private readonly requireDirectUse: boolean;
   private readonly messageTemplate: string;
 
   constructor(options: NoJsonCallbacksOptions = {}) {
     this.blockStringifyReplacer = options.blockStringifyReplacer ?? true;
     this.blockParseReviver = options.blockParseReviver ?? true;
+    this.requireDirectUse = options.requireDirectUse === true;
     this.messageTemplate =
       options.messageTemplate ?? 'JSON.{method}() with callback function is not allowed (property enumeration risk)';
   }
@@ -86,6 +104,69 @@ export class NoJsonCallbacksRule implements ValidationRule {
       CallExpression: (node: any) => {
         this.checkJsonCall(node, context);
       },
+    });
+
+    if (this.requireDirectUse) {
+      this.checkDirectUse(context);
+    }
+  }
+
+  /**
+   * Refuse every use of the `JSON` object other than a direct `JSON.parse(...)` or
+   * `JSON.stringify(...)` call with a statically-known method name.
+   */
+  private checkDirectUse(context: ValidationContext): void {
+    // Only a reference that reaches the global is the JSON object. A local variable of that name
+    // (`const JSON = {...}`) is the script's own value: it can only hold the JSON object through a
+    // free reference, and that reference is refused here.
+    const free = new Set<AnyNode>();
+    for (const ref of analyzeScopes(context.ast).freeReferences) {
+      if (ref.name === 'JSON') free.add(ref.node);
+    }
+
+    walkAll(context.ast, (node, ancestors, key) => {
+      if (node.type !== 'Identifier' || node.name !== 'JSON' || !free.has(node)) return;
+
+      const parent: AnyNode | undefined = ancestors[ancestors.length - 1];
+      const grandparent: AnyNode | undefined = ancestors[ancestors.length - 2];
+
+      // `x.JSON`, `{ JSON: 1 }`: a property called JSON is not the JSON object.
+      if (parent && !parent.computed) {
+        if (parent.type === 'MemberExpression' && key === 'property') return;
+        if ((parent.type === 'Property' || parent.type === 'MethodDefinition') && key === 'key') return;
+      }
+
+      // `typeof JSON`: yields a string, cannot alias the object.
+      if (parent?.type === 'UnaryExpression' && parent.operator === 'typeof') return;
+
+      const isStaticMember =
+        parent?.type === 'MemberExpression' &&
+        key === 'object' &&
+        staticPropertyName(parent.property, parent.computed) !== undefined;
+      if (isStaticMember) {
+        // JSON.parse(...) / JSON.stringify(...): the two methods whose arguments are checked. Any
+        // other method is refused; `JSON.valueOf()` for one returns the JSON object itself.
+        const method = staticPropertyName(parent.property, parent.computed);
+        if (
+          grandparent?.type === 'CallExpression' &&
+          grandparent.callee === parent &&
+          (method === 'parse' || method === 'stringify')
+        ) {
+          return;
+        }
+        // `typeof JSON.stringify`
+        if (grandparent?.type === 'UnaryExpression' && grandparent.operator === 'typeof') return;
+      }
+
+      context.report({
+        code: 'JSON_INDIRECT_USE',
+        message:
+          'JSON can only be used as JSON.parse(...) or JSON.stringify(...), called directly. ' +
+          'Aliasing JSON, reading its methods without calling them, or calling them through ' +
+          'call/apply/bind or a computed name is not allowed.',
+        location: node.loc ? { line: node.loc.start.line, column: node.loc.start.column } : undefined,
+        data: { parentType: parent?.type },
+      });
     });
   }
 
@@ -127,6 +208,12 @@ export class NoJsonCallbacksRule implements ValidationRule {
 
   private checkStringifyReplacer(node: any, context: ValidationContext): void {
     // JSON.stringify(value, replacer?, space?)
+    // A spread hides which argument lands in the replacer position: JSON.stringify(...[v, fn]).
+    if (this.hasSpreadArgument(node, 2)) {
+      this.report(node, 'stringify', 'replacer', context);
+      return;
+    }
+
     // We need to check the second argument (replacer)
     if (node.arguments.length < 2) {
       return; // No replacer argument, safe
@@ -144,14 +231,20 @@ export class NoJsonCallbacksRule implements ValidationRule {
       return;
     }
 
-    // Block function replacer (arrow function, function expression, or identifier)
-    if (this.isFunctionOrPotentialFunction(replacerArg)) {
+    // Anything that is not provably a non-function is refused.
+    if (!this.isProvablyNotAFunction(replacerArg)) {
       this.report(node, 'stringify', 'replacer', context);
     }
   }
 
   private checkParseReviver(node: any, context: ValidationContext): void {
     // JSON.parse(text, reviver?)
+    // A spread hides which argument lands in the reviver position: JSON.parse(...[text, fn]).
+    if (this.hasSpreadArgument(node, 2)) {
+      this.report(node, 'parse', 'reviver', context);
+      return;
+    }
+
     // We need to check the second argument (reviver)
     if (node.arguments.length < 2) {
       return; // No reviver argument, safe
@@ -164,10 +257,31 @@ export class NoJsonCallbacksRule implements ValidationRule {
       return;
     }
 
-    // Block function reviver (arrow function, function expression, or identifier)
-    if (this.isFunctionOrPotentialFunction(reviverArg)) {
+    // Anything that is not provably a non-function is refused.
+    if (!this.isProvablyNotAFunction(reviverArg)) {
       this.report(node, 'parse', 'reviver', context);
     }
+  }
+
+  /** Whether a spread element appears among the first `count` arguments. */
+  private hasSpreadArgument(node: any, count: number): boolean {
+    for (let i = 0; i < node.arguments.length && i < count; i++) {
+      if (node.arguments[i]?.type === 'SpreadElement') return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether an argument can be seen, without running the script, to be something other than a
+   * function. JSON ignores a replacer/reviver that is not callable (and not an array), so these
+   * shapes are harmless. Every other expression (a variable, a call, `(0, fn)`, `await fn`,
+   * `a = fn`, ...) could evaluate to a function and is refused.
+   */
+  private isProvablyNotAFunction(node: any): boolean {
+    if (node.type === 'Literal') return true; // string, number, boolean, null, bigint
+    if (node.type === 'TemplateLiteral') return true; // always a string
+    if (node.type === 'ObjectExpression' || node.type === 'ArrayExpression') return true;
+    return this.isNullOrUndefined(node);
   }
 
   private isJsonObject(node: any): boolean {
@@ -179,6 +293,13 @@ export class NoJsonCallbacksRule implements ValidationRule {
   }
 
   private getMethodName(callee: any): string | null {
+    // Every static spelling the direct-use check accepts, so that both passes agree on the method:
+    // JSON.method(), JSON['method'](), JSON[`method`]()
+    const staticName = staticPropertyName(callee.property, callee.computed === true);
+    if (staticName !== undefined) {
+      return staticName;
+    }
+
     // JSON.method() - identifier property
     if (callee.property?.type === 'Identifier') {
       return callee.property.name;
@@ -205,47 +326,6 @@ export class NoJsonCallbacksRule implements ValidationRule {
 
     // void expression (e.g., void 0) evaluates to undefined
     if (node.type === 'UnaryExpression' && node.operator === 'void') {
-      return true;
-    }
-
-    return false;
-  }
-
-  private isFunctionOrPotentialFunction(node: any): boolean {
-    // Direct function expressions
-    if (node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
-      return true;
-    }
-
-    // Identifier could be a function reference
-    // We must be conservative and block this to prevent:
-    // const walker = (k, v) => { ... };
-    // JSON.stringify(obj, walker);
-    if (node.type === 'Identifier') {
-      return true;
-    }
-
-    // Member expression could be a function reference
-    // e.g., obj.method, this.replacer
-    if (node.type === 'MemberExpression') {
-      return true;
-    }
-
-    // Call expression result could be a function
-    // e.g., JSON.stringify(obj, getReplacer())
-    if (node.type === 'CallExpression') {
-      return true;
-    }
-
-    // Conditional expression could return a function
-    // e.g., JSON.stringify(obj, condition ? fn1 : fn2)
-    if (node.type === 'ConditionalExpression') {
-      return true;
-    }
-
-    // Logical expression could return a function
-    // e.g., JSON.stringify(obj, fn || defaultFn)
-    if (node.type === 'LogicalExpression') {
       return true;
     }
 

@@ -26,8 +26,10 @@ export interface WorkerPoolConfig {
   maxWorkers: number;
 
   /**
-   * Memory limit per worker in bytes
-   * Workers exceeding this limit will be recycled
+   * Heap limit of each worker in bytes (its old generation); 0 for none.
+   * Enforced by the engine, or by the pool when the process runs with `--max-old-space-size`,
+   * which replaces the heap limit of every worker thread. A worker over its limit is terminated
+   * and replaced.
    * @default 128 * 1024 * 1024 (128MB)
    */
   memoryLimitPerWorker: number;

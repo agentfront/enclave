@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Draft for the maintainer: a security release. The invariants each item restores, and the tests that pin them, are listed by category in `SECURITY-TESTS.md`; nothing here says more than that file does.
+
+### Security
+
+- **Host process.** A promise rejection a script leaves unhandled no longer ends the host process, and is not shown to the application's `unhandledRejection` listeners (ATK-REJECT). The application's own rejections are handled as before.
+- **Timeout.** `timeout` now also ends a script that only waits (for a thenable that never calls back, for a promise nobody settles): from the deadline on, `run()` returns the timeout error as soon as nothing the host started for the script is in flight. Before, `run()` did not settle. A tool call or async host function that is in flight is waited for, but no longer for ever: `toolCallGraceMs` after the deadline the execution ends whatever is in flight. Synchronous work after an `await` is stopped at the deadline as well (ATK-TIME).
+- **After `run()` has returned.** What a script left behind (a tool call it did not await, with a `then` on it) can no longer call a tool, a function from `globals` or the console (ATK-TIME).
+- **Custom globals.** The validation covers what a script reaches through a value: the methods and accessors of a class instance's class, a function in a property that is not enumerable or is keyed by a symbol, and a Proxy of an object. These passed before, whatever `allowFunctionsInGlobals` said.
+- **A script at a full stack.** Every call into the runtime enters through a function of the script's own realm, so what a script catches there is never an object of another realm; a tool handler is started from an empty stack; code supplied by the application (functions in `globals`, a `consoleHandler`, the host console) is not started with the stack nearly full, so a host function either runs and returns to the script or is not started, and the host's output streams keep working (ATK-STACK).
+- **Membrane.** No callable handed to a script has a host function in its target chain; what a script catches is a frozen safe error; a host function never receives a live script value; values passed in `globals` are read-only in the sandbox (ATK-REALM, ATK-MERR, ATK-GARG, ATK-HOSTW, ATK-HVAL, ATK-HCBK).
+- **Single-VM adapter** (`doubleVm: { enabled: false }`). Its runtime is now built inside the sandbox realm: the standard library a script sees is the realm's own, nothing of the host's intrinsics is in the realm, and host values and functions sit behind a proxy of the realm (ATK-SVM).
+- **Realm.** With the `agentscript` and `babel` presets only the allowed globals exist in the realm (`realmGlobals: 'allowlist'`); no bare name resolves through a prototype; scripts run in strict mode; regular expressions cannot run with the allowlist; the parent realm's intrinsics are frozen while a script runs (ATK-GLOBALS, ATK-THIS, ATK-RXRT, ATK-PLOCK).
+- **Worker pool.** Inside a worker the script runs in the same sandbox as in process; tool calls go through the host's tool bridge and every message from a worker is checked; the worker's memory limit is enforced when a heap flag of the process replaces it; `maxWorkers` holds when executions start together; a disposed pool leaves nothing running; a worker with a memory limit has a bounded young generation, so that reaching the limit ends the worker and not, as it did in a few runs of a hundred under load, the process (ATK-WORKER).
+- **Interpreter adapter.** Tool arguments and results are copies, the returned value is sanitized, the standard globals are stand-ins, allocation is bounded, and regular expressions are refused (ATK-INTERP).
+- **Result path and sidecar.** The size check of a returned value is an upper bound and never calls into the value; a composite reference handle a script writes by hand is refused when composites are disabled (ATK-SIZE, ATK-SIDECAR).
+- **Engine.** On V8 13.x (Node.js 24), compiled sandbox code is never shared between realms, which could crash the process. A process started with `node --no-sparkplug` does not have the code in question and keeps sharing (ATK-ENGINE).
+- **Regular expressions of the host.** A regular expression passed in `globals` cannot be run from the sandbox, at any security level: neither `test` / `exec` nor as the pattern of a string method, and a `String` object passed in `globals` cannot be matched against a pattern of the script (`match`, `matchAll`, `search`). Its `lastIndex` is not written. The built-in methods the membrane withholds on host data (the ones that run a regular expression, the ones that change their receiver) are withheld on every read path, a property descriptor included (ATK-RXRT).
+- **Tool-call limit, single VM.** A call is counted and checked against `maxToolCalls` where the script makes it, so the limit is exact when several calls are in flight together (ATK-BRIDGE).
+- **Interpreter adapter, built-in calls.** A bound on what one built-in call may produce holds however the call is written (`call`, `apply`, `bind`, a method kept in a variable); a built-in method only works on the kind of value it belongs to; converting an array to text, a replacement pattern, `concat`, `flat`, `split` and indented `JSON.stringify` output are bounded, and what `JSON.parse` builds is charged before it is built. A built-in used as the callback of an array method or of `parallel` gets the checks of a direct call; a function of the script used there is called as before (ATK-INTERP).
+- **Size check.** A `Map`, a `Set` and a regular expression are measured as what they are copied into (ATK-SIZE).
+- **Worker pool.** A script whose execution ended while it waited for a worker is never started; an execution that queued behind a worker that failed to start is told at once. A pool whose warm-up failed leaves no worker running (ATK-WORKER).
+
+### Changed
+
+- Values passed in `globals` are read-only in the sandbox, in the single VM as in the double VM: assignments and mutating built-in methods throw (they are ignored at `PERMISSIVE`).
+- A console call a script makes with less than 128 KB of stack left does not reach a `consoleHandler` (the line is dropped) and throws a `RangeError` with the host console; a function from `globals` called there throws a `RangeError` and has not run.
+- The enclave wraps `process.emit` the first time a sandbox is used, to answer `unhandledRejection` and `rejectionHandled` for promises that are not of the host realm. `disableSandboxRejectionGuard()` turns this off.
+- In the sandbox, `Symbol.for` refuses keys in the `nodejs.` namespace.
+- `run()` on a script that is still waiting at the deadline now resolves with `Script execution timed out after <timeout>ms`. A tool call in progress at the deadline still delivers, for `toolCallGraceMs` (default: the value of `timeout`, so `run()` takes at most twice `timeout`); after that `run()` returns the same error with `error.data.pendingHostCalls`, and the handler's promise is left to settle. `toolCallGraceMs: Infinity` restores the previous behaviour, in which a handler that never settles keeps `run()` waiting.
+- `globals`: an instance of a class with methods needs `allowFunctionsInGlobals: true`; an instance of a class with getters or setters, a `Buffer`, and a Proxy of an object are refused. An instance of a class without methods or accessors is still accepted (not where `secureProxyConfig.blockConstructor` is off).
+- When `run()` returns, the execution is aborted: a tool call the script started and did not await still completes in the host, but nothing the script does afterwards reaches the host.
+- With the worker pool, an execution that is still running five seconds after its timeout is ended by terminating its worker (`WorkerTimeoutError`); pool statistics report the workers' memory.
+- A worker with `memoryLimitPerWorker` has a young generation of 24 MB (it was the engine's default: 192 MB on Node.js 24, 48 MB on Node.js 22), so the most it can hold is its limit plus 24 MB.
+- The interpreter adapter hands tools JSON copies, fails an execution that returns a function, and has an allocation budget. With a `consoleHandler` it gives the script a `console`, under the same `maxConsoleCalls` and `maxConsoleOutputBytes` as the VM adapters.
+- A regular expression passed in `globals` can be read (`source`, `flags`) but not run; a custom global cannot be named `Object` (the constructor throws).
+- With the AgentScript preset, `match`, `matchAll` and `search` on a custom global that is a string are refused like on any string of the script. On a tool namespace, and on a custom global that is an object or a function, a method of that name is the host's and is accepted with any argument.
+- With the single VM, a host built-in called with a callback (`reduce`, `forEach`, ...) hands the script's own objects back as they are: an accumulator the script created stays writable. Host values are behind the membrane as before.
+- With the single VM, calls beyond `maxToolCalls` are refused one by one where they are made; the calls within the limit run, also when all of them were made before the first one started.
+- Interpreter adapter: array methods need an array and string methods a string as their receiver; one call makes at most 1,000,000 array items and 16,000,000 chars of text from an array; `maxSanitizeDepth` and `maxSanitizeProperties` apply as configured (they were clamped to 5-50 and 50-1000).
+- Worker pool metrics: `memoryKills` also counts a worker the engine ended at its heap limit.
+- Interpreter adapter used without an `Enclave`: a context that sets no `maxSanitizeDepth` / `maxSanitizeProperties` gets the sanitizer's defaults (20 and 10,000), as with the double VM.
+- With the single VM, an object without a prototype that a script passes through a host built-in arrives read-only in the callback (it cannot be told from a host object); collect into `{}` or an array.
+- The `timeout` clock starts when the sandbox adapter is ready, not before it is created: the first `run()` of an enclave with the worker pool no longer spends its time starting the workers. With the pool, a script whose time has passed while it waited for a worker is not started (`ExecutionAbortedError`).
+- Cost, measured with a small script that makes one tool call (arm64): 5.9 ms per execution with the double VM on Node.js 24 and 2.7 ms on Node.js 22; 2.9 ms and 1.6 ms with the single VM. A call into the runtime checks the stack first (about 2.7 microseconds); a call into a host function or the console about 5.5.
+
+### Added
+
+- `disableSandboxRejectionGuard()` and `isHostPromise()`.
+- `toolCallGraceMs`.
+- `realmGlobals` (`'allowlist' | 'security-level'`).
+- `SECURITY-TESTS.md`: the catalog of security tests by layer and invariant, with the rules for changing the sandbox. The tests themselves are in a private repository (see the root changelog).
+
+### Known limits
+
+- Node.js prints to the process's stderr when a promise is rejected while the stack is full; a script can cause that output, and nothing in JavaScript can intercept it (see "A script at a full stack" in the README).
+- The enclave cannot stop a tool handler: a call it stops waiting for at `timeout + toolCallGraceMs` keeps running in the host.
+- A script run with `transform: false` is not stopped by the cooperative deadline check.
+
 ## [2.7.0] - 2026-01-09
 
 ### Added

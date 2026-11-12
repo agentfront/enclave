@@ -32,6 +32,46 @@ describe('InterpreterAdapter (SandboxAdapter)', () => {
     expect(res.stats.duration).toBeGreaterThanOrEqual(0);
   });
 
+  it('returns a value of more than 100 items when the context sets no sanitize limits', async () => {
+    // Without an Enclave nothing sets maxSanitizeProperties: the limit is the sanitizer's own
+    // default, as with the double VM, not a smaller one of this adapter.
+    const res = await adapter.execute(
+      main('const items = []; for (let i = 0; i < 500; i++) { items.push(i); } return items;'),
+      makeContext(),
+    );
+
+    expect(res.error).toBeUndefined();
+    expect((res.value as number[]).length).toBe(500);
+  });
+
+  it('runs a full parallel batch whose tasks call a helper that awaits a tool', async () => {
+    // 100 tasks, each two calls deep while it waits: the batch must not use up the call depth
+    const res = await adapter.execute(
+      main(`
+        const double = async (n) => { const reply = await __safe_callTool('double', { n }); return reply.value; };
+        const items = [];
+        for (let i = 0; i < 100; i++) { items.push(i); }
+        const results = await __safe_parallel(items, (n) => double(n));
+        return [results.length, results[99]];
+      `),
+      makeContext({ maxToolCalls: 200, toolHandler: async (_name, args) => ({ value: (args['n'] as number) * 2 }) }),
+    );
+
+    expect(res.error).toBeUndefined();
+    expect(res.value).toEqual([100, 198]);
+  });
+
+  it('accepts a Math function as the callback of map on a large array', async () => {
+    // floor is handed (item, index, array) and reads the item only
+    const res = await new InterpreterAdapter({ maxSteps: 10_000_000 }).execute(
+      main('return new Array(520000).fill(1.5).map(Math.floor).length;'),
+      makeContext({ timeout: 20000 }),
+    );
+
+    expect(res.error).toBeUndefined();
+    expect(res.value).toBe(520000);
+  });
+
   it('routes tool calls to the toolHandler and counts them', async () => {
     const calls: string[] = [];
     const toolHandler: ToolHandler = async (name) => {
@@ -75,6 +115,7 @@ describe('InterpreterAdapter (SandboxAdapter)', () => {
   it('fails cleanly when no toolHandler is configured', async () => {
     const res = await adapter.execute(main("return await __safe_callTool('x', {});"), makeContext());
     expect(res.success).toBe(false);
-    expect(res.error?.message).toMatch(/toolHandler/i);
+    // The same message as the VM adapters give.
+    expect(res.error?.message).toBe('No tool handler configured. Cannot execute tool calls.');
   });
 });

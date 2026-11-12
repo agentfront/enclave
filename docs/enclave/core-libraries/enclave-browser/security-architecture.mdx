@@ -210,7 +210,16 @@ sequenceDiagram
 | Outer to Host | `ready` | Outer iframe initialized |
 | Host to Inner | `abort` | Signal to abort execution |
 
-All messages are validated with Zod schemas. Tool names must match `^[a-zA-Z][a-zA-Z0-9:_-]*$` and be 1–256 characters.
+### What the Host Checks
+
+The host page does not take the iframes' word for anything. It listens only to the outer iframe of the execution it started, and every message from it is validated against a Zod schema before it is acted on. A message that does not match (an unknown type, a missing or extra field, a tool name that is not a string of 1–256 characters, arguments that are not an object, the id of another execution) ends the execution with `PROTOCOL_VIOLATION` and removes the iframes.
+
+The limits that protect the host are enforced by the host as well as inside the sandbox:
+
+- **Tool calls**: no more than `maxToolCalls` reach your tool handler, and a tool name that `allowedOperationPattern` or `blockedOperationPatterns` refuse does not reach it.
+- **Tool arguments**: the handler receives a copy made by the host, of JSON data only, without `__proto__`, `constructor` or `prototype` keys at any depth. A call whose arguments hold more than 1,000,000 array items and object keys is refused (the script's `callTool` rejects) and the handler is not called.
+- **Results**: a returned value is copied into plain host data (primitives, arrays, dates and plain objects, within `maxSanitizeDepth` and `maxSanitizeProperties`); anything else ends the execution. Error texts are cut to a bounded length.
+- **Console**: no more than `maxConsoleCalls` lines and `maxConsoleOutputBytes` reach the host console. A line is counted by its JSON text; one that has none is dropped. The sandbox sends objects as their JSON copy and a BigInt, symbol or function as its text.
 
 ## What's Blocked
 

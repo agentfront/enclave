@@ -26,6 +26,8 @@
 import type { ExecutionContext } from './types';
 import { sanitizeValue } from './value-sanitizer';
 import { createSafeError } from './safe-error';
+import { hasHostStackReserve, STACK_EXHAUSTED_MESSAGE } from './stack-reserve';
+import type { HostActivity } from './execution-deadline';
 
 const ReflectApply = Reflect.apply;
 const ReflectOwnKeys = Reflect.ownKeys;
@@ -40,8 +42,7 @@ const JsonStringify = JSON.stringify;
  * deliberately excluded: `call`, `apply` and `bind` invoke their receiver, so a call through
  * them is a call into the host function itself.
  */
-const BUILTIN_METHODS: WeakSet<object> = (() => {
-  const methods = new WeakSet<object>();
+const BUILTIN_PROTOTYPES: readonly object[] = (() => {
   const typedArrays = [
     Int8Array,
     Uint8Array,
@@ -88,8 +89,23 @@ const BUILTIN_METHODS: WeakSet<object> = (() => {
     ObjectGetPrototypeOf(new Set()[Symbol.iterator]()),
     ObjectGetPrototypeOf(''[Symbol.iterator]()),
   ];
-  for (const prototype of prototypes) {
-    if (prototype === null || typeof prototype !== 'object') continue;
+  return prototypes.filter((prototype): prototype is object => prototype !== null && typeof prototype === 'object');
+})();
+
+const BUILTIN_PROTOTYPE_SET: WeakSet<object> = new WeakSet(BUILTIN_PROTOTYPES);
+
+/**
+ * Whether `prototype` is one of the built-in prototypes whose methods are not gated. The
+ * validation of `globals` stops there when it walks the classes of a value: what lies beyond is
+ * the language's own.
+ */
+export function isBuiltinPrototype(prototype: unknown): boolean {
+  return typeof prototype === 'object' && prototype !== null && BUILTIN_PROTOTYPE_SET.has(prototype);
+}
+
+const BUILTIN_METHODS: WeakSet<object> = (() => {
+  const methods = new WeakSet<object>();
+  for (const prototype of BUILTIN_PROTOTYPES) {
     for (const key of ReflectOwnKeys(prototype)) {
       if (key === 'constructor') continue;
       const descriptor = ObjectGetOwnPropertyDescriptor(prototype, key);
@@ -109,6 +125,96 @@ export function isBuiltinMethod(fn: unknown): boolean {
   return (typeof fn === 'function' || (typeof fn === 'object' && fn !== null)) && BUILTIN_METHODS.has(fn as object);
 }
 
+/**
+ * The built-in methods that change the object they are called on (`push`, `sort`, `Map.prototype.set`,
+ * `Date.prototype.setTime`, ...).
+ *
+ * A value passed in `globals` is the host's own object, shared by every execution of the enclave. The
+ * membrane refuses assignments to it, and these methods are the other way to write to it: called on a
+ * host array, Map, Set, Date or typed array they would change what later executions and the host read.
+ */
+const MUTATING_BUILTIN_METHODS: WeakSet<object> = (() => {
+  const methods = new WeakSet<object>();
+  const add = (prototype: object, names: readonly string[]): void => {
+    for (const name of names) {
+      const descriptor = ObjectGetOwnPropertyDescriptor(prototype, name);
+      if (descriptor && typeof descriptor.value === 'function') {
+        methods.add(descriptor.value);
+      }
+    }
+  };
+  const settersOf = (prototype: object): string[] =>
+    ReflectOwnKeys(prototype).filter((key): key is string => typeof key === 'string' && key.startsWith('set'));
+
+  add(Array.prototype, ['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'fill', 'copyWithin']);
+  add(Map.prototype, ['set', 'delete', 'clear']);
+  add(Set.prototype, ['add', 'delete', 'clear']);
+  add(WeakMap.prototype, ['set', 'delete']);
+  add(WeakSet.prototype, ['add', 'delete']);
+  add(Date.prototype, settersOf(Date.prototype));
+  add(ObjectGetPrototypeOf(Uint8Array.prototype), ['set', 'fill', 'sort', 'reverse', 'copyWithin']);
+  add(DataView.prototype, settersOf(DataView.prototype));
+  add(ArrayBuffer.prototype, ['resize', 'transfer', 'transferToFixedLength']);
+  add(RegExp.prototype, ['compile']);
+  add(Object.prototype, ['__defineGetter__', '__defineSetter__']);
+  return methods;
+})();
+
+/**
+ * Whether `fn` is a built-in method that changes its receiver (see {@link MUTATING_BUILTIN_METHODS}).
+ */
+export function isMutatingBuiltinMethod(fn: unknown): boolean {
+  return (
+    (typeof fn === 'function' || (typeof fn === 'object' && fn !== null)) && MUTATING_BUILTIN_METHODS.has(fn as object)
+  );
+}
+
+/**
+ * The built-in methods that run a regular expression in the HOST realm when they are called on a
+ * value passed in `globals`:
+ *
+ * - of `RegExp.prototype`, the ones that run the pattern: `test`, `exec`, and the ones the string
+ *   methods call (`match`, `matchAll`, `replace`, `search`, `split` with the expression as
+ *   argument). A regular expression passed in `globals` is the host's own object. Run from the
+ *   sandbox it matches a text the script chooses with a pattern the script did not have to get
+ *   past the validator or the realm's own rules, on the host's `RegExp.prototype`; and a match
+ *   with the `g` or `y` flag writes `lastIndex` on the host's object, which the next execution
+ *   reads.
+ * - of `String.prototype`, the ones that compile their argument into a pattern: `match`,
+ *   `matchAll` and `search`. A string is passed as a primitive and has the sandbox realm's
+ *   methods; a boxed `String` is an object of the host, and on it these would compile and run a
+ *   pattern the script chooses with the host's `RegExp`.
+ */
+const REGEXP_MATCH_METHODS: WeakSet<object> = (() => {
+  const methods = new WeakSet<object>();
+  const add = (prototype: object, keys: Array<string | symbol>): void => {
+    for (const key of keys) {
+      const descriptor = ObjectGetOwnPropertyDescriptor(prototype, key);
+      if (descriptor && typeof descriptor.value === 'function') {
+        methods.add(descriptor.value);
+      }
+    }
+  };
+  add(RegExp.prototype, ['test', 'exec', Symbol.match, Symbol.matchAll, Symbol.replace, Symbol.search, Symbol.split]);
+  add(String.prototype, ['match', 'matchAll', 'search']);
+  return methods;
+})();
+
+/**
+ * Whether `fn` is a built-in method that runs a regular expression (see {@link REGEXP_MATCH_METHODS}).
+ */
+export function isRegExpMatchMethod(fn: unknown): boolean {
+  return (
+    (typeof fn === 'function' || (typeof fn === 'object' && fn !== null)) && REGEXP_MATCH_METHODS.has(fn as object)
+  );
+}
+
+/** What a script is told when it runs a regular expression of the host */
+export const HOST_REGEXP_MESSAGE =
+  'A regular expression passed in globals cannot be run in the sandbox, ' +
+  'and a pattern cannot be run on a String object passed in globals. ' +
+  'Read its source and flags (or the text), or pass a function that does the matching.';
+
 /** Default `maxGlobalFunctionCalls` is this many times `maxToolCalls`. */
 export const DEFAULT_GLOBAL_FUNCTION_CALLS_PER_TOOL_CALL = 10;
 
@@ -118,6 +224,10 @@ const MAX_ERROR_NAME_LENGTH = 128;
 
 const UNSAFE_RESULT_MESSAGE =
   'Global function returned a value that cannot be passed into the sandbox ' +
+  '(functions, symbols, and values beyond the sanitization depth or size limits are not allowed)';
+
+const UNSAFE_ARGUMENT_MESSAGE =
+  'Global function was called with a value that cannot be passed to the host ' +
   '(functions, symbols, and values beyond the sanitization depth or size limits are not allowed)';
 
 /**
@@ -232,28 +342,86 @@ function isThenable(value: unknown): boolean {
   }
 }
 
+/**
+ * Returns the object behind a sandbox-side wrapper, for reading a builtin's internal slots (the
+ * single VM's secure proxy wraps the script's `Date`s). See `SanitizeOptions.unwrap`.
+ */
+export type UnwrapSandboxValue = (value: object) => object;
+
+/**
+ * Copy the script's arguments into plain host data, the way tool arguments are copied.
+ *
+ * A host function must never be handed a live script value. Whatever the function does with one runs
+ * script code inside the host: reading a property runs a getter or a Proxy trap, and returning or
+ * awaiting it makes the host's promise machinery call the script's `then` with the host's own
+ * resolving functions, from which the host `Function` constructor is one property read away. After
+ * this copy the function sees null-prototype objects, arrays, primitives and host `Date`s only; a
+ * function or a symbol among the arguments is refused.
+ */
+function sanitizeArguments(args: unknown, limits: ResultLimits, unwrap?: UnwrapSandboxValue): unknown[] {
+  if (!ArrayIsArray(args)) return [];
+  const sanitized = sanitizeValue(args, {
+    maxDepth: limits.maxDepth,
+    maxProperties: limits.maxProperties,
+    allowDates: true,
+    allowErrors: true,
+    unwrap,
+  });
+  return ArrayIsArray(sanitized) ? sanitized : [];
+}
+
 /** Call a host function and encode its outcome; never throws. */
 function invokeGlobalFunction(
   fn: unknown,
   thisArg: unknown,
   args: unknown,
   limits: ResultLimits,
+  unwrap?: UnwrapSandboxValue,
+  activity?: HostActivity,
 ): GlobalCallOutcome | Promise<GlobalCallOutcome> {
   if (typeof fn !== 'function') {
     return { ok: false, name: 'TypeError', message: 'Global is not a function' };
   }
 
+  let safeArgs: unknown[];
+  try {
+    safeArgs = sanitizeArguments(args, limits, unwrap);
+  } catch {
+    return { ok: false, name: 'TypeError', message: UNSAFE_ARGUMENT_MESSAGE };
+  }
+
+  // Not started unless it has room to finish and to hand back what it returns (./stack-reserve).
+  // Asked here, after the arguments are copied and right before the call, so that the answer
+  // holds for the function itself, whatever lies between the script and this frame.
+  let room = false;
+  try {
+    room = hasHostStackReserve();
+  } catch {
+    // No room even to ask
+  }
+  if (!room) {
+    return { ok: false, name: 'RangeError', message: STACK_EXHAUSTED_MESSAGE };
+  }
+
   let result: unknown;
   try {
-    result = ReflectApply(fn, thisArg, ArrayIsArray(args) ? args : []);
+    result = ReflectApply(fn, thisArg, safeArgs);
   } catch (error: unknown) {
     return failure(error);
   }
 
   if (isThenable(result)) {
+    // In flight until it settles: a script waiting for it at the deadline is waiting for the host
+    const end = activity?.begin();
     return Promise.resolve(result).then(
-      (value) => encodeResult(value, limits),
-      (error: unknown) => failure(error),
+      (value) => {
+        end?.();
+        return encodeResult(value, limits);
+      },
+      (error: unknown) => {
+        end?.();
+        return failure(error);
+      },
     );
   }
 
@@ -280,7 +448,7 @@ export function createHostGlobalFunctionInvoker(
 ): (fn: unknown, thisArg: unknown, args: unknown) => string | Promise<string> {
   const limits = resultLimits(context);
   return (fn, thisArg, args) => {
-    const outcome = invokeGlobalFunction(fn, thisArg, args, limits);
+    const outcome = invokeGlobalFunction(fn, thisArg, args, limits, undefined, context.hostActivity);
     return outcome instanceof Promise ? outcome.then(toEnvelope) : toEnvelope(outcome);
   };
 }
@@ -310,7 +478,11 @@ export interface GlobalFunctionCallGate {
  * return value like a tool result and re-creates it in the sandbox realm (a promise becomes a
  * sandbox-realm promise), and turns host errors into safe errors.
  */
-export function createGlobalFunctionGate(context: ExecutionContext, realm: SandboxRealmBridge): GlobalFunctionCallGate {
+export function createGlobalFunctionGate(
+  context: ExecutionContext,
+  realm: SandboxRealmBridge,
+  unwrap?: UnwrapSandboxValue,
+): GlobalFunctionCallGate {
   const limits = resultLimits(context);
   const max = resolveMaxGlobalFunctionCalls(context.config);
   let calls = 0;
@@ -333,7 +505,7 @@ export function createGlobalFunctionGate(context: ExecutionContext, realm: Sandb
         throw createSafeError(globalFunctionLimitMessage(max));
       }
 
-      const outcome = invokeGlobalFunction(target, thisArg, args, limits);
+      const outcome = invokeGlobalFunction(target, thisArg, args, limits, unwrap, context.hostActivity);
       if (outcome instanceof Promise) {
         return realm.adoptPromise(outcome.then(settle));
       }

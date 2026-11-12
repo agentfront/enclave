@@ -14,9 +14,10 @@
 import type { NormalizedToolNamespace } from '@enclave-vm/ast';
 import type { SerializableParentValidationConfig, SerializableSuspiciousPattern } from './types';
 import type { SecurityLevel } from '../types';
-import { globalFunctionLimitMessage } from '../global-function-gate';
+import { globalFunctionLimitMessage, HOST_REGEXP_MESSAGE } from '../global-function-gate';
 import { TOOL_NAMESPACE_FACTORY_SOURCE } from '../tool-namespaces';
 import { CONSOLE_FACTORY_SOURCE } from '../console-handler';
+import { realmTickSource } from '../deadline-guard';
 
 /**
  * Recursion backstop for the in-VM secure-proxy membranes.
@@ -97,6 +98,14 @@ export interface ParentVmBootstrapOptions {
 
   /** Validated tool namespaces to bind in the inner VM */
   toolNamespaces?: readonly NormalizedToolNamespace[];
+
+  /**
+   * The global names the inner realm may hold (`realmGlobals: 'allowlist'`). When set, every
+   * other global is removed from the inner realm before the script runs, the safe standard
+   * globals that are not on the list are not defined, and regular expressions cannot be executed
+   * there. Absent: only the security level's dangerous globals are removed.
+   */
+  realmGlobalAllowlist?: readonly string[];
 }
 
 /**
@@ -182,21 +191,517 @@ const NODEJS_24_DANGEROUS_GLOBALS: Record<SecurityLevel, string[]> = {
 };
 
 /**
- * Generate code to sanitize the inner VM context
+ * Source of an expression evaluated in the inner realm as soon as that realm exists. Its value is
+ * the function that removes globals from the realm at the end of setup; compiling it first means
+ * it holds the realm's pristine intrinsics whatever setup replaces afterwards.
+ *
+ * `scrub(remove, keep)`:
+ * - `remove`: the global names to delete, or `null` for every own key of the global object;
+ * - `keep`: names that are never deleted;
+ * - returns the keys that still resolve as a global afterwards, for the caller to shadow.
+ *
+ * Two facts about `node:vm` shape it (both verified on Node 22 and 24):
+ *
+ * 1. The intrinsics live on the realm's own global object, not on the sandbox object passed to
+ *    `vm.createContext`: `'Function' in sandbox` is false and `delete sandbox.Function` does
+ *    nothing. A `delete` evaluated INSIDE the realm removes the name from both.
+ * 2. A bare identifier is also resolved through the PROTOTYPE CHAIN of the global object, so
+ *    `constructor`, `toString`, `valueOf`, `hasOwnProperty`, `__lookupGetter__`, ... all name a
+ *    function. The scrub therefore ends that chain (`setPrototypeOf(global, null)`), and reports
+ *    any inherited name that still resolves. (The sandbox object has its own chain, which the
+ *    realm consults FIRST: see where the inner context is created.)
  */
-function generateSanitizeContextCode(securityLevel: SecurityLevel): string {
-  const globalsToRemove = NODEJS_24_DANGEROUS_GLOBALS[securityLevel];
+const INNER_REALM_SCRUB_SOURCE = `
+(function () {
+  'use strict';
+  var global = globalThis;
+  var getOwnPropertyNames = Object.getOwnPropertyNames;
+  var getOwnPropertySymbols = Object.getOwnPropertySymbols;
+  var getPrototypeOf = Object.getPrototypeOf;
+  var setPrototypeOf = Object.setPrototypeOf;
 
-  return globalsToRemove
-    .map(
-      (g) => `
-  if ('${g}' in innerContext) {
-    try { delete innerContext['${g}']; } catch (e) {
-      try { innerContext['${g}'] = undefined; } catch (e2) {}
+  return function scrub(remove, keep) {
+    var kept = { __proto__: null };
+    var i;
+    var j;
+    for (i = 0; i < keep.length; i++) kept[keep[i]] = true;
+
+    var targets = [];
+    if (remove) {
+      for (i = 0; i < remove.length; i++) targets[targets.length] = remove[i];
+    } else {
+      var names = getOwnPropertyNames(global);
+      for (i = 0; i < names.length; i++) targets[targets.length] = names[i];
+      var symbols = getOwnPropertySymbols(global);
+      for (i = 0; i < symbols.length; i++) targets[targets.length] = symbols[i];
     }
-  }`,
-    )
-    .join('\n');
+
+    // What the global object inherits resolves as a bare identifier too.
+    var inherited = [];
+    try {
+      var hops = 0;
+      for (var proto = getPrototypeOf(global); proto !== null && hops < 32; proto = getPrototypeOf(proto)) {
+        hops++;
+        var protoNames = getOwnPropertyNames(proto);
+        for (j = 0; j < protoNames.length; j++) inherited[inherited.length] = protoNames[j];
+      }
+    } catch (e) {}
+    try { setPrototypeOf(global, null); } catch (e) {}
+
+    var left = [];
+    for (i = 0; i < targets.length; i++) {
+      var key = targets[i];
+      if (typeof key === 'string' && kept[key] === true) continue;
+      try { delete global[key]; } catch (e) {}
+      if (key in global) left[left.length] = key;
+    }
+    for (i = 0; i < inherited.length; i++) {
+      if (kept[inherited[i]] !== true && inherited[i] in global) left[left.length] = inherited[i];
+    }
+    return left;
+  };
+})()
+`.trim();
+
+/**
+ * Source of an expression evaluated in the pristine inner realm. Its value is the function that
+ * runs `parallel(items, fn)` once the parent realm has checked the arguments: it calls the
+ * script's callback for every item and awaits the results with the inner realm's own
+ * `Promise.all`.
+ *
+ * Doing this in the inner realm keeps two parent-realm objects out of the script's hands: the
+ * resolving functions that `Promise.all` passes to the `then` of each result (a callback may
+ * return any thenable), and the array the results arrive in.
+ */
+const INNER_REALM_PARALLEL_SOURCE = `
+(function () {
+  'use strict';
+  var RealmPromise = Promise;
+  var all = Promise.all;
+  var reject = Promise.reject;
+  var apply = Reflect.apply;
+  return function runParallel(items, length, callback) {
+    var results = [];
+    try {
+      for (var i = 0; i < length; i++) {
+        results[i] = callback(items[i], i, items);
+      }
+    } catch (error) {
+      // As from the async function this replaces: a callback that throws rejects the promise.
+      return apply(reject, RealmPromise, [error]);
+    }
+    return apply(all, RealmPromise, [results]);
+  };
+})()
+`.trim();
+
+/**
+ * How many arguments the stack reserve pushes (see INNER_REALM_GUARD_SOURCE): 8 bytes each, so
+ * 64 KB.
+ *
+ * The size follows from one measured fact: V8 refuses to compile a function for its first call
+ * when less than about 40 KB of stack is left (39.9 KB with Node.js 24, 46.4 KB with Node.js 22).
+ * Below that, any function of the runtime that has not run yet in this process throws a
+ * RangeError at its call site, in the middle of whatever was calling it. With half this reserve
+ * (the first version) a host function passed in globals could run and then fail to hand its
+ * result back. 64 KB is that zone plus room for the frames between the script and the deepest
+ * call of the runtime's own code (measured: under 10 KB). Code the application supplied gets a
+ * larger reserve of its own, where it starts: see ../stack-reserve.
+ *
+ * The check costs about 2.7 microseconds (the engine pushes every argument).
+ */
+export const STACK_RESERVE_ARGUMENTS = 8192;
+
+/**
+ * Source of an expression evaluated in a pristine sandbox realm (the inner realm of the double
+ * VM, the one realm of the single VM). Its value is that realm's half of the membrane:
+ * `makeProxy(target, parentHandler)`, `wrap(fn, needsReserve)`, `own(value)` (what a script may
+ * be handed in place of a thrown value or a rejection reason) and `shell(kind)`.
+ *
+ * Why the membrane needs a half in the script's realm: an error is created in the realm of the
+ * function that is running when it is raised, and a stack overflow is raised at the ENTRY of the
+ * function that no longer fits. A script that recurses until the stack is full and then touches a
+ * membrane proxy overflows at the entry of the trap, before any catch of the trap exists: the
+ * RangeError it catches is a raw object of the trap's realm, never laundered. With a host function
+ * called directly from inner-realm code (the memory accounting hook was one) it is a HOST error,
+ * and its constructor chain reaches the one Function constructor that can generate code.
+ *
+ * So the first frame a script enters is always a function of its own realm:
+ *
+ * - a Proxy handler is an inner-realm object whose traps call the parent realm's traps inside a
+ *   try block;
+ * - every parent or host function that inner-realm code holds directly is wrapped the same way.
+ *
+ * Whatever comes out of that try block is passed on only if a script may have it: a primitive,
+ * an object without a prototype (the runtime's inert errors), or an object of this realm.
+ * Anything else is replaced by an error of this realm with the same name and message. The catch
+ * runs in this realm as well, so if IT overflows, that error is this realm's too.
+ *
+ * The stack reserve: a call (and a construct) first checks that some stack is left, by calling a
+ * function with STACK_RESERVE_ARGUMENTS arguments, which the engine has to push. With less room
+ * than that the script gets a RangeError of its own realm before anything of the runtime has
+ * started. The runtime's code therefore never begins at a nearly full stack, where a failure
+ * halfway through is not something it is written for. Reading a property (the get trap and the
+ * other traps) is not checked: it happens far too often for a check of this price.
+ */
+export const INNER_REALM_GUARD_SOURCE = `
+(function () {
+  'use strict';
+  var apply = Reflect.apply;
+  var reflectGet = Reflect.get;
+  var reflectGetPrototypeOf = Reflect.getPrototypeOf;
+  var ProxyCtor = Proxy;
+  var ObjectPrototype = Object.prototype;
+  var RealmError = Error;
+  var RealmRangeError = RangeError;
+  var RealmTypeError = TypeError;
+  var freeze = Object.freeze;
+
+  var pad = [];
+  for (var i = 0; i < ${STACK_RESERVE_ARGUMENTS}; i++) pad[i] = 0;
+  function nothing() {}
+  function reserve() {
+    apply(nothing, undefined, pad);
+  }
+
+  function passes(value) {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return true;
+    var proto = reflectGetPrototypeOf(value);
+    if (proto === null) return true;
+    for (var depth = 0; depth < 32; depth++) {
+      if (proto === ObjectPrototype) return true;
+      proto = reflectGetPrototypeOf(proto);
+      if (proto === null) return false;
+    }
+    return false;
+  }
+
+  function own(thrown) {
+    var ok = false;
+    try { ok = passes(thrown); } catch (e) { ok = false; }
+    if (ok) return thrown;
+    var name = 'Error';
+    var message = 'Operation failed';
+    try { var n = reflectGet(thrown, 'name'); if (typeof n === 'string') name = n; } catch (e) { /* keep the default */ }
+    try { var m = reflectGet(thrown, 'message'); if (typeof m === 'string') message = m; } catch (e) { /* keep the default */ }
+    var Ctor = name === 'RangeError' ? RealmRangeError : (name === 'TypeError' ? RealmTypeError : RealmError);
+    return new Ctor(message);
+  }
+
+  function wrap(fn, needsReserve) {
+    return function () {
+      if (needsReserve) reserve();
+      try {
+        return apply(fn, undefined, arguments);
+      } catch (thrown) {
+        throw own(thrown);
+      }
+    };
+  }
+
+  // The traps every membrane proxy shares. 'this' is the proxy's handler, whose 'p' is the parent
+  // realm's handler. A trap the parent handler does not define behaves as if there were none.
+  // (One function body for all of them: this text is compiled for every execution.)
+  function trap(name, fallback, needsReserve) {
+    return function () {
+      var p = this.p;
+      var parentTrap = p[name];
+      if (needsReserve) reserve();
+      try {
+        return parentTrap ? apply(parentTrap, p, arguments) : apply(fallback, undefined, arguments);
+      } catch (thrown) {
+        throw own(thrown);
+      }
+    };
+  }
+  var traps = freeze({
+    __proto__: null,
+    get: trap('get', Reflect.get, false),
+    set: trap('set', Reflect.set, false),
+    has: trap('has', Reflect.has, false),
+    deleteProperty: trap('deleteProperty', Reflect.deleteProperty, false),
+    defineProperty: trap('defineProperty', Reflect.defineProperty, false),
+    getOwnPropertyDescriptor: trap('getOwnPropertyDescriptor', Reflect.getOwnPropertyDescriptor, false),
+    ownKeys: trap('ownKeys', Reflect.ownKeys, false),
+    getPrototypeOf: trap('getPrototypeOf', reflectGetPrototypeOf, false),
+    setPrototypeOf: trap('setPrototypeOf', Reflect.setPrototypeOf, false),
+    isExtensible: trap('isExtensible', Reflect.isExtensible, false),
+    preventExtensions: trap('preventExtensions', Reflect.preventExtensions, false),
+    apply: trap('apply', apply, true),
+    construct: trap('construct', Reflect.construct, true)
+  });
+
+  function makeProxy(target, parentHandler) {
+    return new ProxyCtor(target, { __proto__: traps, p: parentHandler });
+  }
+
+  // A fresh object of this realm to put a proxy on: an arrow function (callable, no 'prototype',
+  // no [[Construct]]), an array, or a plain object.
+  function shell(kind) {
+    return kind === 'function' ? () => {} : (kind === 'array' ? [] : {});
+  }
+
+  return freeze({ wrap: wrap, makeProxy: makeProxy, own: own, shell: shell });
+})()
+`.trim();
+
+/**
+ * Source of a statement evaluated in the inner realm: `Symbol.for` refuses keys in the
+ * `nodejs.` namespace.
+ *
+ * The symbol registry is the isolate's, shared with the host, and Node.js looks up some of its
+ * own protocols there. `util.inspect` calls the method an object has under
+ * `Symbol.for('nodejs.util.inspect.custom')` and passes it the host's own `inspect` function;
+ * anything of the host that formats a value of a script (a log line, the printer for an uncaught
+ * error) would hand that function to the script. No intrinsic of a fresh realm carries such a
+ * key, so a script that cannot ask the registry for one cannot define the method.
+ */
+export const INNER_REALM_SYMBOL_REGISTRY_SOURCE = `
+(function () {
+  'use strict';
+  var RealmSymbol = Symbol;
+  var symbolFor = Symbol.for;
+  var RealmString = String;
+  var RealmTypeError = TypeError;
+  var apply = Reflect.apply;
+  var indexOf = String.prototype.indexOf;
+  var defineProperty = Object.defineProperty;
+  var guardedFor = function (key) {
+    if (typeof key === 'symbol') throw new RealmTypeError('Cannot convert a Symbol value to a string');
+    var name = typeof key === 'string' ? key : RealmString(key);
+    if (apply(indexOf, name, ['nodejs.']) === 0) {
+      throw new RealmTypeError('Symbol.for: keys in the "nodejs." namespace are not available in this sandbox');
+    }
+    return apply(symbolFor, RealmSymbol, [name]);
+  };
+  defineProperty(guardedFor, 'name', { value: 'for', configurable: true });
+  defineProperty(RealmSymbol, 'for', { value: guardedFor, writable: false, enumerable: false, configurable: false });
+})();
+`.trim();
+
+/**
+ * Global names the runtime itself needs in the inner realm when a realm allowlist is in force,
+ * whatever the caller's list says: its own script-facing API, the three value globals (which
+ * cannot be deleted), and the error constructors that trusted in-realm helpers construct lazily
+ * (the computed-key guard, the console factory, `__safe_concat`). Every `__safe_*` and `__ag_*`
+ * name the runtime defines is kept as well (see generateSanitizeContextCode).
+ */
+const REALM_RUNTIME_GLOBALS = [
+  'callTool',
+  'parallel',
+  '__maxIterations',
+  'undefined',
+  'NaN',
+  'Infinity',
+  'Error',
+  'TypeError',
+  'RangeError',
+] as const;
+
+/**
+ * Source of a statement evaluated in the inner realm when a realm allowlist without `RegExp` is in
+ * force: it makes regular expressions unusable there.
+ *
+ * AgentScript has no regular expressions, and the validator refuses every way to write or run one.
+ * This is the runtime half of that rule: `String.prototype.match/matchAll/search` build a RegExp
+ * from a STRING argument inside the engine (no `RegExp` binding and no literal needed), and a
+ * backtracking pattern run that way is not interruptible work the iteration limit can see.
+ * Every regular expression of the realm reaches its matcher through `RegExp.prototype`, so the
+ * methods there are replaced by a function that throws, and the prototype is frozen.
+ */
+const INNER_REALM_REGEX_BACKSTOP_SOURCE = `
+(function () {
+  'use strict';
+  var defineProperty = Object.defineProperty;
+  var freeze = Object.freeze;
+  var RealmTypeError = TypeError;
+  var proto = RegExp.prototype;
+  var refuse = () => {
+    throw new RealmTypeError('Regular expressions are not available in this sandbox');
+  };
+  freeze(refuse);
+  var keys = ['exec', 'test', 'compile', Symbol.match, Symbol.matchAll, Symbol.replace, Symbol.search, Symbol.split];
+  for (var i = 0; i < keys.length; i++) {
+    defineProperty(proto, keys[i], { value: refuse, writable: false, configurable: false, enumerable: false });
+  }
+  freeze(proto);
+})()
+`.trim();
+
+/**
+ * Source of an expression that, evaluated in a pristine realm, yields a function freezing that
+ * realm's intrinsics: every constructor, prototype and namespace object the global object names
+ * (including the constructors inside namespaces such as `Intl` and `WebAssembly`), and the ones
+ * only syntax reaches (generator, async and iterator prototypes, the typed array base). Used for
+ * the PARENT realm, right before the script runs.
+ *
+ * Why: the parent realm's trusted code (the membrane, the tool gate) calls `Object.keys`,
+ * `JSON.stringify`, `Array.isArray`, `Reflect.apply`, ... on every operation. A value of the parent
+ * realm that reached the script unwrapped used to be enough to replace one of those with a function
+ * of the script's, which the trusted code then called with raw objects. A handful of them were
+ * pinned after such a report; freezing the objects that hold them covers the ones nobody listed.
+ * A method is replaced by writing to the object that holds it, so the method functions themselves
+ * are left alone: that keeps this to about two hundred objects per execution.
+ *
+ * The objects are collected when the expression is evaluated. Only objects of the realm itself
+ * are taken from the global object: a value another realm put there (a host bridge) has a
+ * prototype chain that never reaches this realm's `Object.prototype`. The global object itself is
+ * not frozen. Accessors are never invoked: properties are read as descriptors.
+ *
+ * It is NOT used for the inner realm: the membrane hands out the methods of the inner realm's safe
+ * globals (`Math.max`, `JSON.parse`, ...) as wrapped forwarders, and a Proxy must report the exact
+ * value of a frozen target's property, so freezing those objects would unwrap them.
+ */
+export const REALM_LOCKDOWN_SOURCE = `
+(function () {
+  'use strict';
+  var global = globalThis;
+  var freeze = Object.freeze;
+  var getPrototypeOf = Object.getPrototypeOf;
+  var getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+  var getOwnPropertyNames = Object.getOwnPropertyNames;
+  var objectPrototype = Object.prototype;
+  var targets = [];
+
+  function isReference(value) {
+    return value !== null && (typeof value === 'object' || typeof value === 'function');
+  }
+
+  function ofThisRealm(value) {
+    try {
+      var hops = 0;
+      for (var current = value; current !== null && hops < 64; current = getPrototypeOf(current)) {
+        if (current === objectPrototype) return true;
+        hops++;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function dataValue(object, key) {
+    var descriptor = getOwnPropertyDescriptor(object, key);
+    return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+  }
+
+  function add(value) {
+    if (isReference(value) && value !== global) targets[targets.length] = value;
+  }
+
+  // An intrinsic together with what it links to: the prototype it creates instances with, the
+  // constructor it names (the only way to GeneratorFunction and its relatives) and its own prototype.
+  function addLinked(value) {
+    if (!isReference(value)) return;
+    add(value);
+    add(dataValue(value, 'prototype'));
+    add(dataValue(value, 'constructor'));
+    add(getPrototypeOf(value));
+  }
+
+  var names = getOwnPropertyNames(global);
+  for (var i = 0; i < names.length; i++) {
+    var value = dataValue(global, names[i]);
+    if (!isReference(value) || value === global || !ofThisRealm(value)) continue;
+    add(value);
+    if (typeof value === 'function') {
+      add(dataValue(value, 'prototype'));
+    } else {
+      // A plain object on the global is a namespace (Intl, WebAssembly, Reflect, Math, ...).
+      // The constructors it holds are intrinsics too.
+      var members = getOwnPropertyNames(value);
+      for (var m = 0; m < members.length; m++) {
+        var member = dataValue(value, members[m]);
+        if (typeof member !== 'function') continue;
+        var memberPrototype = dataValue(member, 'prototype');
+        if (isReference(memberPrototype)) {
+          add(member);
+          add(memberPrototype);
+        }
+      }
+    }
+  }
+
+  // Intrinsics that no global names.
+  var hidden = [
+    function () { return getPrototypeOf(async function () {}); },
+    function () { return getPrototypeOf(function* () {}); },
+    function () { return getPrototypeOf(async function* () {}); },
+    function () { return getPrototypeOf(getPrototypeOf(async function* () {}).prototype); },
+    function () { return getPrototypeOf([][Symbol.iterator]()); },
+    function () { return getPrototypeOf(''[Symbol.iterator]()); },
+    function () { return getPrototypeOf(new Map()[Symbol.iterator]()); },
+    function () { return getPrototypeOf(new Set()[Symbol.iterator]()); },
+    function () { return getPrototypeOf(''.matchAll(/(?:)/g)); },
+    function () { return getPrototypeOf(Int8Array); }
+  ];
+  for (var h = 0; h < hidden.length; h++) {
+    try { addLinked(hidden[h]()); } catch (e) {}
+  }
+
+  return function lockdown() {
+    for (var t = 0; t < targets.length; t++) {
+      try { freeze(targets[t]); } catch (e) {}
+    }
+    return targets.length;
+  };
+})()
+`.trim();
+
+/**
+ * Generate code (run in the PARENT realm, as the last setup step) that removes globals from the
+ * inner realm with the realm's own scrub function (see INNER_REALM_SCRUB_SOURCE).
+ *
+ * - Without a realm allowlist, the dangerous globals of the security level are removed.
+ * - With one, EVERY global is removed except the names the runtime defined on the sandbox object
+ *   that are on the allowlist or carry a reserved prefix. An allowlisted name the runtime did not
+ *   define (the engine's own `console`, say) goes too: what remains is what the runtime put there.
+ *
+ * Whatever cannot be deleted is shadowed with an `undefined`, read-only property on the sandbox
+ * object, which the realm's global lookup consults first. With an allowlist a failure here aborts
+ * the execution: a realm that could not be reduced to its allowlist does not run the script.
+ */
+function generateSanitizeContextCode(securityLevel: SecurityLevel, hasRealmAllowlist: boolean): string {
+  const shadow = `__ag_defineProperty(innerContext, left[i], {
+        value: undefined,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });`;
+
+  if (hasRealmAllowlist) {
+    return `
+  (function() {
+    var defined = __ag_ReflectOwnKeys(innerContext);
+    var keep = ['undefined', 'NaN', 'Infinity'];
+    for (var d = 0; d < defined.length; d++) {
+      var name = defined[d];
+      if (typeof name !== 'string') continue;
+      if (__ag_realmAllowed[name] === true || name.indexOf('__safe_') === 0 || name.indexOf('__ag_') === 0) {
+        keep.push(name);
+      }
+    }
+    var left = __ag_scrubInnerRealm(null, keep);
+    for (var i = 0; i < left.length; i++) {
+      ${shadow}
+    }
+  })();`;
+  }
+
+  const globalsToRemove = NODEJS_24_DANGEROUS_GLOBALS[securityLevel];
+  return `
+  (function() {
+    var names = ${JSON.stringify(globalsToRemove)};
+    var left;
+    try {
+      left = __ag_scrubInnerRealm(names, []);
+    } catch (e) {
+      left = names;
+    }
+    for (var i = 0; i < left.length; i++) {
+      try {
+        ${shadow}
+      } catch (e) { /* already defined by the runtime under this name */ }
+    }
+  })();`;
 }
 
 /**
@@ -226,191 +731,39 @@ function generatePatternDetectorsCode(patterns: SerializableSuspiciousPattern[])
  * This returns JavaScript code as a string that will be executed
  * inside the parent VM context.
  */
-export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): string {
-  const {
-    userCode,
-    innerTimeout,
-    maxIterations,
-    maxToolCalls,
-    toolBridgeMode = 'string',
-    toolBridgeMaxPayloadBytes = 5 * 1024 * 1024,
-    sanitizeStackTraces,
-    securityLevel,
-    validationConfig,
-    suspiciousPatterns,
-    blockedProperties,
-    allowComposites = false,
-    memoryLimit = 0,
-    throwOnBlocked = true,
-    maxGlobalFunctionCalls = 1000,
-    toolNamespaces = [],
-  } = options;
+/**
+ * `value` as a JavaScript string literal made of ASCII characters only.
+ *
+ * The bootstrap is ASCII, so the engine stores its source with one byte per character. A single
+ * character outside Latin-1 anywhere in the text doubles that, and the engine keeps the source of
+ * every script it compiled until several major garbage collections have passed. The script to run
+ * is the one part of the bootstrap that can contain any character.
+ */
+export function asciiStringLiteral(value: string): string {
+  return JSON.stringify(value).replace(
+    /[\u007f-\uffff]/g,
+    (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
 
-  const sanitizeContextCode = generateSanitizeContextCode(securityLevel);
-  const patternDetectorsCode = generatePatternDetectorsCode(suspiciousPatterns);
-
-  // Patch code executed inside VM realms to prevent leaking host stack traces via error.stack.
-  // We avoid including any file names/paths/line numbers in the formatted stack.
-  const stackTraceHardeningCode = `
-(function() {
-  function __ag_redactStackString(stackStr) {
-    try {
-      if (typeof stackStr !== 'string' || !stackStr) return 'Error';
-      var lines = String(stackStr).split('\\n');
-      var header = lines[0] ? String(lines[0]) : 'Error';
-      var frameCount = (lines.length > 1) ? (lines.length - 1) : 0;
-      var max = frameCount;
-      if (max > 25) max = 25;
-      var out = [header];
-      for (var i = 0; i < max; i++) out.push('    at [REDACTED]');
-      if (frameCount > max) out.push('    at [REDACTED]');
-      return out.join('\\n');
-    } catch (e) {
-      return 'Error';
-    }
-  }
-
-  function __ag_prepareStackTrace(err, stack) {
-    try {
-      var name = (err && err.name) ? String(err.name) : 'Error';
-      var message = (err && err.message) ? String(err.message) : '';
-      var header = message ? (name + ': ' + message) : name;
-      if (!stack || !stack.length) return header;
-      var lines = [header];
-      var max = stack.length;
-      if (max > 25) max = 25;
-      for (var i = 0; i < max; i++) {
-        lines.push('    at [REDACTED]');
-      }
-      if (stack.length > max) {
-        lines.push('    at [REDACTED]');
-      }
-      return lines.join('\\n');
-    } catch (e) {
-      return 'Error';
-    }
-  }
-
-  function __ag_lockStackGetter(proto) {
-    if (!proto) return;
-    try {
-      var desc = Object.getOwnPropertyDescriptor(proto, 'stack');
-      if (!desc || typeof desc.get !== 'function') return;
-      var origGet = desc.get;
-      var origSet = desc.set;
-      Object.defineProperty(proto, 'stack', {
-        get: function() {
-          try {
-            return __ag_redactStackString(origGet.call(this));
-          } catch (e) {
-            return 'Error';
-          }
-        },
-        set: function(v) {
-          try {
-            if (typeof origSet === 'function') return origSet.call(this, v);
-          } catch (e) {}
-        },
-        configurable: false,
-        enumerable: false
-      });
-    } catch (e) {}
-  }
-
-  function __ag_lockPrepareStackTrace(ErrCtor) {
-    if (!ErrCtor) return;
-    try {
-      Object.defineProperty(ErrCtor, 'prepareStackTrace', {
-        value: __ag_prepareStackTrace,
-        writable: false,
-        configurable: false,
-        enumerable: false
-      });
-    } catch (e) {}
-    try {
-      Object.defineProperty(ErrCtor, 'stackTraceLimit', {
-        value: 25,
-        writable: false,
-        configurable: false,
-        enumerable: false
-      });
-    } catch (e) {}
-  }
-
-  __ag_lockStackGetter(Error && Error.prototype);
-  __ag_lockPrepareStackTrace(Error);
-  __ag_lockPrepareStackTrace(EvalError);
-  __ag_lockPrepareStackTrace(RangeError);
-  __ag_lockPrepareStackTrace(ReferenceError);
-  __ag_lockPrepareStackTrace(SyntaxError);
-  __ag_lockPrepareStackTrace(TypeError);
-  __ag_lockPrepareStackTrace(URIError);
-  try {
-    if (typeof AggregateError !== 'undefined') __ag_lockPrepareStackTrace(AggregateError);
-  } catch (e) {}
-})();
-`.trim();
-  const stackTraceHardeningCodeJson = JSON.stringify(stackTraceHardeningCode);
-
-  // Detect and report code-generation attempts (Function/eval) even if user code catches the thrown error.
-  // Used to fail closed in STRICT/SECURE modes.
-  const codeGenViolationDetectorCode = `
-(function() {
-  var __ag_report = (typeof __ag_reportViolation__ === 'function') ? __ag_reportViolation__ : null;
-  function __ag_reportOnce(kind) {
-    try {
-      if (__ag_report) __ag_report(kind);
-    } catch (e) {}
-  }
-
-  var __ag_Reflect = (typeof Reflect !== 'undefined') ? Reflect : null;
-  var __ag_Proxy = (typeof Proxy !== 'undefined') ? Proxy : null;
-  var __ag_Object = (typeof Object !== 'undefined') ? Object : null;
-
-  function __ag_wrapCtor(Ctor, kind) {
-    if (!Ctor || !__ag_Proxy || !__ag_Reflect || !__ag_Object) return;
-    try {
-      var proxy = new __ag_Proxy(Ctor, {
-        apply: function(target, thisArg, args) {
-          __ag_reportOnce(kind);
-          return __ag_Reflect.apply(target, thisArg, args);
-        },
-        construct: function(target, args, newTarget) {
-          __ag_reportOnce(kind);
-          return __ag_Reflect.construct(target, args, newTarget);
-        }
-      });
-
-      try {
-        if (Ctor.prototype) {
-          __ag_Object.defineProperty(Ctor.prototype, 'constructor', {
-            value: proxy,
-            writable: false,
-            configurable: false,
-            enumerable: false
-          });
-        }
-      } catch (e) {}
-    } catch (e) {}
-  }
-
-  try { __ag_wrapCtor(Function, 'CODE_GENERATION'); } catch (e) {}
-  try { __ag_wrapCtor((async function(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
-  try { __ag_wrapCtor((function*(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
-  try { __ag_wrapCtor((async function*(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
-})();
-`.trim();
-  const codeGenViolationDetectorCodeJson = JSON.stringify(codeGenViolationDetectorCode);
-
-  // Define __safe_concat/__safe_template inside the INNER VM realm.
-  //
-  // Why: when `__safe_concat` is a host/parent-realm function (injected into the inner context),
-  // stack-overflow errors can span multiple realms and Node/V8 may bypass Error.prepareStackTrace
-  // formatting entirely, leaking internal filenames like "parent-vm.js" into user-accessible stacks.
-  //
-  // By defining these helpers inside the inner realm, stack overflows stay within the inner realm
-  // and our stack-trace hardening can reliably redact frames.
-  const innerRealmSafeConcatAndTemplateCode = `
+/**
+ * Source of the statements that define `__safe_concat` and `__safe_template` inside a sandbox
+ * realm (the inner realm of the double VM, the one realm of the single VM): the `+` operator
+ * and template literals of a transformed script, with memory accounting and reference handling.
+ *
+ * They are functions OF the realm on purpose. As host or parent-realm functions they would be
+ * raw objects of another realm in the script's hands, and a stack overflow inside one would
+ * span realms (see INNER_REALM_GUARD_SOURCE). The realm must still have its `Proxy`, `Reflect`
+ * and `globalThis` when this runs, and `__host_memory_track__` if memory is accounted for.
+ */
+export function innerRealmRuntimeSource(params: {
+  stackTraceHardeningCode: string;
+  allowComposites: boolean;
+  memoryLimit: number;
+  blockedProperties: readonly string[];
+}): string {
+  const { stackTraceHardeningCode, allowComposites, memoryLimit, blockedProperties } = params;
+  return `
 (function() {
 ${stackTraceHardeningCode}
 })();
@@ -426,6 +779,12 @@ ${stackTraceHardeningCode}
 	  var __ag_String = String;
 	  var __ag_ArrayProto = __ag_Object.getPrototypeOf([]);
 	  var __ag_refIdPattern = /^__REF_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}__$/i;
+  // This pattern keeps its own matcher: where the script may not use regular expressions, the
+  // realm's RegExp.prototype methods are replaced afterwards (INNER_REALM_REGEX_BACKSTOP_SOURCE).
+  try {
+    __ag_Object.defineProperty(__ag_refIdPattern, 'exec', { value: __ag_refIdPattern.exec });
+    __ag_Object.defineProperty(__ag_refIdPattern, 'test', { value: __ag_refIdPattern.test });
+  } catch (e) {}
   var __ag_allowComposites = ${allowComposites};
   var __ag_memoryLimit = ${memoryLimit};
   var __ag_track = (typeof __host_memory_track__ === 'function') ? __host_memory_track__ : null;
@@ -661,6 +1020,212 @@ ${stackTraceHardeningCode}
   } catch (e) {}
 })();
 `.trim();
+}
+
+export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): string {
+  const {
+    userCode,
+    innerTimeout,
+    maxIterations,
+    maxToolCalls,
+    toolBridgeMode = 'string',
+    toolBridgeMaxPayloadBytes = 5 * 1024 * 1024,
+    sanitizeStackTraces,
+    securityLevel,
+    validationConfig,
+    suspiciousPatterns,
+    blockedProperties,
+    allowComposites = false,
+    memoryLimit = 0,
+    throwOnBlocked = true,
+    maxGlobalFunctionCalls = 1000,
+    toolNamespaces = [],
+    realmGlobalAllowlist,
+  } = options;
+
+  // Realm allowlist: the caller's names plus what the runtime itself needs there. Custom globals
+  // are added inside the parent VM (it holds them), so the list is right whoever built it.
+  const hasRealmAllowlist = Array.isArray(realmGlobalAllowlist);
+  const realmAllowedNames = hasRealmAllowlist
+    ? [
+        ...new Set([
+          ...(realmGlobalAllowlist as readonly string[]),
+          ...REALM_RUNTIME_GLOBALS,
+          ...toolNamespaces.map((ns) => ns.name),
+        ]),
+      ]
+    : [];
+
+  const sanitizeContextCode = generateSanitizeContextCode(securityLevel, hasRealmAllowlist);
+  const patternDetectorsCode = generatePatternDetectorsCode(suspiciousPatterns);
+
+  // Patch code executed inside VM realms to prevent leaking host stack traces via error.stack.
+  // We avoid including any file names/paths/line numbers in the formatted stack.
+  const stackTraceHardeningCode = `
+(function() {
+  function __ag_redactStackString(stackStr) {
+    try {
+      if (typeof stackStr !== 'string' || !stackStr) return 'Error';
+      var lines = String(stackStr).split('\\n');
+      var header = lines[0] ? String(lines[0]) : 'Error';
+      var frameCount = (lines.length > 1) ? (lines.length - 1) : 0;
+      var max = frameCount;
+      if (max > 25) max = 25;
+      var out = [header];
+      for (var i = 0; i < max; i++) out.push('    at [REDACTED]');
+      if (frameCount > max) out.push('    at [REDACTED]');
+      return out.join('\\n');
+    } catch (e) {
+      return 'Error';
+    }
+  }
+
+  function __ag_prepareStackTrace(err, stack) {
+    try {
+      var name = (err && err.name) ? String(err.name) : 'Error';
+      var message = (err && err.message) ? String(err.message) : '';
+      var header = message ? (name + ': ' + message) : name;
+      if (!stack || !stack.length) return header;
+      var lines = [header];
+      var max = stack.length;
+      if (max > 25) max = 25;
+      for (var i = 0; i < max; i++) {
+        lines.push('    at [REDACTED]');
+      }
+      if (stack.length > max) {
+        lines.push('    at [REDACTED]');
+      }
+      return lines.join('\\n');
+    } catch (e) {
+      return 'Error';
+    }
+  }
+
+  function __ag_lockStackGetter(proto) {
+    if (!proto) return;
+    try {
+      var desc = Object.getOwnPropertyDescriptor(proto, 'stack');
+      if (!desc || typeof desc.get !== 'function') return;
+      var origGet = desc.get;
+      var origSet = desc.set;
+      Object.defineProperty(proto, 'stack', {
+        get: function() {
+          try {
+            return __ag_redactStackString(origGet.call(this));
+          } catch (e) {
+            return 'Error';
+          }
+        },
+        set: function(v) {
+          try {
+            if (typeof origSet === 'function') return origSet.call(this, v);
+          } catch (e) {}
+        },
+        configurable: false,
+        enumerable: false
+      });
+    } catch (e) {}
+  }
+
+  function __ag_lockPrepareStackTrace(ErrCtor) {
+    if (!ErrCtor) return;
+    try {
+      Object.defineProperty(ErrCtor, 'prepareStackTrace', {
+        value: __ag_prepareStackTrace,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+    } catch (e) {}
+    try {
+      Object.defineProperty(ErrCtor, 'stackTraceLimit', {
+        value: 25,
+        writable: false,
+        configurable: false,
+        enumerable: false
+      });
+    } catch (e) {}
+  }
+
+  // Each one on its own: this code also runs at the start of the script itself, where a realm
+  // reduced to its allowlist no longer has a binding for most of these names.
+  try { __ag_lockStackGetter(Error.prototype); } catch (e) {}
+  try { __ag_lockPrepareStackTrace(Error); } catch (e) {}
+  try { __ag_lockPrepareStackTrace(EvalError); } catch (e) {}
+  try { __ag_lockPrepareStackTrace(RangeError); } catch (e) {}
+  try { __ag_lockPrepareStackTrace(ReferenceError); } catch (e) {}
+  try { __ag_lockPrepareStackTrace(SyntaxError); } catch (e) {}
+  try { __ag_lockPrepareStackTrace(TypeError); } catch (e) {}
+  try { __ag_lockPrepareStackTrace(URIError); } catch (e) {}
+  try { __ag_lockPrepareStackTrace(AggregateError); } catch (e) {}
+})();
+`.trim();
+  const stackTraceHardeningCodeJson = JSON.stringify(stackTraceHardeningCode);
+
+  // Detect and report code-generation attempts (Function/eval) even if user code catches the thrown error.
+  // Used to fail closed in STRICT/SECURE modes.
+  const codeGenViolationDetectorCode = `
+(function() {
+  var __ag_report = (typeof __ag_reportViolation__ === 'function') ? __ag_reportViolation__ : null;
+  function __ag_reportOnce(kind) {
+    try {
+      if (__ag_report) __ag_report(kind);
+    } catch (e) {}
+  }
+
+  var __ag_Reflect = (typeof Reflect !== 'undefined') ? Reflect : null;
+  var __ag_Proxy = (typeof Proxy !== 'undefined') ? Proxy : null;
+  var __ag_Object = (typeof Object !== 'undefined') ? Object : null;
+
+  function __ag_wrapCtor(Ctor, kind) {
+    if (!Ctor || !__ag_Proxy || !__ag_Reflect || !__ag_Object) return;
+    try {
+      var proxy = new __ag_Proxy(Ctor, {
+        apply: function(target, thisArg, args) {
+          __ag_reportOnce(kind);
+          return __ag_Reflect.apply(target, thisArg, args);
+        },
+        construct: function(target, args, newTarget) {
+          __ag_reportOnce(kind);
+          return __ag_Reflect.construct(target, args, newTarget);
+        }
+      });
+
+      try {
+        if (Ctor.prototype) {
+          __ag_Object.defineProperty(Ctor.prototype, 'constructor', {
+            value: proxy,
+            writable: false,
+            configurable: false,
+            enumerable: false
+          });
+        }
+      } catch (e) {}
+    } catch (e) {}
+  }
+
+  try { __ag_wrapCtor(Function, 'CODE_GENERATION'); } catch (e) {}
+  try { __ag_wrapCtor((async function(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
+  try { __ag_wrapCtor((function*(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
+  try { __ag_wrapCtor((async function*(){}).constructor, 'CODE_GENERATION'); } catch (e) {}
+})();
+`.trim();
+  const codeGenViolationDetectorCodeJson = JSON.stringify(codeGenViolationDetectorCode);
+
+  // Define __safe_concat/__safe_template inside the INNER VM realm.
+  //
+  // Why: when `__safe_concat` is a host/parent-realm function (injected into the inner context),
+  // stack-overflow errors can span multiple realms and Node/V8 may bypass Error.prepareStackTrace
+  // formatting entirely, leaking internal filenames like "parent-vm.js" into user-accessible stacks.
+  //
+  // By defining these helpers inside the inner realm, stack overflows stay within the inner realm
+  // and our stack-trace hardening can reliably redact frames.
+  const innerRealmSafeConcatAndTemplateCode = innerRealmRuntimeSource({
+    stackTraceHardeningCode,
+    allowComposites,
+    memoryLimit,
+    blockedProperties,
+  });
   const innerRealmSafeConcatAndTemplateCodeJson = JSON.stringify(innerRealmSafeConcatAndTemplateCode);
 
   // Generate allowed/blocked pattern reconstruction code
@@ -694,6 +1259,11 @@ ${stackTraceHardeningCode}
 // This code runs inside the Parent VM and creates/manages the Inner VM
 
   (async function parentVmMain() {
+    // The script to run. It is the first thing in this text so that the bootstraps of two
+    // different scripts differ near their start: the engine's compilation cache compares a new
+    // source with the sources of the same length it still holds, character by character.
+    var userCode = ${asciiStringLiteral(userCode)};
+
     // Get injected references from host
     const vm = __host_vm_module__;
     const hostCallTool = __host_callTool__;
@@ -704,7 +1274,11 @@ ${stackTraceHardeningCode}
     const hostMemoryTrack = typeof __host_memory_track__ === 'function' ? __host_memory_track__ : function(){};
     const hostInvokeGlobal = typeof __host_invokeGlobal__ === 'function' ? __host_invokeGlobal__ : null;
     const hostIsBuiltinMethod = typeof __host_isBuiltinMethod__ === 'function' ? __host_isBuiltinMethod__ : function() { return false; };
+    // Fail closed without the classifier: every built-in method of host data counts as mutating.
+    const hostIsMutatingBuiltin = typeof __host_isMutatingBuiltin__ === 'function' ? __host_isMutatingBuiltin__ : function() { return true; };
     const hostConsoleSink = typeof __host_consoleSink__ === 'function' ? __host_consoleSink__ : null;
+    // Writes one line to the host console at a level. The host console OBJECT is never in this realm.
+    const hostConsoleWrite = typeof __host_console_write__ === 'function' ? __host_console_write__ : function() {};
     const toolBridgeMode = ${JSON.stringify(toolBridgeMode)};
     const toolBridgeMaxPayloadBytes = ${toolBridgeMaxPayloadBytes};
 
@@ -719,7 +1293,14 @@ ${stackTraceHardeningCode}
     try { delete globalThis.__host_memory_track__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_invokeGlobal__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_isBuiltinMethod__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_isMutatingBuiltin__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_consoleSink__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_console_write__; } catch (e) { /* ignore */ }
+
+    // The function that freezes this realm's intrinsics right before the script runs (see
+    // REALM_LOCKDOWN_SOURCE). Built now, while the realm is pristine and the host bridges are
+    // already off its global.
+    const __ag_lockdownParentRealm = ${REALM_LOCKDOWN_SOURCE};
 
     // Policy violation reporter (best-effort; host decides how to handle based on security level)
     function __ag_reportViolation(kind) {
@@ -758,8 +1339,12 @@ ${stackTraceHardeningCode}
   const __ag_ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
   const __ag_ReflectOwnKeys = Reflect.ownKeys;
   const __ag_ReflectApply = Reflect.apply;
+  const __ag_ReflectHas = Reflect.has;
+  const __ag_ReflectDeleteProperty = Reflect.deleteProperty;
+  const __ag_ReflectGetPrototypeOf = Reflect.getPrototypeOf;
+  const __ag_ArrayIsArray = Array.isArray;
   const __ag_hasOwnProperty = Object.prototype.hasOwnProperty;
-  const __ag_functionBind = Function.prototype.bind;
+  const __ag_Promise = Promise;
 
   /**
    * Creates a "safe" error object that cannot be used to escape the sandbox.
@@ -775,6 +1360,10 @@ ${stackTraceHardeningCode}
    */
   // Unique symbol-like marker for identifying safe errors (not a real Symbol to avoid sandbox escape)
   var SAFE_ERROR_MARKER = '__enclave_safe_error_' + Math.random().toString(36).slice(2);
+
+  // Every error createSafeError built. The membrane lets these through as they are; a script
+  // can copy the marker property onto an object of its own, but cannot add it to this set.
+  const safeErrors = new WeakSet();
 
   function createSafeError(message, name) {
     if (name === undefined) name = 'Error';
@@ -862,6 +1451,7 @@ ${stackTraceHardeningCode}
     // Freeze the error to prevent modifications
     __ag_objectFreeze(error);
 
+    safeErrors.add(error);
     return error;
   }
 
@@ -910,6 +1500,7 @@ ${stackTraceHardeningCode}
 
   // Whether to throw errors instead of returning undefined for blocked properties
   const throwOnBlocked = ${throwOnBlocked};
+  const hostRegExpMessage = ${JSON.stringify(HOST_REGEXP_MESSAGE)};
 
   // Whether composite reference handles are allowed (for string concatenation)
   const allowComposites = ${allowComposites};
@@ -924,6 +1515,318 @@ ${stackTraceHardeningCode}
   // cached separately from realm-owned ones because the two use different blocking rules.
   const proxyCache = new WeakMap();
   const hostProxyCache = new WeakMap();
+
+  // SECURITY (function realm): the engine resolves a callable's realm by looking THROUGH Proxy
+  // and bound-function layers to the innermost function (GetFunctionRealm). That realm then owns
+  // objects the engine creates on the callable's behalf: the resolving functions a thenable job
+  // passes to a 'then' (await { then: f }), and the fallback prototype of
+  // Reflect.construct(X, args, f). A membrane Proxy whose target chain ends at a HOST function
+  // (a custom global, a method of a host promise, a bound host method) therefore made the engine
+  // create HOST-realm functions and hand them to sandbox code, which wrapped the membrane proxy
+  // in its own Proxy with an apply trap to receive them. A raw host function reaches the host
+  // Function constructor, the only one with code generation enabled.
+  //
+  // So no callable handed to the sandbox may have a host function anywhere in its target chain:
+  // - a callable is proxied over a fresh INNER-realm shell (see createSecureProxy); the real
+  //   function is only ever reached from the traps, which close over it;
+  // - a method read off an object is a forwarder closure, never Function.prototype.bind (a bound
+  //   function keeps its target's realm);
+  // - a host promise is adopted into a promise of this realm before it is wrapped
+  //   (see adoptHostPromise), so its methods are this realm's.
+  // The only callables proxied directly are the constructors registered here, which need the
+  // construct and 'prototype' behavior of a real target and belong to this sandbox's realms.
+  const realmOwnedCallables = new WeakSet();
+
+  // Forwarder -> the method it calls, so 'length' and 'name' still describe the method.
+  const forwardedMethods = new WeakMap();
+
+  // Forwarders for the built-in methods of PARENT-realm objects (an array Object.keys built, a
+  // promise of this realm). What such a method passes to a script callback is a raw object of
+  // this realm, so their callbacks are guarded (see guardCallbacksForRealm).
+  const parentRealmMethods = new WeakSet();
+
+  // Every proxy createSecureProxy made. (The proxy caches cannot answer "is this a membrane
+  // proxy": they are keyed by the wrapped originals as well.)
+  const membraneProxies = new WeakSet();
+
+  // The inner half of the membrane, set as soon as the inner realm exists.
+  var __ag_innerMembrane = null;
+
+  /**
+   * A function that calls 'method' on 'holder', as 'method.bind(holder)' would, but as a closure
+   * of this realm rather than a bound function that keeps the realm of 'method'.
+   */
+  function createMethodForwarder(method, holder) {
+    var forwarder = (...args) => __ag_ReflectApply(method, holder, args);
+    forwardedMethods.set(forwarder, method);
+    return forwarder;
+  }
+
+  /**
+   * Settle a promise of this realm the way a HOST promise settles, so the sandbox never holds
+   * the host promise (whose 'then', 'catch' and 'finally' are host functions). A rejection
+   * reason is a host value like any other, so it goes through launderThrown.
+   */
+  function adoptHostPromise(hostPromise) {
+    return new __ag_Promise(function(resolve, reject) {
+      hostPromise.then(resolve, function(reason) {
+        reject(launderThrown(reason));
+      });
+    });
+  }
+
+  // Host bridge calls that have not been started yet (see deferHostCall).
+  const pendingHostCalls = [];
+  var hostCallsScheduled = false;
+
+  function startPendingHostCalls() {
+    hostCallsScheduled = false;
+    var calls = pendingHostCalls.splice(0, pendingHostCalls.length);
+    for (var i = 0; i < calls.length; i++) {
+      var call = calls[i];
+      try {
+        call.start().then(call.resolve, call.reject);
+      } catch (thrown) {
+        call.reject(thrown);
+      }
+    }
+  }
+
+  /**
+   * A promise of this realm for the result of a call into the host's tool bridge, with the call
+   * itself made from a microtask instead of from where the script is.
+   *
+   * A script can call a tool with the stack nearly full. Started there, the host's async bridge
+   * failed halfway and returned a rejected HOST promise, and Node.js, whose own bookkeeping of
+   * rejections is JavaScript that needs stack too, kept that rejection listed as unhandled: the
+   * host process ended. From a microtask the bridge always starts on an empty stack, and at the
+   * script's depth nothing of the host runs and no host promise exists.
+   *
+   * 'start' returns the host promise; 'onRejected' turns its rejection reason into what the
+   * script may see.
+   */
+  function deferHostCall(start, onRejected) {
+    return new __ag_Promise(function(resolve, reject) {
+      // Scheduled before it is queued: if this cannot finish because the stack is full, nothing
+      // is left in the queue for a later flush to start on the script's behalf.
+      if (!hostCallsScheduled) {
+        __ag_Promise.resolve().then(startPendingHostCalls);
+        hostCallsScheduled = true;
+      }
+      pendingHostCalls[pendingHostCalls.length] = {
+        start: start,
+        resolve: resolve,
+        reject: function(reason) { reject(onRejected(reason)); }
+      };
+    });
+  }
+
+  /**
+   * Whether a value was created by script code: its prototype chain passes through the inner
+   * realm's Object.prototype. A script Proxy answers for itself here, which is fine: whatever
+   * it claims, it is still a script value.
+   */
+  function belongsToInnerRealm(value) {
+    var proto = value;
+    for (var i = 0; i < 64; i++) {
+      try {
+        proto = __ag_ReflectGetPrototypeOf(proto);
+      } catch (e) {
+        return false;
+      }
+      if (proto === null) return false;
+      if (proto === innerObjectPrototype) return true;
+    }
+    return false;
+  }
+
+  /**
+   * What a script may catch. A value thrown while the membrane works on a host or parent-realm
+   * object (a TypeError raised inside a host built-in, an error from a host getter) is an
+   * object of that realm with a live prototype chain: handing it to a catch block is the same
+   * leak as handing out the object it came from. Only primitives, safe errors, values already
+   * behind the membrane and the script's own objects pass; anything else is reduced to a safe
+   * error carrying its name and message.
+   */
+  function launderThrown(thrown) {
+    if (thrown === null || (typeof thrown !== 'object' && typeof thrown !== 'function')) {
+      return thrown;
+    }
+    if (safeErrors.has(thrown) || membraneProxies.has(thrown) || belongsToInnerRealm(thrown)) {
+      return thrown;
+    }
+    var name = 'Error';
+    var message = 'Operation failed';
+    try {
+      var rawName = __ag_ReflectGet(thrown, 'name');
+      if (typeof rawName === 'string' && rawName) name = rawName;
+    } catch (e) { /* keep the default */ }
+    try {
+      var rawMessage = __ag_ReflectGet(thrown, 'message');
+      if (typeof rawMessage === 'string') message = rawMessage;
+    } catch (e) { /* keep the default */ }
+    return createSafeError(message, name);
+  }
+
+  /**
+   * Wrap a membrane trap so that nothing it throws reaches the script without going through
+   * launderThrown.
+   */
+  function guarded(trap) {
+    return function() {
+      try {
+        return __ag_ReflectApply(trap, this, arguments);
+      } catch (thrown) {
+        throw launderThrown(thrown);
+      }
+    };
+  }
+
+  /**
+   * A value a host built-in hands to script code (an array element, a Map value, the array
+   * itself). The script's own values and values already behind the membrane are passed as they
+   * are; a raw host object is wrapped as host-owned.
+   */
+  function toSandboxValue(value) {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+      return value;
+    }
+    if (membraneProxies.has(value) || belongsToInnerRealm(value)) {
+      return value;
+    }
+    return createSecureProxy(value, 0, true);
+  }
+
+  /**
+   * Arguments for a built-in method of host data. Such a method (map, forEach, sort, find, ...)
+   * calls a script callback with the elements, the index and the collection itself, and those
+   * are raw host objects: each callback is replaced by one that receives them wrapped.
+   */
+  function guardCallbacksForHost(args) {
+    var guardedArgs = [];
+    for (var i = 0; i < args.length; i++) {
+      guardedArgs[i] = typeof args[i] === 'function' ? guardCallbackForHost(args[i]) : args[i];
+    }
+    return guardedArgs;
+  }
+
+  function guardCallbackForHost(callback) {
+    return (...hostArgs) => {
+      for (var i = 0; i < hostArgs.length; i++) {
+        hostArgs[i] = toSandboxValue(hostArgs[i]);
+      }
+      return __ag_ReflectApply(callback, undefined, hostArgs);
+    };
+  }
+
+  /**
+   * A value of THIS realm on its way into script code. Objects created here (the arrays that
+   * Object.keys and Object.entries build, a promise of this realm) are not the script's and not
+   * the host's; unwrapped, each is a raw parent-realm object with a live prototype chain.
+   * Primitives, the script's own values, safe errors and values already behind the membrane
+   * pass as they are.
+   */
+  function toScriptValue(value) {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+      return value;
+    }
+    if (membraneProxies.has(value) || safeErrors.has(value) || belongsToInnerRealm(value)) {
+      return value;
+    }
+    return createSecureProxy(value, 0, false);
+  }
+
+  /**
+   * Arguments for a built-in method of a parent-realm object (see parentRealmMethods). Such a
+   * method (forEach, map, sort, reduce, then, ...) calls a script callback with the elements and
+   * with the collection itself: each callback is replaced by one that receives them through
+   * toScriptValue. The callback keeps its receiver, and what it returns goes back unchanged.
+   */
+  function guardCallbacksForRealm(args) {
+    var guardedArgs = [];
+    for (var i = 0; i < args.length; i++) {
+      guardedArgs[i] = typeof args[i] === 'function' ? guardCallbackForRealm(args[i]) : args[i];
+    }
+    return guardedArgs;
+  }
+
+  function guardCallbackForRealm(callback) {
+    return function() {
+      var realmArgs = [];
+      for (var i = 0; i < arguments.length; i++) {
+        realmArgs[i] = toScriptValue(arguments[i]);
+      }
+      return __ag_ReflectApply(callback, toScriptValue(this), realmArgs);
+    };
+  }
+
+  /**
+   * The result of a built-in method of host data. An array (map, filter, slice, concat, ...) is
+   * copied into an array of this realm, so the script can sort or extend what it derived
+   * without that being a write to a host object; its elements stay wrapped. Anything else is
+   * wrapped as host-owned.
+   */
+  function wrapHostBuiltinResult(result) {
+    if (result === null || (typeof result !== 'object' && typeof result !== 'function')) {
+      return result;
+    }
+    if (membraneProxies.has(result)) {
+      return result;
+    }
+    if (belongsToInnerRealm(result)) {
+      return createSecureProxy(result, 0, false);
+    }
+    if (__ag_ArrayIsArray(result)) {
+      var copy = [];
+      var length = result.length;
+      for (var i = 0; i < length; i++) {
+        copy[i] = toSandboxValue(result[i]);
+      }
+      return createSecureProxy(copy, 0, false);
+    }
+    return createSecureProxy(result, 0, true);
+  }
+
+  /**
+   * Refuse a write through the membrane to a HOST-owned value. A custom global is the host's own
+   * object, shared by every execution of the enclave: a script that could assign to it would
+   * change what later executions and the host itself read, and could plant sandbox objects in it.
+   */
+  /**
+   * What a script gets in place of a built-in method of host data that may not be called on it:
+   * one that changes its receiver (push, sort, Map.prototype.set, ... called on host data would
+   * write to the host's own object without ever reaching the set trap), or one that runs a
+   * regular expression (test, exec and the methods a string calls on one: the host's pattern is
+   * not run for the script, whatever the security level; a result that is silently undefined
+   * would read as "no match"). Null for every other method.
+   */
+  function refusedHostBuiltin(value, propName, depth) {
+    var refusedOnHostData = hostIsMutatingBuiltin(value);
+    if (refusedOnHostData === 'match') {
+      return createSecureProxy(function() {
+        throw createSafeError(hostRegExpMessage);
+      }, depth + 1, false);
+    }
+    if (refusedOnHostData) {
+      return createSecureProxy(function() {
+        return refuseHostWrite("Calling '" + propName + "' on the value", undefined);
+      }, depth + 1, false);
+    }
+    return null;
+  }
+
+  function refuseHostWrite(action, whenIgnored) {
+    if (throwOnBlocked) {
+      throw createSafeError(
+        "Security violation: " + action + " is blocked. " +
+        "Values passed in globals are read-only inside the sandbox."
+      );
+    }
+    // Where blocked operations do not throw (PERMISSIVE), the write is dropped and the trap
+    // reports whenIgnored. For set, defineProperty and deleteProperty that is success: a false
+    // result is a TypeError in strict-mode code, which would not be "ignored".
+    return whenIgnored;
+  }
 
   /**
    * Create a secure proxy that blocks access to dangerous properties
@@ -955,18 +1858,31 @@ ${stackTraceHardeningCode}
       return obj;
     }
 
+    // Idempotent in both modes: a membrane proxy is never wrapped again.
+    if (membraneProxies.has(obj)) {
+      return obj;
+    }
+
     // Check cache
     var cache = host ? hostProxyCache : proxyCache;
     if (cache.has(obj)) {
       return cache.get(obj);
     }
 
-    var proxy = new Proxy(obj, {
-      get: function(target, property, receiver) {
+    // A callable is proxied over an inner-realm shell, never over itself (see
+    // realmOwnedCallables): the Proxy target decides the realm the engine attributes to the
+    // proxy. The shell is an arrow function, so it has no non-configurable own property and no
+    // [[Construct]]; the traps below answer for the real function, obj, which they close over.
+    // Every trap therefore reads obj and ignores its target argument.
+    var shelled = typeof obj === 'function' && !realmOwnedCallables.has(obj);
+    var proxyTarget = shelled ? newCallableShell() : obj;
+
+    var handler = {
+      get: function(_target, property, receiver) {
         var propName = String(property);
 
         // Check if property is non-configurable (proxy invariant requires returning actual value)
-        var descriptor = __ag_getOwnPropertyDescriptor(target, property);
+        var descriptor = __ag_getOwnPropertyDescriptor(obj, property);
         var isNonConfigurable = descriptor && !descriptor.configurable;
 
         // Proxy invariant: if the target has a non-configurable, non-writable data property,
@@ -974,21 +1890,26 @@ ${stackTraceHardeningCode}
         // This matters for hardened properties like Error.prepareStackTrace.
         if (descriptor && isNonConfigurable && 'value' in descriptor && descriptor.writable === false) {
           var exactValue = descriptor.value;
+          var exactIsReference = exactValue !== null && (typeof exactValue === 'object' || typeof exactValue === 'function');
           // On a host-owned value the exact reference cannot be handed over: it would cross
           // the barrier unwrapped and its prototype chain reaches the host Function
           // constructor. Primitives stay safe to report, so only object/function values are
           // refused, and throwing satisfies the invariant that wrapping would break.
-          if (host && exactValue !== null && (typeof exactValue === 'object' || typeof exactValue === 'function')) {
+          if (host && exactIsReference) {
             throw createSafeError(
               "Security violation: Access to '" + propName + "' is blocked. " +
               "This property cannot be exposed without breaking the sandbox barrier."
             );
           }
-          return exactValue;
+          // A shelled callable is not the Proxy target, so no invariant pins its value: a
+          // reference takes the blocking and wrapping path below like any other read.
+          if (!shelled || !exactIsReference) {
+            return exactValue;
+          }
         }
 
         // Block dangerous properties. The ONLY [[Get]] invariant that forces a specific return
-        // value is for a non-writable + non-configurable DATA property — already handled above.
+        // value is for a non-writable + non-configurable DATA property, which is handled above.
         // Anything reaching here is configurable, a non-configurable WRITABLE data property (such
         // as a function own prototype), or a non-configurable accessor; the invariant constrains
         // none of these, so the trap must never hand back the raw value. GHSA-3279: the old
@@ -1004,16 +1925,38 @@ ${stackTraceHardeningCode}
           return undefined;
         }
 
-        var value = __ag_ReflectGet(target, property, receiver);
+        // A forwarder stands in for the method it calls: report that method's arity and name.
+        if (shelled && (property === 'length' || property === 'name') && forwardedMethods.has(obj)) {
+          var described = __ag_getOwnPropertyDescriptor(forwardedMethods.get(obj), property);
+          var describedValue = described && 'value' in described ? described.value : undefined;
+          return (typeof describedValue === 'number' || typeof describedValue === 'string')
+            ? describedValue
+            : (property === 'length' ? 0 : '');
+        }
 
-        // For function values, bind to target first (preserves internal slot access for Promises, etc.)
-        // Then recursively proxy the bound function to block constructor access
+        // The receiver is obj, not the proxy: an accessor that checks its receiver's internal
+        // slot (Map.prototype.size, a typed array's length, ...) rejects a Proxy.
+        var value = __ag_ReflectGet(obj, property, obj);
+
+        // A method is handed out as a forwarder that calls it on the object it was read from
+        // (this keeps internal-slot access working for Promises, Dates, ...), then proxied to
+        // block constructor access. It is a closure rather than value.bind(obj): a bound
+        // function keeps the realm of its target (see realmOwnedCallables).
         if (typeof value === 'function') {
-          var boundMethod = __ag_functionBind.call(value, target);
-          if (host && hostIsBuiltinMethod(value)) {
-            ungatedHostFunctions.add(boundMethod);
+          var hostBuiltin = host && hostIsBuiltinMethod(value);
+          // push, sort, Map.prototype.set, ... called on host data would write to the host's
+          // own object without ever reaching the set trap.
+          var refusedMethod = hostBuiltin ? refusedHostBuiltin(value, propName, depth) : null;
+          if (refusedMethod) {
+            return refusedMethod;
           }
-          return createSecureProxy(boundMethod, depth + 1, host);
+          var method = createMethodForwarder(value, obj);
+          if (hostBuiltin) {
+            ungatedHostFunctions.add(method);
+          } else if (!host && typeof obj === 'object' && !belongsToInnerRealm(obj)) {
+            parentRealmMethods.add(method);
+          }
+          return createSecureProxy(method, depth + 1, host);
         }
 
         // Recursively proxy nested objects to maintain security barrier
@@ -1024,7 +1967,7 @@ ${stackTraceHardeningCode}
 
         return value;
       },
-      set: function(target, property, value, receiver) {
+      set: function(_target, property, value, receiver) {
         var propName = String(property);
         if (blockedPropertiesSet.has(propName)) {
           if (throwOnBlocked) {
@@ -1035,9 +1978,12 @@ ${stackTraceHardeningCode}
           }
           return false;
         }
-        return __ag_ReflectSet(target, property, value, receiver);
+        if (host) {
+          return refuseHostWrite("Setting '" + propName + "'", true);
+        }
+        return __ag_ReflectSet(obj, property, value, receiver);
       },
-      defineProperty: function(target, property, descriptor) {
+      defineProperty: function(_target, property, descriptor) {
         var propName = String(property);
         if (blockedPropertiesSet.has(propName)) {
           if (throwOnBlocked) {
@@ -1048,11 +1994,48 @@ ${stackTraceHardeningCode}
           }
           return false;
         }
-        return __ag_ReflectDefineProperty(target, property, descriptor);
+        if (host) {
+          return refuseHostWrite("Defining '" + propName + "'", true);
+        }
+        // A shell cannot vouch for a non-configurable property (it has none), so the engine
+        // would reject the definition after it had already been applied to the real function.
+        if (shelled && descriptor && descriptor.configurable === false) {
+          throw createSafeError(
+            "Security violation: Defining non-configurable property '" + propName + "' on a function is blocked."
+          );
+        }
+        return __ag_ReflectDefineProperty(obj, property, descriptor);
       },
-      getOwnPropertyDescriptor: function(target, property) {
+      deleteProperty: function(_target, property) {
+        if (host) {
+          return refuseHostWrite("Deleting '" + String(property) + "'", true);
+        }
+        return __ag_ReflectDeleteProperty(obj, property);
+      },
+      has: function(_target, property) {
+        return __ag_ReflectHas(obj, property);
+      },
+      // Freezing or sealing a host-owned value would change it for the host and for every later
+      // execution. A shell must stay extensible, or the engine would start holding the traps
+      // above to the shell's own (empty) shape instead of letting them answer for obj.
+      preventExtensions: host ? function() {
+        // The engine checks a true result against the target, so this one cannot report success.
+        return refuseHostWrite('Freezing or sealing the value', false);
+      } : (shelled ? function() { return false; } : undefined),
+      getOwnPropertyDescriptor: function(_target, property) {
         var propName = String(property);
-        var descriptor = __ag_ReflectGetOwnPropertyDescriptor(target, property);
+        var descriptor = __ag_ReflectGetOwnPropertyDescriptor(obj, property);
+
+        // A shelled callable is not the Proxy target, so the engine would reject a
+        // non-configurable report (the shell has no such property): describe such a property as
+        // configurable. Nothing is lost, because no invariant pins the shell to obj either.
+        var reportable = function(actual) {
+          if (!shelled || !actual || actual.configurable) return actual;
+          var relaxed = {};
+          for (var rk in actual) { if (__ag_hasOwnProperty.call(actual, rk)) relaxed[rk] = actual[rk]; }
+          relaxed.configurable = true;
+          return relaxed;
+        };
 
         // Mirror the get trap's host-owned pinned-value refusal: a non-configurable, non-writable
         // data property must be reported with its exact value (proxy invariant), so on a HOST-owned
@@ -1067,11 +2050,11 @@ ${stackTraceHardeningCode}
               "This property cannot be exposed without breaking the sandbox barrier."
             );
           }
-          return descriptor;
+          return reportable(descriptor);
         }
 
         // Accessor descriptors expose raw getter/setter functions. A non-configurable accessor
-        // must be reported with its exact get/set (proxy invariant) and so cannot be wrapped —
+        // must be reported with its exact get/set (proxy invariant) and so cannot be wrapped:
         // deny it if it carries a function whose prototype chain reaches the host constructor.
         if (descriptor && !descriptor.configurable &&
             (typeof descriptor.get === 'function' || typeof descriptor.set === 'function')) {
@@ -1081,9 +2064,14 @@ ${stackTraceHardeningCode}
           );
         }
 
-        // Must return actual descriptor for other non-configurable properties (proxy invariant)
+        // Must return actual descriptor for other non-configurable properties (proxy invariant).
+        // A shelled callable has no such invariant: its property takes the blocking and wrapping
+        // path below, described as configurable.
         if (descriptor && !descriptor.configurable) {
-          return descriptor;
+          if (!shelled) {
+            return descriptor;
+          }
+          descriptor = reportable(descriptor);
         }
 
         // Block configurable dangerous properties
@@ -1108,28 +2096,37 @@ ${stackTraceHardeningCode}
         }
 
         // Wrap object/function values so a descriptor read cannot hand back a raw reference that
-        // the get trap would otherwise have proxied.
+        // the get trap would otherwise have proxied. A built-in method the get trap withholds on
+        // host data (one that changes its receiver, or runs a regular expression) is withheld
+        // here in the same way: a descriptor is another way to read the same property.
         if (descriptor && 'value' in descriptor) {
           var value = descriptor.value;
           if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
             var wrapped = {};
             for (var dk in descriptor) { if (__ag_hasOwnProperty.call(descriptor, dk)) wrapped[dk] = descriptor[dk]; }
-            wrapped.value = createSecureProxy(value, depth + 1, host);
+            var refusedValue = (host && typeof value === 'function' && hostIsBuiltinMethod(value))
+              ? refusedHostBuiltin(value, propName, depth)
+              : null;
+            wrapped.value = refusedValue || createSecureProxy(value, depth + 1, host);
             return wrapped;
           }
         }
         return descriptor;
       },
-      ownKeys: function(target) {
-        var keys = __ag_ReflectOwnKeys(target);
+      ownKeys: function(_target) {
+        var keys = __ag_ReflectOwnKeys(obj);
         return keys.filter(function(key) {
           var keyStr = String(key);
           // Keep non-blocked properties
           if (!blockedPropertiesSet.has(keyStr)) {
             return true;
           }
-          // Must keep non-configurable properties (proxy invariant)
-          var descriptor = __ag_getOwnPropertyDescriptor(target, key);
+          // Must keep non-configurable properties (proxy invariant). A shelled callable is not
+          // the Proxy target, so nothing forces its blocked keys to be listed.
+          if (shelled) {
+            return false;
+          }
+          var descriptor = __ag_getOwnPropertyDescriptor(obj, key);
           if (descriptor && !descriptor.configurable) {
             return true;
           }
@@ -1137,10 +2134,18 @@ ${stackTraceHardeningCode}
           return false;
         });
       },
-      getPrototypeOf: function(target) {
+      getPrototypeOf: function(_target) {
         // Return null to hide prototype chain
         return null;
       },
+      // The default would change the prototype of the Proxy target: of the shell (pointless), or
+      // of a host-owned value (a write to the host).
+      setPrototypeOf: (host || shelled) ? function() {
+        if (host) {
+          return refuseHostWrite('Changing the prototype of the value', false);
+        }
+        return false;
+      } : undefined,
       // SECURITY (GHSA-grmc-r8vw-226r): the get trap re-wraps values obtained via property
       // ACCESS, but function-call results cross the same trust boundary and must be wrapped
       // too. Without an apply trap, calling a wrapped function (for example the then method
@@ -1155,11 +2160,20 @@ ${stackTraceHardeningCode}
       // maxGlobalFunctionCalls, the shared operation rate limit, and a sanitized, parent-realm
       // copy of the result. Without it those calls skipped every limit that guards callTool, and
       // their results arrived unsanitized. Only built-in methods of host data are exempt.
-      apply: function(target, thisArg, args) {
-        if (host && !ungatedHostFunctions.has(target)) {
-          return callHostFunction(target, thisArg, args);
+      apply: function(_target, thisArg, args) {
+        if (!host) {
+          return createSecureProxy(
+            __ag_ReflectApply(obj, thisArg, parentRealmMethods.has(obj) ? guardCallbacksForRealm(args) : args),
+            0,
+            false
+          );
         }
-        return createSecureProxy(__ag_ReflectApply(target, thisArg, args), 0, host);
+        if (!ungatedHostFunctions.has(obj)) {
+          return callHostFunction(obj, args);
+        }
+        // A built-in method of host data: script callbacks receive wrapped host values, and the
+        // result is wrapped (an array is copied into this realm first).
+        return wrapHostBuiltinResult(__ag_ReflectApply(obj, undefined, guardCallbacksForHost(args)));
       },
       // Constructing a HOST function would hand back a raw host instance without passing the
       // gate, so it is refused. Realm-owned values keep NO construct trap (undefined here means
@@ -1172,7 +2186,19 @@ ${stackTraceHardeningCode}
       construct: host ? function() {
         throw createSafeError('Host functions cannot be called with new', 'TypeError');
       } : undefined
-    });
+    };
+
+    // Nothing a trap throws reaches the script without going through launderThrown.
+    for (var trapName in handler) {
+      if (typeof handler[trapName] === 'function') {
+        handler[trapName] = guarded(handler[trapName]);
+      }
+    }
+
+    // The handler the engine calls is an inner-realm object (see INNER_REALM_GUARD_SOURCE);
+    // 'handler' above is what its traps call.
+    var proxy = __ag_innerMembrane.makeProxy(proxyTarget, handler);
+    membraneProxies.add(proxy);
 
     cache.set(obj, proxy);
     // Idempotency: re-wrapping an already-secure proxy must return it unchanged, so an apply
@@ -1234,7 +2260,7 @@ ${stackTraceHardeningCode}
    * The global-function gate: every call from the sandbox into a host function passed in
    * globals (including functions nested in objects) comes through here.
    */
-  function callHostFunction(target, thisArg, args) {
+  function callHostFunction(target, args) {
     if (hostAbortCheck()) {
       throw createSafeError('Execution aborted');
     }
@@ -1251,13 +2277,17 @@ ${stackTraceHardeningCode}
     enforceRateLimit(now);
     globalFunctionCallTimes.push(now);
 
-    var outcome = hostInvokeGlobal(target, thisArg, args);
+    // The script's 'this' is never passed: a method read off a host object is a forwarder that
+    // already calls it on that object, and a bare host function has no receiver to honor. The
+    // host sanitizes the arguments into plain host data before the function sees them.
+    var outcome = hostInvokeGlobal(target, undefined, args);
     if (typeof outcome === 'string') {
       return createSecureProxy(decodeGlobalFunctionResult(outcome));
     }
 
-    // A host function that returned a thenable: settle to a sanitized parent-realm value.
-    return createSecureProxy(outcome.then(decodeGlobalFunctionResult).then(function(value) {
+    // A host function that returned a thenable: settle to a sanitized parent-realm value. The
+    // host promise is adopted first, so the promise the script receives is one of this realm.
+    return createSecureProxy(adoptHostPromise(outcome).then(decodeGlobalFunctionResult).then(function(value) {
       return createSecureProxy(value);
     }));
   }
@@ -1420,7 +2450,12 @@ ${stackTraceHardeningCode}
         throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
       }
 
-      promise = hostCallTool(requestJson).then(function(responseJson) {
+      // The limits and checks above ran at the call; the host bridge itself is started from a
+      // microtask (see deferHostCall). Everything chained from here on, including the promise the
+      // script receives, is a promise of this realm.
+      promise = deferHostCall(function() {
+        return hostCallTool(requestJson);
+      }, launderThrown).then(function(responseJson) {
         if (typeof responseJson !== 'string') {
           throw createSafeError('Tool bridge returned non-string response');
         }
@@ -1474,19 +2509,31 @@ ${stackTraceHardeningCode}
         throw createSafeError('Tool bridge returned invalid response');
       });
     } else {
-      promise = hostCallTool(toolName, sanitizedArgs).then(undefined, function(error) {
-        // Direct mode: the host marks failures of the tool itself with this code.
-        if (error && error.code === 'TOOL_CALL_FAILED') {
-          var message = typeof error.message === 'string' ? error.message : 'Tool call failed';
-          throw markToolFailure(createSafeError(message), toolName, 'Error', message, 'TOOL_CALL_FAILED');
+      // Direct mode: the rejection is mapped here rather than by launderThrown alone, which
+      // would drop the code the host uses to mark a failure of the tool itself.
+      promise = deferHostCall(function() {
+        return hostCallTool(toolName, sanitizedArgs);
+      }, function(error) {
+        var code;
+        var message;
+        try {
+          code = error && error.code;
+          message = error && error.message;
+        } catch (e) { /* treated as an unmarked failure */ }
+        if (code === 'TOOL_CALL_FAILED') {
+          var text = typeof message === 'string' ? message : 'Tool call failed';
+          return markToolFailure(createSafeError(text), toolName, 'Error', text, 'TOOL_CALL_FAILED');
         }
-        throw error;
+        return launderThrown(error);
       });
     }
 
+    // In direct mode the result is the host's own object, not a copy parsed in this realm.
+    var hostOwnedResult = toolBridgeMode !== 'string';
+
     if (!throwOnError) {
       promise = promise.then(function(result) {
-        return { success: true, data: result };
+        return { success: true, data: createSecureProxy(result, 0, hostOwnedResult) };
       }, function(error) {
         var info = toolFailures.get(error);
         if (info) {
@@ -1500,7 +2547,9 @@ ${stackTraceHardeningCode}
     // Note: We can't just wrap the promise because Promise.then/catch/finally must work
     // Instead, we chain the promise to wrap the result
     return createSecureProxy(promise.then(function(result) {
-      return createSecureProxy(result);
+      return createSecureProxy(result, 0, hostOwnedResult);
+    }, function(error) {
+      throw launderThrown(error);
     }));
   }
 
@@ -1722,11 +2771,11 @@ ${stackTraceHardeningCode}
     if (len > 100) {
       throw createSafeError('parallel() is limited to 100 items');
     }
-    var promises = [];
-    for (var i = 0; i < len; i++) {
-      promises[i] = fn(items[i], i, items);
-    }
-    return await Promise.all(promises);
+    // The callbacks run, and their results are awaited, INSIDE the inner realm (see
+    // INNER_REALM_PARALLEL_SOURCE). Promise.all of this realm would hand its own resolving
+    // functions to whatever 'then' a callback's result has, and would resolve to an array of
+    // this realm: both are raw parent-realm objects in the script's hands.
+    return innerParallelRuntime(items, len, fn);
   }
 
   /**
@@ -1736,7 +2785,7 @@ ${stackTraceHardeningCode}
   var maxConsoleBytes = hostConfig.maxConsoleOutputBytes || 65536;
   var maxConsoleCalls = hostConfig.maxConsoleCalls || 100;
 
-  function createSafeConsoleMethod(method) {
+  function createSafeConsoleMethod(level) {
     return function() {
       consoleStats.callCount++;
       if (consoleStats.callCount > maxConsoleCalls) {
@@ -1754,15 +2803,18 @@ ${stackTraceHardeningCode}
       if (consoleStats.totalBytes > maxConsoleBytes) {
         throw createSafeError('Console output size limit exceeded (max: ' + maxConsoleBytes + ' bytes). This limit prevents I/O flood attacks.');
       }
-      method.call(console, output);
+      // false: the host refused to start its console with the stack nearly full
+      if (hostConsoleWrite(level, output) === false) {
+        throw createSafeError('Maximum call stack size exceeded', 'RangeError');
+      }
     };
   }
 
   var innerConsole = {
-    log: createSafeConsoleMethod(console.log.bind(console)),
-    error: createSafeConsoleMethod(console.error.bind(console)),
-    warn: createSafeConsoleMethod(console.warn.bind(console)),
-    info: createSafeConsoleMethod(console.info.bind(console))
+    log: createSafeConsoleMethod('log'),
+    error: createSafeConsoleMethod('error'),
+    warn: createSafeConsoleMethod('warn'),
+    info: createSafeConsoleMethod('info')
   };
 
   // With a consoleHandler, the script's console is built inside the inner realm and writes
@@ -1782,15 +2834,85 @@ ${stackTraceHardeningCode}
   // Create completely isolated context
   // codeGeneration.strings=false disables new Function() and eval() from strings
   // This prevents sandbox escape via constructor chain: [][c][c]('malicious code')
-  var innerContext = vm.createContext({}, {
+  //
+  // The sandbox object has NO prototype. The inner realm resolves a bare identifier on this
+  // object first, prototype chain included, so with a plain {} the names constructor, toString,
+  // valueOf, hasOwnProperty, __lookupGetter__, ... were THIS realm's Object.prototype members:
+  // raw parent-realm functions in the script's hands, with no membrane in between.
+  var innerContext = vm.createContext(__ag_objectCreate(null), {
     codeGeneration: { strings: false, wasm: false }
   });
+
+  // The function that removes globals from the inner realm at the end of setup (see
+  // INNER_REALM_SCRUB_SOURCE). Compiled before anything else runs there.
+  var __ag_scrubInnerRealm = new vm.Script(${JSON.stringify(INNER_REALM_SCRUB_SOURCE)}, {
+    filename: 'inner-scrub.js'
+  }).runInContext(innerContext);
+
+  // The inner half of the membrane (see INNER_REALM_GUARD_SOURCE): makes the proxies, and wraps
+  // every function of this realm or of the host that inner-realm code is handed directly.
+  __ag_innerMembrane = new vm.Script(${JSON.stringify(INNER_REALM_GUARD_SOURCE)}, {
+    filename: 'inner-membrane.js'
+  }).runInContext(innerContext);
+
+  // Symbol.for refuses the host's own namespace (see INNER_REALM_SYMBOL_REGISTRY_SOURCE).
+  new vm.Script(${JSON.stringify(INNER_REALM_SYMBOL_REGISTRY_SOURCE)}, {
+    filename: 'inner-symbol-registry.js'
+  }).runInContext(innerContext);
+
+  // parallel(): calls the script's callback for every item and awaits the results in the inner
+  // realm (see innerParallel).
+  var innerParallelRuntime = new vm.Script(${JSON.stringify(INNER_REALM_PARALLEL_SOURCE)}, {
+    filename: 'inner-parallel.js'
+  }).runInContext(innerContext);
+
+  // Realm allowlist (realmGlobals: 'allowlist'): the global names the inner realm may hold, as a
+  // prototype-less lookup table, or null when only the security level's dangerous globals go.
+  var __ag_realmAllowed = ${
+    hasRealmAllowlist
+      ? `(function(names) {
+    var allowed = __ag_objectCreate(null);
+    for (var i = 0; i < names.length; i++) allowed[names[i]] = true;
+    // Custom globals are part of the script's API whoever computed the list.
+    if (hostConfig.globals) {
+      for (var customKey in hostConfig.globals) {
+        if (__ag_hasOwnProperty.call(hostConfig.globals, customKey)) allowed[customKey] = true;
+      }
+    }
+    return allowed;
+  })(${JSON.stringify(realmAllowedNames)})`
+      : 'null'
+  };
+
+  // Inner-realm pieces the membrane needs (see realmOwnedCallables): a factory for the functions
+  // that callable proxies use as their target, evaluated in the inner realm so that they belong
+  // to it, and that realm's Object.prototype, which identifies the script's own objects.
+  var newCallableShell = new vm.Script(
+    '(function() { "use strict"; return function() { return () => {}; }; })()',
+    { filename: 'inner-callable-shell.js' }
+  ).runInContext(innerContext);
+  var innerObjectPrototype = new vm.Script('Object.prototype', {
+    filename: 'inner-object-prototype.js'
+  }).runInContext(innerContext);
+
+  // The script's cooperative deadline (see ../deadline-guard): the inner realm's __safe_tick,
+  // which the transformed script calls at every function entry and loop iteration. vm's timeout
+  // below only covers the script up to its first await.
+  new vm.Script(${JSON.stringify(realmTickSource(innerTimeout))}, {
+    filename: 'inner-deadline.js'
+  }).runInContext(innerContext);
 
   // STRICT/SECURE: record code-generation attempts (Function/eval) even if user code catches them.
   if (${securityLevel === 'STRICT' || securityLevel === 'SECURE'}) {
     try {
+      // The reporter the script's realm sees is a function OF that realm that calls this one.
+      // Placing __ag_reportViolation itself on the inner global would put a raw parent-realm
+      // function there (its prototype chain is this realm's).
       Object.defineProperty(innerContext, '__ag_reportViolation__', {
-        value: __ag_reportViolation,
+        value: new vm.Script(
+          '(function (report) { "use strict"; return Object.freeze((kind) => { report(typeof kind === "string" ? kind : ""); }); })',
+          { filename: 'inner-report-violation.js' }
+        ).runInContext(innerContext)(__ag_innerMembrane.wrap(__ag_reportViolation, false)),
         writable: false,
         configurable: false,
         enumerable: false
@@ -1824,31 +2946,56 @@ ${stackTraceHardeningCode}
     if (memoryLimit > 0) {
       // First, inject the host memory tracking callback into innerContext
       // This allows the patched methods to track cumulative memory
+      // The patched methods call this from inner-realm code, so it is a function of that realm
+      // around the host's (see INNER_REALM_GUARD_SOURCE): called raw, a stack overflow at its
+      // entry was a HOST RangeError in the script's catch block.
       Object.defineProperty(innerContext, '__host_memory_track__', {
-        value: hostMemoryTrack,
+        value: __ag_innerMembrane.wrap(hostMemoryTrack, false),
         writable: false,
         configurable: true,
         enumerable: false
       });
 
       // Run the patching code in innerContext
-      var patchCode = '(function() {' +
+      // Math, String and RangeError are parameters: the patched methods run for as long as the
+      // script does and must use the realm's own intrinsics, captured here, not whatever those
+      // global names are bound to (or no longer bound to) by then.
+      var patchCode = '(function(Math, String, RangeError) {' +
+        // Strict mode: an unbound call (const f = [].fill; f(0)) must fail on its undefined "this".
+        // In sloppy mode "this" was coerced to the realm's global object, and fill RETURNED it.
+        '"use strict";' +
         'var memoryLimit = ' + memoryLimit + ';' +
         'var trackMemory = __host_memory_track__;' +
+        // A size is only usable when it is a positive number. NaN (a missing or non-numeric count,
+        // a receiver without a numeric length) must never reach the tracker: added to its running
+        // total it turns the total into NaN, and no limit check fires after that.
+        'function saneSize(n) { return (typeof n === "number" && n > 0) ? n : 0; }' +
+        // Charge what was really allocated when it is more than the estimate (a receiver or an
+        // argument that reports one size and then produces another).
+        'function chargeActual(result, estimated, label) {' +
+        '  var actual = (typeof result === "string") ? result.length * 2 : 0;' +
+        '  if (actual > estimated) {' +
+        '    if (actual > memoryLimit) {' +
+        '      throw new RangeError(label + " would exceed memory limit");' +
+        '    }' +
+        '    trackMemory(actual - estimated);' +
+        '  }' +
+        '  return result;' +
+        '}' +
         // Get the ACTUAL prototype used by literals in this realm
         'var stringProto = Object.getPrototypeOf("");' +
         'var arrayProto = Object.getPrototypeOf([]);' +
         // Patch string repeat
         'var originalRepeat = stringProto.repeat;' +
         'stringProto.repeat = function(count) {' +
-        '  var estimatedSize = this.length * count * 2;' +
+        '  var estimatedSize = saneSize(this.length * saneSize(+count) * 2);' +
         '  if (estimatedSize > memoryLimit) {' +
         '    throw new RangeError("String.repeat would exceed memory limit: " +' +
         '      Math.round(estimatedSize / 1024 / 1024) + "MB > " +' +
         '      Math.round(memoryLimit / 1024 / 1024) + "MB");' +
         '  }' +
         '  trackMemory(estimatedSize);' +
-        '  return originalRepeat.call(this, count);' +
+        '  return chargeActual(originalRepeat.call(this, count), estimatedSize, "String.repeat");' +
         '};' +
         // Patch array join
         'var originalJoin = arrayProto.join;' +
@@ -1860,33 +3007,33 @@ ${stackTraceHardeningCode}
         '    estimatedSize += (item === null || item === undefined) ? 0 : String(item).length;' +
         '    if (i > 0) estimatedSize += sep.length;' +
         '  }' +
-        '  estimatedSize *= 2;' +
+        '  estimatedSize = saneSize(estimatedSize * 2);' +
         '  if (estimatedSize > memoryLimit) {' +
         '    throw new RangeError("Array.join would exceed memory limit: " +' +
         '      Math.round(estimatedSize / 1024 / 1024) + "MB > " +' +
         '      Math.round(memoryLimit / 1024 / 1024) + "MB");' +
         '  }' +
         '  trackMemory(estimatedSize);' +
-        '  return originalJoin.call(this, separator);' +
+        '  return chargeActual(originalJoin.call(this, separator), estimatedSize, "Array.join");' +
         '};' +
         // Patch string padStart/padEnd
         'var originalPadStart = stringProto.padStart;' +
         'var originalPadEnd = stringProto.padEnd;' +
         'stringProto.padStart = function(targetLength, padString) {' +
-        '  var estimatedSize = Math.max(this.length, targetLength) * 2;' +
+        '  var estimatedSize = saneSize(Math.max(saneSize(this.length), saneSize(+targetLength)) * 2);' +
         '  if (estimatedSize > memoryLimit) {' +
         '    throw new RangeError("String.padStart would exceed memory limit");' +
         '  }' +
         '  trackMemory(estimatedSize);' +
-        '  return originalPadStart.call(this, targetLength, padString);' +
+        '  return chargeActual(originalPadStart.call(this, targetLength, padString), estimatedSize, "String.padStart");' +
         '};' +
         'stringProto.padEnd = function(targetLength, padString) {' +
-        '  var estimatedSize = Math.max(this.length, targetLength) * 2;' +
+        '  var estimatedSize = saneSize(Math.max(saneSize(this.length), saneSize(+targetLength)) * 2);' +
         '  if (estimatedSize > memoryLimit) {' +
         '    throw new RangeError("String.padEnd would exceed memory limit");' +
         '  }' +
         '  trackMemory(estimatedSize);' +
-        '  return originalPadEnd.call(this, targetLength, padString);' +
+        '  return chargeActual(originalPadEnd.call(this, targetLength, padString), estimatedSize, "String.padEnd");' +
         '};' +
         // Patch array fill - converts sparse arrays to dense (allocates memory)
         // Vector 1110/1170: Array(dynamicSize).fill() can exhaust memory
@@ -1907,14 +3054,11 @@ ${stackTraceHardeningCode}
         '  trackMemory(estimatedSize);' +
         '  return originalFill.call(this, value, start, end);' +
         '};' +
-        '})();';
+        '})(Math, String, RangeError);';
       var patchScript = new vm.Script(patchCode);
       patchScript.runInContext(innerContext);
     }
   })();
-
-  // Remove dangerous globals from inner VM (AFTER memory patching)
-  ${sanitizeContextCode}
 
   // ============================================================
   // PHASE 2 HARDENING: CVE-2023-29017 Stack Overflow Escape Defense
@@ -2044,6 +3188,12 @@ ${stackTraceHardeningCode}
   Object.freeze(URIError.prototype);
   Object.freeze(EvalError.prototype);
   Object.freeze(Promise.prototype);
+  // The membrane keeps its state in Set, WeakSet and WeakMap instances and calls their methods
+  // through these prototypes on every trap.
+  Object.freeze(Set.prototype);
+  Object.freeze(Map.prototype);
+  Object.freeze(WeakSet.prototype);
+  Object.freeze(WeakMap.prototype);
 
   // Freeze INNER VM prototypes (used by literals like '', [], etc.)
   (function() {
@@ -2186,6 +3336,16 @@ ${stackTraceHardeningCode}
     }
   }
 
+  // Runtime half of "AgentScript has no regular expressions": with a realm allowlist that does
+  // not name RegExp, nothing in the inner realm can run one (see INNER_REALM_REGEX_BACKSTOP_SOURCE).
+  // After inner-runtime.js, whose one trusted pattern has kept its own matcher. Not optional:
+  // a failure here aborts the execution.
+  if (__ag_realmAllowed && __ag_realmAllowed.RegExp !== true) {
+    new vm.Script(${JSON.stringify(INNER_REALM_REGEX_BACKSTOP_SOURCE)}, {
+      filename: 'inner-regex-backstop.js'
+    }).runInContext(innerContext);
+  }
+
   // Defense-in-depth: Remove host callback from inner sandbox after all scripts have captured it
   try { delete innerContext['__host_memory_track__']; } catch (e) { /* ignore */ }
 
@@ -2253,11 +3413,30 @@ ${stackTraceHardeningCode}
       '  RangeError: RangeError, ' +
       '  Promise: Promise, ' +
       '  Math: Math, ' +
-      '  JSON: JSON ' +
+      '  JSON: JSON, ' +
+      '  isNaN: isNaN, ' +
+      '  isFinite: isFinite, ' +
+      '  parseInt: parseInt, ' +
+      '  parseFloat: parseFloat, ' +
+      '  encodeURI: encodeURI, ' +
+      '  decodeURI: decodeURI, ' +
+      '  encodeURIComponent: encodeURIComponent, ' +
+      '  decodeURIComponent: decodeURIComponent ' +
       '})';
     var script = new vm.Script(getIntrinsicsCode);
     return script.runInContext(innerContext);
   })();
+
+  // The constructors the script uses with new and instanceof. They are proxied directly (see
+  // realmOwnedCallables): each belongs to the inner realm, except SafeObject, which is a
+  // function of this realm. Neither realm can generate code from strings.
+  [
+    innerIntrinsics.Array, innerIntrinsics.String, innerIntrinsics.Number, innerIntrinsics.Boolean,
+    innerIntrinsics.Date, innerIntrinsics.RegExp, innerIntrinsics.Error, innerIntrinsics.TypeError,
+    innerIntrinsics.RangeError, innerIntrinsics.Promise, SafeObject
+  ].forEach(function(constructor) {
+    realmOwnedCallables.add(constructor);
+  });
 
   // Add safe standard globals wrapped with secure proxy
   // Use inner context intrinsics for constructors to ensure patched prototypes are used
@@ -2278,14 +3457,16 @@ ${stackTraceHardeningCode}
     undefined: undefined,
     NaN: NaN,
     Infinity: Infinity,
-    isNaN: isNaN,
-    isFinite: isFinite,
-    parseInt: parseInt,
-    parseFloat: parseFloat,
-    encodeURI: encodeURI,
-    decodeURI: decodeURI,
-    encodeURIComponent: encodeURIComponent,
-    decodeURIComponent: decodeURIComponent
+    // The inner realm's own functions, not this realm's: a function of this realm placed on the
+    // inner global would be a raw parent-realm reference in the script's hands.
+    isNaN: innerIntrinsics.isNaN,
+    isFinite: innerIntrinsics.isFinite,
+    parseInt: innerIntrinsics.parseInt,
+    parseFloat: innerIntrinsics.parseFloat,
+    encodeURI: innerIntrinsics.encodeURI,
+    decodeURI: innerIntrinsics.decodeURI,
+    encodeURIComponent: innerIntrinsics.encodeURIComponent,
+    decodeURIComponent: innerIntrinsics.decodeURIComponent
   };
 
   // SECURITY FIX (Vector 640): Use enumerable: false for defense-in-depth
@@ -2295,7 +3476,12 @@ ${stackTraceHardeningCode}
   for (var gKey in safeGlobals) {
     if (safeGlobals.hasOwnProperty(gKey)) {
       // If user provides this global, skip so their version takes precedence
-      if (hostConfig.globals && hostConfig.globals.hasOwnProperty(gKey)) {
+      if (hostConfig.globals && __ag_hasOwnProperty.call(hostConfig.globals, gKey)) {
+        continue;
+      }
+      // With a realm allowlist, a standard global the script may not name is not defined at all
+      // (Promise, RegExp and Boolean under the AgentScript lists).
+      if (__ag_realmAllowed && __ag_realmAllowed[gKey] !== true) {
         continue;
       }
       Object.defineProperty(innerContext, gKey, {
@@ -2315,7 +3501,9 @@ ${stackTraceHardeningCode}
   // back a raw reference, even for descriptor shapes where a realm-owned object may.
   if (hostConfig.globals) {
     for (var uKey in hostConfig.globals) {
-      if (hostConfig.globals.hasOwnProperty(uKey)) {
+      // (Not as a method of the object: custom globals may have no prototype, as the ones a
+      // worker receives do, or an own property of that name.)
+      if (__ag_hasOwnProperty.call(hostConfig.globals, uKey)) {
         var wrappedGlobal = createSecureProxy(hostConfig.globals[uKey], 0, true);
         Object.defineProperty(innerContext, uKey, {
           value: wrappedGlobal,
@@ -2393,14 +3581,23 @@ ${stackTraceHardeningCode}
     try { var s = new vm.Script(neutralizeCode); s.runInContext(innerContext); } catch(e) { /* defense-in-depth */ }
   })();
 
-  var userCode = ${JSON.stringify(userCode)};
+  // Remove dangerous globals from the inner realm. This is the LAST setup step: the trusted
+  // scripts above have captured the intrinsics they need (Proxy, Reflect, ...), and script code
+  // has not run yet.
+  ${sanitizeContextCode}
+
   // IMPORTANT: For stack overflow errors (RangeError: Maximum call stack size exceeded),
   // Node/V8 may ignore Error.prepareStackTrace when it was installed by a different Script
   // than the one that triggered the overflow. To make stack sanitization reliable,
   // we also prepend the hardening code into the same Script that executes user code.
   var __ag_stackHardenPrefix = sanitizeStackTraces ? (${stackTraceHardeningCodeJson} + '\\n') : '';
   var wrappedCode =
-    '(async function() { ' +
+    // Strict mode for everything the script contains. A function called without a receiver then
+    // has no \`this\` (in sloppy mode it is the realm's global object, for __ag_main and for every
+    // arrow function inside it), an assignment to an undeclared name is an error instead of a new
+    // global, a write that cannot happen throws instead of being silently dropped, and a function
+    // of the script has no \`caller\` or \`arguments.callee\` to walk the stack with.
+    '(async function() { "use strict"; ' +
     __ag_stackHardenPrefix +
     userCode +
     ' return typeof __ag_main === "function" ? await __ag_main() : undefined; })()';
@@ -2414,6 +3611,12 @@ ${stackTraceHardeningCode}
     vm.createContext = null;
     vm.Script = null;
   } catch (e) { /* ignore if properties are non-writable */ }
+
+  // PARENT LOCKDOWN: from here on nothing in this realm needs to change, so every intrinsic
+  // constructor, prototype and namespace object is frozen (see REALM_LOCKDOWN_SOURCE). The
+  // trusted code of this realm runs for as long as the script does and looks most of its
+  // built-ins up at call time; none of them can be replaced any more.
+  __ag_lockdownParentRealm();
 
   // Note: codeGeneration is set in createContext(), not runInContext()
   var result = await script.runInContext(innerContext, {

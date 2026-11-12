@@ -1,0 +1,3 @@
+[submodule "security-tests"]
+	path = security-tests
+	url = https://github.com/agentfront/enclave-security-tests.git

@@ -12,11 +12,17 @@
  *   the script, bypassing the global-function gate, so only plain data may live inside them
  * - Opaque containers (promises, WeakMaps, iterators, generators): their contents cannot be
  *   validated, and their built-in methods hand those contents to the script directly
+ * - Host code that is not on the value itself: the methods and accessors of a class instance
+ *   live on its class, a function can hide in a property that is not enumerable or is keyed by
+ *   a symbol, and a Proxy runs its handler on every access. A script reaches all of these, so
+ *   the rules for functions and for getters apply to them as they do to an own enumerable member.
+ *   (A function passed as a global is judged as a function; what hangs on it is not looked at.)
  *
  * @packageDocumentation
  */
 
 import { types } from 'util';
+import { isBuiltinPrototype } from './global-function-gate';
 
 /**
  * Options for globals validation
@@ -44,6 +50,14 @@ export interface GlobalsValidationOptions {
    * List of specifically allowed function names (if allowFunctions is false)
    */
   allowedFunctionNames?: string[];
+
+  /**
+   * Whether a script can read the `constructor` of a class instance. Then the class itself is a
+   * function the script can reach, and an instance is refused unless functions are allowed.
+   * The enclave passes false when its membrane blocks `constructor` (every level but PERMISSIVE).
+   * @default true
+   */
+  classConstructorsReachable?: boolean;
 }
 
 /**
@@ -79,6 +93,39 @@ const ObjectGetPrototypeOf = Object.getPrototypeOf;
 const ArrayPrototype = Array.prototype;
 const MapPrototype = Map.prototype;
 const SetPrototype = Set.prototype;
+const FunctionPrototype: object = Function.prototype;
+
+/** How many classes of a value are looked at; an inheritance chain longer than this is refused */
+const MAX_CLASS_CHAIN = 32;
+
+/**
+ * The prototypes of `obj` that are not the language's own: the classes of a class instance,
+ * nearest first. A script reaches their members through the instance.
+ */
+function classesOf(key: string, obj: object, path: string[]): object[] {
+  const classes: object[] = [];
+  let prototype: object | null = ObjectGetPrototypeOf(obj);
+  while (prototype !== null && prototype !== FunctionPrototype && !isBuiltinPrototype(prototype)) {
+    if (classes.length >= MAX_CLASS_CHAIN) {
+      throw new Error(
+        `Custom global "${key}" has more than ${MAX_CLASS_CHAIN} prototypes at ${path.join('.') || 'root'}. ` +
+          `Its inherited members cannot be validated.`,
+      );
+    }
+    classes.push(prototype);
+    prototype = ObjectGetPrototypeOf(prototype);
+  }
+  return classes;
+}
+
+function segment(prop: string | symbol): string {
+  return typeof prop === 'string' ? prop : `[${String(prop)}]`;
+}
+
+/** Whether `prop` is an element index of a typed array (whose elements are numbers by construction) */
+function isElementIndex(prop: string | symbol): boolean {
+  return typeof prop === 'string' && prop.length > 0 && String(Number(prop) >>> 0) === prop;
+}
 
 /** %IteratorPrototype% and %AsyncIteratorPrototype%: every built-in iterator inherits one of them. */
 const IteratorPrototype: object = ObjectGetPrototypeOf(ObjectGetPrototypeOf([][Symbol.iterator]()));
@@ -178,6 +225,7 @@ export function validateGlobalValue(
   const allowFunctions = options.allowFunctions ?? false;
   const allowGettersSetters = options.allowGettersSetters ?? false;
   const allowedFunctionNames = options.allowedFunctionNames ?? [];
+  const classConstructorsReachable = options.classConstructorsReachable ?? true;
 
   // Check depth limit
   if (path.length > maxDepth) {
@@ -266,6 +314,17 @@ export function validateGlobalValue(
     }
     seen.add(obj);
 
+    // A Proxy runs its handler on every access: a getter on every property, including the
+    // reads this validation is about to make. So it is refused first, without touching it.
+    // (A Proxy of an array, or inside a collection, is refused below whatever is allowed.)
+    if (!allowGettersSetters && !inCollection && types.isProxy(obj) && !Array.isArray(obj)) {
+      throw new Error(
+        `Custom global "${key}" contains a Proxy at ${path.join('.') || 'root'}. ` +
+          `A Proxy runs its handler on every property access, like a getter, so it is not allowed. ` +
+          `Pass plain data, or use allowGettersSetters: true if you understand the security implications.`,
+      );
+    }
+
     const opaque = describeOpaqueContainer(obj);
     if (opaque) {
       throw new Error(
@@ -311,19 +370,36 @@ export function validateGlobalValue(
       }
     }
 
+    // The classes of a class instance: a script reaches their methods and accessors through it.
+    // (A plain object, a plain array, a Map, a Date have none: their prototypes are the language's.)
+    const classes = classesOf(key, obj, path);
+
+    // The class itself, where a script can read `constructor`
+    if (classes.length > 0 && classConstructorsReachable && !allowFunctions) {
+      throw new Error(
+        `Custom global "${key}" contains ${describeInstance(obj)} at ${path.join('.') || 'root'}, ` +
+          `whose constructor a script can reach. ` +
+          `Functions are not allowed by default in custom globals because they can leak host scope via closures. ` +
+          `Pass plain data, or use allowFunctions: true if you understand the security implications.`,
+      );
+    }
+
     // Check for getters/setters
     if (!allowGettersSetters) {
       // Every own key, symbols included: the script reaches symbol-keyed accessors through
       // language operations (`'' + value` reads Symbol.toPrimitive, `for...of` Symbol.iterator).
-      for (const prop of ReflectOwnKeys(obj)) {
-        const desc = ReflectGetOwnPropertyDescriptor(obj, prop);
-        if (desc && (desc.get || desc.set)) {
-          const at = [...path, typeof prop === 'string' ? prop : `[${String(prop)}]`].join('.');
-          throw new Error(
-            `Custom global "${key}" has a getter/setter at ${at}. ` +
-              `Getters and setters are not allowed because they can execute arbitrary code on property access. ` +
-              `Use allowGettersSetters: true if you understand the security implications.`,
-          );
+      // And every key of its classes: `instance.total` runs the getter the class defines.
+      for (const holder of [obj, ...classes]) {
+        for (const prop of ReflectOwnKeys(holder)) {
+          const desc = ReflectGetOwnPropertyDescriptor(holder, prop);
+          if (desc && (desc.get || desc.set)) {
+            const at = [...path, segment(prop)].join('.');
+            throw new Error(
+              `Custom global "${key}" has a getter/setter at ${at}${holder === obj ? '' : ' (defined by its class)'}. ` +
+                `Getters and setters are not allowed because they can execute arbitrary code on property access. ` +
+                `Use allowGettersSetters: true if you understand the security implications.`,
+            );
+          }
         }
       }
     }
@@ -353,28 +429,53 @@ export function validateGlobalValue(
     }
 
     // Own properties: array elements (and any extra array properties) are inside a collection.
-    // Built-in methods hand an array's entries, and those of anything inside a collection, to the
-    // script without the secure proxy, so there every own key counts, not only enumerable ones.
-    const keys: Array<string | symbol> = isArray || inCollection ? ReflectOwnKeys(obj) : Object.keys(obj);
-    for (const prop of keys) {
-      // Check for dangerous keys
-      if (typeof prop === 'string' && DANGEROUS_GLOBAL_KEYS.has(prop)) {
+    // Every own key counts, enumerable or not, keyed by a string or by a symbol: a script reads
+    // `value.hidden` and `value[Symbol.iterator]` like any other property. Values are taken
+    // from the descriptor, so that no getter runs here.
+    const elementsAreNumbers = types.isTypedArray(obj);
+    for (const prop of ReflectOwnKeys(obj)) {
+      if (elementsAreNumbers && isElementIndex(prop)) continue;
+      const desc = ReflectGetOwnPropertyDescriptor(obj, prop);
+      if (!desc) continue;
+
+      // Dangerous keys, as before: among the enumerable keys of an object, among all keys of an
+      // array and of anything inside a collection (built-in methods hand those out directly)
+      const listed = isArray || inCollection || desc.enumerable === true;
+      if (listed && typeof prop === 'string' && DANGEROUS_GLOBAL_KEYS.has(prop)) {
         throw new Error(
           `Custom global "${key}" contains dangerous key "${prop}" at ${path.join('.') || 'root'}. ` +
             `Keys like "__proto__", "constructor", and "prototype" are not allowed.`,
         );
       }
 
-      const propValue = (obj as Record<string | symbol, unknown>)[prop];
+      if (!('value' in desc)) continue; // an accessor, allowed above
       validateGlobalValue(
         key,
-        propValue,
+        desc.value,
         options,
-        [...path, typeof prop === 'string' ? prop : `[${String(prop)}]`],
+        [...path, segment(prop)],
         visited,
         collectionVisited,
         inCollection || isArray,
       );
+    }
+
+    // What its classes define: methods are functions in globals, shared data is data in globals
+    for (const holder of classes) {
+      for (const prop of ReflectOwnKeys(holder)) {
+        if (prop === 'constructor') continue; // judged above, with the class
+        const desc = ReflectGetOwnPropertyDescriptor(holder, prop);
+        if (!desc || !('value' in desc)) continue;
+        validateGlobalValue(
+          key,
+          desc.value,
+          options,
+          [...path, segment(prop)],
+          visited,
+          collectionVisited,
+          inCollection,
+        );
+      }
     }
 
     return;

@@ -1,5 +1,6 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
+import { staticPropertyName } from '../utils/ast-walk';
 
 /**
  * Options for ResourceExhaustionRule
@@ -121,12 +122,13 @@ export class ResourceExhaustionRule implements ValidationRule {
 
       // Detect string.repeat() with large counts
       CallExpression: (node: any) => {
-        if (
-          node.callee.type === 'MemberExpression' &&
-          node.callee.property.type === 'Identifier' &&
-          node.callee.property.name === 'repeat' &&
-          node.arguments.length >= 1
-        ) {
+        // The method that is called, in every static spelling: x.repeat(), x['repeat'](), x[`repeat`]()
+        const method =
+          node.callee.type === 'MemberExpression'
+            ? staticPropertyName(node.callee.property, node.callee.computed === true)
+            : undefined;
+
+        if (method === 'repeat' && node.arguments.length >= 1) {
           const arg = node.arguments[0];
           if (arg.type === 'Literal' && typeof arg.value === 'number') {
             if (arg.value > maxStringRepeat) {
@@ -140,11 +142,7 @@ export class ResourceExhaustionRule implements ValidationRule {
         }
 
         // Also check Array().join() with large arrays
-        if (
-          node.callee.type === 'MemberExpression' &&
-          node.callee.property.type === 'Identifier' &&
-          node.callee.property.name === 'join'
-        ) {
+        if (method === 'join') {
           // Check if this is new Array(n).join() or Array(n).join()
           const object = node.callee.object;
           if (object.type === 'NewExpression' || object.type === 'CallExpression') {
@@ -170,11 +168,7 @@ export class ResourceExhaustionRule implements ValidationRule {
         // Detect Array(n).fill() pattern - CPU/memory exhaustion via large array fill
         // This is particularly dangerous because .fill() immediately allocates and initializes memory
         // Attack vector (Vector 1110): Array(500000).fill(0.12345).reduce((acc, val) => acc + Math.sin(val), 0)
-        if (
-          node.callee.type === 'MemberExpression' &&
-          node.callee.property.type === 'Identifier' &&
-          node.callee.property.name === 'fill'
-        ) {
+        if (method === 'fill') {
           const object = node.callee.object;
           // Check if this is new Array(n).fill() or Array(n).fill()
           if (object.type === 'NewExpression' || object.type === 'CallExpression') {
