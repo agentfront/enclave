@@ -23,6 +23,9 @@ export const REGEXP_REFUSED_MESSAGE = 'Regular expressions are not available in 
 /** What a script gets when it uses a connection object of a realm that has none. */
 export const CONNECTION_REFUSED_MESSAGE = 'Network connections are not available in this sandbox';
 
+/** What a script gets when it uses the document of the frame it runs in. */
+export const DOCUMENT_REFUSED_MESSAGE = 'The document of this sandbox frame is not available';
+
 /** Error code of a run whose sandbox could not be set up; the script was not started. */
 export const SANDBOX_SETUP_FAILED_CODE = 'SANDBOX_SETUP_FAILED';
 
@@ -974,11 +977,14 @@ ${CONNECTION_BACKSTOP_SOURCE}
 
 ${config.blockRegExp ? REGEXP_BACKSTOP_SOURCE : ''}
 
+${DOCUMENT_BACKSTOP_SOURCE}
+
   // ============================================================
   // Execute User Code
   // ============================================================
   (async function() {
-    // Shadow non-deletable browser globals so user code sees undefined
+    // Shadow non-deletable browser globals so user code sees undefined (the document itself is
+    // closed above: this is about the name)
     var document = undefined;
 
     if (setupFailure !== null) {
@@ -1130,6 +1136,61 @@ const CONNECTION_BACKSTOP_SOURCE = `
         try { _defineProperty(window, name, { value: undefined, writable: false, configurable: false, enumerable: false }); } catch(e2) {}
       }
       if (typeof window[name] !== 'undefined') failSetup('"' + name + '" could not be removed');
+    }
+  })();`;
+
+/**
+ * Statements of the inner iframe script that close the frame's document: it holds nothing, and
+ * nothing can be put into it.
+ *
+ * A node that is part of a document can make the browser load something, and not every such load
+ * is a request the document policy governs. A script has no use for the document of the frame it
+ * runs in (the frame is never shown), and a page cannot remove `window.document`. So the document
+ * is emptied, and every member of the prototypes a document gets its behaviour from, and of
+ * `Range`, which can place a node relative to a document, is replaced by a function that throws;
+ * the prototypes are frozen. With no node in the document and no way to add one to it, nothing a
+ * script builds is ever part of a document: no element loads, and no frame is created.
+ *
+ * It runs last, when the script element this code came from has done its work, at every security
+ * level and for every preset. If the document is not empty afterwards, the script is not started.
+ */
+const DOCUMENT_BACKSTOP_SOURCE = `
+  // ============================================================
+  // The Frame's Document
+  // ============================================================
+  (function() {
+    var refuse = () => {
+      throw createSafeError(${JSON.stringify(DOCUMENT_REFUSED_MESSAGE)}, 'TypeError');
+    };
+    _freeze(refuse);
+    function makeUnusable(target) {
+      var keys = _ReflectOwnKeys(target);
+      for (var k = 0; k < keys.length; k++) {
+        var descriptor = _getOwnPropertyDescriptor(target, keys[k]);
+        if (descriptor && descriptor.configurable) {
+          _defineProperty(target, keys[k], { value: refuse, writable: false, configurable: false, enumerable: false });
+        }
+      }
+      _freeze(target);
+    }
+    try {
+      var frameDocument = window.document;
+      while (frameDocument.firstChild) frameDocument.removeChild(frameDocument.firstChild);
+      if (frameDocument.firstChild !== null) failSetup('the document of the frame could not be emptied');
+      // From the document's own prototype down to the one all nodes share; what is below that
+      // (events) has no part in what a document holds.
+      var prototype = _objectGetPrototypeOf(frameDocument);
+      var closed = 0;
+      while (prototype !== null && 'nodeType' in prototype) {
+        var next = _objectGetPrototypeOf(prototype);
+        makeUnusable(prototype);
+        closed++;
+        prototype = next;
+      }
+      if (closed === 0) failSetup('the document of the frame could not be closed');
+      if (typeof window.Range === 'function') makeUnusable(window.Range.prototype);
+    } catch(e) {
+      failSetup('the document of the frame could not be closed');
     }
   })();`;
 
