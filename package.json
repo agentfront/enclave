@@ -84,7 +84,7 @@
   "resolutions": {
     "qs": "^6.16.1",
     "node-forge": "^1.4.0",
-    "glob": "^10.5.0",
+    "glob": "^14.0.2",
     "jws": "^3.2.3",
     "mdast-util-to-hast": "^13.2.1",
     "handlebars": "^4.7.10",
@@ -102,6 +102,7 @@
     "webpack-dev-server": "^5.2.6",
     "minimatch@npm:10.1.1": "10.2.5",
     "minimatch@npm:3.1.2": "3.1.5",
+    "@typescript-eslint/typescript-estree/minimatch": "^11.0.1",
     "picomatch@npm:4.0.2": "4.0.4",
     "@isaacs/brace-expansion": "^5.0.1",
     "nx/brace-expansion": "^5.0.9",
