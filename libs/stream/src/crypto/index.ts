@@ -1,7 +1,10 @@
 /**
  * @enclave-vm/stream - Crypto module
  *
- * Per-hop encryption using ECDH key exchange and AES-GCM encryption.
+ * Primitives for per-hop encryption: ECDH key exchange, HKDF key derivation and AES-GCM.
+ *
+ * Nothing in this repository wires them into a client or a broker. The key exchange is not
+ * authenticated; see the package README for what an application that uses them has to add.
  */
 
 // ECDH key exchange

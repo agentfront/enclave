@@ -69,7 +69,7 @@ Build real-time code execution UIs with streaming output, tool orchestration, an
     Safe JavaScript subset for LLM-generated code
   </Card>
   <Card title="Streaming Protocol" icon="wave-pulse" href="/concepts/streaming-protocol">
-    NDJSON protocol with E2E encryption
+    NDJSON protocol for streaming execution events
   </Card>
 </CardGroup>
 
@@ -98,7 +98,7 @@ Build real-time code execution UIs with streaming output, tool orchestration, an
 | **Real-time Streaming** | NDJSON-based protocol for stdout, logs, and tool calls |
 | **Tool Orchestration** | Define tools with validation, handle calls during execution |
 | **React Integration** | First-class hooks for building interactive code execution UIs |
-| **End-to-end Encryption** | Optional ECDH + AES-256-GCM for sensitive workloads |
+| **Encryption Primitives** | ECDH + AES-256-GCM building blocks in `@enclave-vm/stream`; the client and broker do not encrypt, so sessions rely on HTTPS |
 | **TypeScript-first** | Full type safety and excellent developer experience |
 | **Multiple Isolation Modes** | VM sandbox, worker pool, and double-VM options |
 | **AI Scoring Gate** | Semantic pattern detection to block suspicious code |

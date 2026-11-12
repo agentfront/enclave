@@ -40,7 +40,7 @@ flowchart LR
     Protocol types and Zod schemas for the streaming runtime
   </Card>
   <Card title="@enclave-vm/stream" icon="wave-pulse" href="/enclavejs/stream">
-    NDJSON streaming, encryption, and reconnection handling
+    NDJSON streaming, reconnection helpers, and encryption primitives
   </Card>
   <Card title="@enclave-vm/broker" icon="server" href="/enclavejs/broker">
     Tool broker with session management and HTTP API
@@ -61,7 +61,7 @@ flowchart LR
 - **Real-time Streaming**: NDJSON-based protocol for streaming stdout, logs, and tool calls
 - **Tool Orchestration**: Define tools with Zod schemas, handle tool calls during execution
 - **Session Management**: Track execution sessions with limits, stats, and lifecycle management
-- **End-to-end Encryption**: Optional ECDH + AES-256-GCM encryption for sensitive workloads
+- **Encryption Primitives**: ECDH, HKDF and AES-256-GCM building blocks in `@enclave-vm/stream`. The client and broker do not encrypt: sessions are plain JSON protected by HTTPS
 - **Automatic Reconnection**: Built-in reconnection with sequence tracking and event buffering
 - **React Integration**: First-class React hooks for building interactive code execution UIs
 

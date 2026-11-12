@@ -1,7 +1,7 @@
 {
   "name": "@enclave-vm/stream",
   "version": "2.19.1",
-  "description": "Streaming protocol implementation for EnclaveJS runtime (NDJSON, encryption, reconnection)",
+  "description": "Streaming protocol building blocks for EnclaveJS (NDJSON, reconnection helpers, encryption primitives)",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",
   "license": "Apache-2.0",

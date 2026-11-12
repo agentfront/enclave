@@ -18,7 +18,7 @@ This guide covers security best practices for hardening Enclave deployments in p
 
 ### Recommended
 
-- [ ] Enable end-to-end encryption
+- [ ] Use HTTPS for client connections and authenticate requests in front of the broker
 - [ ] Implement rate limiting
 - [ ] Use network segmentation
 - [ ] Enable audit logging
@@ -368,19 +368,33 @@ const server = createServer({
 });
 ```
 
-### End-to-End Encryption
+### Client Connections
 
-Enable E2E encryption for sensitive data:
+`@enclave-vm/client` sends requests and receives events as plain JSON. It does not encrypt and has no encryption option, so the transport is what protects a session: use an `https:` base URL. Credentials go in `headers`:
 
 ```ts
+import { EnclaveClient } from '@enclave-vm/client';
+
 const client = new EnclaveClient({
-  serverUrl: 'https://broker.example.com',
-  encryption: {
-    enabled: true,
-    curve: 'P-256',
+  baseUrl: 'https://broker.example.com',
+  headers: {
+    Authorization: `Bearer ${token}`,
   },
 });
 ```
+
+The client's options are `baseUrl`, `headers`, `timeout`, `autoReconnect`, `maxReconnectAttempts`, `reconnectDelay`, `maxEventLength` and `fetch`. Any other key, such as `encryption` or `auth`, makes the constructor throw.
+
+The broker's session routes have no authentication of their own. The application has to put authentication in front of them and check the credentials the client sends.
+
+### Payload Encryption
+
+No EnclaveJS package encrypts payloads. An application that wants payload encryption on top of TLS has to wire the primitives of `@enclave-vm/stream` (ECDH P-256, HKDF-SHA-256, AES-256-GCM) into its own endpoints, on both ends. See the [Encrypted Sessions](/examples/encrypted-sessions) example. What such an application has to take care of:
+
+- The key exchange is not authenticated: it protects against a party that can only read the connection, not against one that can change messages. Authenticate the hello messages yourself (for example by signing them with a key the client pins) or rely on TLS for the identity of the server.
+- There are two keys, one per direction. Use one `SessionEncryptionContext` per direction.
+- Read envelopes with `openEncryptedEnvelope` or `context.openEnvelope`, which fail when the ciphertext or the envelope's header was changed. Whether a sequence number was seen before is for the receiver to check.
+- The server that receives the code decrypts it to run it. Payload encryption does not hide anything from that server.
 
 ## Rate Limiting
 
