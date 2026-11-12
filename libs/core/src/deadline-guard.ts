@@ -46,6 +46,13 @@ export const REALM_TICK_FN = '__safe_tick';
  */
 export const TICKS_PER_CLOCK_CHECK = 256;
 
+/**
+ * How many more checks pass once an execution has ended, before every further check throws.
+ * Enough for what a script left behind to settle; a chain that re-arms itself is over within
+ * microseconds.
+ */
+export const TICKS_AFTER_END = 1024;
+
 /** What a deadline check throws once the execution it belongs to has ended. */
 export const EXECUTION_ENDED_MESSAGE = 'Script execution has ended';
 
@@ -204,9 +211,10 @@ export function injectDeadlineChecks(ast: acorn.Node, parse: (source: string) =>
  * script's `catch`, and the adapters already report a thrown string as the error message.
  *
  * The expression's value is a function of that realm, for the adapter alone: called when the
- * execution has ended (its script has settled, either way), it makes every later check throw at
- * once, so that what the script left behind stops at its next function entry or loop iteration
- * instead of going on until the deadline.
+ * execution has ended (its script has settled, either way), it lets `TICKS_AFTER_END` more
+ * checks pass and makes every check after those throw, so that what the script left behind
+ * settles if it is about to and is stopped if it keeps going, instead of running until the
+ * deadline.
  */
 export function realmTickSource(timeoutMs: number): string {
   const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.floor(timeoutMs) : 0;
@@ -218,12 +226,20 @@ export function realmTickSource(timeoutMs: number): string {
   var deadline = timeoutMs > 0 ? now() + timeoutMs : Infinity;
   var expired = false;
   var count = 0;
+  // Set when the execution has ended; what the script left behind then gets graceLeft more
+  // checks to settle in.
+  var ended = false;
+  var graceLeft = ${TICKS_AFTER_END};
   var message = 'Script execution timed out after ' + timeoutMs + 'ms';
   Object.defineProperty(globalThis, ${JSON.stringify(REALM_TICK_FN)}, {
     value: function () {
       if (!expired) {
-        count++;
-        if (count % ${TICKS_PER_CLOCK_CHECK} !== 0 || now() < deadline) return;
+        if (ended) {
+          if (graceLeft-- > 0) return;
+        } else {
+          count++;
+          if (count % ${TICKS_PER_CLOCK_CHECK} !== 0 || now() < deadline) return;
+        }
         expired = true;
       }
       throw message;
@@ -233,8 +249,8 @@ export function realmTickSource(timeoutMs: number): string {
     enumerable: false
   });
   return function () {
-    if (!expired) {
-      expired = true;
+    if (!expired && !ended) {
+      ended = true;
       message = ${JSON.stringify(EXECUTION_ENDED_MESSAGE)};
     }
   };
