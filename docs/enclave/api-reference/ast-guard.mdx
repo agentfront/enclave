@@ -31,7 +31,13 @@ Validate JavaScript source against the rules.
 async validate(source: string, config?: ValidationConfig): Promise<ValidationResult>
 ```
 
-It throws `InvalidSourceError` for a source that is not a string or is empty. Every other outcome, a parse error included, is in the result.
+The promise rejects in three cases:
+
+- with `InvalidSourceError`, for a source that is not a string or is empty;
+- with a `TypeError`, for a `preScan` option that names no preset or holds an invalid setting;
+- with whatever a rule throws. The validator does not turn the exception of a rule into an issue, so a validation with rules of your own belongs in a `try`/`catch` (see [Using Custom Rules](#using-custom-rules)).
+
+Every other outcome is in the result: a failed pre-scan, a parse error, the issues the rules report and a failed transform.
 
 ```ts
 interface ValidationConfig {
@@ -418,17 +424,35 @@ class NoConsoleRule implements ValidationRule {
 import { JSAstValidator, createAgentScriptPreset } from '@enclave-vm/ast';
 
 const validator = new JSAstValidator([...createAgentScriptPreset(), new NoConsoleRule()]);
+
+try {
+  const result = await validator.validate(code);
+  // result.valid and result.issues: what the rules reported
+} catch (error) {
+  // InvalidSourceError, or what a rule threw. The script was not validated: do not run it.
+}
 ```
+
+A rule reports a finding with `context.report()`. An exception it throws instead ends the validation: `validate()` rejects with it, and there is no result.
 
 ## Complete Example
 
 ```ts
-import { JSAstValidator, createAgentScriptPreset, transformAgentScript } from '@enclave-vm/ast';
+import { JSAstValidator, PreScanner, createAgentScriptPreset, transformAgentScript } from '@enclave-vm/ast';
 
 const validator = new JSAstValidator(createAgentScriptPreset());
+const preScanner = new PreScanner({ preset: 'agentscript' });
 
 async function transformAndValidate(code: string) {
-  // Step 1: Transform. AgentScript allows a top-level return and await, which only parse
+  // Step 1: Pre-scan the script as it was written. transformAgentScript() parses its whole
+  // input and has no size limit of its own, so the limits (size first) have to hold before
+  // it runs.
+  const scan = preScanner.scan(code);
+  if (!scan.success) {
+    return { valid: false, error: scan.fatalIssue?.message ?? 'Pre-scan failed', issues: scan.issues };
+  }
+
+  // Step 2: Transform. AgentScript allows a top-level return and await, which only parse
   // once the script is wrapped in its main function.
   let transformed: string;
   try {
@@ -442,9 +466,10 @@ async function transformAndValidate(code: string) {
     return { valid: false, error: (error as Error).message, issues: [] };
   }
 
-  // Step 2: Pre-scan and validate the transformed script
+  // Step 3: Validate the transformed script. The pre-scan has seen the script itself
+  // (step 1); its limits are not measured again on the transform's output.
   const validation = await validator.validate(transformed, {
-    preScan: { preset: 'agentscript' },
+    preScan: { enabled: false },
   });
 
   if (!validation.valid) {
@@ -466,6 +491,8 @@ if (result.valid) {
   console.log('Validation errors:', result.issues);
 }
 ```
+
+The pre-scan comes first because `transformAgentScript()` parses the whole script and has no size limit of its own. The pre-scan that `validate()` runs by default would only see the transformed script, after that parse: a recipe that takes scripts from outside bounds the script as written, as step 1 does.
 
 A script that passes is accepted by the filter. To run it, use [`@enclave-vm/core`](/api-reference/enclave-vm), which does these steps itself and then runs the script in a sandbox.
 
