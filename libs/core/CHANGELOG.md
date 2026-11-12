@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.19.0] - 2026-11-12
+
 Draft for the maintainer: a security release. The invariants each item restores, and the tests that pin them, are listed by category in `SECURITY-TESTS.md`; nothing here says more than that file does.
 
 ### Security

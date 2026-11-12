@@ -9,6 +9,8 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## [Unreleased]
 
+## [2.19.0] - 2026-11-12
+
 Draft for the maintainer. A security release of `@enclave-vm/core`, `@enclave-vm/ast` and `@enclave-vm/browser`: the sandbox boundary, the limits and the host process, each change with the test that pins it. See `SECURITY-TESTS.md` for the catalog and `libs/core/CHANGELOG.md` for the list of behaviour changes a host will notice.
 
 ### Repository
