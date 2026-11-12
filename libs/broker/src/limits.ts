@@ -25,9 +25,9 @@ export function timerDelay(ms: number): number {
 }
 
 /**
- * Merge limit objects field by field. A later object replaces a field only when it defines it,
- * so a session that names one limit keeps every other limit of the layers before it. Keys that
- * are not session limits are dropped.
+ * Merge limit objects field by field. A later object replaces a field only when it gives it a
+ * value, so a session that names one limit keeps every other limit of the layers before it.
+ * Keys that are not session limits are dropped.
  */
 export function mergeSessionLimits(...layers: Array<Partial<SessionLimits> | undefined>): Partial<SessionLimits> {
   const merged: Record<string, unknown> = {};
@@ -38,7 +38,7 @@ export function mergeSessionLimits(...layers: Array<Partial<SessionLimits> | und
     }
     for (const key of LIMIT_KEYS) {
       const value = (layer as Record<string, unknown>)[key];
-      if (value !== undefined) merged[key] = value;
+      if (value !== undefined && value !== null) merged[key] = value;
     }
   }
   return merged as Partial<SessionLimits>;

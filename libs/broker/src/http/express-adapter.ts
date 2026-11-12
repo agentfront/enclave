@@ -58,8 +58,7 @@ function adaptRequest(req: ExpressRequest, res?: ExpressResponse): BrokerRequest
   // Create abort controller for client disconnect handling
   const abortController = new AbortController();
 
-  // Listen for client disconnect: the response is closed before it was finished. (The close
-  // event of the request says that the request was read, not that the caller is gone.)
+  // Listen for client disconnect: the response is closed before it was finished
   if (res?.on) {
     res.on('close', () => {
       if (!res.writableFinished) {

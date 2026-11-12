@@ -367,6 +367,8 @@ export class SessionHandler {
 
       if (req.signal) {
         req.signal.addEventListener('abort', () => cleanup(), { once: true });
+        // The caller may be gone already
+        if (req.signal.aborted) cleanup();
       }
     } catch {
       // The stream could not be set up: the session does not stay registered without one
@@ -531,6 +533,8 @@ export class SessionHandler {
       // Handle client disconnect
       if (req.signal) {
         req.signal.addEventListener('abort', () => close(), { once: true });
+        // The caller may be gone already
+        if (req.signal.aborted) close();
       }
     } catch (error) {
       close(true);

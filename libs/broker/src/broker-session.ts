@@ -703,10 +703,7 @@ function snapshotArguments(args: unknown): { copy: Record<string, unknown>; size
   try {
     const serialized = JSON.stringify(args);
     if (serialized !== undefined) {
-      const copy: unknown = JSON.parse(serialized);
-      if (typeof copy === 'object' && copy !== null) {
-        return { copy: copy as Record<string, unknown>, size: serialized.length };
-      }
+      return { copy: JSON.parse(serialized) as Record<string, unknown>, size: serialized.length };
     }
   } catch {
     // Not serializable
