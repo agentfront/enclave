@@ -1332,6 +1332,8 @@ export class Interpreter {
     const owedAtStart = variable.owed;
     let sum = start;
     for (const operand of operands) {
+      // Each sum is a step, as in any other expression
+      this.tick();
       const right = await this.evalExpr(operand, scope);
       const left = sum;
       sum = this.binary('+', left, right, true);
