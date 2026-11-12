@@ -25,6 +25,15 @@
  *    rests on is converted here, once, the way the built-in converts it, and the built-in is
  *    given the converted value. This holds for the text methods as well (`join`,
  *    `toLocaleString`, `repeat`, `padStart`, `padEnd`), which are wrapped here for that reason.
+ *    It holds for what a receiver holds as well. An object that is not an array can answer
+ *    for its length and for each slot through an accessor, differently every time: where a
+ *    decision rests on it, it is read here, once (its length, then each slot, with the object
+ *    itself as the receiver of the read), and the built-in works on the plain copy. `flat`
+ *    reads the elements of arrays too, so its result is built in the pass that counts it, and
+ *    the built-in does not run. Otherwise an array is handed on as it is: its length is its
+ *    own, and nothing here reads its elements before the built-in does. That rests on one
+ *    property of the realm: a script has no `Proxy` to put in front of an array (ATK-GLOBALS,
+ *    ATK-MEMACC-21).
  *
  * What it does not cover: a copy is free, so a script can still hold many arrays that are each
  * within the limit; object literals, Maps and Sets are not counted. The limit is an estimate,
@@ -68,6 +77,8 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
   var isArray = Array.isArray;
   var defineProperty = Object.defineProperty;
   var objectCreate = Object.create;
+  var ObjectCtor = Object;
+  var construct = Reflect.construct;
   var RangeErrorCtor = RangeError;
   var TypeErrorCtor = TypeError;
   var StringCtor = String;
@@ -75,6 +86,8 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
   var stringProto = String.prototype;
   var ArrayCtor = Array;
   var iteratorSymbol = Symbol.iterator;
+  var speciesSymbol = Symbol.species;
+  var spreadableSymbol = Symbol.isConcatSpreadable;
   var MAX_SAFE_INTEGER = 9007199254740991;
   var limited = memoryLimit > 0 && typeof track === 'function';
   var BYTES = ${ARRAY_ELEMENT_BYTES};
@@ -150,21 +163,51 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
     return value !== null && (typeof value === 'object' || typeof value === 'function');
   }
 
+  /** ToObject: what a built-in works on. Null for a receiver the built-in refuses. */
+  function toObject(value) {
+    if (value === null || value === undefined) return null;
+    return isObject(value) ? value : ObjectCtor(value);
+  }
+
   /**
-   * The receiver of an array built-in, with its length read and converted once.
-   *
-   * An array is itself. Any other object is stood in for by an object that inherits from it and
-   * answers the length that was read here: the built-in reads the length again. Null for a
-   * receiver whose length a script cannot make up (a primitive), or that the built-in refuses.
+   * A plain array of what a source answers for its first slots. Each slot is asked once, with
+   * the source itself as the receiver of the read; with \`holes\`, a slot the source does not
+   * have stays empty. The caller has checked the length: this makes an array of it.
    */
-  function arrayLike(value) {
-    if (isArray(value)) return { target: value, length: value.length };
-    if (!isObject(value)) return null;
-    var length = toLength(value.length);
-    return {
-      target: objectCreate(value, { length: { value: length, writable: true, enumerable: false, configurable: true } }),
-      length: length
-    };
+  function snapshot(source, length, holes) {
+    var copy = [];
+    for (var i = 0; i < length; i++) {
+      if (!holes || i in source) copy[i] = source[i];
+    }
+    if (copy.length !== length) copy.length = length;
+    return copy;
+  }
+
+  /**
+   * The same as an object that has a length and slots and nothing else: no prototype, so
+   * nothing to iterate it by. \`Array.from\` reads such a source by its length.
+   */
+  function slotsOf(source, length) {
+    var holder = objectCreate(null);
+    for (var i = 0; i < length; i++) holder[i] = source[i];
+    holder.length = length;
+    return holder;
+  }
+
+  /**
+   * The empty array a built-in would make for a result of the receiver's kind
+   * (ArraySpeciesCreate): null for a plain array, which the caller makes itself.
+   */
+  function emptyOfKind(receiver) {
+    if (!isArray(receiver)) return null;
+    var kind = receiver.constructor;
+    if (kind === ArrayCtor) return null;
+    if (isObject(kind)) {
+      kind = kind[speciesSymbol];
+      if (kind === null) kind = undefined;
+    }
+    if (kind === undefined || kind === ArrayCtor) return null;
+    return construct(kind, [0]);
   }
 
   /** Rule 1, for a text: that many characters are not made. */
@@ -202,68 +245,117 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
         return apply(original, this, arguments);
       };
     });
-    // concat: the result has the receiver's elements plus, per argument, its elements or itself
+    // concat: the result has, for the receiver and each argument, its elements or itself.
+    // Which of the two is asked here, once, the way the built-in asks (the language's symbol
+    // for it, otherwise whether it is an array). An array is handed on as it is. An object
+    // that is spread is read here; one that is not goes in an array of one, so the built-in
+    // has nothing to ask it a second time.
     patch(arrayProto, 'concat', function (original) {
       return function concat() {
-        var own = lengthOf(this);
-        var total = own;
-        for (var i = 0; i < arguments.length; i++) {
-          total += isArray(arguments[i]) ? arguments[i].length : 1;
+        var receiver = toObject(this);
+        if (receiver === null) return apply(original, this, arguments);
+        var total = 0;
+        var own = 0;
+        var first = receiver;
+        var rest = [];
+        for (var i = -1; i < arguments.length; i++) {
+          var item = i < 0 ? receiver : arguments[i];
+          var handed = item;
+          if (isObject(item)) {
+            var array = isArray(item);
+            var flag = item[spreadableSymbol];
+            if (flag === undefined ? array : !!flag) {
+              var length = toLength(item.length);
+              total += length;
+              checkLength(total, 'Array.concat');
+              if (!array) handed = snapshot(item, length, true);
+              else if (i < 0) own = length;
+            } else {
+              total += 1;
+              // The receiver, when it is an array, stays the receiver: the result is of its kind
+              if (!(array && i < 0)) handed = [item];
+            }
+          } else {
+            total += 1;
+          }
+          if (i >= 0) {
+            rest[rest.length] = handed;
+          } else if (handed !== item) {
+            first = [];
+            rest[rest.length] = handed;
+          }
         }
         checkLength(total, 'Array.concat');
-        var result = apply(original, this, arguments);
+        var result = apply(original, first, rest);
         charge(lengthOf(result) - own);
         return result;
       };
     });
 
-    // flat: counted before it runs, to the depth the built-in flattens. The count walks the
-    // nesting with a list of its own, so the depth of the nesting is not the depth of a call
-    // stack, and it stops at the limit: by the elements counted so far, and by the arrays
-    // entered (an array of empty arrays has nothing to count and everything to visit).
-    function countFlat(root, rootLength, levels) {
+    // flat: the result is built here, in the pass that counts it, to the depth the built-in
+    // flattens. Each slot is asked once (is it there, what is it) and each nested array for its
+    // length once, so what is counted is what the result is made of. The pass walks the nesting
+    // with a list of its own, so the depth of the nesting is not the depth of a call stack, and
+    // it stops at the limit: by the slots counted so far, and by the arrays entered (an array
+    // of empty arrays has nothing to count and everything to visit).
+    function flatten(root, rootLength, levels, target, plain) {
       var budget = memoryLimit / BYTES;
-      var elements = rootLength;
+      var slots = rootLength;
       var entered = 0;
-      if (elements > budget) refuse('Array.flat', elements * BYTES);
-      var arrays = [root];
+      if (slots > budget) refuse('Array.flat', slots * BYTES);
+      var sources = [root];
       var lengths = [rootLength];
       var depths = [levels];
       var next = [0];
       var top = 0;
+      var count = 0;
       while (top >= 0) {
         var index = next[top];
-        if (index >= lengths[top] || !(depths[top] >= 1)) {
+        if (index >= lengths[top]) {
           top--;
           continue;
         }
         next[top] = index + 1;
-        var item = arrays[top][index];
-        if (!isArray(item)) continue;
-        // The slot gives way to what the array holds
-        var length = item.length;
-        elements += length - 1;
-        entered++;
-        if (elements > budget || entered > budget) {
-          refuse('Array.flat', (elements > entered ? elements : entered) * BYTES);
+        var source = sources[top];
+        // A slot that is not there is left out, as in the built-in
+        if (!(index in source)) continue;
+        var item = source[index];
+        if (depths[top] >= 1 && isArray(item)) {
+          // The slot gives way to what the array holds
+          var length = toLength(item.length);
+          slots += length - 1;
+          entered++;
+          if (slots > budget || entered > budget) {
+            refuse('Array.flat', (slots > entered ? slots : entered) * BYTES);
+          }
+          top++;
+          sources[top] = item;
+          lengths[top] = length;
+          depths[top] = depths[top - 1] - 1;
+          next[top] = 0;
+          continue;
         }
-        top++;
-        arrays[top] = item;
-        lengths[top] = length;
-        depths[top] = depths[top - 1] - 1;
-        next[top] = 0;
+        if (plain) {
+          target[count] = item;
+        } else {
+          defineProperty(target, count, { value: item, writable: true, enumerable: true, configurable: true });
+        }
+        count++;
       }
+      return count;
     }
     patch(arrayProto, 'flat', function (original) {
       return function flat(depth) {
+        var receiver = toObject(this);
+        if (receiver === null) return apply(original, this, arguments);
+        var length = toLength(receiver.length);
         var levels = depth === undefined ? 1 : toInteger(depth);
         if (levels < 0) levels = 0;
-        var like = arrayLike(this);
-        if (like === null) return apply(original, this, [levels]);
-        countFlat(like.target, like.length, levels);
-        var result = apply(original, like.target, [levels]);
-        charge(lengthOf(result) - lengthOf(this));
-        return result;
+        var ofKind = emptyOfKind(receiver);
+        var target = ofKind === null ? [] : ofKind;
+        var count = flatten(receiver, length, levels, target, ofKind === null);
+        charge(count - (isArray(receiver) ? length : 0));
+        return target;
       };
     });
     // flatMap: what the callback hands back is counted as it comes
@@ -281,16 +373,18 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
         return result;
       };
     });
-    // The copying methods turn every slot of the receiver into an element, holes included
+    // The copying methods turn every slot of the receiver into an element, holes included.
+    // Of something that is not an array they get a plain copy, of the length that was checked.
     var copying = ['toSorted', 'toReversed', 'toSpliced', 'with'];
     for (var c = 0; c < copying.length; c++) {
       (function (name) {
         patch(arrayProto, name, function (original) {
           return function () {
-            var like = arrayLike(this);
-            if (like === null) return apply(original, this, arguments);
-            checkLength(like.length + (name === 'toSpliced' && arguments.length > 2 ? arguments.length - 2 : 0), 'Array.' + name);
-            return apply(original, like.target, arguments);
+            var receiver = toObject(this);
+            if (receiver === null) return apply(original, this, arguments);
+            var length = toLength(receiver.length);
+            checkLength(length + (name === 'toSpliced' && arguments.length > 2 ? arguments.length - 2 : 0), 'Array.' + name);
+            return apply(original, isArray(receiver) ? receiver : snapshot(receiver, length, false), arguments);
           };
         });
       })(copying[c]);
@@ -298,7 +392,8 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
     // Array.from. Of something with a length: that many elements, whatever is behind it. Of
     // something that is iterated: as many as it yields, so the built-in is stopped at the
     // limit by the mapping function it calls for each element. Which of the two it is, is
-    // decided here, once: the built-in is given a source that can only be read that way.
+    // decided here, once, for an array as for anything else: the built-in is given a source
+    // that can only be read that way.
     patch(ArrayCtor, 'from', function (original) {
       return function from(items, mapFn, thisArg) {
         // What the built-in refuses by itself, it refuses before it makes anything
@@ -306,21 +401,16 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
         if (mapFn !== undefined && typeof mapFn !== 'function') return apply(original, this, arguments);
 
         var source = items;
-        if (isArray(items)) {
-          checkLength(items.length, 'Array.from');
-        } else {
-          var iterate = items[iteratorSymbol];
-          if (iterate === undefined || iterate === null) {
-            var like = arrayLike(items);
-            if (like !== null) {
-              checkLength(like.length, 'Array.from');
-              source = like.target;
-            }
-          } else if (typeof iterate === 'function' && isObject(items)) {
-            var held = {};
-            held[iteratorSymbol] = { value: function () { return apply(iterate, items, []); } };
-            source = objectCreate(null, held);
-          }
+        var iterate = items[iteratorSymbol];
+        if (iterate === undefined || iterate === null) {
+          var receiver = toObject(items);
+          var length = toLength(receiver.length);
+          checkLength(length, 'Array.from');
+          source = slotsOf(receiver, length);
+        } else if (typeof iterate === 'function' && isObject(items)) {
+          var held = {};
+          held[iteratorSymbol] = { value: function () { return apply(iterate, items, []); } };
+          source = objectCreate(null, held);
         }
 
         var produced = 0;

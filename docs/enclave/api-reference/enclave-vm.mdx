@@ -310,6 +310,16 @@ const enclave = new Enclave({ sandboxAdapter: new InterpreterAdapter() });
 
 See [The Interpreter Adapter](/core-libraries/enclave-vm/configuration#the-interpreter-adapter). The double VM is not an adapter you create: it is on by default and configured with the `doubleVm` option.
 
+The interpreter behind the adapter is exported as well, for a host that drives it without an `Enclave`: `Interpreter` (options: `InterpreterOptions`) and the errors a run ends with.
+
+| Error | `name` | When |
+|-------|--------|------|
+| `InterpreterError` | `InterpreterError` | The script used something the interpreter does not allow: a blocked key, an unknown identifier, a call it refuses |
+| `StepLimitError` | `StepLimitError` | The step budget (`maxSteps`) is used up |
+| `DeadlineError` | `TimeoutError` | The `deadline` option (a time as `Date.now()` gives it) has passed while the script was computing. The interpreter reads the clock every few hundred steps and before each built-in or host function it calls |
+
+A script cannot catch `StepLimitError` or `DeadlineError`. Through an `Enclave` they arrive as `result.error.code` `STEP_LIMIT_EXCEEDED` and `EXECUTION_TIMEOUT`.
+
 ## Scoring Classes
 
 `ScoringGate` is the gate an enclave builds from `scoringGate`; it can be used on its own:
@@ -369,6 +379,17 @@ interface ReferenceSidecarOptions {
 ```
 
 The defaults follow the security level. See [Reference Sidecar](/core-libraries/enclave-vm/reference-sidecar).
+
+Two functions give the values in force:
+
+```ts
+import { getReferenceConfig, getMaxTotalResolvedSize } from '@enclave-vm/core';
+
+const config = getReferenceConfig('SECURE', { maxTotalSize: 32 * 1024 * 1024 });
+getMaxTotalResolvedSize(config); // 67108864: twice maxTotalSize, because maxTotalResolvedSize is not set
+```
+
+`getReferenceConfig(securityLevel, overrides?)` returns the defaults of a level with your overrides applied. `getMaxTotalResolvedSize(config)` returns the limit on what one execution resolves in total: `config.maxTotalResolvedSize` when it is a number of at least 0, otherwise twice `config.maxTotalSize`.
 
 ## Process-Level Functions
 
