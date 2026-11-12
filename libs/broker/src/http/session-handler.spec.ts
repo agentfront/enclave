@@ -273,6 +273,43 @@ describe('SessionHandler', () => {
       expect(res.headersSent['Access-Control-Allow-Methods']).toContain('POST');
     });
 
+    it('allows the headers a browser client sends, Authorization among them', async () => {
+      const req = createRequest({ method: 'OPTIONS' });
+      const res = createResponse();
+
+      const route = handler.getRoutes().find((r) => r.method === 'OPTIONS' && r.path === '/sessions');
+      await route!.handler(req, res);
+
+      const allowed = String(res.headersSent['Access-Control-Allow-Headers'])
+        .split(',')
+        .map((name) => name.trim().toLowerCase());
+      // What the client sends by itself, and the header its `headers` option is documented with
+      expect(allowed).toEqual(expect.arrayContaining(['content-type', 'accept', 'last-event-id', 'authorization']));
+    });
+
+    it('allows the additional headers of allowedHeaders, once each', async () => {
+      const custom = createSessionHandler({ broker, allowedHeaders: ['X-API-Key', 'authorization'] });
+      const req = createRequest({ method: 'OPTIONS' });
+      const res = createResponse();
+
+      const route = custom.getRoutes().find((r) => r.method === 'OPTIONS' && r.path === '/sessions');
+      await route!.handler(req, res);
+
+      const allowed = String(res.headersSent['Access-Control-Allow-Headers'])
+        .split(',')
+        .map((name) => name.trim().toLowerCase());
+      expect(allowed).toContain('x-api-key');
+      expect(allowed.filter((name) => name === 'authorization')).toHaveLength(1);
+    });
+
+    it('refuses an allowedHeaders entry that is not a header name', () => {
+      for (const allowedHeaders of [['X Bad'], ['a,b'], ['line\r\nbreak'], [''], [5], 'Authorization']) {
+        expect(() => createSessionHandler({ broker, allowedHeaders: allowedHeaders as unknown as string[] })).toThrow(
+          /allowedHeaders/,
+        );
+      }
+    });
+
     it('should respect allowed origins', async () => {
       const restrictedHandler = createSessionHandler({
         broker,

@@ -261,6 +261,7 @@ const config: SessionHandlerConfig = {
   identify: (request) => undefined, // see above
   cors: true, // default
   allowedOrigins: ['https://app.example.com'], // default ['*']
+  allowedHeaders: ['X-API-Key'], // besides Content-Type, Accept, Last-Event-ID, Authorization
   sessionList: true, // serve GET /sessions (default)
   maxStreamsPerSession: 8, // default
   maxBufferedBytes: 8 * 1024 * 1024, // default

@@ -149,6 +149,8 @@ The hook identifies; it does not authenticate. Verify the credential in your own
 
 CORS headers are on by default with `Access-Control-Allow-Origin: *`, so a page of any origin can call a broker its visitor's browser can reach, including one on `localhost` or an internal network. Set `allowedOrigins` to the origins of your application, or `cors: false`, for anything that is not a public demo.
 
+A cross-origin page may send `Content-Type`, `Accept`, `Last-Event-ID` and `Authorization`. If your clients send another header (an API-key header through the client's `headers` option, say), name it in `allowedHeaders`: a browser does not send a header the preflight answer does not list.
+
 ### Limits
 
 `limits` (see `SessionLimits` in `@enclave-vm/types`) bound every session of a broker. A session created in process may name its own value for a limit; a session created over HTTP may only lower `maxToolCalls` and the lifetime.

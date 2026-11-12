@@ -21,6 +21,33 @@ import type { RequestedLimits } from './request-validation';
  * The shortest and the longest heartbeat interval a request can get. A broker configured with
  * a shorter interval keeps its own as the lower bound.
  */
+/**
+ * The request headers every answer allows a cross-origin page to send: what the client sends by
+ * itself, and `Authorization`, which is how a browser client carries a credential (the client's
+ * `headers` option).
+ */
+const CORS_REQUEST_HEADERS = ['Content-Type', 'Accept', 'Last-Event-ID', 'Authorization'];
+
+/** A header name as HTTP writes one (RFC 9110 token): nothing that could end the header line. */
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/** The value of `Access-Control-Allow-Headers`: the fixed names and the configured ones, once each. */
+function corsRequestHeaders(configured: unknown): string {
+  if (configured !== undefined && !Array.isArray(configured)) {
+    throw new TypeError('SessionHandler: "allowedHeaders" must be an array of header names');
+  }
+  const names = [...CORS_REQUEST_HEADERS];
+  for (const name of (configured ?? []) as unknown[]) {
+    if (typeof name !== 'string' || !HEADER_NAME.test(name)) {
+      throw new TypeError('SessionHandler: "allowedHeaders" must be an array of header names');
+    }
+    if (!names.some((known) => known.toLowerCase() === name.toLowerCase())) {
+      names.push(name);
+    }
+  }
+  return names.join(', ');
+}
+
 const MIN_REQUEST_HEARTBEAT_MS = 1000;
 const MAX_REQUEST_HEARTBEAT_MS = 300_000;
 
@@ -44,6 +71,15 @@ export interface SessionHandlerConfig {
    * @default ['*']
    */
   allowedOrigins?: string[];
+
+  /**
+   * Request headers a cross-origin page may send, in addition to the ones the routes always
+   * allow: `Content-Type`, `Accept`, `Last-Event-ID` and `Authorization`. Name here what your
+   * clients send besides (an API-key header, a tenant header); a browser refuses to send a
+   * header the preflight answer does not list. Each entry is a header name.
+   * @default []
+   */
+  allowedHeaders?: string[];
 
   /**
    * Tells the routes who the caller of a request is.
@@ -111,6 +147,7 @@ export class SessionHandler {
   private readonly broker: Broker;
   private readonly cors: boolean;
   private readonly allowedOrigins: string[];
+  private readonly allowedRequestHeaders: string;
   private readonly identify?: CallerIdentifier;
   private readonly sessionList: boolean;
   private readonly maxStreamsPerSession: number;
@@ -121,6 +158,7 @@ export class SessionHandler {
     this.broker = config.broker;
     this.cors = config.cors ?? true;
     this.allowedOrigins = config.allowedOrigins ?? ['*'];
+    this.allowedRequestHeaders = corsRequestHeaders(config.allowedHeaders);
     if (config.identify !== undefined && typeof config.identify !== 'function') {
       throw new TypeError('SessionHandler: "identify" must be a function');
     }
@@ -132,6 +170,7 @@ export class SessionHandler {
       'broker',
       'cors',
       'allowedOrigins',
+      'allowedHeaders',
       'identify',
       'sessionList',
       'maxStreamsPerSession',
@@ -180,7 +219,7 @@ export class SessionHandler {
     }
 
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Last-Event-ID');
+    res.setHeader('Access-Control-Allow-Headers', this.allowedRequestHeaders);
     res.setHeader('Access-Control-Max-Age', '86400');
   }
 

@@ -229,6 +229,7 @@ interface SessionHandlerConfig {
   broker: Broker;
   cors?: boolean; // default true
   allowedOrigins?: string[]; // default ['*']
+  allowedHeaders?: string[]; // default []: more request headers a cross-origin page may send
   identify?: (request: BrokerRequest) => string | null | undefined | Promise<string | null | undefined>;
   sessionList?: boolean; // default true
   maxStreamsPerSession?: number; // default 8
@@ -240,6 +241,7 @@ interface SessionHandlerConfig {
 |--------|-------------|
 | `identify` | Tells the routes who the caller of a request is. With it, a session belongs to the caller that created it; without it the routes do not tell callers apart |
 | `allowedOrigins` | Origins that get CORS headers. The default allows every origin |
+| `allowedHeaders` | Request headers a cross-origin page may send besides `Content-Type`, `Accept`, `Last-Event-ID` and `Authorization`, which are always allowed. Name the headers your clients add (an API-key header, say); an entry that is not a header name throws at construction |
 | `sessionList` | Whether `GET /sessions` is served |
 | `maxStreamsPerSession` | Streams one session has open at a time; a further one is answered with `429` |
 | `maxBufferedBytes` | How far a reader may fall behind before it is disconnected |
