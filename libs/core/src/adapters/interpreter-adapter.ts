@@ -25,9 +25,12 @@ import type * as ESTree from 'estree';
 
 import { createConsoleSink } from '../console-handler';
 import {
+  DeadlineError,
   Interpreter,
+  MAX_JOIN_LENGTH,
   StepLimitError,
   isBlockedKey,
+  isEngineCalledKey,
   isScriptError,
   takesArraysAsData,
 } from '../interpreter/interpreter';
@@ -55,10 +58,33 @@ const MAX_PARALLEL_ITEMS = 100;
 const MAX_SERIALIZED_RESULT_BYTES = 50 * 1024 * 1024;
 const DEFAULT_MAX_CONSOLE_CALLS = 100;
 const DEFAULT_MAX_CONSOLE_OUTPUT_BYTES = 64 * 1024;
+/** The tool bridge's own default for the size of a request */
+const DEFAULT_MAX_TOOL_PAYLOAD_BYTES = 5 * 1024 * 1024;
 
-/** How a runtime helper calls a function a script handed it (see `Interpreter.call`) */
+/**
+ * Whether a value is certain to serialize to more than `bytes`: judged by the size estimate,
+ * which walks the value without building its text, and with room to spare, so that a value
+ * the limit itself would accept is never refused here. What this refuses, the limit refuses too;
+ * the difference is that the text is not built first.
+ */
+function certainlyLargerThan(value: unknown, bytes: number): boolean {
+  if (!Number.isFinite(bytes) || bytes <= 0) return false;
+  return !checkSerializedSize(value, bytes).ok;
+}
+
+/** What the runtime helpers know of the execution they belong to */
 interface CallbackInvoker {
+  /** How a helper calls a function a script handed it (see `Interpreter.call`) */
   call(fn: unknown, args: unknown[]): unknown;
+  /** Set when the execution has returned: from then on a helper reaches nothing of the host */
+  over?: boolean;
+  /** How a helper has a BigInt it made counted like one an operator of the script made */
+  countBigInt?(value: bigint): void;
+}
+
+/** Thrown by a helper that is called for an execution that has returned */
+function executionOver(): Error {
+  return sandboxError('Execution ended');
 }
 
 export interface InterpreterAdapterOptions {
@@ -88,6 +114,24 @@ function sandboxError(message: string, name = 'Error', code?: string): Error {
   error.name = name;
   if (code !== undefined) (error as Error & { code?: string }).code = code;
   return error;
+}
+
+function ignoreRejection(): void {
+  // Deliberately empty: see observed
+}
+
+/**
+ * A helper that returns a promise, as the script gets it: every promise it returns has a
+ * rejection handler. Whoever awaits the promise still sees a rejection; the handler only keeps
+ * a promise that nobody holds from becoming an unhandled rejection, which by default ends the
+ * host process. The interpreter does the same for the functions of a script.
+ */
+function observed<A extends unknown[]>(helper: (...args: A) => Promise<unknown>): (...args: A) => Promise<unknown> {
+  return (...args: A): Promise<unknown> => {
+    const result = helper(...args);
+    result.then(undefined, ignoreRejection);
+    return result;
+  };
 }
 
 function frozenRecord(members: Record<string, unknown>): Record<string, unknown> {
@@ -168,20 +212,29 @@ export class InterpreterAdapter implements SandboxAdapter {
       typeof memoryLimit === 'number' && memoryLimit > 0 ? Math.min(memoryLimit, adapterLimit) : adapterLimit;
     const tracker = new MemoryTracker({ memoryLimit: Number.isFinite(allocationLimit) ? allocationLimit : 0 });
     const charge = (bytes: number): void => tracker.track(bytes);
+    // What a helper allocates is charged through the interpreter, which ends the run when the
+    // budget refuses: charged directly, the refusal would be an error the script can catch.
+    let chargeForHelper = (_bytes: number): void => {
+      throw sandboxError('The interpreter is not running');
+    };
+
+    // The interpreter reads the clock itself while a script computes: a timer cannot fire then.
+    const timeout = context.config.timeout;
+    const deadlineAt = timeout && timeout > 0 ? Date.now() + timeout : undefined;
 
     let interpreter: Interpreter;
+    // How a helper calls a function it was handed: through the interpreter, which applies the
+    // checks of a call the script writes itself. Bound below, once the interpreter exists.
+    const callbacks: CallbackInvoker = {
+      call: () => {
+        throw sandboxError('The interpreter is not running');
+      },
+    };
     try {
       const safe = createSafeGlobals();
       // The helpers, namespaces and custom globals of this execution; none of them replaces a
       // standard global.
-      // How a helper calls a function it was handed: through the interpreter, which applies the
-      // checks of a call the script writes itself. Bound below, once the interpreter exists.
-      const callbacks: CallbackInvoker = {
-        call: () => {
-          throw sandboxError('The interpreter is not running');
-        },
-      };
-      const runtime = this.runtimeGlobals(context, charge, callbacks);
+      const runtime = this.runtimeGlobals(context, (bytes) => chargeForHelper(bytes), callbacks);
       for (const name of Object.keys(runtime)) {
         if (!Object.prototype.hasOwnProperty.call(safe.globals, name)) safe.globals[name] = runtime[name];
       }
@@ -193,16 +246,18 @@ export class InterpreterAdapter implements SandboxAdapter {
         maxCallDepth: this.options.maxCallDepth ?? DEFAULT_MAX_CALL_DEPTH,
         maxPendingCalls: this.options.maxPendingCalls,
         signal: context.abortController.signal,
+        deadline: deadlineAt,
         charge,
       });
       const running = interpreter;
       callbacks.call = (fn, args) => running.call(fn, args);
+      callbacks.countBigInt = (value) => running.countBigInt(value);
+      chargeForHelper = (bytes) => running.chargeAllocation(bytes);
     } catch (error) {
       return this.fail<T>(error, startTime, stats.toolCallCount, 0, sanitizeStacks);
     }
 
     // Wall-clock timeout drives the AbortSignal the interpreter checks per step.
-    const timeout = context.config.timeout;
     const timer = timeout && timeout > 0 ? setTimeout(() => context.abortController.abort(), timeout) : undefined;
 
     // The per-step signal check can't fire while the interpreter is parked on an
@@ -217,6 +272,17 @@ export class InterpreterAdapter implements SandboxAdapter {
             timeoutHandle = setTimeout(() => resolve(TIMED_OUT), timeout);
           })
         : undefined;
+    const running = interpreter;
+    const timedOut = (): ExecutionResult<T> =>
+      this.fail<T>(
+        new Error(`Execution timed out after ${timeout}ms`),
+        startTime,
+        stats.toolCallCount,
+        running.stepCount,
+        sanitizeStacks,
+        'TimeoutError',
+        'EXECUTION_TIMEOUT',
+      );
 
     try {
       const run = interpreter.run(program) as Promise<T>;
@@ -224,19 +290,12 @@ export class InterpreterAdapter implements SandboxAdapter {
       // can't surface as an unhandled rejection.
       run.catch(() => undefined);
       const outcome = deadline ? await Promise.race([run, deadline]) : await run;
-      if (outcome === TIMED_OUT) {
-        return this.fail<T>(
-          new Error(`Execution timed out after ${timeout}ms`),
-          startTime,
-          stats.toolCallCount,
-          interpreter.stepCount,
-          sanitizeStacks,
-          'TimeoutError',
-          'EXECUTION_TIMEOUT',
-        );
-      }
+      if (outcome === TIMED_OUT) return timedOut();
       return this.succeed<T>(outcome, context, startTime, stats.toolCallCount, interpreter.stepCount);
     } catch (error) {
+      // The deadline, met while the script was computing: the same outcome as when it is met
+      // while the script waits
+      if (error instanceof DeadlineError) return timedOut();
       const code2 = error instanceof StepLimitError ? 'STEP_LIMIT_EXCEEDED' : undefined;
       return this.fail<T>(
         error,
@@ -250,8 +309,10 @@ export class InterpreterAdapter implements SandboxAdapter {
     } finally {
       if (timer) clearTimeout(timer);
       if (timeoutHandle) clearTimeout(timeoutHandle);
-      // The execution is over: nothing of the script runs from here on (a function a built-in
-      // started in passing, a run that timed out while it waited for a tool).
+      // The execution is over: nothing of the script runs from here on, and nothing of it
+      // reaches the host (a run that timed out while it waited for a tool and goes on when the
+      // tool answers). The interpreter makes no further call; the helpers refuse by themselves.
+      callbacks.over = true;
       interpreter.stop();
     }
   }
@@ -270,7 +331,7 @@ export class InterpreterAdapter implements SandboxAdapter {
     callbacks: CallbackInvoker,
   ): Record<string, unknown> {
     const { config } = context;
-    const callTool = this.createCallTool(context);
+    const callTool = observed(this.createCallTool(context, callbacks));
     const resolver =
       context.sidecar && context.referenceConfig
         ? new ReferenceResolver(context.sidecar, context.referenceConfig)
@@ -296,6 +357,8 @@ export class InterpreterAdapter implements SandboxAdapter {
       const result: unknown = (left as never as number) + (right as never as number);
       if (typeof result === 'string') {
         charge((result.length - (typeof left === 'string' ? left.length : 0)) * 2);
+      } else if (typeof result === 'bigint') {
+        callbacks.countBigInt?.(result);
       }
       return result;
     };
@@ -305,12 +368,21 @@ export class InterpreterAdapter implements SandboxAdapter {
       if (!Array.isArray(quasis)) throw sandboxError('Template pieces must be an array', 'TypeError');
       const parts: string[] = [];
       let hasReference = false;
+      let length = 0;
+      // As long as a template literal may be in the interpreter itself
+      const add = (part: string): void => {
+        length += part.length;
+        if (length > MAX_JOIN_LENGTH) {
+          throw sandboxError(`A template literal cannot produce more than ${MAX_JOIN_LENGTH} chars`, 'RangeError');
+        }
+        parts.push(part);
+      };
       for (let i = 0; i < quasis.length; i++) {
-        parts.push(String(quasis[i]));
+        add(String(quasis[i]));
         if (i < values.length) {
           const value = values[i];
           if (typeof value === 'string' && isReferenceId(value)) hasReference = true;
-          parts.push(String(value));
+          add(String(value));
         }
       }
       if (hasReference) return joinReferences(parts.filter((part) => part !== ''));
@@ -336,7 +408,7 @@ export class InterpreterAdapter implements SandboxAdapter {
 
     // parallel(items, fn) and parallel([fn, fn, ...]): everything is started, all of it is
     // awaited, and the tool calls made on the way share the execution's tool-call limit.
-    const parallel = async (first: unknown, second?: unknown): Promise<unknown[]> => {
+    const parallel = observed(async (first: unknown, second?: unknown): Promise<unknown[]> => {
       // Every task is called through the interpreter: a task need not be a function of the
       // script (`parallel(items, String)`), and a built-in gets the checks of a direct call.
       let tasks: Array<() => unknown>;
@@ -362,7 +434,7 @@ export class InterpreterAdapter implements SandboxAdapter {
         throw sandboxError(`${failures.length} of ${tasks.length} parallel operations failed:\n${messages}`);
       }
       return settled.map((result) => (result as PromiseFulfilledResult<unknown>).value);
-    };
+    });
 
     const globals: Record<string, unknown> = {
       __safe_callTool: callTool,
@@ -386,19 +458,27 @@ export class InterpreterAdapter implements SandboxAdapter {
       const write =
         (level: string) =>
         (...args: unknown[]): void => {
+          if (callbacks.over) throw executionOver();
           consoleCalls++;
           if (consoleCalls > maxConsoleCalls) {
             throw sandboxError(
               `Console call limit exceeded (max: ${maxConsoleCalls}). This limit prevents I/O flood attacks.`,
             );
           }
-          const line = args.map(consoleText).join(' ');
-          consoleLength += line.length;
-          if (consoleLength > maxConsoleOutputBytes) {
-            throw sandboxError(
+          const outputLimit = (): Error =>
+            sandboxError(
               `Console output size limit exceeded (max: ${maxConsoleOutputBytes} bytes). This limit prevents I/O flood attacks.`,
             );
+          // An argument that cannot fit is refused before its text is built. The margin is
+          // wide (the estimate is in bytes and also counts members the text leaves out): what
+          // matters is that the text that is built is of the order of the limit, not of the value.
+          const room = (maxConsoleOutputBytes - consoleLength) * 16 + 64 * 1024;
+          for (const arg of args) {
+            if (arg !== null && typeof arg === 'object' && certainlyLargerThan(arg, room)) throw outputLimit();
           }
+          const line = args.map(consoleText).join(' ');
+          consoleLength += line.length;
+          if (consoleLength > maxConsoleOutputBytes) throw outputLimit();
           sink(level, line);
         };
       globals['__safe_console'] = frozenRecord({
@@ -412,7 +492,10 @@ export class InterpreterAdapter implements SandboxAdapter {
     for (const namespace of context.toolNamespaces ?? []) {
       const methods: Record<string, unknown> = {};
       for (const method of namespace.methods) {
-        if (isBlockedKey(method.name)) continue;
+        // A namespace is a value a script holds: like its data, it has no function under a name
+        // the engine calls by itself (a method named `then` would make every use of the
+        // namespace wait for a tool call nobody made).
+        if (isBlockedKey(method.name) || isEngineCalledKey(method.name)) continue;
         methods[method.name] = (args?: unknown, options?: unknown): Promise<unknown> =>
           callTool(method.toolName, args === undefined ? {} : args, options);
       }
@@ -438,6 +521,7 @@ export class InterpreterAdapter implements SandboxAdapter {
    */
   private createCallTool(
     context: ExecutionContext,
+    execution: CallbackInvoker,
   ): (toolName: unknown, args: unknown, options?: unknown) => Promise<unknown> {
     // Hosts that build the context by hand may keep the handler in the configuration.
     const configured = (context.config as { toolHandler?: ExecutionContext['toolHandler'] }).toolHandler;
@@ -446,8 +530,10 @@ export class InterpreterAdapter implements SandboxAdapter {
         ? (Object.create(context, { toolHandler: { value: configured } }) as ExecutionContext)
         : context;
     const bridge = createHostToolBridge(bridgeContext, { updateStats: true });
+    const maxPayloadBytes = context.config.toolBridge?.maxPayloadBytes ?? DEFAULT_MAX_TOOL_PAYLOAD_BYTES;
 
     return async (toolName: unknown, args: unknown, options?: unknown): Promise<unknown> => {
+      if (execution.over) throw executionOver();
       // callTool options: only { throwOnError: false } changes behavior. Tool failures then
       // resolve to { success: false, error }; the enclave's own refusals still throw.
       let throwOnError = true;
@@ -460,6 +546,16 @@ export class InterpreterAdapter implements SandboxAdapter {
       }
       if (typeof args !== 'object' || args === null || Array.isArray(args)) {
         throw sandboxError('Tool arguments must be an object', 'TypeError');
+      }
+
+      // Arguments the bridge is certain to refuse for their size are refused here, in the
+      // bridge's words, before the request is built from them.
+      if (certainlyLargerThan(args, maxPayloadBytes * 2 + 1024)) {
+        throw sandboxError(
+          `Tool request exceeds maximum size (${maxPayloadBytes} bytes)`,
+          'ToolBridgeError',
+          'TOOL_BRIDGE_REQUEST_TOO_LARGE',
+        );
       }
 
       let requestJson: string;

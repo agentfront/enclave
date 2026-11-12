@@ -11,13 +11,17 @@
 
 import {
   assertArrayTextWithinLimit,
+  assertStorable,
   chargedBeforeCall,
+  checkArrayWrite,
   convertsArguments,
+  convertsBeforeCall,
   createScriptError,
   isBlockedKey,
   isScriptData,
   isScriptError,
   MAX_ARRAY_LENGTH,
+  MAX_JOIN_LENGTH,
   takesArraysAsData,
 } from './interpreter';
 import { checkSerializedSize } from '../value-sanitizer';
@@ -163,8 +167,10 @@ const SafeJSON = frozenRecord({
     const size = checkSerializedSize(value, MAX_JSON_TEXT_BYTES);
     if (!size.ok) throw new RangeError(`JSON.stringify: the text would be too large (${size.error})`);
     // With `space` every item and member gets a line of its own, indented by its depth: text
-    // the estimate above does not count.
-    const indent = indentOf(space);
+    // the estimate above does not count. Only a number or a text is an indentation here: the
+    // engine is given what was measured, and nothing else it would read an indentation from.
+    const indentation = typeof space === 'number' || typeof space === 'string' ? space : undefined;
+    const indent = indentOf(indentation);
     if (indent > 0) {
       const budget = MAX_JSON_TEXT_BYTES - size.estimatedBytes;
       if (indentationSize(value, indent, budget, 0, new Set()) > budget) {
@@ -174,12 +180,16 @@ const SafeJSON = frozenRecord({
     return JSON.stringify(
       value,
       Array.isArray(replacer) ? (replacer as Array<string | number>) : undefined,
-      space as string | number | undefined,
+      indentation,
     );
   },
 });
 
-// The engine builds the whole value in one step: the budget is asked first, from the text.
+// The engine builds the whole value in one step: the budget is asked first, from the text. The
+// text is converted once, so that the text the budget was asked for is the text that is parsed.
+convertsBeforeCall(SafeJSON['parse'] as object, (args) =>
+  args.length === 0 ? args : [String(args[0]), ...args.slice(1)],
+);
 chargedBeforeCall(SafeJSON['parse'] as object, (args) => parsedJsonCost(String(args[0])));
 // The value is data to `stringify` (measured above); it never converts an array to text itself.
 takesArraysAsData(SafeJSON['stringify'] as object);
@@ -198,7 +208,10 @@ const SafeObject = frozenRecord({
       if (entry === null || typeof entry !== 'object') throw new TypeError('Each entry must be a [key, value] pair');
       assertArrayTextWithinLimit((entry as Record<number, unknown>)[0]);
       const key = String((entry as Record<number, unknown>)[0]);
-      if (!isBlockedKey(key)) result[key] = (entry as Record<number, unknown>)[1];
+      if (isBlockedKey(key)) continue;
+      const value = (entry as Record<number, unknown>)[1];
+      assertStorable(result, key, value);
+      result[key] = value;
     }
     return result;
   },
@@ -210,7 +223,11 @@ const SafeObject = frozenRecord({
     for (const source of sources) {
       if (source === null || source === undefined) continue;
       for (const key of dataKeys(source)) {
-        (target as Record<string, unknown>)[key] = (source as Record<string, unknown>)[key];
+        let value = (source as Record<string, unknown>)[key];
+        assertStorable(target, key, value);
+        // An index or a length is held to the longest array a script may make, as in an assignment
+        if (Array.isArray(target)) value = checkArrayWrite(target, key, value).value;
+        (target as Record<string, unknown>)[key] = value;
       }
     }
     return target;
@@ -307,6 +324,30 @@ const SafeDate = frozenFunction((): string => new Date().toString(), {
   UTC: (...parts: unknown[]): number => Date.UTC(...(parts as [number])),
 });
 
+// ── URI encoding ─────────────────────────────────────────────────────────────
+/**
+ * Encode a text for a URI, unless that could make it longer than a script's longest text: a
+ * char becomes up to nine (`%XX` for each of its three bytes), in one step of the engine. A
+ * letter or a digit of the basic Latin range stays as it is.
+ */
+function encodedText(encode: (text: string) => string, value: unknown): string {
+  const text = String(value);
+  if (text.length * 9 > MAX_JOIN_LENGTH) {
+    let produced = 0;
+    for (let index = 0; index < text.length && produced <= MAX_JOIN_LENGTH; index++) {
+      const code = text.charCodeAt(index);
+      if (code >= 0x800) produced += 9;
+      else if (code >= 0x80) produced += 6;
+      else if ((code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122)) produced += 1;
+      else produced += 3;
+    }
+    if (produced > MAX_JOIN_LENGTH) {
+      throw new RangeError(`The encoded text would be too long (more than ${MAX_JOIN_LENGTH} chars)`);
+    }
+  }
+  return encode(text);
+}
+
 // ── Errors ───────────────────────────────────────────────────────────────────
 // `new Error('x')` makes the frozen error object of the interpreter, never a host Error (which
 // would carry a host stack). The transformer renames the error types it does not know, so each
@@ -351,8 +392,8 @@ const SAFE_GLOBALS: Readonly<Record<string, unknown>> = Object.freeze({
   parseInt: Object.freeze((value: unknown, radix?: unknown): number =>
     Number.parseInt(String(value), radix as number | undefined),
   ),
-  encodeURI: Object.freeze((value: unknown): string => encodeURI(String(value))),
-  encodeURIComponent: Object.freeze((value: unknown): string => encodeURIComponent(String(value))),
+  encodeURI: Object.freeze((value: unknown): string => encodedText(encodeURI, value)),
+  encodeURIComponent: Object.freeze((value: unknown): string => encodedText(encodeURIComponent, value)),
   decodeURI: Object.freeze((value: unknown): string => decodeURI(String(value))),
   decodeURIComponent: Object.freeze((value: unknown): string => decodeURIComponent(String(value))),
 });

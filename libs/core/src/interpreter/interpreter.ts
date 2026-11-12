@@ -24,10 +24,28 @@
 //   nothing else;
 // - whatever a script catches is its own thrown value or a plain copy of an
 //   error, never a host Error object (which carries a host stack);
+// - the engine never calls a function for a script: data of a script holds no function under
+//   a name the engine looks up by itself (to convert a value, to serialize it, to await it), so
+//   whatever runs for a script runs where the script wrote a call, with the checks of a call;
+// - what a script can call is listed: its own functions, the functions the host provides as
+//   globals, and the methods of the values it holds (arrays, strings, numbers, booleans,
+//   BigInts, dates, objects), each on its own kind of value. A built-in the list does not know
+//   is refused, and an engine built-in is handed a function only where it keeps it as data: a
+//   callback is always called by the interpreter;
 // - every promise an interpreted function returns has a rejection handler, so a
 //   call nobody awaits cannot become an unhandled rejection of the host process;
-// - every loop the interpreter runs on a script's behalf counts against the
-//   step budget, and what evaluation allocates is charged to the host's budget.
+// - every loop the interpreter runs on a script's behalf counts against the step budget, and
+//   so does what a built-in works through for it, in proportion: a step is not worth more
+//   because its operands are large. The clock is read as the steps go by and before every
+//   built-in or host function starts, so a script that only computes ends at its deadline;
+//   a search whose cost is the product of two lengths is made in pieces, between which both
+//   are checked;
+// - a BigInt is bounded in size, and what it holds and what working on it costs are counted
+//   like the rest (the engine itself would let one value take 128 MB);
+// - what evaluation allocates is charged to the host's budget. A text is
+//   charged in full when it is made; the one exception is a variable that is appended to
+//   (`s += x`), which is charged for what is appended until its value is read for anything
+//   that could keep it or look into it, and in full then.
 
 import type * as ESTree from 'estree';
 
@@ -72,6 +90,38 @@ function readProperty(object: unknown, key: string): unknown {
 }
 
 /**
+ * Names under which the engine looks for a function on a value and calls it by itself: to turn
+ * the value into a text or a number (`toString`, `valueOf`), into JSON (`toJSON`, and for a date
+ * `toISOString`), into the text of a locale (`toLocaleString`, for every item of an array), or
+ * to wait for it (`then`, wherever a value passes an `await`).
+ */
+const ENGINE_CALLED_KEYS = new Set(['then', 'toString', 'valueOf', 'toJSON', 'toLocaleString', 'toISOString']);
+
+/** Whether the engine calls a function it finds under this name, without a call in the script. */
+export function isEngineCalledKey(key: string): boolean {
+  return ENGINE_CALLED_KEYS.has(key);
+}
+
+/**
+ * Refuse to store a function where the engine would call it by itself. Such a call is not a
+ * call of the script: it gets none of the checks of a call, a function of the script that is
+ * called that way is not awaited, and a value with a `then` function is waited for wherever it
+ * is evaluated. Data of a script therefore never holds a function under one of those names (an
+ * array neither under `join`, which the engine calls for the text of an array). Any other
+ * value may be stored there, and the conversions every object inherits keep working.
+ *
+ * @throws InterpreterError when `value` is a function and `key` is such a name
+ */
+export function assertStorable(target: unknown, key: string, value: unknown): void {
+  if (typeof value !== 'function') return;
+  if (ENGINE_CALLED_KEYS.has(key) || (key === 'join' && Array.isArray(target))) {
+    throw new InterpreterError(
+      `A function cannot be stored under '${key}': the sandbox runs a function only where the script calls it`,
+    );
+  }
+}
+
+/**
  * Max length any single string-amplifying native op (`repeat`/`padStart`/
  * `padEnd`) may PRODUCE. These allocate in one step, so they're invisible to the
  * instruction budget — without this cap a script can OOM the V8 isolate well
@@ -81,10 +131,11 @@ function readProperty(object: unknown, key: string): unknown {
 const MAX_STRING_OP_LENGTH = 1_000_000;
 
 /**
- * Longest text one conversion of an array may produce: `join`, `'' + array`, a template literal,
- * an array given to a built-in function that expects text or a number (the budget still applies).
+ * Longest text one conversion may produce: `join`, `'' + array`, a template literal, an array
+ * given to a built-in function that expects text or a number, a text that is normalized or
+ * encoded (the budget still applies).
  */
-const MAX_JOIN_LENGTH = 16_000_000;
+export const MAX_JOIN_LENGTH = 16_000_000;
 
 /** Deepest nesting of arrays that is followed when an array is turned into text */
 const MAX_TEXT_NESTING = 64;
@@ -97,6 +148,104 @@ const MAX_TEXT_ITEMS = 8_000_000;
  * spreading. An array of a billion holes costs nothing to make and a lot to `join`.
  */
 export const MAX_ARRAY_LENGTH = 1_000_000;
+
+/** Steps between two looks at the clock while a script computes */
+const CLOCK_CHECK_STEPS = 256;
+
+/**
+ * What a built-in may work through for one step of the budget: chars it reads or compares, items
+ * it goes through. A step of a script is about a tenth of a microsecond; the engine's own loops
+ * are a few hundred to a few thousand times faster per char, and this is on the generous side,
+ * so that ordinary work on large values stays far from the budget.
+ */
+const WORK_PER_STEP = 16_384;
+
+/** A char a built-in writes counts as this many chars read: it is copied, often converted first */
+const WRITE_WORK = 8;
+
+/** Comparing texts by the rules of a locale costs this many times a plain comparison */
+const LOCALE_COMPARE_WORK = 64;
+
+/**
+ * The most one piece of a text search may cost in the worst case: chars of the text it covers
+ * times chars of what is searched for. The engine's search can need that many comparisons for a
+ * text that nearly matches everywhere.
+ */
+const SEARCH_PIECE_WORK = 2 ** 20;
+
+/** Searching an array for a text longer than this is done item by item (each comparison can read all of it) */
+const LONG_SEARCH_TEXT = 64;
+
+/** The most a built-in call that cannot be made in pieces may have to work through in the worst case */
+const MAX_CALL_WORK = 2 ** 33;
+
+/**
+ * The largest BigInt a script may hold, in bits (about 315,000 decimal digits). The engine
+ * allows a thousand times that for one value, and its arithmetic on such values runs for
+ * seconds in one step; at this size no single operation takes more than a few hundredths of one.
+ */
+export const MAX_BIGINT_BITS = 2 ** 20;
+
+/** The decimal digits of the largest BigInt, with a sign */
+const MAX_BIGINT_DIGITS = Math.ceil(MAX_BIGINT_BITS * Math.log10(2)) + 1;
+
+/** A BigInt of up to this many bits is like a number: neither charged nor counted as work */
+const WORD_BITS = 64;
+
+/** Work per bit of a BigInt that is multiplied, divided or made */
+const BIGINT_WORK = 64;
+
+/** Work per bit of a BigInt that is written as decimal text, or per char of a text it is read from */
+const BIGINT_TEXT_WORK = 1024;
+
+/** The operators that compare, and convert a text operand to the kind of the other one */
+const COMPARISONS = new Set(['==', '!=', '<', '<=', '>', '>=']);
+
+/** The bits of a BigInt, without its sign. */
+function bitsOf(value: bigint): number {
+  // Hexadecimal is the one form the engine writes in time proportional to the size
+  const hex = value.toString(16);
+  const start = value < 0n ? 1 : 0;
+  return (hex.length - start - 1) * 4 + (32 - Math.clz32(Number.parseInt(hex[start], 16)));
+}
+
+function bigIntTooLarge(): InterpreterError {
+  return new InterpreterError(`A BigInt cannot be larger than ${MAX_BIGINT_BITS} bits`);
+}
+
+/**
+ * String methods that do not go through their receiver: they read a char or its start or end,
+ * cut it without copying, or build on it. What they make is counted as what they write.
+ */
+const CONSTANT_STRING_METHODS = new Set([
+  'at',
+  'charAt',
+  'charCodeAt',
+  'codePointAt',
+  'valueOf',
+  'toString',
+  'slice',
+  'substring',
+  'substr',
+  'concat',
+  'startsWith',
+  'endsWith',
+  'padStart',
+  'padEnd',
+  'repeat',
+]);
+
+/** Array methods that work at the end of their receiver, copy a part of it or hand out an iterator */
+const CONSTANT_ARRAY_METHODS = new Set(['at', 'push', 'pop', 'slice', 'keys', 'values', 'entries']);
+
+/** String methods that look for a text in a text */
+const TEXT_SEARCHES = new Set(['indexOf', 'lastIndexOf', 'includes', 'split', 'replace', 'replaceAll']);
+
+/** Array methods that look for a value among the items */
+const ARRAY_SEARCHES = new Set(['indexOf', 'lastIndexOf', 'includes']);
+
+/** What {@link Interpreter.searchInPieces} answers for a call it leaves to the engine */
+const NOT_SEARCHED = Symbol('not searched');
 
 /** Array methods that take a callback the interpreter must `await`. */
 const HIGHER_ORDER_ARRAY_METHODS = new Set([
@@ -120,12 +269,14 @@ const FunctionProtoCall: unknown = Function.prototype.call;
 const FunctionProtoApply: unknown = Function.prototype.apply;
 const FunctionProtoBind: unknown = Function.prototype.bind;
 const FunctionProtoToString = Function.prototype.toString;
+const ArrayProtoToLocaleString: unknown = Array.prototype.toLocaleString;
+const StringProtoIndexOf = String.prototype.indexOf;
 
-/** The methods of a built-in prototype, with their names. */
+/** The methods of a built-in prototype, with their names. A name no script may use is no method here. */
 function methodsOf(prototype: object): ReadonlyMap<unknown, string> {
   const methods = new Map<unknown, string>();
   for (const name of Object.getOwnPropertyNames(prototype)) {
-    if (name === 'constructor') continue;
+    if (isBlockedKey(name)) continue;
     const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
     if (descriptor && typeof descriptor.value === 'function') methods.set(descriptor.value, name);
   }
@@ -137,6 +288,60 @@ function methodsOf(prototype: object): ReadonlyMap<unknown, string> {
 // is called, never by how the call is written.
 const ARRAY_METHODS = methodsOf(Array.prototype);
 const STRING_METHODS = methodsOf(String.prototype);
+
+/** The other kinds of value a script holds whose methods it may call */
+type ValueKind = 'Number' | 'Boolean' | 'BigInt' | 'Date' | 'Object';
+
+interface KindMethod {
+  kind: ValueKind;
+  name: string;
+}
+
+/** The methods of the other built-in prototypes, each with the kind of value it belongs to. */
+const OTHER_METHODS: ReadonlyMap<unknown, KindMethod> = (() => {
+  const prototypes: Array<[ValueKind, object]> = [
+    ['Number', Number.prototype],
+    ['Boolean', Boolean.prototype],
+    ['BigInt', BigInt.prototype],
+    ['Date', Date.prototype],
+    ['Object', Object.prototype],
+  ];
+  const methods = new Map<unknown, KindMethod>();
+  for (const [kind, prototype] of prototypes) {
+    for (const [method, name] of methodsOf(prototype)) {
+      if (!methods.has(method)) methods.set(method, { kind, name });
+    }
+  }
+  return methods;
+})();
+
+/**
+ * The value a method of each kind works on. The methods of `Object.prototype` take any value,
+ * except `valueOf`: on a primitive it returns an object that wraps it, a kind of value a script
+ * has no other way to make and that nothing here measures as what it holds.
+ */
+const RECEIVERS: Readonly<Record<ValueKind, { noun: string; accepts(receiver: unknown, name: string): boolean }>> = {
+  Number: { noun: 'a number', accepts: (receiver) => typeof receiver === 'number' },
+  Boolean: { noun: 'a boolean', accepts: (receiver) => typeof receiver === 'boolean' },
+  BigInt: { noun: 'a BigInt', accepts: (receiver) => typeof receiver === 'bigint' },
+  Date: { noun: 'a date', accepts: (receiver) => receiver instanceof Date },
+  Object: {
+    noun: 'an object',
+    accepts: (receiver, name) =>
+      name !== 'valueOf' || (receiver !== null && (typeof receiver === 'object' || typeof receiver === 'function')),
+  },
+};
+
+/**
+ * `next` of the iterator that `values()`, `keys()` and `entries()` of an array return. It is the
+ * one method of an iterator a script may call: the interpreter goes through an iterator itself
+ * (`for…of`, a spread, a destructuring), and whatever else an engine puts on its iterators
+ * (methods that take a callback among them) is not on the list.
+ */
+const ARRAY_ITERATOR_NEXT: unknown = (Object.getPrototypeOf([][Symbol.iterator]()) as { next?: unknown }).next;
+
+/** Functions this library puts on a value it hands to a script, rather than under a global name */
+const LIBRARY_FUNCTIONS = new WeakSet<object>();
 
 /**
  * The arguments an array method keeps as they are. Every other argument is a number or a text to
@@ -185,6 +390,18 @@ export function convertsArguments<F extends object>(fn: F, count: number): F {
   return fn;
 }
 
+const ARGUMENT_CONVERSIONS = new WeakMap<object, (args: unknown[]) => unknown[]>();
+
+/**
+ * Declare how `fn` converts its arguments before it looks at them. The conversion is made once,
+ * before the call is measured and charged, and `fn` is called with its result: what a bound was
+ * checked with is what the function gets.
+ */
+export function convertsBeforeCall<F extends object>(fn: F, convert: (args: unknown[]) => unknown[]): F {
+  ARGUMENT_CONVERSIONS.set(fn, convert);
+  return fn;
+}
+
 const CALL_COSTS = new WeakMap<object, (args: readonly unknown[]) => number>();
 
 /**
@@ -206,10 +423,12 @@ interface TextMeasure {
   active: Set<unknown[]>;
   /** Text length of the functions seen */
   functions: Map<unknown, number>;
+  /** Work the conversion needs beyond writing the chars (a BigInt is slow to write in decimal) */
+  work: number;
 }
 
 function newTextMeasure(): TextMeasure {
-  return { length: 0, items: 0, active: new Set(), functions: new Map() };
+  return { length: 0, items: 0, active: new Set(), functions: new Map(), work: 0 };
 }
 
 /** Upper bound of the text of one array item that is neither a string nor an array. */
@@ -218,8 +437,12 @@ function scalarTextLength(item: unknown, measure: TextMeasure): number {
     case 'number':
     case 'boolean':
       return 32; // also covers a number in the longest locale format
-    case 'bigint':
-      return String(item).length;
+    case 'bigint': {
+      // From its size: writing it out to measure it would be the conversion itself
+      const bits = bitsOf(item as bigint);
+      if (bits > WORD_BITS) measure.work += bits * BIGINT_TEXT_WORK;
+      return Math.ceil(bits * Math.log10(2)) + 2;
+    }
     case 'function': {
       let length = measure.functions.get(item);
       if (length === undefined) {
@@ -291,9 +514,10 @@ const TEXT_TOO_LONG = `An array cannot be turned into a text of more than ${MAX_
  * joins an array's items, and the items of the arrays inside it: an array that holds another one
  * many times is small in memory and huge as text.
  *
+ * @returns The chars the arrays among `values` are as text (an upper bound; 0 without an array)
  * @throws InterpreterError when the text of the arrays among `values` is longer than the limit
  */
-export function assertArrayTextWithinLimit(...values: unknown[]): void {
+export function assertArrayTextWithinLimit(...values: unknown[]): number {
   let measure: TextMeasure | undefined;
   for (const value of values) {
     if (!Array.isArray(value)) continue;
@@ -301,6 +525,7 @@ export function assertArrayTextWithinLimit(...values: unknown[]): void {
     measureArrayText(value, 1, measure, 0);
     if (measure.length > MAX_JOIN_LENGTH) throw new InterpreterError(TEXT_TOO_LONG);
   }
+  return measure?.length ?? 0;
 }
 
 /** Thrown when the instruction budget is exceeded (interrupts infinite loops). */
@@ -311,12 +536,35 @@ export class StepLimitError extends Error {
   }
 }
 
+/** Thrown when the deadline of a run passes while its script is computing. */
+export class DeadlineError extends Error {
+  constructor() {
+    super('Execution deadline exceeded');
+    this.name = 'TimeoutError';
+  }
+}
+
 /** Thrown on any disallowed operation (blocked key, unknown identifier, bad call). */
 export class InterpreterError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'InterpreterError';
   }
+}
+
+/**
+ * What the callback of `reduce` returns when it returns its accumulator, or what it appended to
+ * it: the text, and what is still owed for it (see `Slot.owed`). It goes from the function to
+ * the `reduce` that called it and to nobody else: `reduce` hands the text to the next call of
+ * the callback with what is owed, and pays it before it returns the result to the script. So a
+ * text that is built with `reduce((text, item) => text + item, '')` costs what is appended, as
+ * one that is built with `text += item` in a loop does.
+ */
+class AccumulatedText {
+  constructor(
+    readonly value: string,
+    readonly owed: number,
+  ) {}
 }
 
 // Internal non-error control-flow signals (return / break / continue / `?.`).
@@ -352,12 +600,11 @@ export function createScriptError(name: string, message: string, code?: string):
   error['name'] = name;
   error['message'] = message;
   if (code !== undefined) error['code'] = code;
-  Object.defineProperty(error, 'toString', {
-    value: function toString(): string {
-      return message ? `${name}: ${message}` : name;
-    },
-    enumerable: false,
-  });
+  const toString = function toString(): string {
+    return message ? `${name}: ${message}` : name;
+  };
+  LIBRARY_FUNCTIONS.add(toString);
+  Object.defineProperty(error, 'toString', { value: toString, enumerable: false });
   SCRIPT_ERRORS.add(error);
   return Object.freeze(error);
 }
@@ -367,24 +614,48 @@ export function isScriptError(value: unknown): boolean {
   return typeof value === 'object' && value !== null && SCRIPT_ERRORS.has(value);
 }
 
+/** A variable of a script. */
+interface Slot {
+  value: unknown;
+  mutable: boolean;
+  /**
+   * Bytes that have not been charged for `value`, a text that was made by appending to the
+   * variable: the engine links such a text to the one it was appended to, and writes it out as
+   * a text of its own when something first looks into it. Whoever reads the variable for
+   * anything that could do that, or could keep the value, pays this first (see `Scope.get`).
+   */
+  owed: number;
+}
+
 /** A lexical scope with a parent chain and per-binding const protection. */
 class Scope {
-  private readonly vars = new Map<string, { value: unknown; mutable: boolean }>();
+  private readonly vars = new Map<string, Slot>();
   /**
    * How many calls deep the code of this scope runs: 0 for the program, and for the body of a
    * function one more than where it was called from. A block inside has the depth around it.
    */
   readonly depth: number;
+  /** Charges what is still owed for the value of a variable that is read */
+  private readonly settle: (bytes: number) => void;
+  /**
+   * In the body of a callback that `reduce` called with a text: the name of the parameter that
+   * holds it. A block inside has the name around it; a function inside does not.
+   */
+  accumulator: string | undefined;
 
   constructor(
     private readonly parent?: Scope,
     depth?: number,
+    settle?: (bytes: number) => void,
   ) {
     this.depth = depth ?? parent?.depth ?? 0;
+    this.settle = settle ?? parent?.settle ?? ((): void => undefined);
   }
 
   child(): Scope {
-    return new Scope(this);
+    const scope = new Scope(this);
+    scope.accumulator = this.accumulator;
+    return scope;
   }
 
   /** The scope of one call of a function defined in this scope, running `depth` calls deep. */
@@ -393,33 +664,58 @@ class Scope {
   }
 
   declare(name: string, value: unknown, mutable: boolean): void {
-    this.vars.set(name, { value, mutable });
+    this.vars.set(name, { value, mutable, owed: 0 });
   }
 
   has(name: string): boolean {
     return this.vars.has(name) || (this.parent?.has(name) ?? false);
   }
 
+  /**
+   * The variable as it is stored, or nothing when there is none. For the few readers that
+   * neither keep its value nor look into a text (its length, whether it is empty, appending to
+   * it): everything else reads through {@link get}.
+   */
+  slot(name: string): Slot | undefined {
+    return this.vars.get(name) ?? this.parent?.slot(name);
+  }
+
+  /** The value of a variable, for any use: what is still owed for it is charged first. */
   get(name: string): unknown {
-    const slot = this.vars.get(name);
-    if (slot) return slot.value;
-    if (this.parent) return this.parent.get(name);
-    throw new InterpreterError(`'${name}' is not defined`);
+    const slot = this.slot(name);
+    if (!slot) throw new InterpreterError(`'${name}' is not defined`);
+    if (slot.owed > 0) {
+      const owed = slot.owed;
+      slot.owed = 0;
+      this.settle(owed);
+    }
+    return slot.value;
   }
 
   set(name: string, value: unknown): void {
-    const slot = this.vars.get(name);
-    if (slot) {
-      if (!slot.mutable) throw new InterpreterError(`Assignment to constant '${name}'`);
-      slot.value = value;
-      return;
-    }
-    if (this.parent) {
-      this.parent.set(name, value);
-      return;
-    }
-    throw new InterpreterError(`'${name}' is not defined`);
+    this.append(name, value, 0);
   }
+
+  /** Assign a variable a text that was appended to its value, with what a reader still owes for it. */
+  append(name: string, value: unknown, owed: number): void {
+    const slot = this.slot(name);
+    if (!slot) throw new InterpreterError(`'${name}' is not defined`);
+    if (!slot.mutable) throw new InterpreterError(`Assignment to constant '${name}'`);
+    slot.value = value;
+    slot.owed = owed;
+  }
+}
+
+/** The operands that `node` appends to the variable `name` when it is `name + a + b…`, in order. */
+function appendedTo(name: string, node: ESTree.Expression): ESTree.Expression[] | undefined {
+  const operands: ESTree.Expression[] = [];
+  let first: ESTree.Expression | ESTree.PrivateIdentifier = node;
+  while (first.type === 'BinaryExpression' && first.operator === '+') {
+    operands.push(first.right);
+    first = first.left;
+  }
+  if (operands.length === 0 || first.type !== 'Identifier' || first.name !== name) return undefined;
+  return operands.reverse();
 }
 
 export interface InterpreterOptions {
@@ -442,6 +738,13 @@ export interface InterpreterOptions {
   maxPendingCalls?: number;
   /** Optional cancellation. */
   signal?: AbortSignal;
+  /**
+   * The time, as `Date.now()` gives it, from which the run is over. The interpreter reads the
+   * clock every few hundred steps and before every built-in or host function it calls, and ends
+   * the run with a {@link DeadlineError} once the time has come. A signal alone cannot do that:
+   * the timer behind it does not fire while a script computes.
+   */
+  deadline?: number;
   /**
    * What `new` may be applied to: for each such global, the function that builds the value from
    * the arguments. `new` on anything else is refused.
@@ -499,14 +802,45 @@ export class Interpreter {
   private callerDepth = 0;
   private readonly maxPendingCalls: number;
   private readonly globals: Record<string, unknown>;
-  /** The error that ended the run (step budget, abort, allocation budget); set once, never caught */
+  /**
+   * What is owed for the text `reduce` is handing to its callback, for that function to read as
+   * it starts (in the same synchronous step, like {@link callerDepth}); otherwise nothing.
+   */
+  private accumulatorOwed: number | undefined;
+  /** The step count at which the clock is read next */
+  private nextClockCheck = CLOCK_CHECK_STEPS;
+  /** What built-ins worked through that has not made a full step yet (see {@link work}) */
+  private workDone = 0;
+  /** The error that ended the run (step budget, deadline, abort, allocation budget); set once, never caught */
   private fatal: unknown;
   private readonly interpretedFunctions = new WeakSet<object>();
+  /** The functions the host provides: the globals, their members, and what `bind` made of them */
+  private readonly provided = new WeakSet<object>();
   private readonly errorCopies = new WeakMap<object, object>();
+  /** BigInt literals of the program that were found to be within the size a BigInt may have */
+  private readonly checkedLiterals = new WeakSet<object>();
 
   constructor(private readonly options: InterpreterOptions) {
     this.globals = options.globals;
     this.maxPendingCalls = options.maxPendingCalls ?? DEFAULT_MAX_PENDING_CALLS;
+    this.provide(this.globals, 2);
+  }
+
+  /**
+   * Remember the functions among the properties of `holder`, `depth` levels down: a global
+   * (`parseInt`) or a member of one (`Math.max`, a method of a tool namespace). Read from the
+   * property itself, so that nothing of the host runs for it. An array holds data.
+   */
+  private provide(holder: unknown, depth: number): void {
+    if (holder === null || (typeof holder !== 'object' && typeof holder !== 'function') || Array.isArray(holder))
+      return;
+    for (const name of Object.getOwnPropertyNames(holder)) {
+      const descriptor = Object.getOwnPropertyDescriptor(holder, name);
+      if (!descriptor || !('value' in descriptor)) continue;
+      const value: unknown = descriptor.value;
+      if (typeof value === 'function') this.provided.add(value);
+      if (depth > 1) this.provide(value, depth - 1);
+    }
   }
 
   /**
@@ -515,6 +849,8 @@ export class Interpreter {
    * of the script, or a built-in or host function the script passed along.
    */
   call(fn: unknown, args: unknown[]): unknown {
+    // A helper that is still going when the run has been ended starts nothing more for the script
+    if (this.fatal !== undefined) throw this.fatal;
     if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
     // The call continues the chain of the helper that makes it, one call deeper, when the helper
     // makes it while its own call is starting (`parallel` starts every task that way). A call a
@@ -529,7 +865,7 @@ export class Interpreter {
   }
 
   async run(program: ESTree.Program): Promise<unknown> {
-    const root = new Scope();
+    const root = new Scope(undefined, 0, (bytes) => this.charge(bytes));
     // Hoist function + var/const declarations so `__ag_main` is callable.
     for (const stmt of program.body) {
       if (stmt.type === 'FunctionDeclaration' && stmt.id) {
@@ -551,12 +887,23 @@ export class Interpreter {
   }
 
   /**
-   * End the run from outside: whatever of the script is still going (a function a built-in
-   * started and nobody awaited, a callback waiting for a tool call) stops at its next step. The
-   * host calls this when the execution has returned, so that no script code runs after it.
+   * End the run from outside: whatever of the script is still going (a callback waiting for a
+   * tool call, a run that timed out while it waited) stops at its next step or its next call,
+   * whichever comes first. The host calls this when the execution has returned, so that no
+   * script code runs and no host function is called after it.
    */
   stop(): void {
     if (this.fatal === undefined) this.fatal = new InterpreterError('Execution ended');
+  }
+
+  /**
+   * Charge an allocation that a runtime helper of the host made for the script (the helpers a
+   * transformed `+` or template literal calls). The budget is one budget wherever it is asked:
+   * a refusal ends the run here as it does for what the interpreter charges itself, and no
+   * `catch` or `finally` of the script runs after it.
+   */
+  chargeAllocation(bytes: number): void {
+    this.charge(bytes);
   }
 
   /** End the run with an error no `catch` of the script can stop. */
@@ -569,6 +916,101 @@ export class Interpreter {
     if (this.fatal !== undefined) throw this.fatal;
     if (this.options.signal?.aborted) this.end(new InterpreterError('Execution aborted'));
     if (++this.steps > this.options.maxSteps) this.end(new StepLimitError(this.options.maxSteps));
+    if (this.steps >= this.nextClockCheck) this.checkClock();
+  }
+
+  /** End the run when its deadline has passed. */
+  private checkClock(): void {
+    this.nextClockCheck = this.steps + CLOCK_CHECK_STEPS;
+    const deadline = this.options.deadline;
+    if (deadline !== undefined && Date.now() >= deadline) this.end(new DeadlineError());
+  }
+
+  /**
+   * Count what a built-in works through for the script, in chars or items: the engine does it
+   * in one step of its own, however large the operands are. {@link WORK_PER_STEP} units are a
+   * step of the budget, and the clock is read whenever that adds a step.
+   */
+  private work(units: number): void {
+    if (!(units > 0)) return;
+    this.workDone += units;
+    if (this.workDone < WORK_PER_STEP) return;
+    const steps = Math.floor(this.workDone / WORK_PER_STEP);
+    this.workDone -= steps * WORK_PER_STEP;
+    this.steps += steps;
+    if (this.steps > this.options.maxSteps) this.end(new StepLimitError(this.options.maxSteps));
+    this.checkClock();
+  }
+
+  /** {@link assertArrayTextWithinLimit}, and the text the arrays are written as counted as work. */
+  private arrayOperands(...values: unknown[]): void {
+    let measure: TextMeasure | undefined;
+    for (const value of values) {
+      if (!Array.isArray(value)) continue;
+      measure ??= newTextMeasure();
+      measureArrayText(value, 1, measure, 0);
+      if (measure.length > MAX_JOIN_LENGTH) throw new InterpreterError(TEXT_TOO_LONG);
+    }
+    if (measure) this.work(measure.length * WRITE_WORK + measure.work);
+  }
+
+  /**
+   * Count a BigInt an operation made: it is held to the size a BigInt may have, and beyond the
+   * size of a number what it holds is charged to the budget and making it counts as work. Also
+   * for the runtime helper that adds for a transformed `+`.
+   *
+   * @throws InterpreterError when the value is larger than {@link MAX_BIGINT_BITS}
+   */
+  countBigInt(value: bigint): void {
+    const bits = bitsOf(value);
+    if (bits > MAX_BIGINT_BITS) throw bigIntTooLarge();
+    if (bits <= WORD_BITS) return;
+    this.work(bits * BIGINT_WORK);
+    this.charge(Math.ceil(bits / 8));
+  }
+
+  /** Count the work of writing a value as text, when it is a BigInt: the engine writes it in decimal. */
+  private bigIntAsText(value: unknown): void {
+    if (typeof value !== 'bigint') return;
+    const bits = bitsOf(value);
+    if (bits > WORD_BITS) this.work(bits * BIGINT_TEXT_WORK);
+  }
+
+  /**
+   * What is checked before an operator is applied to a BigInt: the operations whose result can
+   * be far larger than their operands are refused from the operands, and what the engine reads
+   * to compare a BigInt with a text is bounded and counted.
+   */
+  private checkBigIntOperands(operator: string, left: unknown, right: unknown): void {
+    if (typeof left === 'bigint' && typeof right === 'bigint') {
+      if (operator === '<<' || operator === '>>') {
+        // A shift to the left makes a value longer by its count
+        const count = Number(operator === '<<' ? right : -right);
+        if (count > 0 && left !== 0n && bitsOf(left) + count > MAX_BIGINT_BITS) throw bigIntTooLarge();
+      } else if (operator === '**') {
+        // A power has at least (bits - 1) * exponent + 1 bits
+        const bits = bitsOf(left);
+        if (bits > 1 && (bits - 1) * Number(right) + 1 > MAX_BIGINT_BITS) throw bigIntTooLarge();
+      } else if (operator === '/' || operator === '%') {
+        // The result can be small where the work is not
+        const bits = bitsOf(left);
+        if (bits > WORD_BITS) this.work(bits * BIGINT_WORK);
+      }
+      return;
+    }
+    const other = typeof left === 'bigint' ? right : left;
+    if (COMPARISONS.has(operator)) {
+      // The engine reads a BigInt out of a text to compare the two
+      const chars = typeof other === 'string' ? other.length : assertArrayTextWithinLimit(other);
+      if (chars > MAX_BIGINT_DIGITS) {
+        throw new InterpreterError(`A BigInt cannot be compared with a text of more than ${MAX_BIGINT_DIGITS} chars`);
+      }
+      this.work(chars * BIGINT_TEXT_WORK);
+    } else if (operator === '+') {
+      // Added to a text or an array, a BigInt is written out
+      this.bigIntAsText(left);
+      this.bigIntAsText(right);
+    }
   }
 
   /** Charge an allocation to the host's budget. */
@@ -603,12 +1045,25 @@ export class Interpreter {
       case 'FunctionDeclaration':
         if (node.id) scope.declare(node.id.name, this.makeFunction(node, scope), false);
         return undefined;
-      case 'ExpressionStatement':
-        return this.evalExpr(node.expression, scope);
+      case 'ExpressionStatement': {
+        // `s += x` and `s = s + x` as statements: appending to a variable (see execAppend)
+        const expression = node.expression;
+        if (expression.type === 'AssignmentExpression' && expression.left.type === 'Identifier') {
+          const name = expression.left.name;
+          const appended =
+            expression.operator === '+='
+              ? [expression.right]
+              : expression.operator === '='
+                ? appendedTo(name, expression.right)
+                : undefined;
+          if (appended !== undefined && scope.has(name)) return this.execAppend(name, appended, scope);
+        }
+        return this.evalExpr(expression, scope);
+      }
       case 'BlockStatement':
         return this.execBlock(node.body, scope.child());
       case 'IfStatement':
-        if (truthy(await this.evalExpr(node.test, scope))) return this.execStatement(node.consequent, scope);
+        if (await this.evalTest(node.test, scope)) return this.execStatement(node.consequent, scope);
         if (node.alternate) return this.execStatement(node.alternate, scope);
         return undefined;
       case 'ForOfStatement':
@@ -629,7 +1084,7 @@ export class Interpreter {
         // The value itself is thrown: what a script throws, a script (or the caller) catches.
         throw await this.evalExpr(node.argument, scope);
       case 'ReturnStatement':
-        throw new ReturnSignal(node.argument ? await this.evalExpr(node.argument, scope) : undefined);
+        throw new ReturnSignal(node.argument ? await this.evalReturned(node.argument, scope) : undefined);
       case 'BreakStatement':
         if (node.label) throw new InterpreterError('Labeled break is not supported');
         throw new BreakSignal();
@@ -712,7 +1167,7 @@ export class Interpreter {
       if (node.init.type === 'VariableDeclaration') await this.execStatement(node.init, inner);
       else await this.evalExpr(node.init, inner);
     }
-    while (node.test ? truthy(await this.evalExpr(node.test, inner)) : true) {
+    while (node.test ? await this.evalTest(node.test, inner) : true) {
       this.tick();
       if (!(await this.runLoopBody(node.body, inner.child()))) break;
       if (node.update) await this.evalExpr(node.update, inner);
@@ -720,7 +1175,7 @@ export class Interpreter {
   }
 
   private async execWhile(node: ESTree.WhileStatement, scope: Scope): Promise<void> {
-    while (truthy(await this.evalExpr(node.test, scope))) {
+    while (await this.evalTest(node.test, scope)) {
       this.tick();
       if (!(await this.runLoopBody(node.body, scope.child()))) break;
     }
@@ -730,7 +1185,7 @@ export class Interpreter {
     do {
       this.tick();
       if (!(await this.runLoopBody(node.body, scope.child()))) break;
-    } while (truthy(await this.evalExpr(node.test, scope)));
+    } while (await this.evalTest(node.test, scope));
   }
 
   private async execSwitch(node: ESTree.SwitchStatement, scope: Scope): Promise<void> {
@@ -802,6 +1257,10 @@ export class Interpreter {
         if ((node as ESTree.RegExpLiteral).regex) {
           throw new InterpreterError('Regular expressions are not supported');
         }
+        if (typeof node.value === 'bigint' && !this.checkedLiterals.has(node)) {
+          if (bitsOf(node.value) > MAX_BIGINT_BITS) throw bigIntTooLarge();
+          this.checkedLiterals.add(node);
+        }
         return node.value;
       case 'Identifier':
         return scope.has(node.name) ? scope.get(node.name) : this.readGlobal(node.name);
@@ -831,6 +1290,7 @@ export class Interpreter {
               for (const [k, v] of Object.entries(spread as Record<string, unknown>)) {
                 this.tick();
                 if (!BLOCKED_KEYS.has(k)) {
+                  assertStorable(obj, k, v);
                   obj[k] = v;
                   count++;
                 }
@@ -841,7 +1301,9 @@ export class Interpreter {
           if (prop.kind !== 'init') throw new InterpreterError('Getters and setters are not supported');
           const key = await this.propKey(prop, scope);
           if (BLOCKED_KEYS.has(key)) throw new InterpreterError(`Forbidden property key: ${key}`);
-          obj[key] = await this.evalExpr(prop.value as ESTree.Expression, scope);
+          const member = await this.evalExpr(prop.value as ESTree.Expression, scope);
+          assertStorable(obj, key, member);
+          obj[key] = member;
           count++;
         }
         this.charge(count * 16);
@@ -852,7 +1314,8 @@ export class Interpreter {
       case 'UpdateExpression': {
         const ref = await this.resolveReference(node.argument, scope);
         const current = ref.get();
-        assertArrayTextWithinLimit(current);
+        this.arrayOperands(current);
+        this.work(operandSize(current));
         const before = Number(current);
         const after = node.operator === '++' ? before + 1 : before - 1;
         ref.set(after);
@@ -867,7 +1330,7 @@ export class Interpreter {
         return left ?? (await this.evalExpr(node.right, scope)); // ??
       }
       case 'ConditionalExpression':
-        return truthy(await this.evalExpr(node.test, scope))
+        return (await this.evalTest(node.test, scope))
           ? this.evalExpr(node.consequent, scope)
           : this.evalExpr(node.alternate, scope);
       case 'SequenceExpression': {
@@ -902,17 +1365,123 @@ export class Interpreter {
     }
   }
 
+  /**
+   * `s += x` or `s = s + x…` as a statement: append to a variable.
+   *
+   * The engine does not copy a text to append to it: the new text links to the old one, and is
+   * written out as a text of its own when something first looks into it. A loop that appends to
+   * one variable therefore allocates what it appends, and is charged that. What is not charged
+   * yet, the length of the text that was appended to, stays owed on the variable: it is paid by
+   * the first read that could look into the new text or keep it (`Scope.get`), because from then
+   * on it can exist as a full copy next to the texts it was built from. Nothing else can get
+   * hold of the new text: as a statement, the assignment has no value.
+   */
+  private async execAppend(name: string, operands: ESTree.Expression[], scope: Scope): Promise<unknown> {
+    this.tick();
+    const { sum, owed } = await this.appendTo(name, operands, scope);
+    scope.append(name, sum, owed);
+    return sum;
+  }
+
+  /**
+   * The value of the variable `name` with the operands appended, charged for what is appended.
+   *
+   * @returns The sum, and what is still owed for it when it is a text that was appended to a text
+   */
+  private async appendTo(
+    name: string,
+    operands: ESTree.Expression[],
+    scope: Scope,
+  ): Promise<{ sum: unknown; owed: number }> {
+    const variable = scope.slot(name);
+    if (!variable) throw new InterpreterError(`'${name}' is not defined`);
+    // Read as it is, without paying what is owed: the sum below is all that gets hold of it
+    const start: unknown = variable.value;
+    const owedAtStart = variable.owed;
+    let sum = start;
+    for (const operand of operands) {
+      // Each sum is a step, as in any other expression
+      this.tick();
+      const right = await this.evalExpr(operand, scope);
+      const left = sum;
+      sum = this.binary('+', left, right, true);
+      if (typeof sum === 'string') this.charge((sum.length - (typeof left === 'string' ? left.length : 0)) * 2);
+    }
+    let owed = 0;
+    if (typeof sum === 'string' && typeof start === 'string') {
+      // Still owed from earlier appends when nothing read the variable in between (not while
+      // the operands were evaluated either); otherwise the text that was appended to.
+      owed = owedAtStart > 0 && variable.owed === owedAtStart ? owedAtStart : start.length * 2;
+    }
+    return { sum, owed };
+  }
+
+  /**
+   * The value a function returns. In a callback that `reduce` called with a text, the
+   * accumulator itself and what is appended to it (`return text + item`) are returned as an
+   * {@link AccumulatedText}, without paying what is owed for them: `reduce` carries it on.
+   */
+  private async evalReturned(node: ESTree.Expression, scope: Scope): Promise<unknown> {
+    const name = scope.accumulator;
+    if (name === undefined) return this.evalExpr(node, scope);
+    if (node.type === 'ConditionalExpression') {
+      // `first ? item : text + item`: the branch that is taken is what is returned
+      this.tick();
+      const branch = (await this.evalTest(node.test, scope)) ? node.consequent : node.alternate;
+      return this.evalReturned(branch, scope);
+    }
+    if (node.type === 'Identifier' && node.name === name) {
+      const variable = scope.slot(name);
+      if (variable !== undefined && typeof variable.value === 'string') {
+        this.tick();
+        return new AccumulatedText(variable.value, variable.owed);
+      }
+    } else {
+      const appended = appendedTo(name, node);
+      if (appended !== undefined && scope.has(name)) {
+        this.tick();
+        const { sum, owed } = await this.appendTo(name, appended, scope);
+        return typeof sum === 'string' ? new AccumulatedText(sum, owed) : sum;
+      }
+    }
+    return this.evalExpr(node, scope);
+  }
+
+  /**
+   * The variable an identifier names when it holds an appended text that is still owed for.
+   * For the readers that learn nothing but its length or that it is a text.
+   */
+  private appendedText(node: ESTree.Node, scope: Scope): string | undefined {
+    if (node.type !== 'Identifier') return undefined;
+    const variable = scope.slot(node.name);
+    return variable !== undefined && variable.owed > 0 && typeof variable.value === 'string'
+      ? variable.value
+      : undefined;
+  }
+
+  /** Evaluate a condition. Whether a text is empty is known from its length. */
+  private async evalTest(node: ESTree.Expression, scope: Scope): Promise<boolean> {
+    const text = this.appendedText(node, scope);
+    if (text !== undefined) {
+      this.tick();
+      return text.length > 0;
+    }
+    return truthy(await this.evalExpr(node, scope));
+  }
+
   private async evalTemplate(node: ESTree.TemplateLiteral, scope: Scope): Promise<string> {
     let out = '';
     for (let i = 0; i < node.quasis.length; i++) {
       out += node.quasis[i].value.cooked ?? '';
       if (i < node.expressions.length) {
         const value = await this.evalExpr(node.expressions[i], scope);
-        assertArrayTextWithinLimit(value);
+        this.arrayOperands(value);
+        this.bigIntAsText(value);
         out += String(value);
         if (out.length > MAX_JOIN_LENGTH) throw new InterpreterError(TEXT_TOO_LONG);
       }
     }
+    this.work(out.length * WRITE_WORK);
     this.charge(out.length * 2);
     return out;
   }
@@ -936,21 +1505,34 @@ export class Interpreter {
       assertKeyAllowed(key);
       return delete (object as Record<string, unknown>)[key];
     }
+    if (node.operator === '!' || node.operator === 'typeof') {
+      const text = this.appendedText(node.argument, scope);
+      if (text !== undefined) {
+        this.tick();
+        return node.operator === '!' ? text.length === 0 : 'string';
+      }
+    }
     const v = await this.evalExpr(node.argument, scope);
     switch (node.operator) {
       case '!':
         return !truthy(v);
-      case '-':
-        assertArrayTextWithinLimit(v);
-        return -(v as number);
+      case '-': {
+        this.numericOperand(v);
+        const negated: unknown = -(v as number);
+        if (typeof negated === 'bigint') this.countBigInt(negated);
+        return negated;
+      }
       case '+':
-        assertArrayTextWithinLimit(v);
+        this.numericOperand(v);
         return +(v as number);
       case 'typeof':
         return typeof v;
-      case '~':
-        assertArrayTextWithinLimit(v);
-        return ~(v as number);
+      case '~': {
+        this.numericOperand(v);
+        const inverted: unknown = ~(v as number);
+        if (typeof inverted === 'bigint') this.countBigInt(inverted);
+        return inverted;
+      }
       case 'void':
         return undefined;
       default:
@@ -958,16 +1540,36 @@ export class Interpreter {
     }
   }
 
+  /** An operand the engine reads a number from: an array is joined first, a text is read through. */
+  private numericOperand(value: unknown): void {
+    this.arrayOperands(value);
+    this.work(operandSize(value));
+  }
+
   private async evalBinary(node: ESTree.BinaryExpression, scope: Scope): Promise<unknown> {
     if (node.left.type === 'PrivateIdentifier') throw new InterpreterError('Private names are not supported');
+    if (node.operator === '+') return this.evalSum(node, scope);
+    if (node.operator === '===' || node.operator === '!==') {
+      // An appended text and a literal that is not a text of the same length are not equal,
+      // and that is known without looking into the text (`s !== ''`).
+      const literal = node.left.type === 'Literal' ? node.left : node.right.type === 'Literal' ? node.right : undefined;
+      const text = this.appendedText(literal === node.left ? node.right : node.left, scope);
+      if (literal !== undefined && text !== undefined && !(literal as ESTree.RegExpLiteral).regex) {
+        const value: unknown = literal.value;
+        if (typeof value !== 'string' || value.length !== text.length) {
+          this.tick();
+          this.tick();
+          return node.operator === '!==';
+        }
+      }
+    }
     const l = await this.evalExpr(node.left, scope);
     const r = await this.evalExpr(node.right, scope);
     if (node.operator === 'in') {
       if (r === null || (typeof r !== 'object' && typeof r !== 'function')) {
         throw new InterpreterError("Cannot use 'in' on a value that is not an object");
       }
-      assertArrayTextWithinLimit(l);
-      const key = String(l);
+      const key = this.keyText(l);
       if (BLOCKED_KEYS.has(key)) throw new InterpreterError(`Forbidden property access: ${key}`);
       return key in (r as object);
     }
@@ -979,18 +1581,70 @@ export class Interpreter {
     return this.binary(node.operator, l, r);
   }
 
-  /** Apply a binary operator to two values. */
-  private binary(operator: string, left: unknown, right: unknown): unknown {
-    // Every operator but the two strict comparisons converts an array operand to text.
-    if (operator !== '===' && operator !== '!==') assertArrayTextWithinLimit(left, right);
+  /**
+   * `a + b + c`: the operands from left to right, and one sum after the other. Only the last
+   * sum is a value the script gets hold of, and it is charged in full; the ones before it are
+   * part of it.
+   */
+  private async evalSum(node: ESTree.BinaryExpression, scope: Scope): Promise<unknown> {
+    const operands: ESTree.Expression[] = [];
+    let first: ESTree.Expression | ESTree.PrivateIdentifier = node;
+    while (first.type === 'BinaryExpression' && first.operator === '+') {
+      operands.push(first.right);
+      first = first.left;
+    }
+    if (first.type === 'PrivateIdentifier') throw new InterpreterError('Private names are not supported');
+    let sum = await this.evalExpr(first, scope);
+    for (let i = operands.length - 1; i >= 0; i--) {
+      // Each sum is a step (the outermost one was counted when this expression was reached)
+      if (i < operands.length - 1) this.tick();
+      const right = await this.evalExpr(operands[i], scope);
+      sum = this.binary('+', sum, right, i > 0);
+    }
+    return sum;
+  }
+
+  /**
+   * Apply a binary operator to two values.
+   *
+   * @param partOfSum - The result of `+` is an operand of the next `+` and nothing else: the
+   *   caller charges for the text that comes of it
+   */
+  private binary(operator: string, left: unknown, right: unknown, partOfSum = false): unknown {
+    if (typeof left !== 'bigint' && typeof right !== 'bigint') return this.operate(operator, left, right, partOfSum);
+    this.checkBigIntOperands(operator, left, right);
+    const result = this.operate(operator, left, right, partOfSum);
+    if (typeof result === 'bigint') this.countBigInt(result);
+    return result;
+  }
+
+  private operate(operator: string, left: unknown, right: unknown, partOfSum: boolean): unknown {
+    // Whether the engine converts an operand next to `other`. A strict comparison converts
+    // nothing, and a loose one only an operand that is compared with a primitive value: next
+    // to `null`, `undefined` or another object it is compared as it is. Every other operator
+    // converts both operands.
+    const strict = operator === '===' || operator === '!==';
+    const loose = operator === '==' || operator === '!=';
+    const convertsNextTo = (other: unknown): boolean =>
+      !strict &&
+      (!loose || (other !== null && other !== undefined && typeof other !== 'object' && typeof other !== 'function'));
+    // An array that is converted is written as text
+    this.arrayOperands(convertsNextTo(right) ? left : undefined, convertsNextTo(left) ? right : undefined);
+    // Two texts are compared char by char, and a number is read out of a text char by char.
+    // `+` only links two texts.
+    if (operator !== '+') {
+      if (typeof left === 'string' && typeof right === 'string') this.work(Math.min(left.length, right.length));
+      else if (typeof left === 'string' && convertsNextTo(right)) this.work(left.length);
+      else if (typeof right === 'string' && convertsNextTo(left)) this.work(right.length);
+    }
     const l = left as never;
     const r = right as never;
     switch (operator) {
       case '+': {
         const sum: unknown = (l as number) + (r as number);
-        // What the engine adds to an existing string is the new part (it keeps the old one and
-        // links to it), so a loop that appends to one string is charged its length once.
-        if (typeof sum === 'string') this.charge((sum.length - (typeof left === 'string' ? left.length : 0)) * 2);
+        // A text is charged in full: the engine links it to its operands at first, and writes
+        // it out as a text of its own as soon as something looks into it.
+        if (typeof sum === 'string' && !partOfSum) this.charge(sum.length * 2);
         return sum;
       }
       case '-':
@@ -1042,6 +1696,16 @@ export class Interpreter {
    */
   private async evalMemberTarget(node: ESTree.MemberExpression, scope: Scope): Promise<MemberTarget> {
     if (node.object.type === 'Super') throw new InterpreterError('super is not supported');
+    // The length of an appended text is read off the variable (a text has no other member that
+    // can be read without looking into it, and none that can be written)
+    const text =
+      !node.computed && node.property.type === 'Identifier' && node.property.name === 'length'
+        ? this.appendedText(node.object, scope)
+        : undefined;
+    if (text !== undefined) {
+      this.tick();
+      return { object: text, key: 'length' };
+    }
     const object = await this.evalExpr(node.object, scope);
     if (node.optional && (object === null || object === undefined)) throw new ChainShortCircuit();
     if (node.property.type === 'PrivateIdentifier') throw new InterpreterError('Private names are not supported');
@@ -1087,12 +1751,11 @@ export class Interpreter {
   private writeMember(object: unknown, key: string, value: unknown): void {
     this.assertChangeable(object);
     assertKeyAllowed(key);
+    assertStorable(object, key, value);
     if (Array.isArray(object)) {
-      const grownTo = arrayLengthAfterWrite(object, key, value);
-      if (grownTo > MAX_ARRAY_LENGTH) {
-        throw new InterpreterError(`An array cannot be longer than ${MAX_ARRAY_LENGTH} items`);
-      }
-      if (grownTo > object.length) this.charge((grownTo - object.length) * 8);
+      const checked = checkArrayWrite(object, key, value);
+      if (checked.length > object.length) this.charge((checked.length - object.length) * 8);
+      value = checked.value;
     }
     (object as Record<string, unknown>)[key] = value;
   }
@@ -1127,7 +1790,11 @@ export class Interpreter {
     const construct = this.options.constructors?.get(callee);
     if (!construct) throw new InterpreterError('new works with the built-in types the sandbox provides only');
     const args = await this.evalArguments(node.arguments, scope);
-    if (!ARRAY_DATA_FUNCTIONS.has(callee as object)) assertArrayTextWithinLimit(...args);
+    if (!ARRAY_DATA_FUNCTIONS.has(callee as object)) {
+      this.arrayOperands(...args);
+      // A date or an error is made from a text by reading it
+      for (const arg of args) this.work(typeof arg === 'string' ? arg.length : 0);
+    }
     const value = construct(args);
     this.chargeValue(value);
     return value;
@@ -1165,6 +1832,10 @@ export class Interpreter {
    * @param depth - How many calls deep the code that makes this call runs
    */
   private async callFunction(fn: unknown, thisArg: unknown, args: unknown[], depth: number): Promise<unknown> {
+    // Once the run has been ended no call is made for the script: a call is where a script
+    // reaches the host (a tool, the console), and a chain that was waiting when the execution
+    // returned may get here without passing a step.
+    if (this.fatal !== undefined) throw this.fatal;
     for (let hops = 0; fn === FunctionProtoCall || fn === FunctionProtoApply || fn === FunctionProtoBind; hops++) {
       const name = fn === FunctionProtoCall ? 'call' : fn === FunctionProtoApply ? 'apply' : 'bind';
       if (typeof thisArg !== 'function' || hops >= 8) {
@@ -1191,6 +1862,9 @@ export class Interpreter {
       return await this.withCallerDepth(depth, () => interpreted.apply(thisArg, args));
     }
 
+    // A built-in or host function runs in one step of the engine, which nothing can interrupt:
+    // the clock is read before it starts.
+    this.checkClock();
     const own = this.enterCall(depth);
     try {
       args = this.checkBuiltinCall(fn, thisArg, args);
@@ -1200,20 +1874,270 @@ export class Interpreter {
       if (arrayMethod !== undefined && HIGHER_ORDER_ARRAY_METHODS.has(arrayMethod) && typeof args[0] === 'function') {
         return await this.callArrayMethod(thisArg as unknown[], arrayMethod, args, own);
       }
-      // A function of the script that the built-in invokes while it starts is its callee
-      const builtin = fn as (...a: unknown[]) => unknown;
-      const builtinArgs = args;
-      const result = await this.withCallerDepth(own, () => builtin.apply(thisArg, builtinArgs));
-      if (arrayMethod === undefined && STRING_METHODS.get(fn) === 'split' && Array.isArray(result)) {
+      if (arrayMethod === 'toLocaleString') {
+        const text = this.arrayLocaleText(thisArg as unknown[], args, new Set(), { length: 0 }, 0);
+        this.chargeValue(text);
+        return text;
+      }
+      const stringMethod = arrayMethod === undefined ? STRING_METHODS.get(fn) : undefined;
+      this.countRead(fn, arrayMethod, stringMethod, thisArg, args);
+
+      let result = this.searchInPieces(arrayMethod, stringMethod, thisArg, args);
+      if (result === NOT_SEARCHED) {
+        // Whether a text is in a text is asked as where it is: how far the engine went is
+        // then known (see countSearched)
+        const asIndex = stringMethod === 'includes' && typeof thisArg === 'string';
+        // A function of the script that the built-in invokes while it starts is its callee
+        const builtin = (asIndex ? StringProtoIndexOf : fn) as (...a: unknown[]) => unknown;
+        const builtinArgs = args;
+        result = await this.withCallerDepth(own, () => builtin.apply(thisArg, builtinArgs));
+        this.countSearched(arrayMethod, stringMethod, thisArg, args, result);
+        if (asIndex) result = result !== -1;
+      }
+      if (stringMethod === 'split' && Array.isArray(result)) {
         if (result.length > MAX_ARRAY_LENGTH) {
           throw new InterpreterError(`An array cannot be longer than ${MAX_ARRAY_LENGTH} items`);
         }
       }
+      // What the call wrote
+      this.work(typeof result === 'string' ? result.length * WRITE_WORK : operandSize(result));
       this.chargeValue(result);
       return result;
     } finally {
       this.pendingCalls--;
     }
+  }
+
+  /**
+   * Count what a built-in or host function reads before it is called: its receiver, where the
+   * method goes through it (a search, a conversion, a copy; not a method that reads one char or
+   * works at the end of an array), and the texts among the arguments it converts or searches
+   * for. A value a function only keeps is not read: an item to push, the array a callback is
+   * handed with every item. An array that is read as text was counted where it was measured,
+   * and what the call makes is counted when it returns.
+   */
+  private countRead(
+    fn: object,
+    arrayMethod: string | undefined,
+    stringMethod: string | undefined,
+    receiver: unknown,
+    args: unknown[],
+  ): void {
+    let read = 0;
+    if (typeof receiver === 'string') {
+      // A search for a place is counted by how far it goes, when it has answered
+      const counted = stringMethod === undefined || !ARRAY_SEARCHES.has(stringMethod);
+      if (counted && (stringMethod === undefined || !CONSTANT_STRING_METHODS.has(stringMethod))) {
+        read += receiver.length;
+      }
+    } else if (Array.isArray(receiver)) {
+      const counted = arrayMethod !== 'indexOf' && arrayMethod !== 'lastIndexOf';
+      if (counted && (arrayMethod === undefined || !CONSTANT_ARRAY_METHODS.has(arrayMethod))) read += receiver.length;
+    } else if (typeof receiver === 'bigint') {
+      // Its own methods write it out
+      this.bigIntAsText(receiver);
+    }
+    if (!ARRAY_DATA_FUNCTIONS.has(fn)) {
+      const isData = arrayMethod === undefined ? undefined : ARRAY_DATA_ARGUMENTS.get(arrayMethod);
+      const converted = CONVERTED_ARGUMENTS.get(fn) ?? args.length;
+      for (let i = 0; i < args.length && i < converted; i++) {
+        if (isData?.(i)) continue;
+        const arg: unknown = args[i];
+        if (typeof arg === 'string') read += arg.length;
+        else this.bigIntAsText(arg);
+      }
+    }
+    if (stringMethod === 'localeCompare' && typeof receiver === 'string') {
+      // Compared by the rules of a locale, as far as the shorter of the two goes
+      const other: unknown = args[0];
+      read =
+        Math.min(receiver.length, typeof other === 'string' ? other.length : receiver.length) * LOCALE_COMPARE_WORK;
+    }
+    this.work(read);
+  }
+
+  /**
+   * Count a search for a place by how far the engine went: from where it started to where it
+   * found what it looked for, or to the end. A script that goes through a long text with
+   * `indexOf(text, position)` pays for the text once, not once per call.
+   *
+   * @param index - What the engine answered: the place, or -1
+   */
+  private countSearched(
+    arrayMethod: string | undefined,
+    stringMethod: string | undefined,
+    receiver: unknown,
+    args: unknown[],
+    index: unknown,
+  ): void {
+    if (typeof index !== 'number') return;
+    const position: unknown = args[1];
+    if (typeof receiver === 'string' && stringMethod !== undefined && ARRAY_SEARCHES.has(stringMethod)) {
+      const length = receiver.length;
+      if (stringMethod === 'lastIndexOf') {
+        // Without a position, or with one that is not a number, the search starts at the end
+        const given = Number(position);
+        const from = Number.isNaN(given) ? length : Math.min(Math.max(Math.trunc(given), 0), length);
+        this.work(index === -1 ? from : from - index);
+      } else {
+        const from = Math.min(Math.max(integerOf(position), 0), length);
+        this.work(index === -1 ? length - from : index - from);
+      }
+    } else if (Array.isArray(receiver) && (arrayMethod === 'indexOf' || arrayMethod === 'lastIndexOf')) {
+      const length = receiver.length;
+      if (arrayMethod === 'lastIndexOf') {
+        const given = args.length > 1 ? integerOf(position) : length - 1;
+        const from = given >= 0 ? Math.min(given, length - 1) : length + given;
+        this.work(index === -1 ? from + 1 : from - index);
+      } else {
+        const given = integerOf(position);
+        const from = Math.min(given >= 0 ? given : Math.max(length + given, 0), length);
+        this.work(index === -1 ? length - from : index - from);
+      }
+    }
+  }
+
+  /**
+   * Make a search whose cost in the engine is the product of two lengths, piece by piece: a text
+   * in a text (the engine can need a comparison of the whole pattern at every position of a
+   * text that nearly matches everywhere), or a long text among the items of an array (every
+   * item of the same length can be compared to its end). Between the pieces a step is counted
+   * and the clock is read, so that one such call ends with the budget or the deadline like any
+   * other code. The answer is the engine's.
+   *
+   * @returns The result, or {@link NOT_SEARCHED} for a call that is not such a search or small
+   *   enough to be one piece: the engine makes it
+   */
+  private searchInPieces(
+    arrayMethod: string | undefined,
+    stringMethod: string | undefined,
+    receiver: unknown,
+    args: unknown[],
+  ): unknown {
+    const wanted: unknown = args[0];
+    if (typeof wanted !== 'string') return NOT_SEARCHED;
+    // A position the engine refuses to convert is left for the engine to refuse (it does so
+    // before it searches)
+    const method = arrayMethod ?? stringMethod;
+    if (typeof args[1] === 'bigint' && method !== undefined && ARRAY_SEARCHES.has(method)) return NOT_SEARCHED;
+    if (stringMethod !== undefined && typeof receiver === 'string' && TEXT_SEARCHES.has(stringMethod)) {
+      const small = receiver.length * wanted.length <= SEARCH_PIECE_WORK;
+      if (small || wanted.length === 0 || wanted.length > receiver.length) return NOT_SEARCHED;
+      return this.searchText(stringMethod, receiver, wanted, args);
+    }
+    if (arrayMethod !== undefined && Array.isArray(receiver) && ARRAY_SEARCHES.has(arrayMethod)) {
+      const small = receiver.length * wanted.length <= SEARCH_PIECE_WORK;
+      if (small || wanted.length <= LONG_SEARCH_TEXT) return NOT_SEARCHED;
+      return this.searchArray(arrayMethod, receiver, wanted, args);
+    }
+    return NOT_SEARCHED;
+  }
+
+  /** The first place at or after `from` where `pattern` starts in `text`, or -1. */
+  private findForward(text: string, pattern: string, from: number): number {
+    const last = text.length - pattern.length;
+    const starts = Math.max(1, Math.floor(SEARCH_PIECE_WORK / pattern.length));
+    for (let at = from; at <= last; at += starts) {
+      // Between two pieces: a step, and a look at the clock
+      if (at !== from) {
+        this.tick();
+        this.checkClock();
+      }
+      // The part of the text a match that starts in this piece can cover
+      const end = Math.min(at + starts - 1, last) + pattern.length;
+      const found = text.substring(at, end).indexOf(pattern);
+      // Counted as far as the engine went: to the match, or through the piece
+      this.work(found === -1 ? end - at : found + pattern.length);
+      if (found !== -1) return at + found;
+    }
+    return -1;
+  }
+
+  /** The last place at or before `from` where `pattern` starts in `text`, or -1. */
+  private findBackward(text: string, pattern: string, from: number): number {
+    const starts = Math.max(1, Math.floor(SEARCH_PIECE_WORK / pattern.length));
+    for (let high = from; high >= 0; high -= starts) {
+      if (high !== from) {
+        this.tick();
+        this.checkClock();
+      }
+      const low = Math.max(0, high - starts + 1);
+      const end = high + pattern.length;
+      const found = text.substring(low, end).lastIndexOf(pattern);
+      this.work(found === -1 ? end - low : end - low - found);
+      if (found !== -1) return low + found;
+    }
+    return -1;
+  }
+
+  /** `text.indexOf(pattern)` and the other searches for a text in a text, as the engine answers them. */
+  private searchText(name: string, text: string, pattern: string, args: unknown[]): unknown {
+    const length = text.length;
+    const patternLength = pattern.length;
+    switch (name) {
+      case 'indexOf':
+        return this.findForward(text, pattern, Math.min(Math.max(integerOf(args[1]), 0), length));
+      case 'includes':
+        return this.findForward(text, pattern, Math.min(Math.max(integerOf(args[1]), 0), length)) !== -1;
+      case 'lastIndexOf': {
+        // Without a position, or with one that is not a number, the search starts at the end
+        const position = Number(args[1]);
+        const from = Number.isNaN(position) ? Number.POSITIVE_INFINITY : Math.trunc(position);
+        return this.findBackward(text, pattern, Math.min(Math.max(from, 0), length - patternLength));
+      }
+      case 'split': {
+        // The limit was made a number where the call was checked
+        const limit = args[1] as number;
+        const pieces: string[] = [];
+        if (limit === 0) return pieces;
+        let at = 0;
+        for (let hit = this.findForward(text, pattern, 0); hit !== -1; hit = this.findForward(text, pattern, at)) {
+          pieces.push(text.substring(at, hit));
+          if (pieces.length >= limit) return pieces;
+          at = hit + patternLength;
+        }
+        pieces.push(text.substring(at));
+        return pieces;
+      }
+      default: {
+        // replace, replaceAll: the replacement is a text here (anything else was refused)
+        const replacement = String(args[1]);
+        const parts: string[] = [];
+        let at = 0;
+        let hit = this.findForward(text, pattern, 0);
+        while (hit !== -1) {
+          parts.push(text.substring(at, hit), expandReplacement(replacement, text, hit, pattern));
+          at = hit + patternLength;
+          hit = name === 'replace' ? -1 : this.findForward(text, pattern, at);
+        }
+        parts.push(text.substring(at));
+        return parts.join('');
+      }
+    }
+  }
+
+  /** `array.indexOf(text)`, `lastIndexOf` and `includes` for a long text, as the engine answers them. */
+  private searchArray(name: string, array: unknown[], wanted: string, args: unknown[]): number | boolean {
+    const length = array.length;
+    // Only a text of the same length can be equal, and comparing one can read all of it
+    const same = (item: unknown): boolean => {
+      if (typeof item !== 'string' || item.length !== wanted.length) {
+        this.work(1);
+        return false;
+      }
+      this.work(wanted.length);
+      return item === wanted;
+    };
+    if (name === 'lastIndexOf') {
+      let index = args.length > 1 ? integerOf(args[1]) : length - 1;
+      index = index >= 0 ? Math.min(index, length - 1) : length + index;
+      for (; index >= 0; index--) if (same(array[index])) return index;
+      return -1;
+    }
+    let index = integerOf(args[1]);
+    if (index < 0) index = Math.max(length + index, 0);
+    for (; index < length; index++) if (same(array[index])) return name === 'includes' ? true : index;
+    return name === 'includes' ? false : -1;
   }
 
   /**
@@ -1261,7 +2185,7 @@ export class Interpreter {
    */
   private bindFunction(target: unknown, boundThis: unknown, boundArgs: unknown[]): (...rest: unknown[]) => unknown {
     this.charge((boundArgs.length + 2) * 8);
-    return (...rest: unknown[]): Promise<unknown> => {
+    const bound = (...rest: unknown[]): Promise<unknown> => {
       // The bound function is called as a built-in is: one call deep where it is called from,
       // and the function it stands for one deeper.
       const result = this.callFunction(target, boundThis, [...boundArgs, ...rest], this.callerDepth);
@@ -1269,6 +2193,8 @@ export class Interpreter {
       result.then(undefined, ignoreRejection);
       return result;
     };
+    this.provided.add(bound);
+    return bound;
   }
 
   /**
@@ -1281,6 +2207,25 @@ export class Interpreter {
   private checkBuiltinCall(fn: object, thisArg: unknown, args: unknown[]): unknown[] {
     const arrayMethod = ARRAY_METHODS.get(fn);
     const stringMethod = arrayMethod === undefined ? STRING_METHODS.get(fn) : undefined;
+    const otherMethod = arrayMethod === undefined && stringMethod === undefined ? OTHER_METHODS.get(fn) : undefined;
+    const engineMethod = arrayMethod !== undefined || stringMethod !== undefined || otherMethod !== undefined;
+
+    // What a script can call is listed. A function that is neither a method of a value a script
+    // holds nor provided by the host is one the engine added somewhere a script can reach
+    // (on its iterators, for one): nothing here knows what it does with its arguments.
+    if (
+      !engineMethod &&
+      fn !== ARRAY_ITERATOR_NEXT &&
+      fn !== FunctionProtoToString &&
+      !this.provided.has(fn) &&
+      !LIBRARY_FUNCTIONS.has(fn)
+    ) {
+      throw new InterpreterError('This built-in function is not available in the sandbox');
+    }
+    if (otherMethod !== undefined && !RECEIVERS[otherMethod.kind].accepts(thisArg, otherMethod.name)) {
+      const { kind, name } = otherMethod;
+      throw new InterpreterError(`${kind} '${name}' works on ${RECEIVERS[kind].noun} only`);
+    }
 
     // Arrays where the function takes a text or a number: the engine joins them.
     let arrayText = 0;
@@ -1298,12 +2243,32 @@ export class Interpreter {
         if (Array.isArray(arg) && !isData?.(i)) measureArray(arg);
       }
       if (arrayMethod === undefined && stringMethod === undefined && Array.isArray(thisArg)) measureArray(thisArg);
-      arrayText = (measure as TextMeasure | undefined)?.length ?? 0;
+      const measured = measure as TextMeasure | undefined;
+      arrayText = measured?.length ?? 0;
+      this.work(arrayText * WRITE_WORK + (measured?.work ?? 0));
     }
 
     if (stringMethod !== undefined) args = this.checkStringMethod(stringMethod, thisArg, args, arrayText);
-    else if (arrayMethod !== undefined) this.checkArrayMethod(arrayMethod, thisArg, args);
+    else if (arrayMethod !== undefined) args = this.checkArrayMethod(arrayMethod, thisArg, args);
 
+    // An engine built-in gets a function only where it keeps it as data (an item to push, a
+    // value to look for). A callback of an array method is called by the interpreter, which
+    // awaits it and checks the call; any other built-in would call it by itself, or turn it
+    // into text.
+    const callbackTaken =
+      arrayMethod !== undefined && HIGHER_ORDER_ARRAY_METHODS.has(arrayMethod) && typeof args[0] === 'function';
+    if (engineMethod && !callbackTaken) {
+      const isData = arrayMethod === undefined ? undefined : ARRAY_DATA_ARGUMENTS.get(arrayMethod);
+      for (let i = 0; i < args.length; i++) {
+        if (typeof args[i] !== 'function' || isData?.(i)) continue;
+        const kind = arrayMethod !== undefined ? 'Array' : stringMethod !== undefined ? 'String' : otherMethod?.kind;
+        const name = arrayMethod ?? stringMethod ?? otherMethod?.name;
+        throw new InterpreterError(`${kind} '${name}' does not take a function in the sandbox`);
+      }
+    }
+
+    const convert = ARGUMENT_CONVERSIONS.get(fn);
+    if (convert) args = convert(args);
     const cost = CALL_COSTS.get(fn);
     if (cost) this.charge(cost(args));
     return args;
@@ -1317,6 +2282,13 @@ export class Interpreter {
     // same uninterruptible matching as a literal, without a literal.
     if (name === 'match' || name === 'matchAll' || name === 'search') {
       throw new InterpreterError(`String '${name}' is not supported: it runs a regular expression`);
+    }
+
+    // What is searched for is converted once, here: an array becomes its text (measured above),
+    // and the search is made with that text, in pieces when it is long.
+    if (TEXT_SEARCHES.has(name) && args.length > 0) {
+      const pattern = convertedOnce(args[0], String);
+      if (pattern !== args[0]) args = [pattern, ...args.slice(1)];
     }
 
     if (name === 'replace' || name === 'replaceAll') {
@@ -1348,14 +2320,16 @@ export class Interpreter {
 
     // Cap string-amplifying ops whose allocation the step budget can't see.
     if (name === 'repeat' || name === 'padStart' || name === 'padEnd') {
-      const n = Number(args[0]);
+      // The count is converted once: the number that is checked is the number the engine gets
+      const count = convertedOnce(args[0], Number);
+      const n = Number(count);
       const produced = name === 'repeat' ? receiver.length * (n > 0 ? n : 0) : Math.max(receiver.length, n > 0 ? n : 0);
       if (produced > MAX_STRING_OP_LENGTH) {
         throw new InterpreterError(
           `String '${name}' would produce ${produced} chars, exceeding the ${MAX_STRING_OP_LENGTH} limit`,
         );
       }
-      return args;
+      return args.length === 0 ? args : [count, ...args.slice(1)];
     }
 
     // One call appends every argument; with a spread that is one string, many times.
@@ -1372,6 +2346,24 @@ export class Interpreter {
       return args;
     }
 
+    // A normalization form can write several chars for one: up to four when it only takes
+    // composed chars apart, up to eighteen when it also replaces compatibility chars. A char of
+    // the basic Latin range is never changed.
+    if (name === 'normalize') {
+      const form = convertedOnce(args[0], String);
+      const growth = form === 'NFKC' || form === 'NFKD' ? 18 : 4;
+      if (receiver.length * growth > MAX_JOIN_LENGTH) {
+        let produced = 0;
+        for (let i = 0; i < receiver.length && produced <= MAX_JOIN_LENGTH; i++) {
+          produced += receiver.charCodeAt(i) < 0x80 ? 1 : growth;
+        }
+        if (produced > MAX_JOIN_LENGTH) {
+          throw new InterpreterError(`String 'normalize' could produce more than ${MAX_JOIN_LENGTH} chars`);
+        }
+      }
+      return args.length === 0 ? args : [form, ...args.slice(1)];
+    }
+
     // The engine stops at the limit it is given: the array it builds is never longer than a
     // script's arrays may be, plus the one item that shows the limit was passed.
     if (name === 'split') {
@@ -1382,7 +2374,7 @@ export class Interpreter {
     return args;
   }
 
-  private checkArrayMethod(name: string, receiver: unknown, args: unknown[]): void {
+  private checkArrayMethod(name: string, receiver: unknown, args: unknown[]): unknown[] {
     // These methods accept any receiver with a `length`: `{ length: 1e9 }` is no array, and the
     // engine would work through it as if it were one.
     if (!Array.isArray(receiver)) throw new InterpreterError(`Array '${name}' works on an array only`);
@@ -1392,44 +2384,60 @@ export class Interpreter {
     };
 
     switch (name) {
+      // Written by the interpreter itself, one item at a time (see arrayLocaleText): how long
+      // the text of a number or a date is depends on the locale and the options.
+      case 'toLocaleString':
+        return args;
       // `join` writes every item and a separator between them into one string, in one step; so
-      // do the two conversions to text.
+      // does the conversion to text.
       case 'join':
-      case 'toString':
-      case 'toLocaleString': {
-        const separator = name !== 'join' || args.length === 0 || args[0] === undefined ? ',' : String(args[0]);
+      case 'toString': {
+        // The separator is converted once: the text that is measured is the text that is written
+        const given = name !== 'join' || args.length === 0 ? undefined : convertedOnce(args[0], String);
+        const separator = given === undefined ? ',' : String(given);
         const measure = newTextMeasure();
         measureArrayText(receiver, separator.length, measure, 0);
         if (measure.length > MAX_JOIN_LENGTH) {
           throw new InterpreterError(`Array '${name}' would produce more than ${MAX_JOIN_LENGTH} chars`);
         }
-        return;
+        this.work(measure.work);
+        return name === 'join' && args.length > 0 ? [given, ...args.slice(1)] : args;
       }
       // Without a comparison function the engine compares the items as text: strings as they
       // are, and an array among the items joined, again for every comparison.
       case 'sort':
       case 'toSorted': {
-        if (typeof args[0] === 'function') return;
+        if (typeof args[0] === 'function') return args;
         const measure = newTextMeasure();
+        let chars = 0;
         for (let i = 0; i < receiver.length && measure.length <= MAX_JOIN_LENGTH; i++) {
           const item: unknown = receiver[i];
           if (Array.isArray(item)) measureArrayText(item, 1, measure, 1);
+          else chars += typeof item === 'string' ? item.length : 32;
         }
         if (measure.length > MAX_JOIN_LENGTH) throw new InterpreterError(TEXT_TOO_LONG);
-        return;
+        // A sort compares each item about as often as the array can be halved, and a comparison
+        // of two texts that start alike reads them to where they differ: the engine does all of
+        // it in one step, so it is counted, and refused when it could be too much for one.
+        const compared = (chars + measure.length) * (Math.ceil(Math.log2(receiver.length + 1)) + 6);
+        if (compared > MAX_CALL_WORK) {
+          throw new InterpreterError(`Array '${name}' would compare more text than one call may`);
+        }
+        this.work(compared);
+        return args;
       }
       // Growth by the arguments (a spread makes them many): charged before it happens.
       case 'push':
       case 'unshift':
         if (receiver.length + args.length > MAX_ARRAY_LENGTH) tooLong();
         this.charge(args.length * 8);
-        return;
+        return args;
       case 'splice':
       case 'toSpliced': {
         const added = Math.max(0, args.length - 2);
         if (receiver.length + added > MAX_ARRAY_LENGTH) tooLong();
         if (name === 'splice') this.charge(added * 8);
-        return;
+        return args;
       }
       // A new array of the receiver and every array among the arguments: one array, given many
       // times, is small in memory and large once copied.
@@ -1440,16 +2448,59 @@ export class Interpreter {
           length += Array.isArray(arg) ? arg.length : 1;
         }
         if (length > MAX_ARRAY_LENGTH) tooLong();
-        return;
+        return args;
       }
       case 'flat': {
-        const depth = args[0] === undefined ? 1 : Number(args[0]);
+        // The depth is converted once: the depth that is measured is the depth the engine gets
+        const given = convertedOnce(args[0], Number);
+        const depth = given === undefined ? 1 : Number(given);
         if (flatLength(receiver, Number.isNaN(depth) ? 0 : depth, MAX_ARRAY_LENGTH) > MAX_ARRAY_LENGTH) tooLong();
-        return;
+        return args.length === 0 ? args : [given, ...args.slice(1)];
       }
       default:
-        return;
+        return args;
     }
+  }
+
+  /**
+   * `array.toLocaleString(locales, options)`: the text of every item in the locale's format,
+   * joined by commas, as the engine writes it. The engine does it in one step and the length of
+   * what an item becomes is not known beforehand (a number can take hundreds of chars with the
+   * right options), so the items are converted here one at a time: each counts as a step, and
+   * the text is refused as soon as it is longer than a script's longest text.
+   */
+  private arrayLocaleText(
+    array: unknown[],
+    args: unknown[],
+    active: Set<unknown[]>,
+    written: { length: number },
+    depth: number,
+  ): string {
+    if (depth > MAX_TEXT_NESTING) throw new InterpreterError(TEXT_TOO_LONG);
+    const parts: string[] = [];
+    active.add(array);
+    try {
+      for (let i = 0; i < array.length; i++) {
+        this.tick();
+        const item: unknown = array[i];
+        let text = '';
+        if (Array.isArray(item) && (item as { toLocaleString?: unknown }).toLocaleString === ArrayProtoToLocaleString) {
+          // The engine writes nothing for an array it is already converting
+          if (!active.has(item)) text = this.arrayLocaleText(item, args, active, written, depth + 1);
+        } else if (item !== null && item !== undefined) {
+          text = String((item as { toLocaleString(...options: unknown[]): unknown }).toLocaleString(...args));
+          written.length += text.length;
+        }
+        if (i > 0) written.length += 1;
+        if (written.length > MAX_JOIN_LENGTH) {
+          throw new InterpreterError(`Array 'toLocaleString' would produce more than ${MAX_JOIN_LENGTH} chars`);
+        }
+        parts.push(text);
+      }
+    } finally {
+      active.delete(array);
+    }
+    return parts.join(',');
   }
 
   /**
@@ -1532,10 +2583,34 @@ export class Interpreter {
           acc = arr[order[0]];
           start = 1;
         }
+        // What is still owed for `acc` while it is a text the callback appends to
+        let owed = 0;
         for (let n = start; n < order.length; n++) {
           this.tick();
-          acc = await reducer(acc, arr[order[n]], order[n], arr);
+          let pending: Promise<unknown>;
+          if (interpreted !== undefined && typeof acc === 'string') {
+            // A function of the script is told what is owed for the text it is handed, and
+            // answers with what is owed for the text it returns (see AccumulatedText)
+            this.accumulatorOwed = owed;
+            try {
+              pending = reducer(acc, arr[order[n]], order[n], arr);
+            } finally {
+              this.accumulatorOwed = undefined;
+            }
+          } else {
+            pending = reducer(acc, arr[order[n]], order[n], arr);
+          }
+          const next = await pending;
+          if (next instanceof AccumulatedText) {
+            acc = next.value;
+            owed = next.owed;
+          } else {
+            acc = next;
+            owed = 0;
+          }
         }
+        // The result is a value like any other: what is owed for it is paid before the script has it
+        if (owed > 0) this.charge(owed);
         return acc;
       }
       case 'sort':
@@ -1646,7 +2721,9 @@ export class Interpreter {
             const rest: Record<string, unknown> = {};
             for (const key of Object.keys(source)) {
               this.tick();
-              if (!taken.has(key) && !BLOCKED_KEYS.has(key)) rest[key] = source[key];
+              if (taken.has(key) || BLOCKED_KEYS.has(key)) continue;
+              assertStorable(rest, key, source[key]);
+              rest[key] = source[key];
             }
             await this.applyPattern(prop.argument, rest, scope, mode);
             continue;
@@ -1676,7 +2753,11 @@ export class Interpreter {
     // A named function expression can call itself by its name, which only its own body sees.
     const selfName = node.type === 'FunctionExpression' && node.id ? node.id.name : undefined;
     const outer = selfName === undefined ? closure : closure.child();
-    const call = async (args: unknown[], callerDepth: number): Promise<unknown> => {
+    const call = async (
+      args: unknown[],
+      callerDepth: number,
+      accumulatorOwed: number | undefined,
+    ): Promise<unknown> => {
       // Counted here, where the function starts, so that it holds whoever calls it: the
       // interpreter for a call the script writes, or a built-in that was handed the function.
       const fnScope = outer.activation(this.enterCall(callerDepth));
@@ -1689,11 +2770,21 @@ export class Interpreter {
           }
           await this.applyPattern(param, args[i], fnScope, 'let');
         }
+        // Called by `reduce` with a text: the parameter that holds it is a variable that is
+        // appended to, with what `reduce` still owes for the text
+        const first = node.params[0];
+        if (accumulatorOwed !== undefined && first?.type === 'Identifier' && typeof args[0] === 'string') {
+          const accumulator = fnScope.slot(first.name);
+          if (accumulator !== undefined) {
+            accumulator.owed = accumulatorOwed;
+            fnScope.accumulator = first.name;
+          }
+        }
         if (node.body.type === 'BlockStatement') {
           await this.execBlock(node.body.body, fnScope);
           return undefined;
         }
-        return await this.evalExpr(node.body, fnScope); // arrow shorthand
+        return await this.evalReturned(node.body, fnScope); // arrow shorthand
       } catch (e) {
         if (e instanceof ReturnSignal) return e.value;
         throw e;
@@ -1703,8 +2794,14 @@ export class Interpreter {
     };
     // Read as the function is called, before anything of it is awaited
     const depthOfCaller = (): number => this.callerDepth;
+    // Read and taken as the function is called: it is meant for this call and no other
+    const takeAccumulatorOwed = (): number | undefined => {
+      const owed = this.accumulatorOwed;
+      this.accumulatorOwed = undefined;
+      return owed;
+    };
     const interpreted = function interpreted(...args: unknown[]): Promise<unknown> {
-      const result = call(args, depthOfCaller());
+      const result = call(args, depthOfCaller(), takeAccumulatorOwed());
       // Whoever awaits this promise still sees a rejection. This handler only keeps a call that
       // nobody awaits (a callback a host built-in invoked and dropped) from becoming an unhandled
       // rejection, which by default ends the host process.
@@ -1718,7 +2815,10 @@ export class Interpreter {
 
   /** A computed property key as text. An array as a key is its items, joined. */
   private keyText(value: unknown): string {
-    assertArrayTextWithinLimit(value);
+    this.arrayOperands(value);
+    this.bigIntAsText(value);
+    // The engine reads a key through to look it up
+    this.work(operandSize(value));
     return String(value);
   }
 
@@ -1758,6 +2858,66 @@ export function isScriptData(value: unknown): boolean {
   if (value === null || typeof value !== 'object') return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+/** What a built-in reads when it is given `value`: the chars of a text, the items of an array. */
+function operandSize(value: unknown): number {
+  return typeof value === 'string' || Array.isArray(value) ? value.length : 0;
+}
+
+/** A position or count as the engine reads it: a whole number, 0 when it is not a number. */
+function integerOf(value: unknown): number {
+  const number = Number(value);
+  return Number.isNaN(number) ? 0 : Math.trunc(number);
+}
+
+/**
+ * The text a match is replaced by, for a search for a text: `$$` is a dollar sign, `$&` the
+ * match, `` $` `` the text before it and `$'` the text after it. Nothing else is a pattern here
+ * (a search for a text has no groups).
+ */
+function expandReplacement(template: string, text: string, at: number, matched: string): string {
+  if (!template.includes('$')) return template;
+  let out = '';
+  for (let i = 0; i < template.length; i++) {
+    const next = template[i] === '$' ? template[i + 1] : undefined;
+    if (next === '$') out += '$';
+    else if (next === '&') out += matched;
+    else if (next === '`') out += text.substring(0, at);
+    else if (next === "'") out += text.substring(at + matched.length);
+    else {
+      out += template[i];
+      continue;
+    }
+    i++;
+  }
+  return out;
+}
+
+/**
+ * An argument a built-in converts, converted here instead when the conversion is one the engine
+ * would repeat: of an object, whose answer need not be the same twice. Any other value is passed
+ * on as it is, and the engine converts it (or refuses it) as it always does.
+ */
+function convertedOnce(value: unknown, convert: (value: unknown) => unknown): unknown {
+  return typeof value === 'object' && value !== null ? convert(value) : value;
+}
+
+/**
+ * Check `array[key] = value` against the longest array a script may make, wherever the write is
+ * made: an assignment, or a built-in that copies members onto an array.
+ *
+ * @returns What to write (a length is converted here, once: the number that is checked is the
+ *   number that is set) and the length the array has afterwards
+ * @throws InterpreterError when the array would be longer than {@link MAX_ARRAY_LENGTH}
+ */
+export function checkArrayWrite(array: unknown[], key: string, value: unknown): { value: unknown; length: number } {
+  if (key === 'length') value = convertedOnce(value, Number);
+  const length = arrayLengthAfterWrite(array, key, value);
+  if (length > MAX_ARRAY_LENGTH) {
+    throw new InterpreterError(`An array cannot be longer than ${MAX_ARRAY_LENGTH} items`);
+  }
+  return { value, length };
 }
 
 /** The length an array has after `array[key] = value`. */
