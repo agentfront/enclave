@@ -114,6 +114,23 @@ describe('the pre-scanner an enclave uses', () => {
       expect(lowered.error?.code).toBe('VALIDATION_ERROR');
     });
 
+    it('takes larger string literals when the limit for one and the limit for all of them are raised', async () => {
+      // The configuration the README shows. Two literals of 64 KB: each is over the preset's
+      // limit for one literal (10 KB), and together they are over its limit for all (100 KB).
+      const literals = `const a = '${'x'.repeat(64 * KB)}';\nconst b = '${'y'.repeat(64 * KB)}';\nreturn a.length + b.length;`;
+      const limits = { maxInputSize: 1024 * KB, maxLineLength: 100000, maxStringLength: 512 * KB };
+
+      const oneRaised = await run(literals, { preScan: { config: limits } });
+      expect(oneRaised.success).toBe(false);
+      expect(JSON.stringify(oneRaised.error?.data)).toContain('PRESCANNER_STRING_TOTAL');
+
+      const bothRaised = await run(literals, {
+        preScan: { config: { ...limits, maxTotalStringContent: 1024 * KB } },
+      });
+      expect(bothRaised.error).toBeUndefined();
+      expect(bothRaised.value).toBe(128 * KB);
+    });
+
     it.each([
       ['a preset that does not exist', { preset: 'loose' }],
       ['a preset that is not a text', { preset: 5 }],

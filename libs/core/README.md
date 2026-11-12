@@ -1077,11 +1077,21 @@ The `preScan` option picks another preset or changes single limits of the one in
 // The limits enclaves had before 2.19.2, whatever the AST preset
 const enclave = new Enclave({ preScan: { preset: 'standard' } });
 
-// The agentscript pre-scanner with room for larger string literals (for the reference sidecar, say)
+// The agentscript pre-scanner with room for larger string literals (for the reference sidecar, say).
+// The limit on one literal and the limit on all literals together are separate: raise both.
 const enclave = new Enclave({
-  preScan: { config: { maxInputSize: 1024 * 1024, maxLineLength: 100000, maxStringLength: 512 * 1024 } },
+  preScan: {
+    config: {
+      maxInputSize: 1024 * 1024,
+      maxLineLength: 100000,
+      maxStringLength: 512 * 1024,
+      maxTotalStringContent: 1024 * 1024,
+    },
+  },
 });
 ```
+
+A line is at most 100,000 characters under any configuration (the pre-scanner's absolute maximum), so a literal longer than that has to be a template literal over several lines.
 
 With `validate: false` the pre-scanner does not run; a script is limited to 5,242,880 characters in any case.
 

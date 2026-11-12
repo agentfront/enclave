@@ -201,8 +201,10 @@ export function useCodeExecution() {
       },
       onError: (code, message) => {
         // cancel() ends the session here before the broker has answered. CANCEL_FAILED means
-        // the broker did not confirm the stop: the script may still be running there.
-        if (code === 'CANCEL_FAILED') {
+        // the broker did not confirm the stop: the script may still be running there. The
+        // answer can arrive after a newer run has started: it belongs to this run, so it is
+        // shown only while this run is still the current one.
+        if (code === 'CANCEL_FAILED' && sessionRef.current === session) {
           setState(prev => ({ ...prev, stopError: message }));
         }
       },
@@ -250,7 +252,7 @@ export function useCodeExecution() {
 
 Tools run on the broker. The hook is told about each tool call; it executes nothing. The broker emits no `stdout` events, so `output` stays empty unless your server sends them.
 
-Stopping has two parts. `cancel()` ends the session in the client at once: `wait()` resolves with the code `CANCELLED` and the hook is idle before the broker has answered. The request that asks the broker to end the session can still fail. The client then calls `onError` with the code `CANCEL_FAILED`, and the hook keeps the message in `stopError`: show it, because the script may still be running on the broker.
+Stopping has two parts. `cancel()` ends the session in the client at once: `wait()` resolves with the code `CANCELLED` and the hook is idle before the broker has answered. The request that asks the broker to end the session can still fail. The client then calls `onError` with the code `CANCEL_FAILED`, and the hook keeps the message in `stopError`: show it, because the script may still be running on the broker. The hook shows it only for the run that is still the current one. When the user has started another run before the answer arrives, the warning would appear on a run that was not stopped, so the hook drops it; an application that has to know about every unconfirmed stop keeps them in a list of its own, by session id.
 
 ## Step 4: Build the Editor Component
 

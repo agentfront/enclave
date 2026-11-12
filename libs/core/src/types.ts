@@ -943,9 +943,18 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * // The limits enclaves had before 2.19.2, whatever the AST preset
    * const enclave = new Enclave({ preScan: { preset: 'standard' } });
    *
-   * // The agentscript pre-scanner with room for larger string literals
+   * // The agentscript pre-scanner with room for larger string literals. The limit on one
+   * // literal and the limit on all literals together are separate: raise both. (A line is at
+   * // most 100,000 characters under any configuration.)
    * const enclave = new Enclave({
-   *   preScan: { config: { maxInputSize: 1024 * 1024, maxLineLength: 100000, maxStringLength: 512 * 1024 } },
+   *   preScan: {
+   *     config: {
+   *       maxInputSize: 1024 * 1024,
+   *       maxLineLength: 100000,
+   *       maxStringLength: 512 * 1024,
+   *       maxTotalStringContent: 1024 * 1024,
+   *     },
+   *   },
    * });
    * ```
    */

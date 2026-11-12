@@ -753,7 +753,7 @@ interface ValidationIssue {
 
 ## Error Handling
 
-All errors extend `AstGuardError` with specific error types. `validate()` throws `InvalidSourceError` for a source that is not a string or is empty, a `TypeError` for an invalid `preScan` option, and whatever a rule of your own throws (the exception of a rule is not turned into an issue); a parse error is not thrown but returned as `result.parseError`, with a `PARSE_ERROR` issue:
+The error classes of this library extend `AstGuardError`. Not everything `validate()` throws is one of them: it throws `InvalidSourceError` (an `AstGuardError`) for a source that is not a string or is empty, a `TypeError` for an invalid `preScan` option, and whatever a rule of your own throws (the exception of a rule is not turned into an issue). A caller that catches only `AstGuardError` leaves the last two unhandled. A parse error is not thrown but returned as `result.parseError`, with a `PARSE_ERROR` issue:
 
 ```typescript
 import {
