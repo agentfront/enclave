@@ -649,7 +649,14 @@ export class SessionHandler {
    * behind by more than `maxBufferedBytes`: it must be dropped, nothing more is written to it.
    */
   private writeEvent(res: BrokerResponse, event: StreamEvent): boolean {
-    res.write(JSON.stringify(event) + '\n');
+    let line: string;
+    try {
+      line = JSON.stringify(event);
+    } catch {
+      // An event that cannot be serialized is not sent
+      return true;
+    }
+    res.write(line + '\n');
     if (res.flush) {
       res.flush();
     }

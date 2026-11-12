@@ -39,6 +39,7 @@ export type { SessionManagerConfig, SessionInfo, CreateSessionResult } from './s
 export { SessionHandler, createSessionHandler, registerExpressRoutes, createExpressRouter } from './http';
 export type {
   SessionHandlerConfig,
+  CallerIdentifier,
   RouteHandler,
   BrokerRequest,
   BrokerResponse,
