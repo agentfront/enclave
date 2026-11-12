@@ -289,12 +289,12 @@ function RunnerInner() {
 
 ## Related Packages
 
-| Package                                     | Description                                             |
-| ------------------------------------------- | ------------------------------------------------------- |
-| [@enclave-vm/types](../enclavejs-types)     | Type definitions and Zod schemas                        |
-| [@enclave-vm/client](../enclavejs-client)   | Browser/Node.js client SDK                              |
-| [@enclave-vm/stream](../enclavejs-stream)   | Streaming protocol implementation                       |
-| [@enclave-vm/runtime](../enclavejs-runtime) | Runtime worker building blocks (not a runnable service) |
+| Package                           | Description                                             |
+| --------------------------------- | ------------------------------------------------------- |
+| [@enclave-vm/types](../types)     | Type definitions and Zod schemas                        |
+| [@enclave-vm/client](../client)   | Browser/Node.js client SDK                              |
+| [@enclave-vm/stream](../stream)   | Streaming protocol implementation                       |
+| [@enclave-vm/runtime](../runtime) | Runtime worker building blocks (not a runnable service) |
 
 ## License
 

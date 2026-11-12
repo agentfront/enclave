@@ -299,7 +299,7 @@ A filter decides which events a client is sent. The body of `POST /sessions` may
 }
 ```
 
-`mode` is `include` (send only matching events) or `exclude` (do not send matching events). A rule can match by event type and by content. `session_init` and `final` are always sent. See [Event Filtering](/enclavejs/broker#event-filtering) for the patterns and the bounds on a filter.
+`mode` is `include` (send only matching events) or `exclude` (do not send matching events). A rule can match by event type and by content. By default `session_init` and `final` are sent whatever the rules say. A filter that sets its own `alwaysAllow` list replaces that default: `session_init` and `final` are then filtered like any other event unless the list names them, so a reader that waits for `final` keeps it in the list. See [Event Filtering](/enclavejs/broker#event-filtering) for the patterns and the bounds on a filter.
 
 A filter is a convenience for the client, not a confidentiality control.
 

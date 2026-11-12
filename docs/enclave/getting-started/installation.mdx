@@ -66,7 +66,7 @@ npm install @enclave-vm/stream
 
 #### @enclave-vm/broker
 
-Tool broker with session management and HTTP API. It does not authenticate callers: put your own authentication in front of its routes.
+Tool broker with session management and HTTP API. It does not authenticate callers: put your own authentication in front of its routes. Authentication alone does not keep the sessions of one caller from another: a broker that serves more than one caller also needs the `identify` hook of its session handler (see [Who may see a session](/enclavejs/broker#who-may-see-a-session)).
 
 ```bash
 npm install @enclave-vm/broker

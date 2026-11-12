@@ -102,7 +102,7 @@ const enclave = new Enclave({
 | `modelId` | `'Xenova/all-MiniLM-L6-v2'` | Hugging Face model to load (see below) |
 | `mode` | `'classification'` | `'classification'` or `'similarity'` (see [Similarity Mode](#similarity-mode)) |
 | `cacheDir` | `~/.enclave/models` | Where a downloaded model is kept |
-| `fallbackToRules` | `true` | Use the rule-based scorer when the model cannot be loaded or the analyzer fails |
+| `fallbackToRules` | `true` | Use the rule-based scorer when the model cannot be loaded (in classification mode) or the analyzer fails |
 | `customAnalyzer` | - | Your own analyzer; replaces the keyword heuristic |
 | `vectoriaConfig` | - | `threshold`, `topK`, `modelName` for similarity mode |
 
@@ -112,10 +112,12 @@ With `scorer: 'local-llm'` and no `localLlm` configuration, the gate uses the ru
 
 ### Similarity Mode
 
-`localLlm.mode: 'similarity'` additionally searches a VectoriaDB index (optional dependency `vectoriadb`) for patterns similar to the script's feature summary, and takes the higher of that match and the score described above.
+`localLlm.mode: 'similarity'` additionally searches a VectoriaDB index (optional dependency `vectoriadb`) for patterns similar to the script's feature summary, and takes the higher of that match and the score of your `customAnalyzer` or, without one, of the keyword heuristic.
 
 <Warning>
-The index is created empty for each scorer, and the configuration has no way to add patterns to it. The search therefore finds nothing, and the score in similarity mode is the same as in classification mode.
+The index is created empty for each scorer, and the configuration has no way to add patterns to it. The search therefore finds nothing, and the score in similarity mode is the score of the `customAnalyzer` or of the keyword heuristic alone.
+
+That is the score of classification mode in every case but one. When the model could not be loaded and there is no `customAnalyzer`, classification mode answers with the rule-based scorer, and similarity mode still answers with the keyword heuristic. The two modes can then give different scores for the same script, and decide differently at `blockThreshold` and `warnThreshold`.
 </Warning>
 
 ```ts

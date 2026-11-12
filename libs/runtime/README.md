@@ -8,7 +8,7 @@
 
 The @enclave-vm/runtime package contains the building blocks of a runtime worker: a worker object that keeps track of sessions, a session executor, and the channels between a worker and a broker.
 
-> **This package is not a runnable service.** It does not execute code, starts no server and opens no port. It has no authentication, no TLS, no CORS, no HTTP or WebSocket endpoints, no serverless entry points, and it reads no environment variables. An `execute` request never runs code: it ends with `RuntimeNotImplementedError`. To run scripts use [@enclave-vm/broker](../enclavejs-broker) (sessions, tools and streaming over HTTP) or [@enclave-vm/core](../enclave-vm) (the sandbox).
+> **This package is not a runnable service.** It does not execute code, starts no server and opens no port. It has no authentication, no TLS, no CORS, no HTTP or WebSocket endpoints, no serverless entry points, and it reads no environment variables. An `execute` request never runs code: it ends with `RuntimeNotImplementedError`. To run scripts use [@enclave-vm/broker](../broker) (sessions, tools and streaming over HTTP) or [@enclave-vm/core](../core) (the sandbox).
 
 ## What Is in the Package
 
@@ -133,13 +133,13 @@ The `enclave-runtime` program does not start a worker. It checks its arguments (
 
 ## Related Packages
 
-| Package                                   | Description                        |
-| ----------------------------------------- | ---------------------------------- |
-| [@enclave-vm/core](../enclave-vm)         | Core execution engine              |
-| [@enclave-vm/types](../enclavejs-types)   | Type definitions and Zod schemas   |
-| [@enclave-vm/stream](../enclavejs-stream) | Streaming protocol implementation  |
-| [@enclave-vm/broker](../enclavejs-broker) | Tool broker and session management |
-| [@enclave-vm/client](../enclavejs-client) | Browser/Node.js client SDK         |
+| Package                         | Description                        |
+| ------------------------------- | ---------------------------------- |
+| [@enclave-vm/core](../core)     | Core execution engine              |
+| [@enclave-vm/types](../types)   | Type definitions and Zod schemas   |
+| [@enclave-vm/stream](../stream) | Streaming protocol implementation  |
+| [@enclave-vm/broker](../broker) | Tool broker and session management |
+| [@enclave-vm/client](../client) | Browser/Node.js client SDK         |
 
 ## License
 

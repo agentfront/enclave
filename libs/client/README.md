@@ -269,12 +269,12 @@ runCode();
 
 ## Related Packages
 
-| Package                                     | Description                                             |
-| ------------------------------------------- | ------------------------------------------------------- |
-| [@enclave-vm/types](../enclavejs-types)     | Type definitions and Zod schemas                        |
-| [@enclave-vm/stream](../enclavejs-stream)   | Streaming protocol implementation                       |
-| [@enclave-vm/react](../enclavejs-react)     | React hooks and components                              |
-| [@enclave-vm/runtime](../enclavejs-runtime) | Runtime worker building blocks (not a runnable service) |
+| Package                           | Description                                             |
+| --------------------------------- | ------------------------------------------------------- |
+| [@enclave-vm/types](../types)     | Type definitions and Zod schemas                        |
+| [@enclave-vm/stream](../stream)   | Streaming protocol implementation                       |
+| [@enclave-vm/react](../react)     | React hooks and components                              |
+| [@enclave-vm/runtime](../runtime) | Runtime worker building blocks (not a runnable service) |
 
 ## License
 

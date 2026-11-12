@@ -125,13 +125,13 @@ The package defines types for an encrypted envelope and a key exchange (`Encrypt
 
 ## Related Packages
 
-| Package                                     | Description                                             |
-| ------------------------------------------- | ------------------------------------------------------- |
-| [@enclave-vm/stream](../enclavejs-stream)   | Streaming protocol implementation                       |
-| [@enclave-vm/broker](../enclavejs-broker)   | Tool broker and session management                      |
-| [@enclave-vm/client](../enclavejs-client)   | Browser/Node.js client SDK                              |
-| [@enclave-vm/react](../enclavejs-react)     | React hooks and components                              |
-| [@enclave-vm/runtime](../enclavejs-runtime) | Runtime worker building blocks (not a runnable service) |
+| Package                           | Description                                             |
+| --------------------------------- | ------------------------------------------------------- |
+| [@enclave-vm/stream](../stream)   | Streaming protocol implementation                       |
+| [@enclave-vm/broker](../broker)   | Tool broker and session management                      |
+| [@enclave-vm/client](../client)   | Browser/Node.js client SDK                              |
+| [@enclave-vm/react](../react)     | React hooks and components                              |
+| [@enclave-vm/runtime](../runtime) | Runtime worker building blocks (not a runnable service) |
 
 ## License
 

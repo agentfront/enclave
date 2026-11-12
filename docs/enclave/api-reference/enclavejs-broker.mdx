@@ -552,6 +552,8 @@ process.on('SIGTERM', async () => {
 });
 ```
 
+`identify` separates sessions, not data: the two tools above return the same users to every caller that may create a session. A tool that reads data restricted per caller applies that restriction itself, with the owner of its session (`broker.getSession(context.sessionId as SessionId)?.owner`, the caller `identify` returned), or leaves it to the data store. See the broker example in [Architecture](/concepts/architecture).
+
 ## Related
 
 - [Broker Overview](/enclavejs/broker) - Guide

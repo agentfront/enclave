@@ -313,7 +313,12 @@ metadata:
     nginx.ingress.kubernetes.io/session-cookie-max-age: "3600"
 ```
 
-A client that does not keep cookies (a server-side `EnclaveClient` with the default `fetch`) needs another form of affinity, such as routing by a header you set in `headers`.
+Cookie affinity works for a client that keeps the cookie and sends it back. Two kinds of client do not:
+
+- A server-side `EnclaveClient` with the default `fetch` keeps no cookies.
+- A browser client on another origin than the broker. `EnclaveClient` calls `fetch` without `credentials`, so the browser neither stores nor sends a cookie of another origin, and the broker's routes do not answer with `Access-Control-Allow-Credentials`, which a request with credentials would need.
+
+For a browser, serve the broker under the origin of the page: a path of the application's host that the ingress routes to the brokers. The affinity cookie is then a cookie of the page's own origin, and the browser keeps it. Otherwise use a form of affinity that needs no cookie, such as routing by a header you set in the client's `headers` (for a page on another origin, name that header in the session handler's `allowedHeaders`).
 
 ## Performance
 

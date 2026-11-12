@@ -66,6 +66,33 @@ export const enclaveClient = new EnclaveClient({
 
 The client sends requests and receives events as plain JSON over HTTP: in production use an `https:` base URL, and send your credentials with the `headers` option. The client has no other options than `baseUrl`, `headers`, `timeout`, `autoReconnect`, `maxReconnectAttempts`, `reconnectDelay`, `maxEventLength` and `fetch`; any other option makes the constructor throw.
 
+### An Editor on Another Origin Than the Broker
+
+A browser asks before it sends a request with a JSON body or an `Authorization` header to another origin (the CORS preflight). The broker's session routes answer that question themselves: a page of an origin in the handler's `allowedOrigins` (every origin by default) may send `Content-Type`, `Accept`, `Last-Event-ID` and `Authorization`. A credential in the `Authorization` header therefore works from an editor on another origin. Add it to the client of this step:
+
+```tsx
+// src/enclave/config.ts
+export const enclaveClient = new EnclaveClient({
+  baseUrl: 'https://broker.example.com',
+  headers: { Authorization: `Bearer ${token}` }, // your credential, sent with every request of the client
+  autoReconnect: true,
+  maxReconnectAttempts: 5,
+});
+```
+
+On the broker, name the origin of the editor, and any other request header your client sends:
+
+```ts
+const handler = createSessionHandler({
+  broker,
+  identify: (request) => (request.raw as { user?: { id: string } }).user?.id,
+  allowedOrigins: ['https://app.example.com'],
+  allowedHeaders: ['X-API-Key'], // only for a header besides the four above
+});
+```
+
+A browser does not send a header the preflight answer does not list, so a credential in a header of your own needs its entry in `allowedHeaders`. The preflight is an `OPTIONS` request without the credential: authentication in front of the routes has to let `OPTIONS` requests through to them.
+
 ## Step 2: Create the Provider
 
 ```tsx
@@ -107,6 +134,8 @@ interface ExecutionState {
   toolCalls: ToolCall[];
   result: unknown;
   error: string | null;
+  // Set when the broker did not confirm a stop request: that script may still be running
+  stopError: string | null;
   stats: ExecutionStats | null;
 }
 
@@ -132,6 +161,7 @@ export function useCodeExecution() {
     toolCalls: [],
     result: null,
     error: null,
+    stopError: null,
     stats: null,
   });
 
@@ -143,6 +173,7 @@ export function useCodeExecution() {
       toolCalls: [],
       result: null,
       error: null,
+      stopError: null,
       stats: null,
     });
 
@@ -167,6 +198,13 @@ export function useCodeExecution() {
             tc.id === callId ? { ...tc, status: 'completed' } : tc
           ),
         }));
+      },
+      onError: (code, message) => {
+        // cancel() ends the session here before the broker has answered. CANCEL_FAILED means
+        // the broker did not confirm the stop: the script may still be running there.
+        if (code === 'CANCEL_FAILED') {
+          setState(prev => ({ ...prev, stopError: message }));
+        }
       },
     });
     sessionRef.current = session;
@@ -196,7 +234,8 @@ export function useCodeExecution() {
   }, [client]);
 
   const stop = useCallback(() => {
-    // Ends the session in the client and asks the broker to end it
+    // Ends the session in the client at once and asks the broker to end it. cancel() does
+    // not reject: a stop the broker did not confirm is reported to onError (see above).
     void sessionRef.current?.cancel('Stopped by the user');
   }, []);
 
@@ -210,6 +249,8 @@ export function useCodeExecution() {
 ```
 
 Tools run on the broker. The hook is told about each tool call; it executes nothing. The broker emits no `stdout` events, so `output` stays empty unless your server sends them.
+
+Stopping has two parts. `cancel()` ends the session in the client at once: `wait()` resolves with the code `CANCELLED` and the hook is idle before the broker has answered. The request that asks the broker to end the session can still fail. The client then calls `onError` with the code `CANCEL_FAILED`, and the hook keeps the message in `stopError`: show it, because the script may still be running on the broker.
 
 ## Step 4: Build the Editor Component
 
@@ -388,6 +429,7 @@ export function CodePlayground() {
     toolCalls,
     result,
     error,
+    stopError,
     stats,
     execute,
     stop,
@@ -433,6 +475,7 @@ export function CodePlayground() {
 
       <div className={styles.statusBar}>
         Status: {status}
+        {stopError && ' (stop not confirmed: the script may still be running on the broker)'}
       </div>
     </div>
   );
@@ -561,7 +604,7 @@ function MyComponent() {
 }
 ```
 
-`useEnclaveSession` returns `execute`, `cancel`, `reset`, `state`, `isRunning`, `sessionId`, `result`, `error`, `stdout` and `events`. See [@enclave-vm/react](/enclavejs/react).
+`useEnclaveSession` returns `execute`, `cancel`, `reset`, `state`, `isRunning`, `sessionId`, `result`, `error`, `stdout` and `events`. Its `cancel()` behaves like the one above: the session ends in the client at once, and a stop the broker did not confirm is reported to the hook's `onError` option with the code `CANCEL_FAILED`. See [@enclave-vm/react](/enclavejs/react).
 
 ## Best Practices
 

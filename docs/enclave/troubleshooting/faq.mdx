@@ -50,7 +50,7 @@ Enclave uses a 6-layer defense-in-depth model:
 5. Runtime sandbox (a realm with only the allowed globals, a membrane, limits)
 6. Output sanitization
 
-The layers are built to hold independently: the runtime does not rely on the validator having refused a script. What the sandbox does not deliver is stated too. In process, the timeout and the memory limit are the enclave's own accounting, not the engine's, and a host that must survive whatever a script does runs the enclave in the worker pool, a child process or a container. See the [Security Model](/concepts/security-model#what-enclave-does-not-protect-against).
+The layers are built to hold independently: the runtime does not rely on the validator having refused a script. What the sandbox does not deliver is stated too. In process, the timeout and the memory limit are the enclave's own accounting, not the engine's, and the worker pool adds a hard stop and a heap limit per worker without leaving the host's process. A host that must survive whatever a script does runs the enclave in a child process or a container with limits of the operating system. See the [Security Model](/concepts/security-model#what-enclave-does-not-protect-against).
 
 ### Can scripts access the file system?
 

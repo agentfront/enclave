@@ -185,13 +185,13 @@ What the primitives do, and what is left to the application:
 
 ## Related Packages
 
-| Package                                     | Description                                             |
-| ------------------------------------------- | ------------------------------------------------------- |
-| [@enclave-vm/types](../enclavejs-types)     | Type definitions and Zod schemas                        |
-| [@enclave-vm/broker](../enclavejs-broker)   | Tool broker and session management                      |
-| [@enclave-vm/client](../enclavejs-client)   | Browser/Node.js client SDK                              |
-| [@enclave-vm/react](../enclavejs-react)     | React hooks and components                              |
-| [@enclave-vm/runtime](../enclavejs-runtime) | Runtime worker building blocks (not a runnable service) |
+| Package                           | Description                                             |
+| --------------------------------- | ------------------------------------------------------- |
+| [@enclave-vm/types](../types)     | Type definitions and Zod schemas                        |
+| [@enclave-vm/broker](../broker)   | Tool broker and session management                      |
+| [@enclave-vm/client](../client)   | Browser/Node.js client SDK                              |
+| [@enclave-vm/react](../react)     | React hooks and components                              |
+| [@enclave-vm/runtime](../runtime) | Runtime worker building blocks (not a runnable service) |
 
 ## License
 

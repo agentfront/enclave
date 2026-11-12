@@ -139,7 +139,7 @@ For the same reason an array method does not work on a receiver that is longer t
 
 It does not count a copy (a script can hold many arrays that are each within the limit), and it does not count object literals, Maps and Sets. A script that goes over the limit fails with `MEMORY_LIMIT_EXCEEDED`. With a limit set, the VM adapters also measure the returned value: one whose serialized size is estimated above `memoryLimit`, or above 50 MB where the limit is larger, fails with `SERIALIZATION_LIMIT_EXCEEDED`.
 
-Treat the limit as an estimate. Where the host must survive whatever a script allocates, use the [worker pool](/core-libraries/enclave-vm/worker-pool), whose workers have a heap limit of the engine, or run the enclave in a child process or a container with a memory limit of the operating system.
+Treat the limit as an estimate. The [worker pool](/core-libraries/enclave-vm/worker-pool) adds a heap limit of the engine per worker; a worker thread shares the host's process, so that limit is a backstop and not a guarantee that the host survives. Where the host must survive whatever a script allocates, run the enclave in a child process or a container with a memory limit of the operating system.
 
 ## Reference Sidecar
 

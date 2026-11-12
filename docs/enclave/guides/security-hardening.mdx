@@ -13,14 +13,15 @@ This guide covers security best practices for hardening Enclave deployments in p
 - [ ] Set memory limits, on the sandbox and on the process or container around it
 - [ ] Configure timeouts
 - [ ] Validate all tool inputs
-- [ ] Authenticate callers in front of every endpoint that accepts code
+- [ ] Authenticate callers in front of every endpoint that accepts code, and in front of every session route of the broker: the routes that list, read, replay and end sessions have no authentication of their own either
+- [ ] Give the broker's session routes an `identify` hook, so that a session belongs to the caller that created it. Authentication alone does not do that. Only a broker whose routes a single trusted backend calls can go without the hook (see [Client Connections](#client-connections))
 - [ ] Run as non-root user
 
 ### Recommended
 
-- [ ] Use HTTPS for client connections and authenticate requests in front of the broker
-- [ ] Give the broker's routes an `identify` hook, so that a session belongs to the caller that created it
-- [ ] Run the sandbox in the worker pool, a child process or a container when the host must survive any script
+- [ ] Use HTTPS for client connections: the client and the broker exchange plain JSON
+- [ ] Run the sandbox in the worker pool for a hard stop of a script that runs past its timeout and a heap limit per worker. A worker thread shares the host's process: the pool does not guarantee that the host survives
+- [ ] Run the enclave in a child process or a container with limits of the operating system when the host must survive any script
 - [ ] Consider the AI Scoring Gate as an additional, heuristic signal
 - [ ] Implement rate limiting
 - [ ] Use network segmentation
@@ -398,7 +399,25 @@ const client = new EnclaveClient({
 
 The client's options are `baseUrl`, `headers`, `timeout`, `autoReconnect`, `maxReconnectAttempts`, `reconnectDelay`, `maxEventLength` and `fetch`. Any other key, such as `encryption` or `auth`, makes the constructor throw.
 
-The broker's session routes have no authentication of their own. The application has to put authentication in front of them and check the credentials the client sends.
+The broker's session routes have no authentication of their own. The application has to put authentication in front of all of them (the route that creates a session, and the routes that list, read, replay and end sessions) and check the credentials the client sends.
+
+Authentication does not tell the routes whose session is whose: without an `identify` hook they answer every caller for every session. Give the session handler the hook, and let it return the caller your authentication found:
+
+```ts
+import { createSessionHandler, registerExpressRoutes } from '@enclave-vm/broker';
+
+app.use(authenticate); // your middleware: checks the credential and sets req.user
+registerExpressRoutes(
+  app,
+  createSessionHandler({
+    broker,
+    // request.raw is the request object of the HTTP framework
+    identify: (request) => (request.raw as { user?: { id: string } }).user?.id,
+  }),
+);
+```
+
+With the hook a session belongs to the caller that created it: `GET /sessions` lists the caller's own sessions, a request for another caller's session is answered with `404`, and a request without an identity with `401`. The hook can be left out only where a single trusted backend is the one caller of the routes; that backend then has to keep the sessions of its own users apart. See [Who may see a session](/enclavejs/broker#who-may-see-a-session).
 
 ### Payload Encryption
 
