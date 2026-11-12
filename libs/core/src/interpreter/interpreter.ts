@@ -515,6 +515,8 @@ export class Interpreter {
    * of the script, or a built-in or host function the script passed along.
    */
   call(fn: unknown, args: unknown[]): unknown {
+    // A helper that is still going when the run has been ended starts nothing more for the script
+    if (this.fatal !== undefined) throw this.fatal;
     if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
     // The call continues the chain of the helper that makes it, one call deeper, when the helper
     // makes it while its own call is starting (`parallel` starts every task that way). A call a
@@ -551,9 +553,10 @@ export class Interpreter {
   }
 
   /**
-   * End the run from outside: whatever of the script is still going (a function a built-in
-   * started and nobody awaited, a callback waiting for a tool call) stops at its next step. The
-   * host calls this when the execution has returned, so that no script code runs after it.
+   * End the run from outside: whatever of the script is still going (a callback waiting for a
+   * tool call, a run that timed out while it waited) stops at its next step or its next call,
+   * whichever comes first. The host calls this when the execution has returned, so that no
+   * script code runs and no host function is called after it.
    */
   stop(): void {
     if (this.fatal === undefined) this.fatal = new InterpreterError('Execution ended');
@@ -1165,6 +1168,10 @@ export class Interpreter {
    * @param depth - How many calls deep the code that makes this call runs
    */
   private async callFunction(fn: unknown, thisArg: unknown, args: unknown[], depth: number): Promise<unknown> {
+    // Once the run has been ended no call is made for the script: a call is where a script
+    // reaches the host (a tool, the console), and a chain that was waiting when the execution
+    // returned may get here without passing a step.
+    if (this.fatal !== undefined) throw this.fatal;
     for (let hops = 0; fn === FunctionProtoCall || fn === FunctionProtoApply || fn === FunctionProtoBind; hops++) {
       const name = fn === FunctionProtoCall ? 'call' : fn === FunctionProtoApply ? 'apply' : 'bind';
       if (typeof thisArg !== 'function' || hops >= 8) {

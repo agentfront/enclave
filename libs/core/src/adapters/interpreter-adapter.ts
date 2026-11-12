@@ -56,9 +56,17 @@ const MAX_SERIALIZED_RESULT_BYTES = 50 * 1024 * 1024;
 const DEFAULT_MAX_CONSOLE_CALLS = 100;
 const DEFAULT_MAX_CONSOLE_OUTPUT_BYTES = 64 * 1024;
 
-/** How a runtime helper calls a function a script handed it (see `Interpreter.call`) */
+/** What the runtime helpers know of the execution they belong to */
 interface CallbackInvoker {
+  /** How a helper calls a function a script handed it (see `Interpreter.call`) */
   call(fn: unknown, args: unknown[]): unknown;
+  /** Set when the execution has returned: from then on a helper reaches nothing of the host */
+  over?: boolean;
+}
+
+/** Thrown by a helper that is called for an execution that has returned */
+function executionOver(): Error {
+  return sandboxError('Execution ended');
 }
 
 export interface InterpreterAdapterOptions {
@@ -170,17 +178,17 @@ export class InterpreterAdapter implements SandboxAdapter {
     const charge = (bytes: number): void => tracker.track(bytes);
 
     let interpreter: Interpreter;
+    // How a helper calls a function it was handed: through the interpreter, which applies the
+    // checks of a call the script writes itself. Bound below, once the interpreter exists.
+    const callbacks: CallbackInvoker = {
+      call: () => {
+        throw sandboxError('The interpreter is not running');
+      },
+    };
     try {
       const safe = createSafeGlobals();
       // The helpers, namespaces and custom globals of this execution; none of them replaces a
       // standard global.
-      // How a helper calls a function it was handed: through the interpreter, which applies the
-      // checks of a call the script writes itself. Bound below, once the interpreter exists.
-      const callbacks: CallbackInvoker = {
-        call: () => {
-          throw sandboxError('The interpreter is not running');
-        },
-      };
       const runtime = this.runtimeGlobals(context, charge, callbacks);
       for (const name of Object.keys(runtime)) {
         if (!Object.prototype.hasOwnProperty.call(safe.globals, name)) safe.globals[name] = runtime[name];
@@ -250,8 +258,10 @@ export class InterpreterAdapter implements SandboxAdapter {
     } finally {
       if (timer) clearTimeout(timer);
       if (timeoutHandle) clearTimeout(timeoutHandle);
-      // The execution is over: nothing of the script runs from here on (a function a built-in
-      // started in passing, a run that timed out while it waited for a tool).
+      // The execution is over: nothing of the script runs from here on, and nothing of it
+      // reaches the host (a run that timed out while it waited for a tool and goes on when the
+      // tool answers). The interpreter makes no further call; the helpers refuse by themselves.
+      callbacks.over = true;
       interpreter.stop();
     }
   }
@@ -270,7 +280,7 @@ export class InterpreterAdapter implements SandboxAdapter {
     callbacks: CallbackInvoker,
   ): Record<string, unknown> {
     const { config } = context;
-    const callTool = this.createCallTool(context);
+    const callTool = this.createCallTool(context, callbacks);
     const resolver =
       context.sidecar && context.referenceConfig
         ? new ReferenceResolver(context.sidecar, context.referenceConfig)
@@ -386,6 +396,7 @@ export class InterpreterAdapter implements SandboxAdapter {
       const write =
         (level: string) =>
         (...args: unknown[]): void => {
+          if (callbacks.over) throw executionOver();
           consoleCalls++;
           if (consoleCalls > maxConsoleCalls) {
             throw sandboxError(
@@ -438,6 +449,7 @@ export class InterpreterAdapter implements SandboxAdapter {
    */
   private createCallTool(
     context: ExecutionContext,
+    execution: CallbackInvoker,
   ): (toolName: unknown, args: unknown, options?: unknown) => Promise<unknown> {
     // Hosts that build the context by hand may keep the handler in the configuration.
     const configured = (context.config as { toolHandler?: ExecutionContext['toolHandler'] }).toolHandler;
@@ -448,6 +460,7 @@ export class InterpreterAdapter implements SandboxAdapter {
     const bridge = createHostToolBridge(bridgeContext, { updateStats: true });
 
     return async (toolName: unknown, args: unknown, options?: unknown): Promise<unknown> => {
+      if (execution.over) throw executionOver();
       // callTool options: only { throwOnError: false } changes behavior. Tool failures then
       // resolve to { success: false, error }; the enclave's own refusals still throw.
       let throwOnError = true;
