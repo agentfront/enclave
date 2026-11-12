@@ -374,7 +374,9 @@ export class Enclave {
     // that is not a string. A method named `search` or `match` on one of those is the host's; on
     // a string global it would be the string method that compiles its argument into a pattern.
     const hostObjectGlobals = [
-      ...Object.keys(initialGlobals).filter((name) => typeof initialGlobals[name] !== 'string'),
+      ...Object.keys(initialGlobals).filter(
+        (name) => typeof initialGlobals[name] !== 'string' && !(initialGlobals[name] instanceof String),
+      ),
       ...this.toolNamespaces.map((ns) => ns.name),
     ];
 

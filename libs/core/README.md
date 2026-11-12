@@ -770,7 +770,9 @@ run: `test`, `exec` and its use as the pattern of `match`, `matchAll`, `replace`
 throw, at every security level. A match would run the host's pattern on a text the script chooses,
 outside the rules that apply to the script's own expressions, and with the `g` or `y` flag it writes
 `lastIndex` on the host's object. Pass a function that does the matching, or let the script build
-the expression from `source` and `flags` where the preset allows `RegExp`.
+the expression from `source` and `flags` where the preset allows `RegExp`. The same goes for
+`match`, `matchAll` and `search` on a `String` object (`new String(...)`) passed in `globals`;
+a plain string is not affected.
 
 A custom global cannot be named `Object`: the sandbox provides its own. The constructor throws.
 

@@ -45,7 +45,7 @@ const enclave = new BrowserEnclave({
 | `memoryLimit` | number | 1048576 | Memory limit in bytes (soft tracking) |
 | `toolHandler` | function | - | Async function that handles `callTool()` invocations |
 | `toolNamespaces` | object | - | Expose tools as `ns.method(args)`: `{ mail: ['list', 'send'] }` or `{ users: { get: 'users:get' } }`. Each call is a `callTool()` call, validated by the outer iframe. Same naming rules as `@enclave-vm/core` |
-| `globals` | object | - | Additional globals available in the sandbox (JSON data only; the constructor throws for a function, symbol, BigInt, circular structure, Map, Set, RegExp or `undefined`) |
+| `globals` | object | - | Additional globals available in the sandbox (JSON data only; the constructor throws for a function, symbol, BigInt, circular structure, Map, Set, RegExp or `undefined`). Each run reads the values again, so a change inside a global is picked up; a global that changes between a string and another kind of value fails the run with `GLOBALS_CHANGED` (scripts are validated against what each global was when the enclave was created) |
 | `validate` | boolean | `true` | Validate code with ast-guard before execution |
 | `transform` | boolean | `true` | Transform code before execution (AgentScript wrappers) |
 | `allowFunctionsInGlobals` | boolean | varies | No effect in the browser: functions never cross the iframe boundary, so a function in `globals` always throws. Expose host capabilities as tools |

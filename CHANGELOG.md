@@ -18,7 +18,7 @@ Draft for the maintainer. A security release of `@enclave-vm/core`, `@enclave-vm
 - CI has a job "Security tests" that fetches the submodule with a read-only token and prints counts only, because its log is public.
 - `npx nx test core` builds `core` first: its worker tests and the test of the worker entry point read the built package.
 - `@enclave-vm/browser` has no changelog of its own: the host page no longer trusts its sandbox iframes (ATK-IFRAME in `SECURITY-TESTS.md`; see "Security Architecture" in the documentation of the package).
-- `@enclave-vm/browser`: the host page refuses a tool call whose arguments hold more than 1,000,000 array items and object keys, and does not relay a console line whose size it cannot measure.
+- `@enclave-vm/browser`: the host page refuses a tool call whose arguments hold more than 1,000,000 array items and object keys, and does not relay a console line whose size it cannot measure. A custom global that changes between a string and another kind of value after the enclave was created fails the run (`GLOBALS_CHANGED`): scripts are validated against what each global was then.
 
 ## 2026-01-09
 

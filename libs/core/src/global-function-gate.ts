@@ -170,31 +170,33 @@ export function isMutatingBuiltinMethod(fn: unknown): boolean {
 }
 
 /**
- * The `RegExp.prototype` methods that run the pattern: `test`, `exec`, and the ones the string
- * methods call (`match`, `matchAll`, `replace`, `search`, `split` with the expression as argument).
+ * The built-in methods that run a regular expression in the HOST realm when they are called on a
+ * value passed in `globals`:
  *
- * A regular expression passed in `globals` is the host's own object. Run from the sandbox it
- * matches a text the script chooses with a pattern the script did not have to get past the
- * validator or the realm's own rules, on the host's `RegExp.prototype`; and a match with the `g`
- * or `y` flag writes `lastIndex` on the host's object, which the next execution reads.
+ * - of `RegExp.prototype`, the ones that run the pattern: `test`, `exec`, and the ones the string
+ *   methods call (`match`, `matchAll`, `replace`, `search`, `split` with the expression as
+ *   argument). A regular expression passed in `globals` is the host's own object. Run from the
+ *   sandbox it matches a text the script chooses with a pattern the script did not have to get
+ *   past the validator or the realm's own rules, on the host's `RegExp.prototype`; and a match
+ *   with the `g` or `y` flag writes `lastIndex` on the host's object, which the next execution
+ *   reads.
+ * - of `String.prototype`, the ones that compile their argument into a pattern: `match`,
+ *   `matchAll` and `search`. A string is passed as a primitive and has the sandbox realm's
+ *   methods; a boxed `String` is an object of the host, and on it these would compile and run a
+ *   pattern the script chooses with the host's `RegExp`.
  */
 const REGEXP_MATCH_METHODS: WeakSet<object> = (() => {
   const methods = new WeakSet<object>();
-  const keys: Array<string | symbol> = [
-    'test',
-    'exec',
-    Symbol.match,
-    Symbol.matchAll,
-    Symbol.replace,
-    Symbol.search,
-    Symbol.split,
-  ];
-  for (const key of keys) {
-    const descriptor = ObjectGetOwnPropertyDescriptor(RegExp.prototype, key);
-    if (descriptor && typeof descriptor.value === 'function') {
-      methods.add(descriptor.value);
+  const add = (prototype: object, keys: Array<string | symbol>): void => {
+    for (const key of keys) {
+      const descriptor = ObjectGetOwnPropertyDescriptor(prototype, key);
+      if (descriptor && typeof descriptor.value === 'function') {
+        methods.add(descriptor.value);
+      }
     }
-  }
+  };
+  add(RegExp.prototype, ['test', 'exec', Symbol.match, Symbol.matchAll, Symbol.replace, Symbol.search, Symbol.split]);
+  add(String.prototype, ['match', 'matchAll', 'search']);
   return methods;
 })();
 
@@ -209,8 +211,9 @@ export function isRegExpMatchMethod(fn: unknown): boolean {
 
 /** What a script is told when it runs a regular expression of the host */
 export const HOST_REGEXP_MESSAGE =
-  'A regular expression passed in globals cannot be run in the sandbox. ' +
-  'Read its source and flags, or pass a function that does the matching.';
+  'A regular expression passed in globals cannot be run in the sandbox, ' +
+  'and a pattern cannot be run on a String object passed in globals. ' +
+  'Read its source and flags (or the text), or pass a function that does the matching.';
 
 /** Default `maxGlobalFunctionCalls` is this many times `maxToolCalls`. */
 export const DEFAULT_GLOBAL_FUNCTION_CALLS_PER_TOOL_CALL = 10;
