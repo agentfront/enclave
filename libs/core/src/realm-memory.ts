@@ -29,8 +29,10 @@
  *    for its length and for each slot through an accessor, differently every time: where a
  *    decision rests on it, it is read here, once (its length, then each slot, with the object
  *    itself as the receiver of the read), and the built-in works on the plain copy. `flat`
- *    reads the elements of arrays too, so its result is built in the pass that counts it, and
- *    the built-in does not run. Otherwise an array is handed on as it is: its length is its
+ *    reads the elements of arrays too, and `concat` asks every value whether it is spread,
+ *    which code of the script can answer, for an array as for anything else; so the result of
+ *    these two is built in the pass that counts it, and the built-in does not run (for
+ *    `concat`: ATK-MEMACC-31). Otherwise an array is handed on as it is: its length is its
  *    own, and nothing here reads its elements before the built-in does. An array behind a
  *    proxy is not its own answer. Where a realm leaves a script the Proxy constructor, the
  *    script gets a stand-in for it that remembers the proxies it makes, and such a proxy is
@@ -458,58 +460,74 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
         return apply(original, this, arguments);
       };
     });
-    // concat: the result has, for the receiver and each argument, its elements or itself.
-    // Which of the two is asked here, once, the way the built-in asks (the language's symbol
-    // for it, otherwise whether it is an array). An array is handed on as it is. An object
-    // that is spread is read here; one that is not goes in an array of one, so the built-in
-    // has nothing to ask it a second time.
+    // concat: the result has, for the receiver and each argument, its elements or itself. It
+    // is built here, in the pass that counts it and in the order the built-in works: each value
+    // is asked once whether it is spread (the language's symbol for it, otherwise whether it
+    // is an array), a value that is spread is asked once for its length and once for each
+    // slot, and the count is checked before the slots are copied. The built-in does not run.
+    // It would ask every value again, and what answers can be code of the script (an accessor
+    // on an array, the constructor of the receiver's kind): an array that was counted could
+    // hold more by the time the built-in copies it, as often as it is named.
+    function copySlots(target, at, source, length) {
+      // A slot that is not there stays empty in the result
+      for (var k = 0; k < length; k++) {
+        if (k in source) target[at + k] = source[k];
+      }
+    }
     patch(arrayProto, 'concat', function (original) {
       return function concat() {
         var receiver = toObject(this);
         if (receiver === null) return apply(original, this, arguments);
-        var total = 0;
+        // The result is of the receiver's kind, and is made first, as in the built-in
+        var ofKind = emptyOfKind(receiver);
+        var plain = ofKind === null;
+        var target = plain ? [] : ofKind;
+        if (plain) {
+          // A first size for the result, so that it is not made in steps: what the arrays
+          // among the values hold now. It decides nothing. Every value is asked and counted
+          // below, and the result ends with the length that was counted.
+          var expected = 0;
+          for (var e = -1; e < arguments.length; e++) {
+            var one = e < 0 ? receiver : arguments[e];
+            expected += ownArray(one) ? one.length : 1;
+          }
+          if (expected * BYTES <= memoryLimit) target.length = expected;
+        }
+        var count = 0;
         var own = 0;
-        var first = receiver;
-        var rest = [];
         for (var i = -1; i < arguments.length; i++) {
           var item = i < 0 ? receiver : arguments[i];
-          var handed = item;
+          var spread = false;
           if (isObject(item)) {
-            // An array behind a proxy a script made is spread like one, and read here like
-            // any other object that is spread
-            var spreadByKind = isArray(item);
-            var array = ownArray(item);
             var flag = item[spreadableSymbol];
-            if (flag === undefined ? spreadByKind : !!flag) {
-              var length = toLength(item.length);
-              total += length;
-              checkLength(total, 'Array.concat');
-              if (!array) handed = snapshot(item, length, true);
-              else if (i < 0) own = length;
-            } else if (array && i < 0) {
-              // The receiver, when it is an array, stays the receiver: the result is of its
-              // kind. The built-in asks it again whether it is spread, so it is counted as
-              // what it holds: whichever answer it gives then, the count covers it.
-              var held = toLength(item.length);
-              total += held > 1 ? held : 1;
+            spread = flag === undefined ? isArray(item) : !!flag;
+          }
+          if (!spread) {
+            checkLength(count + 1, 'Array.concat');
+            if (plain) {
+              target[count] = item;
             } else {
-              total += 1;
-              handed = [item];
+              defineProperty(target, count, { value: item, writable: true, enumerable: true, configurable: true });
             }
+            count++;
+            continue;
+          }
+          var length = toLength(item.length);
+          checkLength(count + length, 'Array.concat');
+          if (i < 0 && ownArray(item)) own = length;
+          if (plain) {
+            copySlots(target, count, item, length);
           } else {
-            total += 1;
+            for (var k = 0; k < length; k++) {
+              if (!(k in item)) continue;
+              defineProperty(target, count + k, { value: item[k], writable: true, enumerable: true, configurable: true });
+            }
           }
-          if (i >= 0) {
-            rest[rest.length] = handed;
-          } else if (handed !== item) {
-            first = [];
-            rest[rest.length] = handed;
-          }
+          count += length;
         }
-        checkLength(total, 'Array.concat');
-        var result = apply(original, first, rest);
-        charge(lengthOf(result) - own);
-        return result;
+        target.length = count;
+        charge(count - own);
+        return target;
       };
     });
 
@@ -860,29 +878,57 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
     }
 
     // Array.fromAsync: like Array.from. How the source is read is decided here, once, and what
-    // it yields is counted as it comes.
+    // it yields is counted as it comes. The built-in answers every failure with a promise that
+    // is rejected, never with an error at the call. So an iterator that cannot be called is
+    // handed on as the value it is, and an error the source raises while it is read here is
+    // kept and raised again by the source the built-in is given: the answer is the built-in's
+    // own, and the source is not asked a second time. The limit's refusal is not an answer of
+    // the built-in: it ends the call.
     patch(ArrayCtor, 'fromAsync', function (original) {
       return function fromAsync(items, mapFn, thisArg) {
         if (items === null || items === undefined) return apply(original, this, arguments);
         if (mapFn !== undefined && typeof mapFn !== 'function') return apply(original, this, arguments);
         var source;
-        var iterate = asyncIteratorSymbol === undefined ? undefined : items[asyncIteratorSymbol];
-        var symbol = asyncIteratorSymbol;
-        if (iterate === undefined || iterate === null) {
-          iterate = items[iteratorSymbol];
-          symbol = iteratorSymbol;
+        var receiver;
+        var length = -1;
+        var failed = false;
+        var failure;
+        try {
+          var iterate = asyncIteratorSymbol === undefined ? undefined : items[asyncIteratorSymbol];
+          var symbol = asyncIteratorSymbol;
+          if (iterate === undefined || iterate === null) {
+            iterate = items[iteratorSymbol];
+            symbol = iteratorSymbol;
+          }
+          if (iterate === undefined || iterate === null) {
+            receiver = toObject(items);
+            length = toLength(receiver.length);
+          } else {
+            var held = {};
+            held[symbol] = {
+              value: typeof iterate === 'function' ? function () { return apply(iterate, items, []); } : iterate
+            };
+            source = objectCreate(null, held);
+          }
+        } catch (error) {
+          failed = true;
+          failure = error;
         }
-        if (iterate === undefined || iterate === null) {
-          var receiver = toObject(items);
-          var length = toLength(receiver.length);
+        if (!failed && length >= 0) {
           checkLength(length, 'Array.fromAsync');
-          source = slotsOf(receiver, length);
-        } else if (typeof iterate !== 'function') {
-          throw new TypeErrorCtor('Array.fromAsync: the iterator of the source is not a function');
-        } else {
-          var held = {};
-          held[symbol] = { value: function () { return apply(iterate, items, []); } };
-          source = objectCreate(null, held);
+          try {
+            source = slotsOf(receiver, length);
+          } catch (error) {
+            failed = true;
+            failure = error;
+          }
+        }
+        if (failed) {
+          var raising = {};
+          raising[asyncIteratorSymbol === undefined ? iteratorSymbol : asyncIteratorSymbol] = {
+            get: function () { throw failure; }
+          };
+          source = objectCreate(null, raising);
         }
         var produced = 0;
         var mapped = mapFn !== undefined;
