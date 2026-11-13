@@ -1,6 +1,6 @@
 {
   "name": "@enclave-vm/runtime",
-  "version": "2.19.1",
+  "version": "2.19.2",
   "description": "Building blocks of a runtime worker for EnclaveJS: session bookkeeping and channels (does not execute code)",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave",
@@ -37,9 +37,9 @@
     "enclave-runtime": "./dist/cli.js"
   },
   "dependencies": {
-    "@enclave-vm/core": "2.19.1",
-    "@enclave-vm/stream": "2.19.1",
-    "@enclave-vm/types": "2.19.1"
+    "@enclave-vm/core": "2.19.2",
+    "@enclave-vm/stream": "2.19.2",
+    "@enclave-vm/types": "2.19.2"
   },
   "devDependencies": {
     "ws": "^8.19.0"
