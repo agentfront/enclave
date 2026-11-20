@@ -90,6 +90,11 @@ export async function readBodyText(response: Response, maxBytes: number, truncat
 export interface OriginBoundRequest {
   method: string;
   headers: Record<string, string>;
+  /**
+   * Headers that are no credential and follow a redirect to any origin, such as the validators of
+   * a conditional request (`If-None-Match`, `If-Modified-Since`). Sent with every request.
+   */
+  portableHeaders?: Record<string, string>;
   body?: BodyInit;
   signal?: AbortSignal;
 }
@@ -106,7 +111,8 @@ export async function fetchOriginBound(url: string, request: OriginBoundRequest)
   let current = url;
   let method = request.method;
   let body = request.body;
-  let headers = request.headers;
+  const portable = request.portableHeaders ?? {};
+  let headers = { ...request.headers, ...portable };
 
   for (let hop = 0; ; hop++) {
     const response = await fetch(current, { method, headers, body, signal: request.signal, redirect: 'manual' });
@@ -141,7 +147,7 @@ export async function fetchOriginBound(url: string, request: OriginBoundRequest)
     }
 
     if (next.origin !== origin) {
-      headers = body === undefined ? {} : onlyContentType(headers);
+      headers = { ...(body === undefined ? {} : onlyContentType(headers)), ...portable };
     }
 
     current = next.href;

@@ -237,13 +237,15 @@ export class OpenApiSpecPoller extends EventEmitter {
 
     const headers: Record<string, string> = { ...this.config.headers };
 
-    // Add conditional request headers
+    // Add conditional request headers. They are no credential: they follow a redirect to another
+    // origin (the configured headers do not), so the server that answers can still answer 304.
+    const validators: Record<string, string> = {};
     if (this.config.changeDetection !== 'content-hash') {
       if (this.lastEtag) {
-        headers['If-None-Match'] = this.lastEtag;
+        validators['If-None-Match'] = this.lastEtag;
       }
       if (this.lastModified) {
-        headers['If-Modified-Since'] = this.lastModified;
+        validators['If-Modified-Since'] = this.lastModified;
       }
     }
 
@@ -257,6 +259,7 @@ export class OpenApiSpecPoller extends EventEmitter {
       const response = await fetchOriginBound(this.config.url, {
         method: 'GET',
         headers,
+        portableHeaders: validators,
         signal: controller.signal,
       });
 
