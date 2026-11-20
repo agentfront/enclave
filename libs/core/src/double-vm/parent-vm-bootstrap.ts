@@ -2775,13 +2775,17 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
    * referenced many times is written as many times, so the text can be far longer than the value
    * is large. What each member adds is counted as JSON.stringify writes it, and the count is a
    * lower bound of its UTF-8 bytes (a code unit is at least one byte, an escape only adds), so a
-   * value whose text is within the limit is never given up.
+   * value whose text is within the limit is never given up. The members JSON.stringify visits are
+   * counted as well, also those it leaves out (a function, undefined): at most as many as the limit
+   * has bytes.
    */
   var TOO_LARGE = {};
   function stringifyWithin(value, limit) {
     var bytes = 0;
+    var visits = 0;
     var root = true;
     return __ag_JSONStringify(value, function(key, member) {
+      if (++visits > limit) throw TOO_LARGE;
       // A String or Number object is written as what it converts to; converted here, the way
       // JSON.stringify converts it and once, so the count is of what is written.
       if (member !== null && typeof member === 'object') {
