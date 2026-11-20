@@ -228,6 +228,8 @@ function findRegexLiterals(source: string): Array<{
     token.last = keyword ? 'other' : 'identifier';
     lastIdentifier = identifierAfterDot ? '' : identifierBuffer;
     identifierBuffer = '';
+    // The property name took the dot: what follows it is not a property name too
+    lastPunctuation = '';
   };
 
   for (let i = 0; i < source.length; i++) {
@@ -282,6 +284,8 @@ function findRegexLiterals(source: string): Array<{
     if (inTemplateString) {
       if (char === '`') {
         inTemplateString = false;
+        // A finished template is a value: a slash after it divides
+        token.last = 'close';
       } else if (char === '$' && nextChar === '{') {
         // An interpolation is code, scanned as code up to its closing brace
         inTemplateString = false;
@@ -295,7 +299,11 @@ function findRegexLiterals(source: string): Array<{
     }
 
     if (inString) {
-      if (char === inString) inString = null;
+      if (char === inString) {
+        inString = null;
+        // A finished string is a value: a slash after it divides
+        token.last = 'close';
+      }
       continue;
     }
 
