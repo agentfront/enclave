@@ -18,6 +18,7 @@ A follow-up to 2.19.0: two more layers behind the validator, and the dependency 
 
 ### Security
 
+- `@enclave-vm/broker`: the periodic poll of an OpenAPI specification sends the source's `headers` to the specification's origin only; a redirect to another origin is followed without them, as for the first load (ATK-BRK-110).
 - `@enclave-vm/broker`: the message and code of an exception a tool handler throws reach the script, and the final event when the script does not catch it, with the value of each secret that handler was given replaced by `[REDACTED]` (ATK-BRK-109). Only the value as it is is recognised, not an encoded or partial form: a handler should still not put a secret into an error.
 
 ### After 2.19.1: a review of every package

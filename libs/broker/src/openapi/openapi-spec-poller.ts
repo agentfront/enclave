@@ -9,7 +9,7 @@
 
 import { EventEmitter } from 'events';
 import { sha256Hex } from './hash-utils';
-import { readBodyText } from './http-utils';
+import { fetchOriginBound, readBodyText } from './http-utils';
 import { DEFAULT_MAX_SPEC_BYTES } from './openapi-tool-loader';
 
 /**
@@ -252,7 +252,10 @@ export class OpenApiSpecPoller extends EventEmitter {
     const timeout = setTimeout(() => controller.abort(), this.config.fetchTimeoutMs);
 
     try {
-      const response = await fetch(this.config.url, {
+      // The configured headers are for the specification's origin: a redirect to another origin
+      // is followed without them, as for the first load of the specification.
+      const response = await fetchOriginBound(this.config.url, {
+        method: 'GET',
         headers,
         signal: controller.signal,
       });
