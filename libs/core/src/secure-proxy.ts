@@ -701,7 +701,30 @@ function isOfBuiltinKind(receiver: object, homes: readonly object[]): boolean {
   return false;
 }
 
+/**
+ * Built-in methods that only compare their arguments with what the receiver holds (and convert a
+ * position with `valueOf`): they call no method of an argument with a host value, and a guard in
+ * place of the argument would not be identical to the script's own value the receiver may hold
+ * (`list.concat([mine]).includes(mine)`). Their arguments are passed as they are.
+ */
+const TypedArrayPrototype = ObjectGetPrototypeOf(Uint8Array.prototype) as Record<string, unknown>;
+const COMPARING_BUILTINS: ReadonlySet<unknown> = new Set<unknown>([
+  Array.prototype.includes,
+  Array.prototype.indexOf,
+  Array.prototype.lastIndexOf,
+  TypedArrayPrototype['includes'],
+  TypedArrayPrototype['indexOf'],
+  TypedArrayPrototype['lastIndexOf'],
+  Map.prototype.get,
+  Map.prototype.has,
+  Set.prototype.has,
+  WeakMap.prototype.get,
+  WeakMap.prototype.has,
+  WeakSet.prototype.has,
+]);
+
 function passesHostValuesToCallbacks(fn: unknown, builtinMethod: boolean): boolean {
+  if (COMPARING_BUILTINS.has(fn)) return false;
   return (
     builtinMethod ||
     fn === JsonParse ||
