@@ -39,13 +39,17 @@ function hasSlot(valueOf: () => unknown, value: unknown): boolean {
  * The JSON text of `value`, as `JSON.stringify` writes it, or a {@link JsonTooLargeError} as soon
  * as it would be longer than `limit` bytes. What each member adds is counted as it is written,
  * and the count is a lower bound of its UTF-8 bytes (a code unit is at least one byte, an escape
- * only adds), so a value whose text is within the limit is never given up. Any other error of
- * `JSON.stringify` (a cycle, a BigInt, a getter that throws) is thrown as it is.
+ * only adds), so a value whose text is within the limit is never given up. The members
+ * `JSON.stringify` visits are counted as well, also those it leaves out (a function, undefined):
+ * at most as many as the limit has bytes. Any other error of `JSON.stringify` (a cycle, a BigInt,
+ * a getter that throws) is thrown as it is.
  */
 export function stringifyWithin(value: unknown, limit: number): string | undefined {
   let bytes = 0;
+  let visits = 0;
   let root = true;
   return JSONStringify(value, function (this: unknown, key: string, member: unknown): unknown {
+    if (++visits > limit) throw new JsonTooLargeError(limit);
     // A String or Number object is written as what it converts to; converted here, the way
     // JSON.stringify converts it and once, so the count is of what is written.
     if (member !== null && typeof member === 'object') {
