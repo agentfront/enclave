@@ -479,7 +479,9 @@ export function createHostToolBridge(
         );
       }
 
-      // Lift large string results to sidecar if configured
+      // Lift large string results to sidecar if configured. Such a result reaches the script as
+      // a reference or not at all: when the sidecar refuses to store it (a quota), the call fails
+      // rather than hand the script the text the sidecar was there to keep from it.
       if (sidecar && referenceConfig && typeof sanitizedResult === 'string') {
         const size = utf8ByteLength(sanitizedResult);
         if (size >= referenceConfig.extractionThreshold) {
@@ -487,7 +489,19 @@ export function createHostToolBridge(
             const refId = sidecar.store(sanitizedResult, 'tool-result', { origin: tool });
             sanitizedResult = refId;
           } catch {
-            // If storage fails (limits), keep original value and fall through.
+            return serializeResponse(
+              {
+                v: TOOL_BRIDGE_PROTOCOL_VERSION,
+                ok: false,
+                error: {
+                  name: 'ToolBridgeError',
+                  message: 'Tool result could not be stored in the reference sidecar',
+                  code: 'TOOL_RESULT_NOT_STORED',
+                  toolError: true,
+                },
+              },
+              maxPayloadBytes,
+            );
           }
         }
       }
