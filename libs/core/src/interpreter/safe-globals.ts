@@ -222,25 +222,34 @@ const SafeObject = frozenRecord({
     }
     // Every write is checked before any is made: a write that is refused leaves the target as it
     // was. (What the call writes is charged when it returns; a call that throws halfway would
-    // leave a growth behind that nothing charged.)
-    const writes: Array<[string, unknown]> = [];
-    let length = Array.isArray(target) ? target.length : 0;
+    // leave a growth behind that nothing charged.) Two passes over the sources, so that nothing is
+    // held for each member: the first checks each write (an array's length followed across them)
+    // and keeps only the lengths it converted, at most one per source; the second makes the writes,
+    // reading each source again, so a source that is the target itself sees the writes before it,
+    // as in the language. Script data has no getters, so a second read gives what the first did.
+    const targetIsArray = Array.isArray(target);
+    const lengths: unknown[] = [];
+    let length = targetIsArray ? (target as unknown[]).length : 0;
     for (const source of sources) {
       if (source === null || source === undefined) continue;
       for (const key of dataKeys(source)) {
-        let value = (source as Record<string, unknown>)[key];
+        const value = (source as Record<string, unknown>)[key];
         assertStorable(target, key, value);
         // An index or a length is held to the longest array a script may make, as in an assignment
-        if (Array.isArray(target)) {
-          const checked = checkArrayWrite(target, key, value, length);
-          value = checked.value;
+        if (targetIsArray) {
+          const checked = checkArrayWrite(target as unknown[], key, value, length);
           length = checked.length;
+          if (key === 'length') lengths.push(checked.value);
         }
-        writes.push([key, value]);
       }
     }
-    for (const [key, value] of writes) {
-      (target as Record<string, unknown>)[key] = value;
+    let nextLength = 0;
+    for (const source of sources) {
+      if (source === null || source === undefined) continue;
+      for (const key of dataKeys(source)) {
+        (target as Record<string, unknown>)[key] =
+          targetIsArray && key === 'length' ? lengths[nextLength++] : (source as Record<string, unknown>)[key];
+      }
     }
     return target;
   },
