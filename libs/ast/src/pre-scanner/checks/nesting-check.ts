@@ -8,6 +8,7 @@
 import type { PreScannerConfig } from '../config';
 import type { ScanState } from '../scan-state';
 import { PRESCANNER_ERROR_CODES } from '../errors';
+import { walkCode } from './code-walk';
 
 /**
  * Opening brackets and their matching closers
@@ -36,133 +37,36 @@ const CLOSING_BRACKETS = new Set(Object.values(BRACKET_PAIRS));
 export function checkNestingDepth(source: string, config: PreScannerConfig, state: ScanState): void {
   let depth = 0;
   let maxDepth = 0;
-  let maxDepthPosition = 0;
-  let inString: string | null = null;
-  let inTemplateString = false;
-  let templateDepth = 0;
-  let escaped = false;
-  let inLineComment = false;
-  let inBlockComment = false;
+  let stopped = false;
 
-  for (let i = 0; i < source.length; i++) {
-    const char = source[i];
-    const nextChar = source[i + 1];
-
-    // Handle escape sequences in strings
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-
-    if (char === '\\' && inString) {
-      escaped = true;
-      continue;
-    }
-
-    // Handle line comments
-    if (inLineComment) {
-      if (char === '\n') {
-        inLineComment = false;
-      }
-      continue;
-    }
-
-    // Handle block comments
-    if (inBlockComment) {
-      if (char === '*' && nextChar === '/') {
-        inBlockComment = false;
-        i++; // Skip the '/'
-      }
-      continue;
-    }
-
-    // Check for comment start
-    if (!inString && !inTemplateString && char === '/') {
-      if (nextChar === '/') {
-        inLineComment = true;
-        i++;
-        continue;
-      }
-      if (nextChar === '*') {
-        inBlockComment = true;
-        i++;
-        continue;
-      }
-      // Could be regex literal or division - skip for nesting check
-      // The regex check will handle this separately
-    }
-
-    // Handle template strings with interpolation
-    if (inTemplateString) {
-      if (char === '`' && !escaped) {
-        inTemplateString = false;
-        continue;
-      }
-      if (char === '$' && nextChar === '{') {
-        templateDepth++;
+  // The brackets of the code, also of the code in a template's interpolations (see walkCode)
+  walkCode(source, {
+    code: (i, char) => {
+      if (OPENING_BRACKETS.has(char)) {
         depth++;
         if (depth > maxDepth) {
           maxDepth = depth;
-          maxDepthPosition = i;
         }
-        i++;
-        continue;
+
+        // Check limit immediately for early termination
+        if (depth > config.maxNestingDepth) {
+          state.reportFatalError({
+            code: PRESCANNER_ERROR_CODES.EXCESSIVE_NESTING,
+            message: `Bracket nesting depth (${depth}) exceeds maximum allowed (${config.maxNestingDepth})`,
+            position: i,
+            data: { actual: depth, limit: config.maxNestingDepth },
+          });
+          stopped = true;
+          return true;
+        }
+      } else if (CLOSING_BRACKETS.has(char)) {
+        depth = Math.max(0, depth - 1); // Avoid negative depth on malformed input
       }
-      continue;
-    }
+      return false;
+    },
+  });
 
-    // Handle regular strings
-    if (inString) {
-      if (char === inString) {
-        inString = null;
-      }
-      continue;
-    }
-
-    // Start of string
-    if (char === '"' || char === "'") {
-      inString = char;
-      continue;
-    }
-
-    // Start of template string
-    if (char === '`') {
-      inTemplateString = true;
-      continue;
-    }
-
-    // Handle closing brace in template string interpolation
-    if (templateDepth > 0 && char === '}') {
-      templateDepth--;
-      depth--;
-      inTemplateString = true;
-      continue;
-    }
-
-    // Handle brackets
-    if (OPENING_BRACKETS.has(char)) {
-      depth++;
-      if (depth > maxDepth) {
-        maxDepth = depth;
-        maxDepthPosition = i;
-      }
-
-      // Check limit immediately for early termination
-      if (depth > config.maxNestingDepth) {
-        state.reportFatalError({
-          code: PRESCANNER_ERROR_CODES.EXCESSIVE_NESTING,
-          message: `Bracket nesting depth (${depth}) exceeds maximum allowed (${config.maxNestingDepth})`,
-          position: i,
-          data: { actual: depth, limit: config.maxNestingDepth },
-        });
-        return;
-      }
-    } else if (CLOSING_BRACKETS.has(char)) {
-      depth = Math.max(0, depth - 1); // Avoid negative depth on malformed input
-    }
-  }
-
-  state.updateMaxNestingDepth(maxDepth);
+  if (!stopped) state.updateMaxNestingDepth(maxDepth);
 }
 
 /**
@@ -179,61 +83,37 @@ export function checkConsecutiveOperators(source: string, config: PreScannerConf
 
   let consecutiveCount = 0;
   let consecutiveStart = 0;
-  let inString = false;
-  let stringChar: string | null = null;
-  let escaped = false;
 
-  for (let i = 0; i < source.length; i++) {
-    const char = source[i];
-
-    // Handle escape in strings
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-
-    if (char === '\\' && inString) {
-      escaped = true;
-      continue;
-    }
-
-    // Track strings
-    if (!inString && (char === '"' || char === "'" || char === '`')) {
-      inString = true;
-      stringChar = char;
+  // The operators of the code, also of the code in a template's interpolations (see walkCode); a
+  // string between two operators ends a run
+  walkCode(source, {
+    string: () => {
       consecutiveCount = 0;
-      continue;
-    }
+      return false;
+    },
+    code: (i, char) => {
+      if (operatorChars.has(char)) {
+        if (consecutiveCount === 0) {
+          consecutiveStart = i;
+        }
+        consecutiveCount++;
 
-    if (inString && char === stringChar) {
-      inString = false;
-      stringChar = null;
-      continue;
-    }
-
-    if (inString) continue;
-
-    // Check operators
-    if (operatorChars.has(char)) {
-      if (consecutiveCount === 0) {
-        consecutiveStart = i;
+        if (consecutiveCount > config.maxConsecutiveOperators) {
+          state.reportFatalError({
+            code: PRESCANNER_ERROR_CODES.EXCESSIVE_OPERATORS,
+            message: `Consecutive operators (${consecutiveCount}) exceed maximum allowed (${config.maxConsecutiveOperators})`,
+            position: consecutiveStart,
+            data: { actual: consecutiveCount, limit: config.maxConsecutiveOperators },
+          });
+          return true;
+        }
+      } else if (!isWhitespace(char)) {
+        // Reset on non-operator, non-whitespace
+        consecutiveCount = 0;
       }
-      consecutiveCount++;
-
-      if (consecutiveCount > config.maxConsecutiveOperators) {
-        state.reportFatalError({
-          code: PRESCANNER_ERROR_CODES.EXCESSIVE_OPERATORS,
-          message: `Consecutive operators (${consecutiveCount}) exceed maximum allowed (${config.maxConsecutiveOperators})`,
-          position: consecutiveStart,
-          data: { actual: consecutiveCount, limit: config.maxConsecutiveOperators },
-        });
-        return;
-      }
-    } else if (!isWhitespace(char)) {
-      // Reset on non-operator, non-whitespace
-      consecutiveCount = 0;
-    }
-  }
+      return false;
+    },
+  });
 }
 
 /**

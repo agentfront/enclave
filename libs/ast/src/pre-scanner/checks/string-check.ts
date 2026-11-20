@@ -8,6 +8,7 @@
 import type { PreScannerConfig } from '../config';
 import type { ScanState } from '../scan-state';
 import { PRESCANNER_ERROR_CODES } from '../errors';
+import { walkCode } from './code-walk';
 
 /**
  * Check string literals for excessive length.
@@ -19,85 +20,10 @@ import { PRESCANNER_ERROR_CODES } from '../errors';
  */
 export function checkStringLiterals(source: string, config: PreScannerConfig, state: ScanState): void {
   let totalStringContent = 0;
-  let position = 0;
-  let line = 1;
 
-  while (position < source.length) {
-    const char = source[position];
-
-    // Track lines
-    if (char === '\n') {
-      line++;
-      position++;
-      continue;
-    }
-
-    // Check for string start
-    if (char === '"' || char === "'" || char === '`') {
-      const stringStart = position;
-      const stringLine = line;
-      const quote = char;
-      const isTemplate = char === '`';
-
-      position++; // Move past opening quote
-
-      let stringContent = '';
-      let escaped = false;
-      let templateDepth = 0;
-
-      while (position < source.length) {
-        const c = source[position];
-
-        // Track lines in strings
-        if (c === '\n') {
-          line++;
-        }
-
-        if (escaped) {
-          stringContent += c;
-          escaped = false;
-          position++;
-          continue;
-        }
-
-        if (c === '\\') {
-          escaped = true;
-          position++;
-          continue;
-        }
-
-        // Handle template string interpolation
-        if (isTemplate && c === '$' && source[position + 1] === '{') {
-          templateDepth++;
-          position += 2;
-          // Skip interpolation content
-          while (position < source.length && templateDepth > 0) {
-            const ic = source[position];
-            if (ic === '\n') line++;
-            if (ic === '{') templateDepth++;
-            if (ic === '}') templateDepth--;
-            position++;
-          }
-          continue;
-        }
-
-        if (c === quote && !isTemplate) {
-          // End of regular string
-          break;
-        }
-
-        if (c === '`' && isTemplate && templateDepth === 0) {
-          // End of template string
-          break;
-        }
-
-        stringContent += c;
-        position++;
-      }
-
-      position++; // Move past closing quote
-
-      const stringLength = stringContent.length;
+  // Every string literal, also those written in the interpolations of a template (see walkCode)
+  walkCode(source, {
+    string: (stringStart, stringLine, stringLength) => {
       totalStringContent += stringLength;
       state.addStringContent(stringLength);
 
@@ -112,7 +38,7 @@ export function checkStringLiterals(source: string, config: PreScannerConfig, st
           line: stringLine,
           data: { actual: stringLength, limit: config.maxStringLength },
         });
-        return;
+        return true;
       }
 
       // Check total string content
@@ -126,41 +52,11 @@ export function checkStringLiterals(source: string, config: PreScannerConfig, st
           line: stringLine,
           data: { actual: totalStringContent, limit: config.maxTotalStringContent },
         });
-        return;
+        return true;
       }
-
-      continue;
-    }
-
-    // Skip comments
-    if (char === '/') {
-      const nextChar = source[position + 1];
-
-      if (nextChar === '/') {
-        // Line comment
-        while (position < source.length && source[position] !== '\n') {
-          position++;
-        }
-        continue;
-      }
-
-      if (nextChar === '*') {
-        // Block comment
-        position += 2;
-        while (position < source.length - 1) {
-          if (source[position] === '\n') line++;
-          if (source[position] === '*' && source[position + 1] === '/') {
-            position += 2;
-            break;
-          }
-          position++;
-        }
-        continue;
-      }
-    }
-
-    position++;
-  }
+      return false;
+    },
+  });
 }
 
 /**
