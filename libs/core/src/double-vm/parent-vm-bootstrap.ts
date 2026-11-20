@@ -502,7 +502,6 @@ const REALM_RUNTIME_GLOBALS = [
   'RangeError',
 ] as const;
 
-
 /**
  * Source of an expression that, evaluated in a pristine realm, yields a function freezing that
  * realm's intrinsics: every constructor, prototype and namespace object the global object names

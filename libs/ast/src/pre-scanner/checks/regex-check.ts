@@ -319,11 +319,7 @@ function findRegexLiterals(source: string): Array<{
       // Division vs regex heuristic:
       // Regex follows: return, =, (, [, {, ,, ;, :, !, &, |, ?, +, -, ~, typeof, void, in, delete
       // Division follows: identifier, number, ), ]
-      if (
-        token.last !== 'identifier' &&
-        token.last !== 'number' &&
-        token.last !== 'close'
-      ) {
+      if (token.last !== 'identifier' && token.last !== 'number' && token.last !== 'close') {
         // Try to parse as regex
         const regexResult = tryParseRegex(source, i);
         if (regexResult) {
