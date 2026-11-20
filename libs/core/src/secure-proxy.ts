@@ -40,6 +40,13 @@ const HostObjectPrototype: object = Object.prototype;
 // than whatever the `Reflect` binding resolves to when the safe runtime is assembled.
 const ReflectObject = Reflect;
 
+/** Whether a property key is an array index ('0' to '4294967294' in canonical form). */
+function isArrayIndexKey(property: string | symbol): boolean {
+  if (typeof property !== 'string') return false;
+  const index = Number(property);
+  return index >>> 0 === index && index !== 4294967295 && String(index) === property;
+}
+
 /**
  * Snapshot of every own value on the pristine `Reflect` namespace, taken at module load.
  *
@@ -878,15 +885,16 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
      * receives its arguments behind the membrane and keeps the script's object as its receiver,
      * and an object member or result guarded the same way. Its own properties are listed as
      * they are, so a function that copies or serializes the object sees the same data. An array
-     * is data to every built-in and passes as it is, as does a value that is behind the
-     * membrane already.
+     * gets a guard that is still an array (see guardArrayArgument). A value that is behind the
+     * membrane already passes as it is.
      */
     const guardObjectArgument = (value: unknown): unknown => {
       if (value === null || typeof value !== 'object') return value;
-      if (proxySet.has(value) || guardedArguments.has(value) || Array.isArray(value)) return value;
+      if (proxySet.has(value) || guardedArguments.has(value)) return value;
       if (heldBySandbox && heldBySandbox(value)) return value;
       const existing = lookupGuard(value);
       if (existing) return existing;
+      if (Array.isArray(value)) return guardArrayArgument(value);
       const original = value;
       // Over an empty object, not over the script's object: a frozen member of the target would
       // have to be reported as it is (proxy invariant), unguarded.
@@ -908,6 +916,34 @@ export function createSecureProxy<T extends object>(target: T, options: SecurePr
         },
         // What a host function stores in the object is a host value like any other
         set: (_shell, property, stored) => ReflectSet(original, property, toSandbox(stored), original),
+      });
+      storeGuard(original, guard);
+      guardedArguments.set(guard, original);
+      return guard;
+    };
+
+    /**
+     * An array of the script on its way into such a host function. The built-ins read its length
+     * and its elements and spread it (concat), so its guard is a proxy of the array itself, which
+     * is an array to them. An element and the length are answered as they are: they are data.
+     * Every other member is read like a member of an object (guardMember): an array can carry
+     * methods of its own, and the set operations call size, has and keys of whatever set-like
+     * they are given, with the host's own values. A frozen method of the array cannot be answered
+     * guarded (proxy invariant), so the built-in fails instead of calling it.
+     */
+    const guardArrayArgument = (original: unknown[]): unknown => {
+      const guard = new Proxy(original, {
+        get: (target, property) => {
+          const member = ReflectGet(target, property, target);
+          return property === 'length' || isArrayIndexKey(property) ? member : guardMember(member, target);
+        },
+        // What a host function stores in the array is a host value like any other
+        set: (target, property, stored) => ReflectSet(target, property, toSandbox(stored), target),
+        defineProperty: (target, property, descriptor) => {
+          if ('get' in descriptor || 'set' in descriptor) return false;
+          const stored = 'value' in descriptor ? { ...descriptor, value: toSandbox(descriptor.value) } : descriptor;
+          return ReflectDefineProperty(target, property, stored);
+        },
       });
       storeGuard(original, guard);
       guardedArguments.set(guard, original);
