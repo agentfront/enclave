@@ -21,6 +21,9 @@ import type { SessionHistoryLimits } from './session-history';
  */
 const DEFAULT_BRIDGE_PAYLOAD_BYTES = 5 * 1024 * 1024;
 
+/** The bytes the string bridge's response adds around a result: `{"v":1,"ok":true,"value":` and `}`. */
+const BRIDGE_RESPONSE_ENVELOPE_BYTES = JSON.stringify({ v: 1, ok: true, value: 0 }).length - 1;
+
 /**
  * Broker session configuration
  */
@@ -83,6 +86,8 @@ export class BrokerSession {
   private readonly abortController: AbortController;
   private readonly limits: Required<SessionLimits>;
   private readonly checkResultSize: boolean;
+  /** The payload limit of the sandbox's string bridge; undefined when the bridge is not used. */
+  private readonly bridgePayloadBytes: number | undefined;
   private _state: SessionStateValue = 'starting';
   private executionPromise: Promise<SessionFinalResult> | null = null;
   private toolCallCount = 0;
@@ -114,6 +119,8 @@ export class BrokerSession {
     this.checkResultSize =
       (bridge?.mode ?? 'string') !== 'string' ||
       this.limits.maxToolResultBytes < (bridge?.maxPayloadBytes ?? DEFAULT_BRIDGE_PAYLOAD_BYTES);
+    this.bridgePayloadBytes =
+      (bridge?.mode ?? 'string') === 'string' ? (bridge?.maxPayloadBytes ?? DEFAULT_BRIDGE_PAYLOAD_BYTES) : undefined;
 
     this.expiresAt = this.createdAt + this.limits.sessionTtlMs;
 
@@ -504,16 +511,14 @@ export class BrokerSession {
       this.abortController.signal.removeEventListener('abort', onSessionAbort);
     }
 
-    // A result above the session's limit is a failed call
-    if (result.success && !this.resultWithinLimit(result.value)) {
-      result = {
-        success: false,
-        error: {
-          code: 'TOOL_RESULT_TOO_LARGE',
-          message: `Tool result exceeds the limit of ${this.limits.maxToolResultBytes} bytes`,
-        },
-        durationMs: result.durationMs,
-      };
+    // A result above the session's limit, or above what the sandbox's bridge carries, is a failed
+    // call. The second is seen here as well, so that cancelOnFirstError applies to it: the bridge
+    // would refuse the result after this method returned, where the session does not see it.
+    if (result.success) {
+      const refusal = this.resultRefusal(result.value);
+      if (refusal) {
+        result = { success: false, error: refusal, durationMs: result.durationMs };
+      }
     }
 
     // Emit tool result event
@@ -534,20 +539,33 @@ export class BrokerSession {
   }
 
   /**
-   * Whether a tool result is within `limits.maxToolResultBytes`, measured as serialized JSON.
+   * Why a tool result is refused, or undefined: over `limits.maxToolResultBytes`, or over the
+   * payload limit of the sandbox's string bridge (with the bytes of its response envelope),
+   * measured as serialized JSON.
    */
-  private resultWithinLimit(value: unknown): boolean {
-    if (!this.checkResultSize) return true;
+  private resultRefusal(value: unknown): { code: string; message: string } | undefined {
     const limit = this.limits.maxToolResultBytes;
-    if (!(limit > 0) || limit === Infinity) return true;
+    const checkOwn = this.checkResultSize && limit > 0 && limit !== Infinity;
+    if (!checkOwn && this.bridgePayloadBytes === undefined) return undefined;
     let serialized: string | undefined;
     try {
       serialized = JSON.stringify(value);
     } catch {
       // Not serializable: the sandbox's own bridge decides what happens to it.
-      return true;
+      return undefined;
     }
-    return serialized === undefined || Buffer.byteLength(serialized, 'utf8') <= limit;
+    if (serialized === undefined) return undefined;
+    const bytes = Buffer.byteLength(serialized, 'utf8');
+    if (checkOwn && bytes > limit) {
+      return { code: 'TOOL_RESULT_TOO_LARGE', message: `Tool result exceeds the limit of ${limit} bytes` };
+    }
+    if (this.bridgePayloadBytes !== undefined && bytes + BRIDGE_RESPONSE_ENVELOPE_BYTES > this.bridgePayloadBytes) {
+      return {
+        code: 'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+        message: `Tool response exceeds maximum size (${this.bridgePayloadBytes} bytes)`,
+      };
+    }
+    return undefined;
   }
 
   /**
