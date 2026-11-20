@@ -6,8 +6,8 @@
  * @packageDocumentation
  */
 
-import { useState, useCallback, useRef } from 'react';
-import type { SessionResult, SessionHandle, StreamEvent, SessionId } from '@enclave-vm/client';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import type { EnclaveClient, SessionResult, SessionHandle, StreamEvent, SessionId } from '@enclave-vm/client';
 import { useEnclaveClient } from './EnclaveProvider.js';
 import type { SessionState, UseEnclaveSessionOptions, UseEnclaveSessionReturn } from './types.js';
 
@@ -40,74 +40,85 @@ import type { SessionState, UseEnclaveSessionOptions, UseEnclaveSessionReturn } 
  * }
  * ```
  */
+/**
+ * What the state of the hook belongs to: one per client the provider hands out. A newer client
+ * has a higher generation. The run counter and the cancellation handle are the owner's, so they
+ * are never shared between clients and nothing has to be reset when the client changes.
+ */
+interface SessionOwner {
+  client: EnclaveClient;
+  generation: number;
+  run: number;
+  handle: SessionHandle | null;
+}
+
+/** The state of the hook, with the owner it belongs to. */
+interface SessionSnapshot<T> {
+  owner: SessionOwner;
+  state: SessionState;
+  sessionId: SessionId | null;
+  result: SessionResult<T> | null;
+  error: { code?: string; message: string } | null;
+  stdout: string;
+  events: StreamEvent[];
+}
+
+let ownerGenerations = 0;
+
+function idleSnapshot<T>(owner: SessionOwner): SessionSnapshot<T> {
+  return { owner, state: 'idle', sessionId: null, result: null, error: null, stdout: '', events: [] };
+}
+
 export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions = {}): UseEnclaveSessionReturn<T> {
   const client = useEnclaveClient();
 
-  // State
-  const [state, setState] = useState<SessionState>('idle');
-  const [sessionId, setSessionId] = useState<SessionId | null>(null);
-  const [result, setResult] = useState<SessionResult<T> | null>(null);
-  const [error, setError] = useState<{ code?: string; message: string } | null>(null);
-  const [stdout, setStdout] = useState<string>('');
-  const [events, setEvents] = useState<StreamEvent[]>([]);
+  // The owner of this client. Made while rendering but nothing is changed there: a render React
+  // discards leaves the owner that is shown, its runs and its handle as they were.
+  const owner = useMemo<SessionOwner>(
+    () => ({ client, generation: ++ownerGenerations, run: 0, handle: null }),
+    [client],
+  );
 
-  // Refs for current session handle
-  const handleRef = useRef<SessionHandle | null>(null);
+  // The owner the last commit showed. A run's callbacks are called while its owner is that one or
+  // a newer one (a run an effect of the same commit started).
+  const committedOwnerRef = useRef<SessionOwner>(owner);
+  useEffect(() => {
+    committedOwnerRef.current = owner;
+  }, [owner]);
 
-  // The run the state belongs to: the latest execute of the current client. A run that is not
-  // (an earlier one, or one of a client the provider has since replaced) still resolves its own
-  // promise, but leaves the state and the cancellation handle alone, and a run of a replaced
-  // client calls none of the callbacks either.
-  const runRef = useRef(0);
-  const clientRef = useRef(client);
-
-  // A new client (another server, another principal): the state of the previous one is not shown
-  // under it, and none of its runs can write to the state any more. Done while rendering, not in
-  // an effect: an execute that an effect of this commit starts (a layout effect runs before a
-  // passive one) already belongs to the new client and must not be detached by a later reset.
-  const [ownerClient, setOwnerClient] = useState(client);
-  if (ownerClient !== client) {
-    setOwnerClient(client);
-    clientRef.current = client;
-    runRef.current++;
-    handleRef.current = null;
-    setState('idle');
-    setSessionId(null);
-    setResult(null);
-    setError(null);
-    setStdout('');
-    setEvents([]);
-  }
+  // The state, tagged with its owner. The state of another owner (the client before) is not shown
+  // under this one; an owner's runs write only while the state is theirs, and an older owner
+  // never takes it from a newer one.
+  const [snapshot, setSnapshot] = useState<SessionSnapshot<T>>(() => idleSnapshot<T>(owner));
+  const idle = useMemo(() => idleSnapshot<T>(owner), [owner]);
+  const shown = snapshot.owner === owner ? snapshot : idle;
 
   /**
    * Reset the hook state
    */
   const reset = useCallback(() => {
-    setState('idle');
-    setSessionId(null);
-    setResult(null);
-    setError(null);
-    setStdout('');
-    setEvents([]);
-    handleRef.current = null;
-  }, []);
+    owner.handle = null;
+    setSnapshot(idleSnapshot<T>(owner));
+  }, [owner]);
 
   /**
    * Execute code in the enclave
    */
   const execute = useCallback(
     async (code: string): Promise<SessionResult<T>> => {
-      const run = ++runRef.current;
-      const owner = client;
-      const isCurrent = (): boolean => runRef.current === run;
-      const ownerIsCurrent = (): boolean => clientRef.current === owner;
+      const run = ++owner.run;
+      // The latest run of its owner, and the state is its owner's
+      const update = (change: (current: SessionSnapshot<T>) => Partial<SessionSnapshot<T>>): void => {
+        setSnapshot((current) =>
+          owner.run === run && current.owner === owner ? { ...current, ...change(current) } : current,
+        );
+      };
+      const callbacksApply = (): boolean => owner.generation >= committedOwnerRef.current.generation;
 
-      // Reset state for new execution
-      setState('running');
-      setResult(null);
-      setError(null);
-      setStdout('');
-      setEvents([]);
+      // Reset state for new execution: the state becomes this owner's, unless a newer owner has it
+      setSnapshot((current) =>
+        current.owner.generation > owner.generation ? current : { ...idleSnapshot<T>(owner), state: 'running' },
+      );
 
       // Call onStart callback
       options.onStart?.();
@@ -125,52 +136,50 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
       }
 
       // Start streaming execution
-      const handle = client.executeStream(code, {
+      const handle = owner.client.executeStream(code, {
         sessionId: options.sessionId,
         limits: Object.keys(limits).length > 0 ? limits : undefined,
         onEvent: (event) => {
-          if (isCurrent()) setEvents((prev) => [...prev, event]);
+          update((current) => ({ events: [...current.events, event] }));
         },
         onStdout: (chunk) => {
-          if (isCurrent()) setStdout((prev) => prev + chunk);
-          if (ownerIsCurrent()) options.onStdout?.(chunk);
+          update((current) => ({ stdout: current.stdout + chunk }));
+          if (callbacksApply()) options.onStdout?.(chunk);
         },
         onLog: (level, message, data) => {
-          if (ownerIsCurrent()) options.onLog?.(level, message, data);
+          if (callbacksApply()) options.onLog?.(level, message, data);
         },
         onToolCall: (callId, toolName, args) => {
-          if (ownerIsCurrent()) options.onToolCall?.(callId, toolName, args);
+          if (callbacksApply()) options.onToolCall?.(callId, toolName, args);
         },
         onToolResultApplied: (callId) => {
-          if (ownerIsCurrent()) options.onToolResultApplied?.(callId);
+          if (callbacksApply()) options.onToolResultApplied?.(callId);
         },
         onError: (code, message) => {
-          if (ownerIsCurrent()) options.onError?.({ code, message });
+          if (callbacksApply()) options.onError?.({ code, message });
         },
       });
 
-      handleRef.current = handle;
-      setSessionId(handle.sessionId);
+      owner.handle = handle;
+      update(() => ({ sessionId: handle.sessionId }));
 
       try {
         // Wait for completion
         const sessionResult = (await handle.wait()) as SessionResult<T>;
 
         // Update state based on result
-        if (isCurrent()) {
-          if (sessionResult.success) {
-            setState('completed');
-            setResult(sessionResult);
-          } else if (sessionResult.error?.code === 'CANCELLED') {
-            setState('cancelled');
-            setResult(sessionResult);
-          } else {
-            setState('error');
-            setResult(sessionResult);
-            setError(sessionResult.error ?? { message: 'Unknown error' });
-          }
+        if (sessionResult.success) {
+          update(() => ({ state: 'completed', result: sessionResult }));
+        } else if (sessionResult.error?.code === 'CANCELLED') {
+          update(() => ({ state: 'cancelled', result: sessionResult }));
+        } else {
+          update(() => ({
+            state: 'error',
+            result: sessionResult,
+            error: sessionResult.error ?? { message: 'Unknown error' },
+          }));
         }
-        if (ownerIsCurrent()) {
+        if (callbacksApply()) {
           if (!sessionResult.success && sessionResult.error?.code !== 'CANCELLED') {
             options.onError?.(sessionResult.error ?? { message: 'Unknown error' });
           }
@@ -194,12 +203,8 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
           events: handle.getEvents(),
         };
 
-        if (isCurrent()) {
-          setState('error');
-          setError(errorInfo);
-          setResult(errorResult);
-        }
-        if (ownerIsCurrent()) {
+        update(() => ({ state: 'error', error: errorInfo, result: errorResult }));
+        if (callbacksApply()) {
           options.onError?.(errorInfo);
           options.onComplete?.(errorResult);
         }
@@ -207,31 +212,34 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
         return errorResult;
       } finally {
         // Only the handle of this run: a later run's handle stays, so cancel() still reaches it
-        if (handleRef.current === handle) handleRef.current = null;
+        if (owner.handle === handle) owner.handle = null;
       }
     },
-    [client, options],
+    [owner, options],
   );
 
   /**
    * Cancel the current session
    */
-  const cancel = useCallback(async (reason?: string): Promise<void> => {
-    if (handleRef.current) {
-      await handleRef.current.cancel(reason);
-    }
-  }, []);
+  const cancel = useCallback(
+    async (reason?: string): Promise<void> => {
+      if (owner.handle) {
+        await owner.handle.cancel(reason);
+      }
+    },
+    [owner],
+  );
 
   return {
     execute,
     cancel,
-    state,
-    isRunning: state === 'running',
-    sessionId,
-    result,
-    error,
-    stdout,
-    events,
+    state: shown.state,
+    isRunning: shown.state === 'running',
+    sessionId: shown.sessionId,
+    result: shown.result,
+    error: shown.error,
+    stdout: shown.stdout,
+    events: shown.events,
     reset,
   };
 }
