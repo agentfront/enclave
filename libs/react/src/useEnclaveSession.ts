@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import type { SessionResult, SessionHandle, StreamEvent, SessionId } from '@enclave-vm/client';
 import { useEnclaveClient } from './EnclaveProvider.js';
 import type { SessionState, UseEnclaveSessionOptions, UseEnclaveSessionReturn } from './types.js';
@@ -62,9 +62,12 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
   const clientRef = useRef(client);
 
   // A new client (another server, another principal): the state of the previous one is not shown
-  // under it, and none of its runs can write to the state any more.
-  useEffect(() => {
-    if (clientRef.current === client) return;
+  // under it, and none of its runs can write to the state any more. Done while rendering, not in
+  // an effect: an execute that an effect of this commit starts (a layout effect runs before a
+  // passive one) already belongs to the new client and must not be detached by a later reset.
+  const [ownerClient, setOwnerClient] = useState(client);
+  if (ownerClient !== client) {
+    setOwnerClient(client);
     clientRef.current = client;
     runRef.current++;
     handleRef.current = null;
@@ -74,7 +77,7 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
     setError(null);
     setStdout('');
     setEvents([]);
-  }, [client]);
+  }
 
   /**
    * Reset the hook state
