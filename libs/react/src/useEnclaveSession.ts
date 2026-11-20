@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { SessionResult, SessionHandle, StreamEvent, SessionId } from '@enclave-vm/client';
 import { useEnclaveClient } from './EnclaveProvider.js';
 import type { SessionState, UseEnclaveSessionOptions, UseEnclaveSessionReturn } from './types.js';
@@ -54,6 +54,28 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
   // Refs for current session handle
   const handleRef = useRef<SessionHandle | null>(null);
 
+  // The run the state belongs to: the latest execute of the current client. A run that is not
+  // (an earlier one, or one of a client the provider has since replaced) still resolves its own
+  // promise, but leaves the state and the cancellation handle alone, and a run of a replaced
+  // client calls none of the callbacks either.
+  const runRef = useRef(0);
+  const clientRef = useRef(client);
+
+  // A new client (another server, another principal): the state of the previous one is not shown
+  // under it, and none of its runs can write to the state any more.
+  useEffect(() => {
+    if (clientRef.current === client) return;
+    clientRef.current = client;
+    runRef.current++;
+    handleRef.current = null;
+    setState('idle');
+    setSessionId(null);
+    setResult(null);
+    setError(null);
+    setStdout('');
+    setEvents([]);
+  }, [client]);
+
   /**
    * Reset the hook state
    */
@@ -72,6 +94,11 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
    */
   const execute = useCallback(
     async (code: string): Promise<SessionResult<T>> => {
+      const run = ++runRef.current;
+      const owner = client;
+      const isCurrent = (): boolean => runRef.current === run;
+      const ownerIsCurrent = (): boolean => clientRef.current === owner;
+
       // Reset state for new execution
       setState('running');
       setResult(null);
@@ -99,23 +126,23 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
         sessionId: options.sessionId,
         limits: Object.keys(limits).length > 0 ? limits : undefined,
         onEvent: (event) => {
-          setEvents((prev) => [...prev, event]);
+          if (isCurrent()) setEvents((prev) => [...prev, event]);
         },
         onStdout: (chunk) => {
-          setStdout((prev) => prev + chunk);
-          options.onStdout?.(chunk);
+          if (isCurrent()) setStdout((prev) => prev + chunk);
+          if (ownerIsCurrent()) options.onStdout?.(chunk);
         },
         onLog: (level, message, data) => {
-          options.onLog?.(level, message, data);
+          if (ownerIsCurrent()) options.onLog?.(level, message, data);
         },
         onToolCall: (callId, toolName, args) => {
-          options.onToolCall?.(callId, toolName, args);
+          if (ownerIsCurrent()) options.onToolCall?.(callId, toolName, args);
         },
         onToolResultApplied: (callId) => {
-          options.onToolResultApplied?.(callId);
+          if (ownerIsCurrent()) options.onToolResultApplied?.(callId);
         },
         onError: (code, message) => {
-          options.onError?.({ code, message });
+          if (ownerIsCurrent()) options.onError?.({ code, message });
         },
       });
 
@@ -127,21 +154,26 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
         const sessionResult = (await handle.wait()) as SessionResult<T>;
 
         // Update state based on result
-        if (sessionResult.success) {
-          setState('completed');
-          setResult(sessionResult);
-        } else if (sessionResult.error?.code === 'CANCELLED') {
-          setState('cancelled');
-          setResult(sessionResult);
-        } else {
-          setState('error');
-          setResult(sessionResult);
-          setError(sessionResult.error ?? { message: 'Unknown error' });
-          options.onError?.(sessionResult.error ?? { message: 'Unknown error' });
+        if (isCurrent()) {
+          if (sessionResult.success) {
+            setState('completed');
+            setResult(sessionResult);
+          } else if (sessionResult.error?.code === 'CANCELLED') {
+            setState('cancelled');
+            setResult(sessionResult);
+          } else {
+            setState('error');
+            setResult(sessionResult);
+            setError(sessionResult.error ?? { message: 'Unknown error' });
+          }
         }
-
-        // Call onComplete callback
-        options.onComplete?.(sessionResult);
+        if (ownerIsCurrent()) {
+          if (!sessionResult.success && sessionResult.error?.code !== 'CANCELLED') {
+            options.onError?.(sessionResult.error ?? { message: 'Unknown error' });
+          }
+          // Call onComplete callback
+          options.onComplete?.(sessionResult);
+        }
 
         return sessionResult;
       } catch (err) {
@@ -151,10 +183,6 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
           message: err instanceof Error ? err.message : 'Unknown error',
         };
 
-        setState('error');
-        setError(errorInfo);
-        options.onError?.(errorInfo);
-
         // Return error result
         const errorResult: SessionResult<T> = {
           success: false,
@@ -163,12 +191,20 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
           events: handle.getEvents(),
         };
 
-        setResult(errorResult);
-        options.onComplete?.(errorResult);
+        if (isCurrent()) {
+          setState('error');
+          setError(errorInfo);
+          setResult(errorResult);
+        }
+        if (ownerIsCurrent()) {
+          options.onError?.(errorInfo);
+          options.onComplete?.(errorResult);
+        }
 
         return errorResult;
       } finally {
-        handleRef.current = null;
+        // Only the handle of this run: a later run's handle stays, so cancel() still reaches it
+        if (handleRef.current === handle) handleRef.current = null;
       }
     },
     [client, options],
