@@ -669,6 +669,8 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
         // Either name is the call: as written, or after the transform that renames it
         required: ['callTool', '__safe_callTool'],
         mode: 'any',
+        // The host's callTool, not a method of the script's own object of that name
+        directCallsOnly: true,
         minCalls: 1,
         messageTemplate: 'AgentScript code must contain at least one callTool invocation',
       }),

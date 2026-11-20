@@ -20,6 +20,13 @@ export interface RequiredFunctionCallOptions {
    * - 'any': At least ONE function in the list must be called
    */
   mode?: 'all' | 'any';
+  /**
+   * Count only a call of the name itself (`callTool(...)`), not a method of an object that has
+   * the name (`local.callTool(...)`): for a required host function, which a script reaches by
+   * its global name only.
+   * Default: false
+   */
+  directCallsOnly?: boolean;
 }
 
 /**
@@ -44,7 +51,14 @@ export class RequiredFunctionCallRule implements ValidationRule {
   }
 
   validate(context: ValidationContext): void {
-    const { required, minCalls = 1, maxCalls = 0, messageTemplate, mode = 'all' } = this.options;
+    const {
+      required,
+      minCalls = 1,
+      maxCalls = 0,
+      messageTemplate,
+      mode = 'all',
+      directCallsOnly = false,
+    } = this.options;
     const callCounts = new Map<string, number>();
 
     // Initialize counts
@@ -66,7 +80,7 @@ export class RequiredFunctionCallRule implements ValidationRule {
         }
 
         // Handle member calls: obj.funcName()
-        if (callee.type === 'MemberExpression' && callee.property.type === 'Identifier') {
+        if (!directCallsOnly && callee.type === 'MemberExpression' && callee.property.type === 'Identifier') {
           const name = callee.property.name;
           if (callCounts.has(name)) {
             callCounts.set(name, callCounts.get(name)! + 1);
@@ -89,6 +103,19 @@ export class RequiredFunctionCallRule implements ValidationRule {
           data: {
             functions: required,
             expectedMin: minCalls,
+            actual: totalCalls,
+          },
+        });
+      }
+      // The maximum holds for the calls of all of them together
+      if (maxCalls > 0 && totalCalls > maxCalls) {
+        const functionNames = required.join(' or ');
+        context.report({
+          code: 'FUNCTION_CALLED_TOO_MANY_TIMES',
+          message: `[${functionNames}] can be called at most ${maxCalls} time(s) in all, but were called ${totalCalls} time(s)`,
+          data: {
+            functions: required,
+            expectedMax: maxCalls,
             actual: totalCalls,
           },
         });
