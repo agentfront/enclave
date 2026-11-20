@@ -2678,8 +2678,11 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       throw createSafeError('Operation name must be a non-empty string', 'TypeError');
     }
 
-    // Operation name pattern validation (whitelist)
+    // Operation name pattern validation (whitelist). Each test starts at the beginning of the
+    // name: a global or sticky pattern would otherwise go on from where its last match ended,
+    // and decide the same name differently on the next call.
     if (validationConfig.validateOperationNames && typeof allowedOperationPattern !== 'undefined') {
+      allowedOperationPattern.lastIndex = 0;
       if (!allowedOperationPattern.test(operationName)) {
         throw createSafeError('Operation "' + operationName + '" does not match allowed pattern');
       }
@@ -2688,6 +2691,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     // Operation name pattern validation (blacklist)
     if (typeof blockedOperationPatterns !== 'undefined') {
       for (var i = 0; i < blockedOperationPatterns.length; i++) {
+        blockedOperationPatterns[i].lastIndex = 0;
         if (blockedOperationPatterns[i].test(operationName)) {
           throw createSafeError('Operation "' + operationName + '" matches blocked pattern');
         }
