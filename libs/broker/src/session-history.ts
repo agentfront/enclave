@@ -72,6 +72,7 @@ export class BoundedSessionEmitter extends SessionEmitter {
   private kept: Array<{ event: StreamEvent; size: number }> = [];
   private keptBytes = 0;
   private droppedThrough = 0;
+  private ended = false;
 
   /**
    * Size of the event that is emitted next, when the caller knows it already. Used once.
@@ -87,6 +88,10 @@ export class BoundedSessionEmitter extends SessionEmitter {
    * Emit a stream event: keep it within the bounds, then hand it to the listeners.
    */
   override emit(event: StreamEvent): void {
+    // The final event ends the session's stream: what a call the session abandoned does after it
+    // (a tool that settles late) is not appended
+    if (this.ended) return;
+    if (event.type === 'final') this.ended = true;
     this.keep(event);
     try {
       super.emit(event);
@@ -128,7 +133,8 @@ export class BoundedSessionEmitter extends SessionEmitter {
     this.nextEventSize = undefined;
     if (size === undefined) {
       try {
-        size = JSON.stringify(event).length;
+        // In UTF-8 bytes, as maxBytes states it (a code unit is 1 to 3 bytes)
+        size = Buffer.byteLength(JSON.stringify(event), 'utf8');
       } catch {
         size = UNMEASURED_EVENT_BYTES;
       }

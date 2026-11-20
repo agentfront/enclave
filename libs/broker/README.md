@@ -159,16 +159,16 @@ The routes answer the preflight (`OPTIONS`) themselves, and a browser sends it w
 
 `limits` (see `SessionLimits` in `@enclave-vm/types`) bound every session of a broker. A session created in process may name its own value for a limit; a session created over HTTP may only lower `maxToolCalls` and the lifetime.
 
-| Limit                 | Default  | What it bounds                                                                                           |
-| --------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
-| `maxToolCalls`        | 50       | Tool calls of one session                                                                                |
-| `toolTimeoutMs`       | 30000    | The run time of the script (it is passed to the sandbox as its timeout)                                  |
-| `perToolDeadlineMs`   | 30000    | One tool call: the handler's `signal` is aborted. A tool's own `config.timeout` applies when it is lower |
-| `deadlineMs`          | 0 (none) | The whole session, counted from its creation                                                             |
-| `sessionTtlMs`        | 60000    | How long a session stays registered; a session past it is cancelled at the next cleanup                  |
-| `maxToolResultBytes`  | 5 MB     | A tool result, as serialized JSON; a larger one fails the call with `TOOL_RESULT_TOO_LARGE`              |
-| `heartbeatIntervalMs` | 15000    | Interval of `heartbeat` events                                                                           |
-| `cancelOnFirstError`  | false    | Whether the first failed tool call cancels the session                                                   |
+| Limit                 | Default  | What it bounds                                                                                                                                                               |
+| --------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxToolCalls`        | 50       | Tool calls of one session                                                                                                                                                    |
+| `toolTimeoutMs`       | 30000    | The run time of the script (it is passed to the sandbox as its timeout)                                                                                                      |
+| `perToolDeadlineMs`   | 30000    | One tool call: the handler's `signal` is aborted. A tool's own `config.timeout` applies when it is lower                                                                     |
+| `deadlineMs`          | 0 (none) | The whole session, counted from its creation                                                                                                                                 |
+| `sessionTtlMs`        | 60000    | How long a session lives: a session still running when it is reached is cancelled then (its tool calls get the abort signal), and an idle one is removed at the next cleanup |
+| `maxToolResultBytes`  | 5 MB     | A tool result, as serialized JSON; a larger one fails the call with `TOOL_RESULT_TOO_LARGE`                                                                                  |
+| `heartbeatIntervalMs` | 15000    | Interval of `heartbeat` events                                                                                                                                               |
+| `cancelOnFirstError`  | false    | Whether the first failed tool call cancels the session                                                                                                                       |
 
 `maxStdoutBytes` is not used: the broker emits no `stdout` events.
 

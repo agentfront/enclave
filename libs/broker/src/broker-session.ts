@@ -130,6 +130,7 @@ export class BrokerSession {
   private stdoutBytes = 0;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  private lifetimeTimer: ReturnType<typeof setTimeout> | null = null;
   private _deadlineExceeded = false;
   private readonly partialErrors: ErrorPayload[] = [];
 
@@ -255,6 +256,16 @@ export class BrokerSession {
         }
       }, timerDelay(heartbeatMs));
     }
+
+    // The lifetime of the session (sessionTtlMs; for an HTTP session, the maxExecutionMs of its
+    // request) ends work that is still running when it is reached, not only at the next cleanup
+    const lifetimeLeft = this.expiresAt - Date.now();
+    this.lifetimeTimer = setTimeout(
+      () => {
+        if (!this.isTerminal()) this.cancel('Session lifetime exceeded');
+      },
+      timerDelay(Math.max(0, lifetimeLeft)),
+    );
 
     // Set up deadline timer if configured (compute remaining from createdAt epoch)
     const deadlineMs = this.limits.deadlineMs;
@@ -747,6 +758,10 @@ export class BrokerSession {
       clearTimeout(this.deadlineTimer);
       this.deadlineTimer = null;
     }
+    if (this.lifetimeTimer) {
+      clearTimeout(this.lifetimeTimer);
+      this.lifetimeTimer = null;
+    }
   }
 
   /**
@@ -773,7 +788,10 @@ function snapshotArguments(args: unknown): { copy: Record<string, unknown>; size
   try {
     const serialized = JSON.stringify(args);
     if (serialized !== undefined) {
-      return { copy: JSON.parse(serialized) as Record<string, unknown>, size: serialized.length };
+      return {
+        copy: JSON.parse(serialized) as Record<string, unknown>,
+        size: Buffer.byteLength(serialized, 'utf8'),
+      };
     }
   } catch {
     // Not serializable
