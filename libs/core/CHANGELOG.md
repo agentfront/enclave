@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Scoring gate with the sidecar.** The gate scores the script before the sidecar replaces its large literals with references, so a script is scored on the text its tools will receive. With a low `sidecar.extractionThreshold` a literal was scored as its reference (ATK-SCORE-12).
 - **Interpreter adapter, `Object.assign`.** Every write is checked before any is made, so a source that is refused leaves the target as it was. A refused source used to leave the writes before it in place, and the growth they made was never charged (ATK-INTERP-49).
 - **Double VM, rapid-enumeration detector.** `rapidEnumerationOverrides` applies to a name only when it lists a number for that name itself. A tool named like a member every object inherits (`toString`, `valueOf`, `constructor`, ...) read that member as its threshold, and the detector never stopped it (ATK-OPNAME-02).
 - **Double VM, operation-name patterns.** `allowedOperationPattern` and `blockedOperationPatterns` decide the same name the same way on every call when a pattern has the `g` or `y` flag: each test starts at the beginning of the name. A blocked name was let through on every other call (ATK-OPNAME-01).
