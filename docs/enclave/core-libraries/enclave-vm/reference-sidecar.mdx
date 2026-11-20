@@ -132,7 +132,7 @@ A string literal in the script that is at least `extractionThreshold` bytes long
 2. **Bounded resolution** - `maxResolvedSize` and `maxTotalResolvedSize` bound what is built for tool calls
 3. **Automatic cleanup** - References are cleared when the execution ends
 
-A string tool result at or above `extractionThreshold` reaches the script as a reference or not at all. When it cannot be stored because a storage limit is reached (`maxReferenceSize`, `maxTotalSize`, `maxReferenceCount`), the tool call fails with the code `TOOL_RESULT_NOT_STORED`: as a thrown error, or with `callTool(name, args, { throwOnError: false })` as `{ success: false, error: { code: 'TOOL_RESULT_NOT_STORED', ... } }`. The script does not receive the string itself. The same holds through the string bridge and in `toolBridge.mode: 'direct'`, in both VMs.
+A string tool result at or above `extractionThreshold` reaches the script as a reference or not at all. When it cannot be stored because a storage limit is reached (`maxReferenceSize`, `maxTotalSize`, `maxReferenceCount`), the tool call fails with the code `TOOL_RESULT_NOT_STORED`: as a thrown error, or with `callTool(name, args, { throwOnError: false })` as `{ success: false, error: { code: 'TOOL_RESULT_NOT_STORED', ... } }`. The script does not receive the string itself. This holds through the string bridge (the default `toolBridge.mode`), in both VMs.
 
 ## Errors
 
