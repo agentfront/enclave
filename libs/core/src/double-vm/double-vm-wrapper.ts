@@ -11,6 +11,7 @@
 import * as vm from 'vm';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { sanitizeValue, checkSerializedSize } from '../value-sanitizer';
+import { utf8Length } from '../bounded-json';
 import { getBlockedPropertiesForLevel, buildBlockedPropertiesFromConfig } from '../secure-proxy';
 import { createSafeError } from '../safe-error';
 import { ReferenceResolver } from '../sidecar/reference-resolver';
@@ -517,23 +518,24 @@ export class DoubleVmWrapper implements SandboxAdapter {
           allowErrors: true,
         });
 
-        // Lift large string results to sidecar if configured
+        // Lift large string results to sidecar if configured. Such a result reaches the script
+        // as a reference or not at all (as through the string bridge).
         if (sidecar && referenceConfig && typeof sanitized === 'string') {
           const size = Buffer.byteLength(sanitized, 'utf-8');
           if (size >= referenceConfig.extractionThreshold) {
             try {
-              const refId = sidecar.store(sanitized, 'tool-result', { origin: toolName });
-              return refId;
-            } catch (storageError) {
-              // If storage fails (e.g., sidecar limits reached), log and return original value
-              if (process.env['NODE_ENV'] !== 'production') {
-                console.debug(
-                  `[DoubleVmWrapper] Sidecar storage failed for tool "${toolName}": ${(storageError as Error).message}`,
-                );
-              }
-              return sanitized;
+              return sidecar.store(sanitized, 'tool-result', { origin: toolName });
+            } catch {
+              throw new Error('Tool result could not be stored in the reference sidecar');
             }
           }
+        }
+
+        // The response is held to toolBridge.maxPayloadBytes, as through the string bridge
+        const maxPayloadBytes = config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
+        const responseJson = sanitized === undefined ? undefined : JSON.stringify(sanitized);
+        if (responseJson !== undefined && utf8Length(responseJson) > maxPayloadBytes) {
+          throw new Error(`Tool response exceeds maximum size (${maxPayloadBytes} bytes)`);
         }
 
         return sanitized;

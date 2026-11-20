@@ -2843,14 +2843,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       throw createSafeError('Tool arguments must be an object', 'TypeError');
     }
 
-    // Double sanitization (defense in depth). Through the string bridge the text is written
-    // within its payload limit (see stringifyWithin), so what is done before the request is
-    // measured is in proportion to the limit.
+    // Double sanitization (defense in depth). The text is written within the payload limit (see
+    // stringifyWithin), so what is done before the request is measured is in proportion to the
+    // limit; in direct mode as well, where the request is held to the same limit below.
     var sanitizedArgs;
     try {
-      sanitizedArgs = JSON.parse(
-        toolBridgeMode === 'string' ? stringifyWithin(args, toolBridgeMaxPayloadBytes) : JSON.stringify(args)
-      );
+      sanitizedArgs = JSON.parse(stringifyWithin(args, toolBridgeMaxPayloadBytes));
     } catch (e) {
       if (e === TOO_LARGE) {
         throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
@@ -2946,8 +2944,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         throw createSafeError('Tool bridge returned invalid response');
       });
     } else {
-      // Direct mode: the rejection is mapped here rather than by launderThrown alone, which
-      // would drop the code the host uses to mark a failure of the tool itself.
+      // Direct mode: the request is held to the payload limit as through the string bridge.
+      if (exceedsPayloadLimit(JSON.stringify({ v: 1, tool: toolName, args: sanitizedArgs }), toolBridgeMaxPayloadBytes)) {
+        throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
+      }
+      // The rejection is mapped here rather than by launderThrown alone, which would drop the
+      // code the host uses to mark a failure of the tool itself.
       promise = deferHostCall(function() {
         return hostCallTool(toolName, sanitizedArgs);
       }, function(error) {
