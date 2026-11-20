@@ -26,6 +26,7 @@ export class ScoringGate {
   private scorer: Scorer | null = null;
   private cache: ScoringCache | null = null;
   private initialized = false;
+  private initializing: Promise<void> | null = null;
 
   constructor(config: ScoringGateConfig) {
     // Normalize configuration (handles both legacy and new progressive mode)
@@ -49,14 +50,29 @@ export class ScoringGate {
     if (this.initialized) {
       return;
     }
+    // A call that arrives while the scorer is being set up waits for that setup: one scorer is
+    // made and initialized, however many first evaluations arrive together. A setup that fails
+    // is tried again by the next call.
+    if (!this.initializing) {
+      this.initializing = this.setUpScorer().finally(() => {
+        this.initializing = null;
+      });
+    }
+    return this.initializing;
+  }
 
+  private async setUpScorer(): Promise<void> {
     // Create the scorer
-    this.scorer = this.createScorer();
+    const scorer = this.createScorer();
+    this.scorer = scorer;
 
     // Initialize the scorer (may download models, etc.)
-    await this.scorer.initialize?.();
+    await scorer.initialize?.();
 
-    this.initialized = true;
+    // Unless the gate was disposed in the meantime
+    if (this.scorer === scorer) {
+      this.initialized = true;
+    }
   }
 
   /**
