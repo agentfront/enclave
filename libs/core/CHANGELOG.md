@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Double VM, rapid-enumeration detector.** `rapidEnumerationOverrides` applies to a name only when it lists a number for that name itself. A tool named like a member every object inherits (`toString`, `valueOf`, `constructor`, ...) read that member as its threshold, and the detector never stopped it (ATK-OPNAME-02).
 - **Double VM, operation-name patterns.** `allowedOperationPattern` and `blockedOperationPatterns` decide the same name the same way on every call when a pattern has the `g` or `y` flag: each test starts at the beginning of the name. A blocked name was let through on every other call (ATK-OPNAME-01).
 - **Single VM, array built-ins that compare.** `includes`, `indexOf` and `lastIndexOf` of arrays and typed arrays, called on host data, receive the script's values as they are: they compare them and call nothing on them. A guard in their place made `list.concat([mine]).includes(mine)` false (ATK-HVAL-11). The lookups of a Map or Set keep the guard, as their `set` and `add` do.
 - **Single VM, returned value.** `maxSanitizeDepth` and `maxSanitizeProperties` below 5 and 50 apply to the value a script returns; the single VM raised them to those floors (ATK-SANBOUND-02, ATK-SANBOUND-03). The caps of 50 and 1,000 stay.
