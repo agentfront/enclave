@@ -72,11 +72,12 @@ export class ScoringGate {
     // Initialize the scorer (may download models, etc.)
     await scorer.initialize?.();
 
-    // Unless the gate was disposed in the meantime (or a later setup replaced this one): then
-    // this scorer is not the gate's, and is disposed of
+    // Unless the gate was disposed in the meantime: then this scorer is not the gate's. It is
+    // disposed of only when no later setup replaced it, since the scorers of one configuration
+    // can share what they hold (a host's analyzer)
     if (this.scorer === scorer) {
       this.initialized = true;
-    } else {
+    } else if (this.scorer === null) {
       scorer.dispose?.();
     }
   }

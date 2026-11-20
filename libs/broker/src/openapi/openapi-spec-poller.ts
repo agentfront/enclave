@@ -260,6 +260,8 @@ export class OpenApiSpecPoller extends EventEmitter {
         method: 'GET',
         headers,
         portableHeaders: validators,
+        // A redirect that comes back to the specification's origin gets its headers again
+        restoreOnOrigin: true,
         signal: controller.signal,
       });
 

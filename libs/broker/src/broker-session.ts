@@ -21,6 +21,35 @@ import type { SessionHistoryLimits } from './session-history';
  */
 const DEFAULT_BRIDGE_PAYLOAD_BYTES = 5 * 1024 * 1024;
 
+/**
+ * Whether a tool result is plain data: primitives, arrays, and objects whose prototype is the
+ * plain object's or null, all the way down, without the keys the bridge's copy leaves out. The
+ * bridge copies a result before it measures it, and only of plain data is that copy the result's
+ * own JSON text; anything else (an Error, a Map, a Date, an instance of a class) the session
+ * leaves to the bridge.
+ */
+function isPlainData(value: unknown): boolean {
+  const pending: unknown[] = [value];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === null || typeof current !== 'object') continue;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    if (Array.isArray(current)) {
+      for (const item of current) pending.push(item);
+      continue;
+    }
+    const prototype = Object.getPrototypeOf(current);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    for (const key of Object.keys(current)) {
+      if (key === '__proto__' || key === 'constructor') return false;
+      pending.push((current as Record<string, unknown>)[key]);
+    }
+  }
+  return true;
+}
+
 /** The bytes the string bridge's response adds around a result: `{"v":1,"ok":true,"value":` and `}`. */
 const BRIDGE_RESPONSE_ENVELOPE_BYTES = JSON.stringify({ v: 1, ok: true, value: 0 }).length - 1;
 
@@ -578,7 +607,8 @@ export class BrokerSession {
     if (
       !heldBySidecar &&
       this.bridgePayloadBytes !== undefined &&
-      bytes + BRIDGE_RESPONSE_ENVELOPE_BYTES > this.bridgePayloadBytes
+      bytes + BRIDGE_RESPONSE_ENVELOPE_BYTES > this.bridgePayloadBytes &&
+      isPlainData(value)
     ) {
       return {
         code: 'TOOL_BRIDGE_RESPONSE_TOO_LARGE',

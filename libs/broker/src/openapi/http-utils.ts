@@ -95,6 +95,12 @@ export interface OriginBoundRequest {
    * a conditional request (`If-None-Match`, `If-Modified-Since`). Sent with every request.
    */
   portableHeaders?: Record<string, string>;
+  /**
+   * Send the configured headers again when a redirect comes back to the request's own origin
+   * after another (`A → B → A`). Off by default: what B chooses on A is then sent with A's
+   * headers.
+   */
+  restoreOnOrigin?: boolean;
   body?: BodyInit;
   signal?: AbortSignal;
 }
@@ -112,7 +118,9 @@ export async function fetchOriginBound(url: string, request: OriginBoundRequest)
   let method = request.method;
   let body = request.body;
   const portable = request.portableHeaders ?? {};
-  let headers = { ...request.headers, ...portable };
+  // The headers for the request's own origin, and what is sent at the next hop
+  let own = { ...request.headers, ...portable };
+  let headers = own;
 
   for (let hop = 0; ; hop++) {
     const response = await fetch(current, { method, headers, body, signal: request.signal, redirect: 'manual' });
@@ -144,10 +152,13 @@ export async function fetchOriginBound(url: string, request: OriginBoundRequest)
       method = 'GET';
       body = undefined;
       headers = withoutContentType(headers);
+      own = withoutContentType(own);
     }
 
     if (next.origin !== origin) {
       headers = { ...(body === undefined ? {} : onlyContentType(headers)), ...portable };
+    } else if (request.restoreOnOrigin) {
+      headers = own;
     }
 
     current = next.href;
