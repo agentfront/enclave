@@ -37,6 +37,17 @@ import { generateParentVmBootstrap } from './parent-vm-bootstrap';
 import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-patterns';
 
 /**
+ * The errors the direct tool path raises itself for a result it refuses, with the code a script
+ * gets for each (`callTool(..., { throwOnError: false })`), as through the string bridge.
+ */
+const resultRefusals = new WeakMap<object, string>();
+function resultRefusal(message: string, code: 'TOOL_RESULT_NOT_STORED' | 'TOOL_BRIDGE_RESPONSE_TOO_LARGE'): Error {
+  const error = new Error(message);
+  resultRefusals.set(error, code);
+  return error;
+}
+
+/**
  * Double VM Wrapper
  *
  * Creates a nested VM structure:
@@ -526,7 +537,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
             try {
               return sidecar.store(sanitized, 'tool-result', { origin: toolName });
             } catch {
-              throw new Error('Tool result could not be stored in the reference sidecar');
+              throw resultRefusal('Tool result could not be stored in the reference sidecar', 'TOOL_RESULT_NOT_STORED');
             }
           }
         }
@@ -535,7 +546,10 @@ export class DoubleVmWrapper implements SandboxAdapter {
         const maxPayloadBytes = config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
         const responseJson = sanitized === undefined ? undefined : JSON.stringify(sanitized);
         if (responseJson !== undefined && utf8Length(responseJson) > maxPayloadBytes) {
-          throw new Error(`Tool response exceeds maximum size (${maxPayloadBytes} bytes)`);
+          throw resultRefusal(
+            `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
+            'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+          );
         }
 
         return sanitized;
@@ -544,6 +558,11 @@ export class DoubleVmWrapper implements SandboxAdapter {
         // This is critical - the original error from the tool handler could expose
         // the host Function constructor via error.constructor.constructor
         const err = error as Error;
+        // A result refused here keeps its own code and text, as through the string bridge.
+        const refused = resultRefusals.get(error as object);
+        if (refused) {
+          throw createSafeError(err.message, 'Error', refused);
+        }
         // The code marks a failure of the tool itself (not a refusal by the enclave), which a
         // script's `callTool(..., { throwOnError: false })` receives as a result object.
         throw createSafeError(

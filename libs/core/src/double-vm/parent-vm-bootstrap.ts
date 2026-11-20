@@ -2959,9 +2959,10 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
           code = error && error.code;
           message = error && error.message;
         } catch (e) { /* treated as an unmarked failure */ }
-        if (code === 'TOOL_CALL_FAILED') {
+        // A failure of the tool, or a result the host refused, keeps its code.
+        if (code === 'TOOL_CALL_FAILED' || code === 'TOOL_RESULT_NOT_STORED' || code === 'TOOL_BRIDGE_RESPONSE_TOO_LARGE') {
           var text = typeof message === 'string' ? message : 'Tool call failed';
-          return markToolFailure(createSafeError(text), toolName, 'Error', text, 'TOOL_CALL_FAILED');
+          return markToolFailure(createSafeError(text), toolName, 'Error', text, code);
         }
         return launderThrown(error);
       });
