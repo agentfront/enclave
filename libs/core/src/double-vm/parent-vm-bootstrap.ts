@@ -17,6 +17,7 @@ import type { SecurityLevel } from '../types';
 import { globalFunctionLimitMessage, HOST_REGEXP_MESSAGE } from '../global-function-gate';
 import { TOOL_NAMESPACE_FACTORY_SOURCE } from '../tool-namespaces';
 import { CONSOLE_FACTORY_SOURCE } from '../console-handler';
+import { REALM_REGEX_BACKSTOP_SOURCE as INNER_REALM_REGEX_BACKSTOP_SOURCE } from '../realm-regex-backstop';
 import { realmTickSource } from '../deadline-guard';
 import { booleanLiteral, numericLiteral } from '../enclave-options';
 import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
@@ -501,35 +502,6 @@ const REALM_RUNTIME_GLOBALS = [
   'RangeError',
 ] as const;
 
-/**
- * Source of a statement evaluated in the inner realm when a realm allowlist without `RegExp` is in
- * force: it makes regular expressions unusable there.
- *
- * AgentScript has no regular expressions, and the validator refuses every way to write or run one.
- * This is the runtime half of that rule: `String.prototype.match/matchAll/search` build a RegExp
- * from a STRING argument inside the engine (no `RegExp` binding and no literal needed), and a
- * backtracking pattern run that way is not interruptible work the iteration limit can see.
- * Every regular expression of the realm reaches its matcher through `RegExp.prototype`, so the
- * methods there are replaced by a function that throws, and the prototype is frozen.
- */
-const INNER_REALM_REGEX_BACKSTOP_SOURCE = `
-(function () {
-  'use strict';
-  var defineProperty = Object.defineProperty;
-  var freeze = Object.freeze;
-  var RealmTypeError = TypeError;
-  var proto = RegExp.prototype;
-  var refuse = () => {
-    throw new RealmTypeError('Regular expressions are not available in this sandbox');
-  };
-  freeze(refuse);
-  var keys = ['exec', 'test', 'compile', Symbol.match, Symbol.matchAll, Symbol.replace, Symbol.search, Symbol.split];
-  for (var i = 0; i < keys.length; i++) {
-    defineProperty(proto, keys[i], { value: refuse, writable: false, configurable: false, enumerable: false });
-  }
-  freeze(proto);
-})()
-`.trim();
 
 /**
  * Source of an expression that, evaluated in a pristine realm, yields a function freezing that

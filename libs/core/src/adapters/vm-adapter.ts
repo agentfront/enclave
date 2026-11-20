@@ -9,6 +9,7 @@
 
 import * as vm from 'vm';
 import { compileSandboxScript, ReusableSandboxScript } from '../sandbox-script';
+import { REALM_REGEX_BACKSTOP_SOURCE } from '../realm-regex-backstop';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { createSafeRuntime } from '../safe-runtime';
 import {
@@ -1620,6 +1621,18 @@ export class VmAdapter implements SandboxAdapter {
           configurable: false,
           enumerable: false,
         });
+      }
+
+      // Runtime half of "AgentScript has no regular expressions", as in the double VM: with a realm
+      // allowlist that does not name RegExp, nothing in the realm can run one. The validator alone
+      // cannot see every way a script reaches a method that compiles its argument into a pattern.
+      // After the trusted scripts above have captured what they use, and while the realm's Object
+      // still has the methods the backstop uses (they are neutralized next). Not optional.
+      const realmAllowlist = executionContext.realmGlobalAllowlist;
+      if (realmAllowlist && !realmAllowlist.includes('RegExp')) {
+        compileSandboxScript(REALM_REGEX_BACKSTOP_SOURCE, { filename: 'realm-regex-backstop.js' }).runInContext(
+          baseSandbox,
+        );
       }
 
       // Defense-in-depth: neutralize dangerous methods on the intrinsic Object constructor
