@@ -234,8 +234,18 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
         }
       }
 
-      // The response is held to toolBridge.maxPayloadBytes, as through the string bridge
-      const responseJson = value === undefined ? undefined : JSON.stringify(value);
+      // The response is held to toolBridge.maxPayloadBytes, as through the string bridge, and
+      // measured within it: a value referenced many times is not written out in full first
+      let responseJson: string | undefined;
+      try {
+        responseJson = value === undefined ? undefined : stringifyWithin(value, maxPayloadBytes);
+      } catch (error: unknown) {
+        if (!(error instanceof JsonTooLargeError)) throw error;
+        throw codedError(
+          `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
+          'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+        );
+      }
       if (responseJson !== undefined && utf8Length(responseJson) > maxPayloadBytes) {
         throw codedError(
           `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,

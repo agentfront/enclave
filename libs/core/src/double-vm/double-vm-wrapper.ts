@@ -11,7 +11,7 @@
 import * as vm from 'vm';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { sanitizeValue, checkSerializedSize } from '../value-sanitizer';
-import { utf8Length } from '../bounded-json';
+import { JsonTooLargeError, stringifyWithin, utf8Length } from '../bounded-json';
 import { getBlockedPropertiesForLevel, buildBlockedPropertiesFromConfig } from '../secure-proxy';
 import { createSafeError } from '../safe-error';
 import { ReferenceResolver } from '../sidecar/reference-resolver';
@@ -531,20 +531,32 @@ export class DoubleVmWrapper implements SandboxAdapter {
 
         // Lift large string results to sidecar if configured. Such a result reaches the script
         // as a reference or not at all (as through the string bridge).
+        let outgoing: unknown = sanitized;
         if (sidecar && referenceConfig && typeof sanitized === 'string') {
           const size = Buffer.byteLength(sanitized, 'utf-8');
           if (size >= referenceConfig.extractionThreshold) {
             try {
-              return sidecar.store(sanitized, 'tool-result', { origin: toolName });
+              outgoing = sidecar.store(sanitized, 'tool-result', { origin: toolName });
             } catch {
               throw resultRefusal('Tool result could not be stored in the reference sidecar', 'TOOL_RESULT_NOT_STORED');
             }
           }
         }
 
-        // The response is held to toolBridge.maxPayloadBytes, as through the string bridge
+        // What crosses (the value, or the reference in its place) is held to
+        // toolBridge.maxPayloadBytes, as through the string bridge, and measured within it: a
+        // value referenced many times is not written out in full before it is refused.
         const maxPayloadBytes = config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
-        const responseJson = sanitized === undefined ? undefined : JSON.stringify(sanitized);
+        let responseJson: string | undefined;
+        try {
+          responseJson = outgoing === undefined ? undefined : stringifyWithin(outgoing, maxPayloadBytes);
+        } catch (error: unknown) {
+          if (!(error instanceof JsonTooLargeError)) throw error;
+          throw resultRefusal(
+            `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
+            'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+          );
+        }
         if (responseJson !== undefined && utf8Length(responseJson) > maxPayloadBytes) {
           throw resultRefusal(
             `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
@@ -552,7 +564,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
           );
         }
 
-        return sanitized;
+        return outgoing;
       } catch (error: unknown) {
         // SECURITY: Use createSafeError to prevent prototype chain escape attacks
         // This is critical - the original error from the tool handler could expose
