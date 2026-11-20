@@ -1782,19 +1782,22 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
    * object, with a function member replaced by one that passes its arguments through
    * toSandboxValue (and keeps the script's object as its receiver), and an object member or
    * result guarded the same way. Its own properties are listed as they are, so a built-in that
-   * copies or serializes the object sees the same data. An array is data to every built-in and
-   * is passed as it is, as is a value that is behind the membrane already.
+   * copies or serializes the object sees the same data. An array gets a guard that is still an
+   * array, see guardArrayForHost. A value that is behind the membrane already is passed as it is.
    */
   function guardObjectForHost(value) {
     if (value === null || typeof value !== 'object') {
       return value;
     }
-    if (membraneProxies.has(value) || guardedHostArguments.has(value) || __ag_ArrayIsArray(value)) {
+    if (membraneProxies.has(value) || guardedHostArguments.has(value)) {
       return value;
     }
     var existing = hostArgumentGuards.get(value);
     if (existing) {
       return existing;
+    }
+    if (__ag_ArrayIsArray(value)) {
+      return guardArrayForHost(value);
     }
     // Over an empty object of this realm, not over the script's object: a frozen member of the
     // target would have to be reported as it is (proxy invariant), unguarded.
@@ -1830,6 +1833,52 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     hostArgumentGuards.set(value, guard);
     guardedHostArguments.set(guard, value);
     return guard;
+  }
+
+  /**
+   * An array of the script on its way into a built-in method of host data. The built-ins read
+   * its length and its elements and spread it (concat), so its guard is a proxy of the array
+   * itself, which is an array to them. An element and the length are answered as they are: they
+   * are data. Every other member is read like a member of an object (guardMemberForHost): an
+   * array can carry methods of its own, and the set operations call size, has and keys of
+   * whatever set-like they are given, with the host's own values. A frozen method of the array
+   * cannot be answered guarded (proxy invariant), so the built-in fails instead of calling it.
+   */
+  function guardArrayForHost(value) {
+    var guard = new __ag_ParentProxy(value, {
+      get: function(target, property) {
+        var member = __ag_ReflectGet(target, property, target);
+        if (property === 'length' || isArrayIndexKey(property)) {
+          return member;
+        }
+        return guardMemberForHost(member, target);
+      },
+      // What a built-in stores in the array is a host value like any other.
+      set: function(target, property, stored) {
+        return __ag_ReflectSet(target, property, toSandboxValue(stored), target);
+      },
+      defineProperty: function(target, property, descriptor) {
+        if ('get' in descriptor || 'set' in descriptor) {
+          return false;
+        }
+        if ('value' in descriptor) {
+          descriptor.value = toSandboxValue(descriptor.value);
+        }
+        return __ag_ReflectDefineProperty(target, property, descriptor);
+      }
+    });
+    hostArgumentGuards.set(value, guard);
+    guardedHostArguments.set(guard, value);
+    return guard;
+  }
+
+  /** Whether a property key is an array index ('0' to '4294967294' in canonical form). */
+  function isArrayIndexKey(property) {
+    if (typeof property !== 'string') {
+      return false;
+    }
+    var index = +property;
+    return index >>> 0 === index && index !== 4294967295 && '' + index === property;
   }
 
   function guardMemberForHost(member, holder) {
