@@ -54,9 +54,12 @@ export class ScoringGate {
     // made and initialized, however many first evaluations arrive together. A setup that fails
     // is tried again by the next call.
     if (!this.initializing) {
-      this.initializing = this.setUpScorer().finally(() => {
-        this.initializing = null;
+      const setup: Promise<void> = this.setUpScorer().finally(() => {
+        // Only this setup's own reference: dispose() may have dropped it, and a later call
+        // started another
+        if (this.initializing === setup) this.initializing = null;
       });
+      this.initializing = setup;
     }
     return this.initializing;
   }
@@ -69,9 +72,12 @@ export class ScoringGate {
     // Initialize the scorer (may download models, etc.)
     await scorer.initialize?.();
 
-    // Unless the gate was disposed in the meantime
+    // Unless the gate was disposed in the meantime (or a later setup replaced this one): then
+    // this scorer is not the gate's, and is disposed of
     if (this.scorer === scorer) {
       this.initialized = true;
+    } else {
+      scorer.dispose?.();
     }
   }
 
@@ -264,6 +270,8 @@ export class ScoringGate {
     this.scorer = null;
     this.cache = null;
     this.initialized = false;
+    // A call after this starts a setup of its own; one in progress is not joined
+    this.initializing = null;
   }
 
   /**
