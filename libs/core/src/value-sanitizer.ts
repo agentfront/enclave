@@ -54,6 +54,9 @@ export interface SanitizeOptions {
  */
 const DANGEROUS_KEYS = new Set(['__proto__', 'constructor']);
 
+/** What sanitizeValue writes where a value repeats an ancestor, as JSON: `"[Circular]"`. */
+const CIRCULAR_MARKER_BYTES = 12;
+
 /**
  * Captured host intrinsics.
  *
@@ -578,8 +581,8 @@ export function estimateSerializedSize(
   if (ArrayIsArray(value)) {
     // Check for circular reference (is this object an ancestor of itself?)
     if (currentPath.has(value)) {
-      // Circular reference detected - JSON.stringify would throw, but we estimate small
-      return 4;
+      // A repeat of an ancestor: sanitizeValue writes "[Circular]" there (12 bytes as JSON)
+      return CIRCULAR_MARKER_BYTES;
     }
 
     // Add to current path for descendant checks
@@ -620,8 +623,8 @@ export function estimateSerializedSize(
 
     // Check for circular reference (is this object an ancestor of itself?)
     if (currentPath.has(object)) {
-      // Circular reference detected
-      return 4;
+      // A repeat of an ancestor: sanitizeValue writes "[Circular]" there (12 bytes as JSON)
+      return CIRCULAR_MARKER_BYTES;
     }
 
     // Handle special objects. Only values that are not plain objects pay for the brand checks.
