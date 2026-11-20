@@ -405,35 +405,41 @@ export class ReferenceResolver {
   /**
    * Check if a value contains any reference IDs
    *
+   * Every value is looked at, at any depth: a reference or composite past `maxResolutionDepth`
+   * cannot be resolved, and it must still be found, so that `resolve()` refuses the call rather
+   * than the handler receiving it unresolved. The value is walked with a list instead of by
+   * recursion, so a deep value cannot exhaust the stack, and an object is looked at once.
+   *
    * @param value - The value to check
-   * @param depth - Current recursion depth (internal)
+   * @param _depth - Unused; kept for callers that pass a depth
    * @returns true if the value or any nested value is a reference
    */
-  containsReferences(value: unknown, depth = 0): boolean {
-    if (depth > this.config.maxResolutionDepth) {
-      return false;
-    }
-
-    if (isReferenceId(value) || isCompositeHandle(value)) {
-      return true;
-    }
-
-    // Arrays: iterate by index — never .some on the untrusted value.
-    if (Array.isArray(value)) {
-      const len = untrustedLength(value);
-      for (let i = 0; i < len; i++) {
-        if (this.containsReferences(untrustedAt(value, i), depth + 1)) {
-          return true;
-        }
+  containsReferences(value: unknown, _depth = 0): boolean {
+    const pending: unknown[] = [value];
+    const seen = new Set<object>();
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (isReferenceId(current) || isCompositeHandle(current)) {
+        return true;
       }
-      return false;
+      if (current === null || typeof current !== 'object' || seen.has(current)) {
+        continue;
+      }
+      seen.add(current);
+      // Arrays: iterate by index, never .forEach on the untrusted value.
+      if (Array.isArray(current)) {
+        const len = untrustedLength(current);
+        for (let i = 0; i < len; i++) {
+          pending.push(untrustedAt(current, i));
+        }
+        continue;
+      }
+      // Objects: Object.values returns a genuine array.
+      const members = Object.values(current);
+      for (let i = 0; i < members.length; i++) {
+        pending.push(members[i]);
+      }
     }
-
-    // Objects: Object.values returns a genuine array — safe to .some over.
-    if (value !== null && typeof value === 'object') {
-      return Object.values(value).some((val) => this.containsReferences(val, depth + 1));
-    }
-
     return false;
   }
 
