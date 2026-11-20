@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The pre-scanner finds a regular-expression literal in every position** and analyzes it (`PRESCANNER_REDOS`): after the condition of `if`, `while`, `for` and `with`, after `else` and `do`, and inside a template interpolation `${...}`, where it took the literal for a division or for template text (ATK-REDOS-25). A `/` after a property named like a keyword (`o.if(a) / 2`) is still a division.
 - **`transformConcatenation` with `arraySpread: true` hands every array literal that has elements to the runtime**, not only one with a spread: `[a, b]` becomes `__safe_array(0, [a, b])`, so that a runtime that accounts for arrays counts it like any other array. The empty literal is left as it is.
 
 ### After 2.19.1: a review of every package
