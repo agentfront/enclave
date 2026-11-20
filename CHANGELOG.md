@@ -16,6 +16,10 @@ A follow-up to 2.19.0: two more layers behind the validator, and the dependency 
 - `@enclave-vm/broker` depends on `minimatch` 11 (`^11.0.1`, was `^10.2.5`) for the glob patterns of its event filter. `minimatch` 11.0.4 and later need Node.js 20 or 22+; its changelog lists the matching edge cases that changed. The glob patterns of the event filter have a test now.
 - Tooling: the root `resolutions` move `glob` to 14 (Jest) and the `minimatch` of `@typescript-eslint/typescript-estree` to 11. Nx pins `minimatch` 10.2.5 and uses an API that 11 removed, so that copy stays until Nx moves.
 
+### Security
+
+- `@enclave-vm/broker`: the message and code of an exception a tool handler throws reach the script, and the final event when the script does not catch it, with the value of each secret that handler was given replaced by `[REDACTED]` (ATK-BRK-109). Only the value as it is is recognised, not an encoded or partial form: a handler should still not put a secret into an error.
+
 ### After 2.19.1: a review of every package
 
 Draft for the maintainer. A security review of 2.19.1 across all nine packages, with a fix and a test for what it found. The invariants are listed by category in `SECURITY-TESTS.md`, which also lists what is still open; `libs/core/CHANGELOG.md` and `libs/ast/CHANGELOG.md` have the changes a host of those packages will notice. The packages without a changelog of their own:

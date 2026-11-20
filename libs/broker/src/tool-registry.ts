@@ -9,6 +9,24 @@
 import { z } from 'zod';
 import type { ToolConfig } from '@enclave-vm/types';
 
+/** What stands in an error message for the value of a secret. */
+const REDACTED_SECRET = '[REDACTED]';
+
+/**
+ * A text of a handler's error with every value in `secretValues` replaced by `REDACTED_SECRET`,
+ * the longest first. Anything that is not a string is returned as it is.
+ */
+function redactSecrets<T>(text: T, secretValues: string[]): T {
+  if (typeof text !== 'string') return text;
+  let redacted: string = text;
+  const values = secretValues.filter((value) => typeof value === 'string' && value.length > 0);
+  values.sort((a, b) => b.length - a.length);
+  for (const value of values) {
+    if (redacted.includes(value)) redacted = redacted.split(value).join(REDACTED_SECRET);
+  }
+  return redacted as T;
+}
+
 /**
  * Tool definition for registration
  */
@@ -324,6 +342,10 @@ export class ToolRegistry {
       };
     }
 
+    // The values the handler is given, kept before it runs: what it throws is passed on to the
+    // script and to the session's events with each of them taken out.
+    const secretValues = Object.values(secrets);
+
     // Execute handler
     try {
       const result = await tool.definition.handler(validation.validatedArgs, {
@@ -341,8 +363,8 @@ export class ToolRegistry {
       return {
         success: false,
         error: {
-          code: err.code ?? 'EXECUTION_ERROR',
-          message: err.message,
+          code: redactSecrets(err.code ?? 'EXECUTION_ERROR', secretValues),
+          message: redactSecrets(err.message, secretValues),
         },
         durationMs: Date.now() - startTime,
       };
