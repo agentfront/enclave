@@ -98,7 +98,8 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
    */
   const reset = useCallback(() => {
     owner.handle = null;
-    setSnapshot(idleSnapshot<T>(owner));
+    // Only the owner's own state: a reset kept from an earlier client leaves a newer one's alone
+    setSnapshot((current) => (current.owner === owner ? idleSnapshot<T>(owner) : current));
   }, [owner]);
 
   /**
