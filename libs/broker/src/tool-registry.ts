@@ -13,16 +13,28 @@ import type { ToolConfig } from '@enclave-vm/types';
 const REDACTED_SECRET = '[REDACTED]';
 
 /**
- * A text of a handler's error with every value in `secretValues` replaced by `REDACTED_SECRET`,
- * the longest first. Anything that is not a string is returned as it is.
+ * A text of a handler's error with every value in `secretValues` replaced by `REDACTED_SECRET`.
+ * One pass from left to right: at each position the longest value that starts there is replaced,
+ * and what was put in is not looked at again (a secret such as `E` does not match inside the
+ * marker). Anything that is not a string is returned as it is.
  */
 function redactSecrets<T>(text: T, secretValues: string[]): T {
   if (typeof text !== 'string') return text;
-  let redacted: string = text;
-  const values = secretValues.filter((value) => typeof value === 'string' && value.length > 0);
+  const values = [...new Set(secretValues)].filter((value) => typeof value === 'string' && value.length > 0);
+  if (!values.some((value) => text.includes(value))) return text;
   values.sort((a, b) => b.length - a.length);
-  for (const value of values) {
-    if (redacted.includes(value)) redacted = redacted.split(value).join(REDACTED_SECRET);
+  let redacted = '';
+  let i = 0;
+  scan: while (i < text.length) {
+    for (const value of values) {
+      if (text.startsWith(value, i)) {
+        redacted += REDACTED_SECRET;
+        i += value.length;
+        continue scan;
+      }
+    }
+    redacted += text[i];
+    i++;
   }
   return redacted as T;
 }
