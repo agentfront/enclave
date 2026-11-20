@@ -37,7 +37,9 @@ function isPlainData(value: unknown): boolean {
     if (seen.has(current)) continue;
     seen.add(current);
     if (Array.isArray(current)) {
-      for (const item of current) pending.push(item);
+      // By index, as the bridge's copy reads it: an array's own iterator is not called
+      const length = current.length;
+      for (let index = 0; index < length; index++) pending.push(current[index]);
       continue;
     }
     const prototype = Object.getPrototypeOf(current);
