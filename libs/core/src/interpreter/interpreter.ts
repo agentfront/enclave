@@ -2911,17 +2911,22 @@ function convertedOnce(value: unknown, convert: (value: unknown) => unknown): un
  *   number that is set) and the length the array has afterwards
  * @throws InterpreterError when the array would be longer than {@link MAX_ARRAY_LENGTH}
  */
-export function checkArrayWrite(array: unknown[], key: string, value: unknown): { value: unknown; length: number } {
+export function checkArrayWrite(
+  array: unknown[],
+  key: string,
+  value: unknown,
+  currentLength: number = array.length,
+): { value: unknown; length: number } {
   if (key === 'length') value = convertedOnce(value, Number);
-  const length = arrayLengthAfterWrite(array, key, value);
+  const length = arrayLengthAfterWrite(currentLength, key, value);
   if (length > MAX_ARRAY_LENGTH) {
     throw new InterpreterError(`An array cannot be longer than ${MAX_ARRAY_LENGTH} items`);
   }
   return { value, length };
 }
 
-/** The length an array has after `array[key] = value`. */
-function arrayLengthAfterWrite(array: unknown[], key: string, value: unknown): number {
+/** The length an array of `currentLength` has after `array[key] = value`. */
+function arrayLengthAfterWrite(currentLength: number, key: string, value: unknown): number {
   if (key === 'length') {
     const length = Number(value);
     if (!Number.isInteger(length) || length < 0) throw new InterpreterError('Invalid array length');
@@ -2929,6 +2934,6 @@ function arrayLengthAfterWrite(array: unknown[], key: string, value: unknown): n
   }
   const index = Number(key);
   // An index is a canonical non-negative integer; any other key is a plain property.
-  if (Number.isInteger(index) && index >= 0 && String(index) === key) return Math.max(array.length, index + 1);
-  return array.length;
+  if (Number.isInteger(index) && index >= 0 && String(index) === key) return Math.max(currentLength, index + 1);
+  return currentLength;
 }

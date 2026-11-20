@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Interpreter adapter, `Object.assign`.** Every write is checked before any is made, so a source that is refused leaves the target as it was. A refused source used to leave the writes before it in place, and the growth they made was never charged (ATK-INTERP-49).
 - **Double VM, rapid-enumeration detector.** `rapidEnumerationOverrides` applies to a name only when it lists a number for that name itself. A tool named like a member every object inherits (`toString`, `valueOf`, `constructor`, ...) read that member as its threshold, and the detector never stopped it (ATK-OPNAME-02).
 - **Double VM, operation-name patterns.** `allowedOperationPattern` and `blockedOperationPatterns` decide the same name the same way on every call when a pattern has the `g` or `y` flag: each test starts at the beginning of the name. A blocked name was let through on every other call (ATK-OPNAME-01).
 - **Single VM, array built-ins that compare.** `includes`, `indexOf` and `lastIndexOf` of arrays and typed arrays, called on host data, receive the script's values as they are: they compare them and call nothing on them. A guard in their place made `list.concat([mine]).includes(mine)` false (ATK-HVAL-11). The lookups of a Map or Set keep the guard, as their `set` and `add` do.

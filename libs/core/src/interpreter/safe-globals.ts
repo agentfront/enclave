@@ -220,15 +220,27 @@ const SafeObject = frozenRecord({
     if (!isScriptData(target) || Object.isFrozen(target)) {
       throw new TypeError('Object.assign needs an object or array the script created as its target');
     }
+    // Every write is checked before any is made: a write that is refused leaves the target as it
+    // was. (What the call writes is charged when it returns; a call that throws halfway would
+    // leave a growth behind that nothing charged.)
+    const writes: Array<[string, unknown]> = [];
+    let length = Array.isArray(target) ? target.length : 0;
     for (const source of sources) {
       if (source === null || source === undefined) continue;
       for (const key of dataKeys(source)) {
         let value = (source as Record<string, unknown>)[key];
         assertStorable(target, key, value);
         // An index or a length is held to the longest array a script may make, as in an assignment
-        if (Array.isArray(target)) value = checkArrayWrite(target, key, value).value;
-        (target as Record<string, unknown>)[key] = value;
+        if (Array.isArray(target)) {
+          const checked = checkArrayWrite(target, key, value, length);
+          value = checked.value;
+          length = checked.length;
+        }
+        writes.push([key, value]);
       }
+    }
+    for (const [key, value] of writes) {
+      (target as Record<string, unknown>)[key] = value;
     }
     return target;
   },
