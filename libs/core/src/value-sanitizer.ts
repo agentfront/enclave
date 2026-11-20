@@ -357,9 +357,13 @@ function sanitizeObjectValue(
     const sanitizedMap: Record<string, unknown> = ObjectCreate(null);
     const entries = ReflectApply(MapProtoEntries, inspected, []) as IterableIterator<[unknown, unknown]>;
     for (const [key, val] of entries) {
+      // Every entry counts, also one that is not copied: walking it is work all the same
+      context.propCount.count++;
+      if (context.propCount.count > maxProperties) {
+        throw new Error(`Tool handler return value exceeds maximum properties (${maxProperties}).`);
+      }
       if (typeof key !== 'string') continue; // Only string keys
       if (DANGEROUS_KEYS.has(key)) continue; // Skip dangerous keys
-      context.propCount.count++;
       sanitizedMap[key] = sanitizeValue(val, options, depth + 1, context);
     }
     return sanitizedMap;
@@ -373,6 +377,9 @@ function sanitizeObjectValue(
     const result: unknown[] = [];
     for (const item of iter) {
       context.propCount.count++;
+      if (context.propCount.count > maxProperties) {
+        throw new Error(`Tool handler return value exceeds maximum properties (${maxProperties}).`);
+      }
       result.push(sanitizeValue(item, options, depth + 1, context));
     }
     return result;
