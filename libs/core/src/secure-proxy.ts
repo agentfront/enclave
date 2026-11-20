@@ -702,10 +702,12 @@ function isOfBuiltinKind(receiver: object, homes: readonly object[]): boolean {
 }
 
 /**
- * Built-in methods that only compare their arguments with what the receiver holds (and convert a
+ * Array methods that only compare their arguments with the elements of the receiver (and convert a
  * position with `valueOf`): they call no method of an argument with a host value, and a guard in
- * place of the argument would not be identical to the script's own value the receiver may hold
- * (`list.concat([mine]).includes(mine)`). Their arguments are passed as they are.
+ * place of the argument would not be identical to the script's own value an array a built-in made
+ * holds (`list.concat([mine]).includes(mine)`). Their arguments are passed as they are. The
+ * lookups of a Map or Set stay on the guarded path: where a collection takes keys (`set`, `add`)
+ * it stores the guard, and a lookup must use the same.
  */
 const TypedArrayPrototype = ObjectGetPrototypeOf(Uint8Array.prototype) as Record<string, unknown>;
 const COMPARING_BUILTINS: ReadonlySet<unknown> = new Set<unknown>([
@@ -715,12 +717,6 @@ const COMPARING_BUILTINS: ReadonlySet<unknown> = new Set<unknown>([
   TypedArrayPrototype['includes'],
   TypedArrayPrototype['indexOf'],
   TypedArrayPrototype['lastIndexOf'],
-  Map.prototype.get,
-  Map.prototype.has,
-  Set.prototype.has,
-  WeakMap.prototype.get,
-  WeakMap.prototype.has,
-  WeakSet.prototype.has,
 ]);
 
 function passesHostValuesToCallbacks(fn: unknown, builtinMethod: boolean): boolean {
