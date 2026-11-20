@@ -8,7 +8,7 @@
 
 import type { SessionId, StreamEvent, SessionLimits, ErrorPayload } from '@enclave-vm/types';
 import { generateSessionId, generateCallId, EventType, PROTOCOL_VERSION } from '@enclave-vm/types';
-import { SessionEmitter, Enclave } from '@enclave-vm/core';
+import { SessionEmitter, Enclave, REFERENCE_CONFIGS } from '@enclave-vm/core';
 import type { SessionStateValue, SessionFinalResult, CreateEnclaveOptions, ExecutionStats } from '@enclave-vm/core';
 import type { ToolRegistry, ToolContext, ToolExecutionResult } from './tool-registry';
 import { resolveSessionLimits, timerDelay } from './limits';
@@ -88,6 +88,11 @@ export class BrokerSession {
   private readonly checkResultSize: boolean;
   /** The payload limit of the sandbox's string bridge; undefined when the bridge is not used. */
   private readonly bridgePayloadBytes: number | undefined;
+  /**
+   * The size from which the sandbox's sidecar holds a string result as a reference (measured by
+   * the bridge after that); undefined without a sidecar.
+   */
+  private readonly sidecarExtractionBytes: number | undefined;
   private _state: SessionStateValue = 'starting';
   private executionPromise: Promise<SessionFinalResult> | null = null;
   private toolCallCount = 0;
@@ -121,6 +126,11 @@ export class BrokerSession {
       this.limits.maxToolResultBytes < (bridge?.maxPayloadBytes ?? DEFAULT_BRIDGE_PAYLOAD_BYTES);
     this.bridgePayloadBytes =
       (bridge?.mode ?? 'string') === 'string' ? (bridge?.maxPayloadBytes ?? DEFAULT_BRIDGE_PAYLOAD_BYTES) : undefined;
+    const sidecar = config.enclaveConfig?.sidecar;
+    this.sidecarExtractionBytes = sidecar?.enabled
+      ? (sidecar.extractionThreshold ??
+        REFERENCE_CONFIGS[config.enclaveConfig?.securityLevel ?? 'STANDARD'].extractionThreshold)
+      : undefined;
 
     this.expiresAt = this.createdAt + this.limits.sessionTtlMs;
 
@@ -559,7 +569,17 @@ export class BrokerSession {
     if (checkOwn && bytes > limit) {
       return { code: 'TOOL_RESULT_TOO_LARGE', message: `Tool result exceeds the limit of ${limit} bytes` };
     }
-    if (this.bridgePayloadBytes !== undefined && bytes + BRIDGE_RESPONSE_ENVELOPE_BYTES > this.bridgePayloadBytes) {
+    // A string the sidecar holds as a reference crosses the bridge as the reference: the bridge
+    // measures it after that, and so is not asked here.
+    const heldBySidecar =
+      typeof value === 'string' &&
+      this.sidecarExtractionBytes !== undefined &&
+      Buffer.byteLength(value, 'utf8') >= this.sidecarExtractionBytes;
+    if (
+      !heldBySidecar &&
+      this.bridgePayloadBytes !== undefined &&
+      bytes + BRIDGE_RESPONSE_ENVELOPE_BYTES > this.bridgePayloadBytes
+    ) {
       return {
         code: 'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
         message: `Tool response exceeds maximum size (${this.bridgePayloadBytes} bytes)`,
