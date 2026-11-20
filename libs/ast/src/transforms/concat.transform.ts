@@ -38,10 +38,11 @@ export interface ConcatTransformConfig {
   compoundAssignment?: boolean;
 
   /**
-   * Also wrap an array literal that contains a spread, `[a, ...b]`, as
-   * `__safe_array(__safe_arrayStart(), [a, ...__safe_spread(b)])`, so that the runtime sees each
-   * source before it is spread and the result when it exists. Only for a runtime that defines
-   * those three functions.
+   * Also hand every array literal that has elements to the runtime when it exists, so that it is
+   * counted like any other array. One with a spread, `[a, ...b]`, becomes
+   * `__safe_array(__safe_arrayStart(), [a, ...__safe_spread(b)])`, so that the runtime also sees
+   * each source before it is spread; one without, `[a, b]`, becomes `__safe_array(0, [a, b])`.
+   * Only for a runtime that defines those three functions.
    * Default: false
    */
   arraySpread?: boolean;
@@ -134,11 +135,23 @@ export function transformConcatenation(ast: acorn.Node, config: ConcatTransformC
 
   // `[a, ...b]`: each spread source goes through __safe_spread, and the literal as a whole is
   // handed to __safe_array together with what __safe_arrayStart returned before it was built.
+  // `[a, b]`: the literal is handed to __safe_array as it is (0 stands for no spread), which
+  // checks and charges its slots like those of any array.
   if (config.arraySpread === true) {
     walk.simple(ast as any, {
       ArrayExpression: (node: any) => {
         const elements: any[] = node.elements ?? [];
         if (!elements.some((element) => element && element.type === 'SpreadElement')) {
+          if (elements.length === 0) {
+            return;
+          }
+          const literal = { type: 'ArrayExpression', elements };
+          node.type = 'CallExpression';
+          node.callee = { type: 'Identifier', name: `${prefix}array` };
+          node.arguments = [{ type: 'Literal', value: 0, raw: '0' }, literal];
+          node.optional = false;
+          delete node.elements;
+          transformedCount++;
           return;
         }
         for (const element of elements) {

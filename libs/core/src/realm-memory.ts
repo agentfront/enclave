@@ -1032,7 +1032,9 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
 
   // An array literal with spreads: [a, ...b, ...c] is compiled to
   //   __safe_array(__safe_arrayStart(), [a, ...__safe_spread(b), ...__safe_spread(c)])
-  // so that each source is seen before it is spread and the result when it exists.
+  // so that each source is seen before it is spread and the result when it exists. One without
+  // spreads, [a, b], is compiled to __safe_array(0, [a, b]): it has no frame, and its slots are
+  // checked and charged like those of any array.
   var frames = [];
   var nextId = 1;
 
@@ -1094,7 +1096,7 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
 
   function arrayFinish(id, array) {
     var largest = 0;
-    for (var i = frames.length - 1; i >= 0; i--) {
+    for (var i = id === 0 ? -1 : frames.length - 1; i >= 0; i--) {
       if (frames[i].id === id) {
         largest = frames[i].largest;
         frames.length = i;
@@ -1102,7 +1104,7 @@ export function realmArrayAccountingSource(memoryLimit: number): string {
       }
     }
     if (isArray(array)) {
-      checkLength(array.length, 'Array spread');
+      checkLength(array.length, id === 0 ? 'Array literal' : 'Array spread');
       charge(array.length - largest);
     }
     return array;
