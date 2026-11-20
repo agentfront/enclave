@@ -39,6 +39,7 @@ import { MemoryTracker } from '../memory-tracker';
 import { isReferenceId } from '../sidecar/reference-config';
 import { ReferenceResolver } from '../sidecar/reference-resolver';
 import { sanitizeStackTrace } from '../stack-trace';
+import { MAX_THROWN_MESSAGE_LENGTH } from '../thrown-value';
 import { createHostToolBridge, encodeToolBridgeRequest } from '../tool-bridge';
 import type { ExecutionContext, ExecutionError, ExecutionResult, ExecutionStats, SandboxAdapter } from '../types';
 import { checkSerializedSize, sanitizeValue } from '../value-sanitizer';
@@ -430,8 +431,22 @@ export class InterpreterAdapter implements SandboxAdapter {
       const settled = await Promise.allSettled(tasks.map(async (task) => task()));
       const failures = settled.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
       if (failures.length > 0) {
-        const messages = failures.map((failure) => this.describe(failure.reason).message).join('\n');
-        throw sandboxError(`${failures.length} of ${tasks.length} parallel operations failed:\n${messages}`);
+        // The text is bounded whatever the failures say (a script decides how long each is):
+        // messages are listed while they fit, and the rest are counted.
+        let messages = '';
+        let listed = 0;
+        for (const failure of failures) {
+          const room = MAX_THROWN_MESSAGE_LENGTH - messages.length - (listed === 0 ? 0 : 1);
+          if (room <= 0) break;
+          const message = this.describe(failure.reason).message;
+          messages += (listed === 0 ? '' : '\n') + (message.length > room ? message.slice(0, room) : message);
+          listed++;
+        }
+        const unlisted = failures.length - listed;
+        throw sandboxError(
+          `${failures.length} of ${tasks.length} parallel operations failed:\n${messages}` +
+            (unlisted > 0 ? `\n(${unlisted} more not shown)` : ''),
+        );
       }
       return settled.map((result) => (result as PromiseFulfilledResult<unknown>).value);
     });
