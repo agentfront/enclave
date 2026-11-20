@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Single VM, returned value.** `maxSanitizeDepth` and `maxSanitizeProperties` below 5 and 50 apply to the value a script returns; the single VM raised them to those floors (ATK-SANBOUND-02, ATK-SANBOUND-03). The caps of 50 and 1,000 stay.
 - **Interpreter adapter, `parallel` failures.** The error of a `parallel` batch with failed tasks lists their messages while they fit in 16 KB (the bound of `result.error`) and counts the rest, instead of joining every message (ATK-INTERP-48).
 - **Sidecar, references in tool arguments.** A reference or a composite handle anywhere in the arguments of a tool call is found, however deep, in every adapter (both VMs and the interpreter). One past the sidecar's resolution depth makes the call fail with `REFERENCE_RESOLUTION_FAILED`; it reached the handler unresolved (ATK-REFDEPTH-03 to 05). Arguments without a reference are unchanged at any depth `maxSanitizeDepth` allows.
 - **Size of a returned value.** Where a returned array or object repeats one of its ancestors, the size check counts the 12 bytes of the `"[Circular]"` text the copy has there, not 4, so a value made of many such repeats is measured at its size against `memoryLimit` (ATK-SIZE-30).
