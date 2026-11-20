@@ -132,11 +132,11 @@ A string literal in the script that is at least `extractionThreshold` bytes long
 2. **Bounded resolution** - `maxResolvedSize` and `maxTotalResolvedSize` bound what is built for tool calls
 3. **Automatic cleanup** - References are cleared when the execution ends
 
-A string tool result at or above `extractionThreshold` reaches the script as a reference or not at all. When it cannot be stored because a storage limit is reached (`maxReferenceSize`, `maxTotalSize`, `maxReferenceCount`), the tool call fails with the code `TOOL_RESULT_NOT_STORED`: as a thrown error, or with `callTool(name, args, { throwOnError: false })` as `{ success: false, error: { code: 'TOOL_RESULT_NOT_STORED', ... } }`. The script does not receive the string itself. This holds through the string bridge (the default `toolBridge.mode`), in both VMs.
+A string tool result at or above `extractionThreshold` reaches the script as a reference or not at all. When it cannot be stored because a storage limit is reached (`maxReferenceSize`, `maxTotalSize`, `maxReferenceCount`), the tool call fails and the script does not receive the string itself. With the default `throwOnError: true` the call throws an error whose message says that the result could not be stored; like the other errors a tool call throws, it carries a `name` and a `message`, not a `code`. With `callTool(name, args, { throwOnError: false })` the call returns `{ success: false, error: { code: 'TOOL_RESULT_NOT_STORED', ... } }`, so a script that decides on the code uses that form. This holds through the string bridge (the default `toolBridge.mode`), in both VMs.
 
 ## Errors
 
-The sidecar has no error codes of its own in `result.error.code`. A concatenation that is refused and a tool call that is refused for a resolution limit throw inside the script, which may catch them; uncaught, they end the run like any error of the script (see [Error Codes](/core-libraries/enclave-vm/configuration#error-codes)).
+The sidecar has no error codes of its own in `result.error.code`. A concatenation that is refused, a tool call that is refused for a resolution limit, and a tool call whose result cannot be stored throw inside the script, which may catch them; uncaught, they end the run like any error of the script (see [Error Codes](/core-libraries/enclave-vm/configuration#error-codes)).
 
 ## Best Practices
 
