@@ -215,7 +215,13 @@ export function findRegexLiterals(source: string): Array<{
   // name, never a keyword)
   let lastIdentifier = '';
   let identifierAfterDot = false;
+  let identifierStartedStatement = false;
   let lastPunctuation = '';
+  let statementStart = true;
+  let pendingCase = false;
+  let pendingLabel = false;
+  let ternaryDepth = 0;
+  let statementColon = false;
   // For each open parenthesis: whether it holds the condition of if/while/for/with
   const parens: boolean[] = [];
   // Brace depth, and the depths at which a template interpolation `${` was opened: its code is
@@ -229,6 +235,10 @@ export function findRegexLiterals(source: string): Array<{
   const flushIdentifier = (): void => {
     if (!identifierBuffer) return;
     const keyword = !identifierAfterDot && REGEX_KEYWORD_PREFIXES.has(identifierBuffer);
+    pendingLabel = !identifierAfterDot && identifierStartedStatement && !keyword;
+    if (!identifierAfterDot) {
+      if (identifierBuffer === 'case' || identifierBuffer === 'default') pendingCase = true;
+    }
     token.last = keyword ? 'other' : 'identifier';
     lastIdentifier = identifierAfterDot ? '' : identifierBuffer;
     identifierBuffer = '';
@@ -358,7 +368,11 @@ export function findRegexLiterals(source: string): Array<{
 
     // Track token types for regex vs division detection
     if (isIdentifierChar(char)) {
-      if (!identifierBuffer) identifierAfterDot = lastPunctuation === '.';
+      if (!identifierBuffer) {
+        identifierAfterDot = lastPunctuation === '.';
+        identifierStartedStatement = statementStart;
+        statementStart = false;
+      }
       identifierBuffer += char;
     } else {
       // Handle other token types
@@ -368,31 +382,59 @@ export function findRegexLiterals(source: string): Array<{
         // The condition of if/while/for/with: a statement follows its closing parenthesis
         parens.push(token.last === 'identifier' && CONDITION_KEYWORDS.has(lastIdentifier));
         token.last = 'other';
+        statementStart = false;
       } else if (char === ')') {
-        token.last = parens.pop() === true ? 'other' : 'close';
+        const condition = parens.pop() === true;
+        token.last = condition ? 'other' : 'close';
+        statementStart = condition;
       } else if (char === ']') {
         token.last = 'close';
       } else if (char === '{') {
-        expressionBraces.push(
+        const expression =
           token.last === 'operator' ||
-            (lastPunctuation !== '' && '([{,:?'.includes(lastPunctuation)) ||
-            ['return', 'throw', 'yield', 'await', 'case'].includes(lastIdentifier),
-        );
+          (lastPunctuation !== '' && '([{,:?'.includes(lastPunctuation) && !statementColon) ||
+          ['return', 'throw', 'yield', 'await'].includes(lastIdentifier);
+        expressionBraces.push(expression);
         braceDepth++;
         token.last = 'other';
+        statementStart = !expression;
+        statementColon = false;
       } else if (char === '}') {
         braceDepth--;
-        token.last = expressionBraces.pop() ? 'close' : 'other';
+        const expression = expressionBraces.pop() === true;
+        token.last = expression ? 'close' : 'other';
+        statementStart = !expression;
         if (templateBraces.length > 0 && templateBraces[templateBraces.length - 1] === braceDepth) {
           // The end of a template interpolation: back in the template's text
           templateBraces.pop();
           inTemplateString = true;
         }
+      } else if (char === '?') {
+        if (nextChar !== '?' && source[i - 1] !== '?' && nextChar !== '.') ternaryDepth++;
+        token.last = 'operator';
+        statementStart = false;
+      } else if (char === ':') {
+        if (ternaryDepth > 0) {
+          ternaryDepth--;
+          statementColon = false;
+        } else {
+          statementColon = pendingCase || pendingLabel;
+          pendingCase = false;
+          pendingLabel = false;
+        }
+        token.last = 'other';
+        statementStart = statementColon;
+      } else if (char === ';') {
+        token.last = 'other';
+        statementStart = true;
       } else if (isOperator(char)) {
         token.last = 'operator';
+        statementStart = false;
       } else if (!isWhitespace(char)) {
         token.last = 'other';
+        statementStart = false;
       }
+      if (!isWhitespace(char) && char !== ':') statementColon = false;
       if (!isWhitespace(char)) lastPunctuation = char;
     }
   }

@@ -323,17 +323,18 @@ function collectStaticKeys(node: any, out: string[], foldConstants: boolean): vo
       const separator = node.arguments.length === 0 ? ',' : constantValue(node.arguments[0]);
       if (separator !== NOT_CONSTANT) {
         const separatorText = String(separator);
-        let projectedLength = Math.max(0, callee.object.elements.length - 1) * separatorText.length;
-        if (projectedLength > MAX_STATIC_KEY_LENGTH) throw new StaticKeyExpansionError(node);
         const parts: string[] = [];
         for (const element of callee.object.elements) {
           if (element?.type === 'SpreadElement') return;
           const value = element ? constantValue(element) : null;
           if (value === NOT_CONSTANT) return;
-          const part = value === null ? '' : String(value);
+          parts.push(value === null ? '' : String(value));
+        }
+        let projectedLength = Math.max(0, parts.length - 1) * separatorText.length;
+        if (projectedLength > MAX_STATIC_KEY_LENGTH) throw new StaticKeyExpansionError(node);
+        for (const part of parts) {
           projectedLength += part.length;
           if (projectedLength > MAX_STATIC_KEY_LENGTH) throw new StaticKeyExpansionError(node);
-          parts.push(part);
         }
         out.push(parts.join(separatorText));
       }

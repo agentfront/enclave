@@ -10,7 +10,7 @@
 import type { CallToolOptions, ExecutionContext, SecureProxyLevelConfig } from './types';
 import type { GlobalFunctionCallGate } from './global-function-gate';
 import { sanitizeValue } from './value-sanitizer';
-import { JsonTooLargeError, stringifyWithin, utf8Length } from './bounded-json';
+import { JsonTooLargeError, JsonTraversalLimitError, stringifyWithin, utf8Length } from './bounded-json';
 import { createSafeError, createSafeTypeError } from './safe-error';
 import { ReferenceSidecar } from './sidecar/reference-sidecar';
 import { ReferenceResolver, ResolutionLimitError } from './sidecar/reference-resolver';
@@ -238,6 +238,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
           const resultJson = stringifyWithin(sanitized, resultLimit);
           tooLarge = resultJson !== undefined && utf8Length(resultJson) > resultLimit;
         } catch (error: unknown) {
+          if (error instanceof JsonTraversalLimitError) {
+            refuseToolResult('Tool result exceeds the traversal limit', 'TOOL_RESULT_TOO_COMPLEX');
+          }
           if (!(error instanceof JsonTooLargeError)) throw error;
           tooLarge = true;
         }

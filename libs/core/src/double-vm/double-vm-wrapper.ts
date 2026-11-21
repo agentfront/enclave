@@ -11,7 +11,7 @@
 import * as vm from 'vm';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { sanitizeValue, checkSerializedSize } from '../value-sanitizer';
-import { JsonTooLargeError, stringifyWithin, utf8Length } from '../bounded-json';
+import { JsonTooLargeError, JsonTraversalLimitError, stringifyWithin, utf8Length } from '../bounded-json';
 import { getBlockedPropertiesForLevel, buildBlockedPropertiesFromConfig } from '../secure-proxy';
 import { createSafeError } from '../safe-error';
 import { ReferenceResolver } from '../sidecar/reference-resolver';
@@ -43,7 +43,11 @@ import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-pat
 const resultRefusals = new WeakMap<object, string>();
 function resultRefusal(
   message: string,
-  code: 'TOOL_RESULT_NOT_STORED' | 'TOOL_BRIDGE_RESPONSE_TOO_LARGE' | 'TOOL_RESULT_TOO_LARGE',
+  code:
+    | 'TOOL_RESULT_NOT_STORED'
+    | 'TOOL_BRIDGE_RESPONSE_TOO_LARGE'
+    | 'TOOL_RESULT_TOO_LARGE'
+    | 'TOOL_RESULT_TOO_COMPLEX',
 ): Error {
   const error = new Error(message);
   resultRefusals.set(error, code);
@@ -542,6 +546,9 @@ export class DoubleVmWrapper implements SandboxAdapter {
               throw resultRefusal(`Tool result exceeds the limit of ${resultLimit} bytes`, 'TOOL_RESULT_TOO_LARGE');
             }
           } catch (error: unknown) {
+            if (error instanceof JsonTraversalLimitError) {
+              throw resultRefusal('Tool result exceeds the traversal limit', 'TOOL_RESULT_TOO_COMPLEX');
+            }
             if (error instanceof JsonTooLargeError) {
               throw resultRefusal(`Tool result exceeds the limit of ${resultLimit} bytes`, 'TOOL_RESULT_TOO_LARGE');
             }

@@ -1,7 +1,7 @@
 import type { ExecutionContext } from './types';
 import { sanitizeValue } from './value-sanitizer';
 import { ReferenceResolver, ResolutionLimitError } from './sidecar/reference-resolver';
-import { JsonTooLargeError, stringifyWithin } from './bounded-json';
+import { JsonTooLargeError, JsonTraversalLimitError, stringifyWithin } from './bounded-json';
 
 const TOOL_BRIDGE_PROTOCOL_VERSION = 1 as const;
 
@@ -486,13 +486,15 @@ export function createHostToolBridge(
       const resultLimit = executionContext.maxToolResultBytes;
       if (resultLimit !== undefined && Number.isFinite(resultLimit) && resultLimit > 0) {
         let tooLarge = false;
+        let tooComplex = false;
         try {
           const resultJson = stringifyWithin(sanitizedResult, resultLimit);
           tooLarge = resultJson !== undefined && utf8ByteLength(resultJson) > resultLimit;
         } catch (error: unknown) {
           tooLarge = error instanceof JsonTooLargeError;
+          tooComplex = error instanceof JsonTraversalLimitError;
         }
-        if (tooLarge) {
+        if (tooLarge || tooComplex) {
           executionContext.onToolBridgeFailure?.();
           return serializeResponse(
             {
@@ -500,8 +502,10 @@ export function createHostToolBridge(
               ok: false,
               error: {
                 name: 'ToolBridgeError',
-                message: `Tool result exceeds the limit of ${resultLimit} bytes`,
-                code: 'TOOL_RESULT_TOO_LARGE',
+                message: tooComplex
+                  ? 'Tool result exceeds the traversal limit'
+                  : `Tool result exceeds the limit of ${resultLimit} bytes`,
+                code: tooComplex ? 'TOOL_RESULT_TOO_COMPLEX' : 'TOOL_RESULT_TOO_LARGE',
                 toolError: true,
               },
             },
