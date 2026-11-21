@@ -11,6 +11,34 @@ API reference for the `@enclave-vm/core` package.
 npm install @enclave-vm/core
 ```
 
+## Worker-safe AgentScript runner
+
+The `@enclave-vm/core/worker` entry exports `PortableEnclave`, `AgentScriptRunner`, and their `PortableEnclaveOptions`, `PortableRunOptions`, and `AgentScriptRunnerOptions` types. It runs in Node and Cloudflare Workers with `nodejs_compat` without Node VM or worker-thread modules.
+
+`AgentScriptRunner` accepts raw, untrusted AgentScript. It pre-scans, transforms, and validates the source before the bounded interpreter runs it. `InterpreterAdapter` is a lower-level export for code that has already been transformed and validated; it does not perform those checks itself.
+
+```ts
+import { AgentScriptRunner } from '@enclave-vm/core/worker';
+
+const runner = new AgentScriptRunner({
+  hostFunctions: { lookup: (name: string) => ({ name, found: true }) },
+  maxHostFunctionCalls: 20,
+  maxSteps: 100_000,
+  timeout: 5_000,
+});
+
+try {
+  const result = await runner.run("return lookup('item').found;");
+  console.log(result);
+} finally {
+  runner.dispose();
+}
+```
+
+`AgentScriptRunnerOptions` extends the supported `PortableEnclaveOptions` and adds `hostFunctions`, required `maxHostFunctionCalls`, optional `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `rapidEnumeration` thresholds and per-operation overrides. Host callbacks receive copied plain-data arguments; their results are copied and bounded before the script sees them. The runner refuses unsupported VM-only options and pre-scan overrides at construction.
+
+`PortableEnclaveOptions` extends `CreateEnclaveOptions` with an `interpreter` object for `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `maxAllocationBytes`. `PortableEnclave.run(code, toolHandler?, runOptions?)` accepts `PortableRunOptions.maxToolResultBytes` and `onToolBridgeFailure`. The interpreter charges copied host-function results and tool responses against its cumulative allocation budget. `maxSteps` bounds interpreted CPU work, including built-in operations. `timeout` is checked between steps and at I/O boundaries; on deployed Cloudflare Workers it is not a hard wall-time cutoff during CPU-only work, and synchronous host callbacks cannot be preempted.
+
 ## Enclave Class
 
 The main class for secure code execution.

@@ -73,6 +73,33 @@ if (result.success) {
 enclave.dispose();
 ```
 
+### Portable AgentScript runner
+
+Use the Worker entry when the host cannot load Node's `vm` or worker-thread modules. `AgentScriptRunner` pre-scans raw source, transforms AgentScript, validates the AST, and then runs it in the bounded interpreter. `InterpreterAdapter` is a lower-level adapter and does not perform those validation steps by itself.
+
+```typescript
+import { AgentScriptRunner } from '@enclave-vm/core/worker';
+
+const runner = new AgentScriptRunner({
+  securityLevel: 'STANDARD',
+  timeout: 5000,
+  maxSteps: 1_000_000,
+  maxToolCalls: 20,
+  maxHostFunctionCalls: 200,
+  hostFunctions: { getTool: (name) => ({ name }) },
+  toolHandler: async (name, args) => ({ name, args }),
+});
+
+try {
+  const result = await runner.run("return getTool('example').name;");
+  console.log(result);
+} finally {
+  runner.dispose();
+}
+```
+
+The runner supports Node and Cloudflare Workers with `nodejs_compat`. Tool and host-function arguments and results cross as bounded plain data. Steps, call depth, pending calls, allocation, tool calls, console output, bridge payloads and sidecar storage all have finite limits. `maxSteps` bounds interpreted CPU work, including work charged for built-in operations. `timeout` is checked between interpreter steps and at I/O boundaries; deployed Cloudflare Workers do not advance their clocks during CPU-only work, so it is not a hard wall-time cutoff there. Synchronous host callbacks cannot be preempted. Unsupported VM-only options and pre-scan overrides fail at construction.
+
 ## Configuration
 
 ### CreateEnclaveOptions
@@ -146,7 +173,9 @@ The constructor checks its options and throws a `TypeError` for a value outside 
 
 - **Text**: concatenation (`a + b`, and `x += y`, which is charged like `x + y`) and the methods that multiply their input (`repeat`, `padStart`, `padEnd`, `join`).
 - **Arrays**: no single array is larger than the limit holds, at 8 bytes per element, and what an operation adds is charged: `push`, `unshift`, `splice`, `fill`, the elements `concat`, `flat`, `flatMap` and a spread literal add, and what `Array.from` makes out of something that is not an array.
-- **Not counted**: a copy is free, so a script can hold many arrays that are each within the limit; object literals, Maps and Sets are not counted.
+- **Not counted by the VM adapter**: a copy is free, so a script can hold many arrays that are each within the limit; object literals, Maps and Sets are not counted.
+
+The portable interpreter additionally charges copied host-function results and tool responses by their serialized size to the cumulative allocation budget.
 
 A script that goes over the limit fails with `MEMORY_LIMIT_EXCEEDED`, and a script cannot switch the accounting off or reset it. With a limit set, a returned value whose serialized size is estimated above the limit (above 50 MB where the limit is larger) fails with `SERIALIZATION_LIMIT_EXCEEDED`. The limit is an estimate: where the host must survive whatever a script allocates, use the [worker pool](#worker-pool-adapter-optional), whose workers have a heap limit of the engine, or a child process or container with a memory limit of the operating system.
 
