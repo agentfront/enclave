@@ -92,6 +92,8 @@ interface Connection {
  */
 interface ActiveSession {
   sessionId: SessionId;
+  /** Unique to this creation, even if a later session reuses sessionId. */
+  instanceId: SessionId;
   events: StreamEvent[];
   resolve: (result: SessionResult) => void;
   handlers: SessionEventHandlers;
@@ -288,6 +290,7 @@ export class EnclaveClient {
     // Store session state
     const session: ActiveSession = {
       sessionId,
+      instanceId: generateSessionId(),
       events: [],
       resolve: resolveResult!,
       handlers: options,
@@ -465,13 +468,13 @@ export class EnclaveClient {
       await this.withDeadline('Stopping the session', async (signal) => {
         const response = await this.config.fetch(url, {
           method: 'DELETE',
-          headers: this.buildHeaders(),
+          headers: this.sessionHeaders(session),
           signal,
         });
         void response.body?.cancel().catch(() => undefined);
 
-        // 404: the server does not have the session, so there is nothing left to stop
-        if (response.status === 404) {
+        // The original creation is absent if its ID is gone or now belongs to another one.
+        if (response.status === 404 || response.status === 412) {
           notFound = true;
         } else if (!response.ok) {
           failure = `the server answered ${response.status}`;
@@ -510,7 +513,7 @@ export class EnclaveClient {
         response = await this.config.fetch(url, {
           method: 'POST',
           headers: {
-            ...this.buildHeaders(),
+            ...this.sessionHeaders(session),
             'Content-Type': 'application/json',
             Accept: 'application/x-ndjson',
           },
@@ -900,5 +903,15 @@ export class EnclaveClient {
     return {
       ...this.config.headers,
     };
+  }
+
+  /** The creation identifier always takes precedence over configured headers. */
+  private sessionHeaders(session: ActiveSession): Record<string, string> {
+    const headers = this.buildHeaders();
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === 'x-session-instance-id') delete headers[name];
+    }
+    headers['X-Session-Instance-ID'] = session.instanceId;
+    return headers;
   }
 }

@@ -207,7 +207,7 @@ No script runs in these packages. The broker is a server in front of the sandbox
 
 The encryption of `@enclave-vm/stream` is a set of primitives that no client or broker of this repository uses, and its key exchange is not authenticated: ATK-STREAMENC pins what the primitives do, not a protocol. `broker.openapi` (ATK-BRK-83), `client.cancel` (ATK-CLIENT-17) and `runtime.not-implemented` use built packages or the broker's source behind a local server: run `yarn build` first.
 
-Focused network regressions in the private suite: `broker.cancel-on-error` checks result refusals against `cancelOnFirstError` and the broker result cap; `client.cancel-creation-race` checks deferred stops when a session ID is reused; `provider.config` checks the context after an equal replacement configuration.
+Focused network regressions in the private suite: `broker.cancel-on-error` checks result refusals against `cancelOnFirstError` and the broker result cap; `broker.session-instance` checks that a delayed stop applies only to its own creation; `client.cancel-creation-race` checks deferred stops when a session ID is reused; `provider.config` checks the context after an equal replacement configuration.
 
 ## Case folders (`security-tests/test-script/cases`)
 

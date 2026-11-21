@@ -94,6 +94,9 @@ export interface BrokerSessionConfig {
    * one is given here, and is then not reachable over routes that identify their callers.
    */
   owner?: string;
+
+  /** Optional creation identifier used by the HTTP routes for conditional cancellation. */
+  instanceId?: string;
 }
 
 /**
@@ -110,6 +113,8 @@ export class BrokerSession {
    * The caller this session belongs to, if any.
    */
   readonly owner?: string;
+  /** Creation identifier supplied by the HTTP client, if any. */
+  readonly instanceId?: string;
 
   private readonly emitter: BoundedSessionEmitter;
   private readonly toolRegistry: ToolRegistry;
@@ -136,6 +141,13 @@ export class BrokerSession {
 
   constructor(toolRegistry: ToolRegistry, config: BrokerSessionConfig = {}) {
     this.sessionId = config.sessionId ?? generateSessionId();
+    if (
+      config.instanceId !== undefined &&
+      (typeof config.instanceId !== 'string' || !/^[A-Za-z0-9._:~-]{1,128}$/.test(config.instanceId))
+    ) {
+      throw new TypeError('Session instance id must be a short header-safe string');
+    }
+    this.instanceId = config.instanceId;
     if (config.owner !== undefined) {
       if (typeof config.owner !== 'string' || config.owner.length === 0) {
         throw new TypeError('Session owner must be a non-empty string');

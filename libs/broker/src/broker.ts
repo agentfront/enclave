@@ -340,8 +340,8 @@ export class Broker {
   /**
    * Terminate a session
    */
-  async terminateSession(sessionId: SessionId, reason?: string): Promise<boolean> {
-    return this.sessionManager.terminate(sessionId, reason);
+  async terminateSession(sessionId: SessionId, reason?: string, expectedSession?: BrokerSession): Promise<boolean> {
+    return this.sessionManager.terminate(sessionId, reason, expectedSession);
   }
 
   // ============================================================================
