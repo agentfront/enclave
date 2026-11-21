@@ -57,7 +57,15 @@ const REGEX_KEYWORD_PREFIXES = new Set([
   'new',
   'yield',
   'await',
+  'else',
+  'do',
 ]);
+
+/**
+ * Keywords whose parenthesized condition is followed by a statement: a `/` after the closing
+ * parenthesis starts a regex, not a division.
+ */
+const CONDITION_KEYWORDS = new Set(['if', 'while', 'for', 'with']);
 
 /**
  * Result of ReDoS analysis for a single pattern
@@ -198,9 +206,31 @@ function findRegexLiterals(source: string): Array<{
   let line = 1;
 
   // Track context to distinguish regex from division
-  let lastSignificantToken: 'operator' | 'identifier' | 'number' | 'close' | 'other' = 'other';
+  // (In an object, so that its assignments in flushIdentifier are seen by the type checker.)
+  const token: { last: 'operator' | 'identifier' | 'number' | 'close' | 'other' } = { last: 'other' };
   // Buffer for tracking identifier/keyword being scanned
   let identifierBuffer = '';
+  // The identifier last completed, and whether the one being scanned follows a `.` (a property
+  // name, never a keyword)
+  let lastIdentifier = '';
+  let identifierAfterDot = false;
+  let lastPunctuation = '';
+  // For each open parenthesis: whether it holds the condition of if/while/for/with
+  const parens: boolean[] = [];
+  // Brace depth, and the depths at which a template interpolation `${` was opened: its code is
+  // scanned like any code, up to its closing brace
+  let braceDepth = 0;
+  const templateBraces: number[] = [];
+
+  const flushIdentifier = (): void => {
+    if (!identifierBuffer) return;
+    const keyword = !identifierAfterDot && REGEX_KEYWORD_PREFIXES.has(identifierBuffer);
+    token.last = keyword ? 'other' : 'identifier';
+    lastIdentifier = identifierAfterDot ? '' : identifierBuffer;
+    identifierBuffer = '';
+    // The property name took the dot: what follows it is not a property name too
+    lastPunctuation = '';
+  };
 
   for (let i = 0; i < source.length; i++) {
     const char = source[i];
@@ -210,6 +240,7 @@ function findRegexLiterals(source: string): Array<{
     if (char === '\n') {
       line++;
       inLineComment = false;
+      if (!inString && !inTemplateString) flushIdentifier();
       continue;
     }
 
@@ -251,24 +282,43 @@ function findRegexLiterals(source: string): Array<{
 
     // Handle strings
     if (inTemplateString) {
-      if (char === '`') inTemplateString = false;
+      if (char === '`') {
+        inTemplateString = false;
+        // A finished template is a value: a slash after it divides
+        token.last = 'close';
+      } else if (char === '$' && nextChar === '{') {
+        // An interpolation is code, scanned as code up to its closing brace
+        inTemplateString = false;
+        templateBraces.push(braceDepth);
+        braceDepth++;
+        i++;
+        token.last = 'other';
+        lastPunctuation = '{';
+      }
       continue;
     }
 
     if (inString) {
-      if (char === inString) inString = null;
+      if (char === inString) {
+        inString = null;
+        // A finished string is a value: a slash after it divides
+        token.last = 'close';
+      }
       continue;
     }
 
+    // A character that ends an identifier: the identifier is classified before the character is
+    if (!isIdentifierChar(char)) flushIdentifier();
+
     if (char === '"' || char === "'") {
       inString = char;
-      lastSignificantToken = 'other';
+      token.last = 'other';
       continue;
     }
 
     if (char === '`') {
       inTemplateString = true;
-      lastSignificantToken = 'other';
+      token.last = 'other';
       continue;
     }
 
@@ -277,11 +327,7 @@ function findRegexLiterals(source: string): Array<{
       // Division vs regex heuristic:
       // Regex follows: return, =, (, [, {, ,, ;, :, !, &, |, ?, +, -, ~, typeof, void, in, delete
       // Division follows: identifier, number, ), ]
-      if (
-        lastSignificantToken !== 'identifier' &&
-        lastSignificantToken !== 'number' &&
-        lastSignificantToken !== 'close'
-      ) {
+      if (token.last !== 'identifier' && token.last !== 'number' && token.last !== 'close') {
         // Try to parse as regex
         const regexResult = tryParseRegex(source, i);
         if (regexResult) {
@@ -292,37 +338,47 @@ function findRegexLiterals(source: string): Array<{
             line,
           });
           i = regexResult.endIndex;
-          lastSignificantToken = 'other';
+          token.last = 'other';
           continue;
         }
       }
-      lastSignificantToken = 'operator';
+      token.last = 'operator';
       continue;
     }
 
     // Track token types for regex vs division detection
     if (isIdentifierChar(char)) {
+      if (!identifierBuffer) identifierAfterDot = lastPunctuation === '.';
       identifierBuffer += char;
     } else {
-      // Check if the completed identifier is a keyword that allows regex
-      if (identifierBuffer) {
-        if (REGEX_KEYWORD_PREFIXES.has(identifierBuffer)) {
-          lastSignificantToken = 'other'; // Allows regex after keyword
-        } else {
-          lastSignificantToken = 'identifier'; // Regular identifier
-        }
-        identifierBuffer = '';
-      }
       // Handle other token types
       if (isDigit(char)) {
-        lastSignificantToken = 'number';
-      } else if (char === ')' || char === ']') {
-        lastSignificantToken = 'close';
+        token.last = 'number';
+      } else if (char === '(') {
+        // The condition of if/while/for/with: a statement follows its closing parenthesis
+        parens.push(token.last === 'identifier' && CONDITION_KEYWORDS.has(lastIdentifier));
+        token.last = 'other';
+      } else if (char === ')') {
+        token.last = parens.pop() === true ? 'other' : 'close';
+      } else if (char === ']') {
+        token.last = 'close';
+      } else if (char === '{') {
+        braceDepth++;
+        token.last = 'other';
+      } else if (char === '}') {
+        braceDepth--;
+        token.last = 'other';
+        if (templateBraces.length > 0 && templateBraces[templateBraces.length - 1] === braceDepth) {
+          // The end of a template interpolation: back in the template's text
+          templateBraces.pop();
+          inTemplateString = true;
+        }
       } else if (isOperator(char)) {
-        lastSignificantToken = 'operator';
+        token.last = 'operator';
       } else if (!isWhitespace(char)) {
-        lastSignificantToken = 'other';
+        token.last = 'other';
       }
+      if (!isWhitespace(char)) lastPunctuation = char;
     }
   }
 

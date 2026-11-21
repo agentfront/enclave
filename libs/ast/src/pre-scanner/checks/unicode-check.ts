@@ -132,7 +132,10 @@ export function checkInvisibleChars(source: string, config: PreScannerConfig, st
   INVISIBLE_PATTERN.lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  // Count invisible characters - allow a few (like BOM at start) but flag excessive use
+  // Count invisible characters - allow a few (like BOM at start) but flag excessive use. The
+  // report lists at most MAX_REPORTED of them, and once that many are found the script is refused
+  // whatever follows: the scan stops there instead of keeping a record of every one.
+  const MAX_REPORTED = 10;
   const matches: Array<{ position: number; charCode: number }> = [];
 
   while ((match = INVISIBLE_PATTERN.exec(source)) !== null) {
@@ -147,17 +150,21 @@ export function checkInvisibleChars(source: string, config: PreScannerConfig, st
       position,
       charCode: source.charCodeAt(position),
     });
+    if (matches.length >= MAX_REPORTED) {
+      break;
+    }
   }
 
   // Report if suspicious number of invisible chars (more than 3 is suspicious)
   if (matches.length > 3) {
     const firstMatch = matches[0];
     const line = getLineNumber(source, firstMatch.position);
+    const counted = matches.length >= MAX_REPORTED ? `${MAX_REPORTED} or more` : String(matches.length);
 
     state.incrementUnicodeIssues();
     state.reportFatalError({
       code: PRESCANNER_ERROR_CODES.UNICODE_SUSPICIOUS,
-      message: `Suspicious invisible characters detected: ${matches.length} invisible/zero-width characters found`,
+      message: `Suspicious invisible characters detected: ${counted} invisible/zero-width characters found`,
       position: firstMatch.position,
       line,
       data: {
