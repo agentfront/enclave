@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.20.0] - 2026-11-21
+
 ### Changed
 
 - **Computed property keys:** STRICT, SECURE and AgentScript reject `constructor` when a key is assembled from constant concatenation, a constant template substitution or a literal array join.

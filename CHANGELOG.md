@@ -9,6 +9,8 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## [Unreleased]
 
+## [2.20.0] - 2026-11-21
+
 A follow-up to 2.19.0: two more layers behind the validator, and the dependency and code-scanning alerts of the repository. `libs/core/CHANGELOG.md` has the changes a host of `@enclave-vm/core` will notice.
 
 - `@enclave-vm/browser`: a script validated as AgentScript runs in a realm that cannot run a regular expression (ATK-RXRT in `SECURITY-TESTS.md`). The matcher methods of `RegExp.prototype` throw `TypeError: Regular expressions are not available in this sandbox`, the prototype is frozen, and the names `RegExp` and `URLPattern` are not in the realm. This is what `@enclave-vm/core` does with the realm allowlist; until now the browser had the validator only. With another preset, or with `validate: false`, the realm is as before.

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.20.0] - 2026-11-21
+
 ### Changed
 
 - **Interpreter adapter, call depth.** `maxCallDepth` (default 256) is counted along each chain of calls, not over the whole execution. The tasks of a `parallel` batch each continue the chain that started the batch, so a batch whose tasks call helper functions no longer adds up to the limit. A callback counts as a call of the function that invokes it (an array method, `parallel`, a bound function), and a chain keeps its depth across what it awaits.
