@@ -9,6 +9,36 @@
 import { z } from 'zod';
 import type { ToolConfig } from '@enclave-vm/types';
 
+/** What stands in an error message for the value of a secret. */
+const REDACTED_SECRET = '[REDACTED]';
+
+/**
+ * A text of a handler's error with every value in `secretValues` replaced by `REDACTED_SECRET`.
+ * One pass from left to right: at each position the longest value that starts there is replaced,
+ * and what was put in is not looked at again (a secret such as `E` does not match inside the
+ * marker). Anything that is not a string is returned as it is.
+ */
+function redactSecrets<T>(text: T, secretValues: string[]): T {
+  if (typeof text !== 'string') return text;
+  const values = [...new Set(secretValues)].filter((value) => typeof value === 'string' && value.length > 0);
+  if (!values.some((value) => text.includes(value))) return text;
+  values.sort((a, b) => b.length - a.length);
+  let redacted = '';
+  let i = 0;
+  scan: while (i < text.length) {
+    for (const value of values) {
+      if (text.startsWith(value, i)) {
+        redacted += REDACTED_SECRET;
+        i += value.length;
+        continue scan;
+      }
+    }
+    redacted += text[i];
+    i++;
+  }
+  return redacted as T;
+}
+
 /**
  * Tool definition for registration
  */
@@ -324,6 +354,10 @@ export class ToolRegistry {
       };
     }
 
+    // The values the handler is given, kept before it runs: what it throws is passed on to the
+    // script and to the session's events with each of them taken out.
+    const secretValues = Object.values(secrets);
+
     // Execute handler
     try {
       const result = await tool.definition.handler(validation.validatedArgs, {
@@ -341,8 +375,8 @@ export class ToolRegistry {
       return {
         success: false,
         error: {
-          code: err.code ?? 'EXECUTION_ERROR',
-          message: err.message,
+          code: redactSecrets(err.code ?? 'EXECUTION_ERROR', secretValues),
+          message: redactSecrets(err.message, secretValues),
         },
         durationMs: Date.now() - startTime,
       };

@@ -236,6 +236,8 @@ A script decides the arguments of a generated tool, so whatever an operation of 
 
 Secrets are resolved per tool and handed to the handler only; they are not part of any event. Tool arguments and the result of the script are part of the events: do not put a secret into them, and do not return one from a tool.
 
+The message and code of an exception a handler throws are passed on to the script, and to the final event when the script does not catch it, with the value of each secret the handler was given replaced by `[REDACTED]`. Only the value as it is is recognised, not an encoded or partial form of it: a handler does not put a secret into an error.
+
 ## Related packages
 
 | Package                           | Description                                                   |
