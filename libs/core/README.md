@@ -73,6 +73,33 @@ if (result.success) {
 enclave.dispose();
 ```
 
+### Portable AgentScript runner
+
+Use the Worker entry when the host cannot load Node's `vm` or worker-thread modules. `AgentScriptRunner` pre-scans raw source, transforms AgentScript, validates the AST, and then runs it in the bounded interpreter. `InterpreterAdapter` is a lower-level adapter and does not perform those validation steps by itself.
+
+```typescript
+import { AgentScriptRunner } from '@enclave-vm/core/worker';
+
+const runner = new AgentScriptRunner({
+  securityLevel: 'STANDARD',
+  timeout: 5000,
+  maxSteps: 1_000_000,
+  maxToolCalls: 20,
+  maxHostFunctionCalls: 200,
+  hostFunctions: { getTool: (name) => ({ name }) },
+  toolHandler: async (name, args) => ({ name, args }),
+});
+
+try {
+  const result = await runner.run("return getTool('example').name;");
+  console.log(result);
+} finally {
+  runner.dispose();
+}
+```
+
+The runner supports Node and Cloudflare Workers with `nodejs_compat`. Tool and host-function arguments and results cross as bounded plain data. Steps, call depth, pending calls, allocation, wall time, tool calls, console output, bridge payloads and sidecar storage all have finite limits. Unsupported VM-only options and pre-scan overrides fail at construction.
+
 ## Configuration
 
 ### CreateEnclaveOptions
