@@ -8,7 +8,7 @@
 
 import type { SessionId, StreamEvent, SessionLimits, ErrorPayload } from '@enclave-vm/types';
 import { generateSessionId, generateCallId, EventType, PROTOCOL_VERSION } from '@enclave-vm/types';
-import { SessionEmitter, Enclave } from '@enclave-vm/core';
+import { SessionEmitter, Enclave, REFERENCE_CONFIGS } from '@enclave-vm/core';
 import type { SessionStateValue, SessionFinalResult, CreateEnclaveOptions, ExecutionStats } from '@enclave-vm/core';
 import type { ToolRegistry, ToolContext, ToolExecutionResult } from './tool-registry';
 import { resolveSessionLimits, timerDelay } from './limits';
@@ -20,6 +20,40 @@ import type { SessionHistoryLimits } from './session-history';
  * (`toolBridge.maxPayloadBytes` of the Enclave options).
  */
 const DEFAULT_BRIDGE_PAYLOAD_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Whether a tool result is plain data: primitives, arrays, and objects whose prototype is the
+ * plain object's or null, all the way down, without the keys the bridge's copy leaves out. The
+ * bridge copies a result before it measures it, and only of plain data is that copy the result's
+ * own JSON text; anything else (an Error, a Map, a Date, an instance of a class) the session
+ * leaves to the bridge.
+ */
+function isPlainData(value: unknown): boolean {
+  const pending: unknown[] = [value];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === null || typeof current !== 'object') continue;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    if (Array.isArray(current)) {
+      // By index, as the bridge's copy reads it: an array's own iterator is not called
+      const length = current.length;
+      for (let index = 0; index < length; index++) pending.push(current[index]);
+      continue;
+    }
+    const prototype = Object.getPrototypeOf(current);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    for (const key of Object.keys(current)) {
+      if (key === '__proto__' || key === 'constructor') return false;
+      pending.push((current as Record<string, unknown>)[key]);
+    }
+  }
+  return true;
+}
+
+/** The bytes the string bridge's response adds around a result: `{"v":1,"ok":true,"value":` and `}`. */
+const BRIDGE_RESPONSE_ENVELOPE_BYTES = JSON.stringify({ v: 1, ok: true, value: 0 }).length - 1;
 
 /**
  * Broker session configuration
@@ -83,6 +117,13 @@ export class BrokerSession {
   private readonly abortController: AbortController;
   private readonly limits: Required<SessionLimits>;
   private readonly checkResultSize: boolean;
+  /** The payload limit of the sandbox's string bridge; undefined when the bridge is not used. */
+  private readonly bridgePayloadBytes: number | undefined;
+  /**
+   * The size from which the sandbox's sidecar holds a string result as a reference (measured by
+   * the bridge after that); undefined without a sidecar.
+   */
+  private readonly sidecarExtractionBytes: number | undefined;
   private _state: SessionStateValue = 'starting';
   private executionPromise: Promise<SessionFinalResult> | null = null;
   private toolCallCount = 0;
@@ -114,6 +155,13 @@ export class BrokerSession {
     this.checkResultSize =
       (bridge?.mode ?? 'string') !== 'string' ||
       this.limits.maxToolResultBytes < (bridge?.maxPayloadBytes ?? DEFAULT_BRIDGE_PAYLOAD_BYTES);
+    this.bridgePayloadBytes =
+      (bridge?.mode ?? 'string') === 'string' ? (bridge?.maxPayloadBytes ?? DEFAULT_BRIDGE_PAYLOAD_BYTES) : undefined;
+    const sidecar = config.enclaveConfig?.sidecar;
+    this.sidecarExtractionBytes = sidecar?.enabled
+      ? (sidecar.extractionThreshold ??
+        REFERENCE_CONFIGS[config.enclaveConfig?.securityLevel ?? 'STANDARD'].extractionThreshold)
+      : undefined;
 
     this.expiresAt = this.createdAt + this.limits.sessionTtlMs;
 
@@ -504,16 +552,14 @@ export class BrokerSession {
       this.abortController.signal.removeEventListener('abort', onSessionAbort);
     }
 
-    // A result above the session's limit is a failed call
-    if (result.success && !this.resultWithinLimit(result.value)) {
-      result = {
-        success: false,
-        error: {
-          code: 'TOOL_RESULT_TOO_LARGE',
-          message: `Tool result exceeds the limit of ${this.limits.maxToolResultBytes} bytes`,
-        },
-        durationMs: result.durationMs,
-      };
+    // A result above the session's limit, or above what the sandbox's bridge carries, is a failed
+    // call. The second is seen here as well, so that cancelOnFirstError applies to it: the bridge
+    // would refuse the result after this method returned, where the session does not see it.
+    if (result.success) {
+      const refusal = this.resultRefusal(result.value);
+      if (refusal) {
+        result = { success: false, error: refusal, durationMs: result.durationMs };
+      }
     }
 
     // Emit tool result event
@@ -534,20 +580,44 @@ export class BrokerSession {
   }
 
   /**
-   * Whether a tool result is within `limits.maxToolResultBytes`, measured as serialized JSON.
+   * Why a tool result is refused, or undefined: over `limits.maxToolResultBytes`, or over the
+   * payload limit of the sandbox's string bridge (with the bytes of its response envelope),
+   * measured as serialized JSON.
    */
-  private resultWithinLimit(value: unknown): boolean {
-    if (!this.checkResultSize) return true;
+  private resultRefusal(value: unknown): { code: string; message: string } | undefined {
     const limit = this.limits.maxToolResultBytes;
-    if (!(limit > 0) || limit === Infinity) return true;
+    const checkOwn = this.checkResultSize && limit > 0 && limit !== Infinity;
+    if (!checkOwn && this.bridgePayloadBytes === undefined) return undefined;
     let serialized: string | undefined;
     try {
       serialized = JSON.stringify(value);
     } catch {
       // Not serializable: the sandbox's own bridge decides what happens to it.
-      return true;
+      return undefined;
     }
-    return serialized === undefined || Buffer.byteLength(serialized, 'utf8') <= limit;
+    if (serialized === undefined) return undefined;
+    const bytes = Buffer.byteLength(serialized, 'utf8');
+    if (checkOwn && bytes > limit) {
+      return { code: 'TOOL_RESULT_TOO_LARGE', message: `Tool result exceeds the limit of ${limit} bytes` };
+    }
+    // A string the sidecar holds as a reference crosses the bridge as the reference: the bridge
+    // measures it after that, and so is not asked here.
+    const heldBySidecar =
+      typeof value === 'string' &&
+      this.sidecarExtractionBytes !== undefined &&
+      Buffer.byteLength(value, 'utf8') >= this.sidecarExtractionBytes;
+    if (
+      !heldBySidecar &&
+      this.bridgePayloadBytes !== undefined &&
+      bytes + BRIDGE_RESPONSE_ENVELOPE_BYTES > this.bridgePayloadBytes &&
+      isPlainData(value)
+    ) {
+      return {
+        code: 'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+        message: `Tool response exceeds maximum size (${this.bridgePayloadBytes} bytes)`,
+      };
+    }
+    return undefined;
   }
 
   /**

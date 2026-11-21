@@ -9,7 +9,7 @@
 
 import { EventEmitter } from 'events';
 import { sha256Hex } from './hash-utils';
-import { readBodyText } from './http-utils';
+import { fetchOriginBound, readBodyText } from './http-utils';
 import { DEFAULT_MAX_SPEC_BYTES } from './openapi-tool-loader';
 
 /**
@@ -237,13 +237,15 @@ export class OpenApiSpecPoller extends EventEmitter {
 
     const headers: Record<string, string> = { ...this.config.headers };
 
-    // Add conditional request headers
+    // Add conditional request headers. They are no credential: they follow a redirect to another
+    // origin (the configured headers do not), so the server that answers can still answer 304.
+    const validators: Record<string, string> = {};
     if (this.config.changeDetection !== 'content-hash') {
       if (this.lastEtag) {
-        headers['If-None-Match'] = this.lastEtag;
+        validators['If-None-Match'] = this.lastEtag;
       }
       if (this.lastModified) {
-        headers['If-Modified-Since'] = this.lastModified;
+        validators['If-Modified-Since'] = this.lastModified;
       }
     }
 
@@ -252,8 +254,14 @@ export class OpenApiSpecPoller extends EventEmitter {
     const timeout = setTimeout(() => controller.abort(), this.config.fetchTimeoutMs);
 
     try {
-      const response = await fetch(this.config.url, {
+      // The configured headers are for the specification's origin: a redirect to another origin
+      // is followed without them, as for the first load of the specification.
+      const response = await fetchOriginBound(this.config.url, {
+        method: 'GET',
         headers,
+        portableHeaders: validators,
+        // A redirect that comes back to the specification's origin gets its headers again
+        restoreOnOrigin: true,
         signal: controller.signal,
       });
 
