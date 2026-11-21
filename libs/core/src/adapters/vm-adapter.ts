@@ -1244,6 +1244,10 @@ export class VmAdapter implements SandboxAdapter {
             var promiseThen = Promise.prototype.then;
             var settled = Promise.resolve();
             var reflectApply = Reflect.apply;
+            var isArray = Array.isArray;
+            var StringOf = String;
+            var stringValueOf = String.prototype.valueOf;
+            var numberValueOf = Number.prototype.valueOf;
             var maxBytes = ${numericLiteral('toolBridge.maxPayloadBytes', maxPayloadBytes)};
             var limitMessage = ${JSON.stringify(limitMessage)};
 
@@ -1312,6 +1316,56 @@ export class VmAdapter implements SandboxAdapter {
               return err;
             }
 
+            // Whether a value has the internal slot that a built-in's valueOf reads.
+            function hasSlot(valueOf, value) {
+              try {
+                reflectApply(valueOf, value, []);
+                return true;
+              } catch (e) {
+                return false;
+              }
+            }
+
+            // The JSON text of a value, given up as soon as it would be longer than limit bytes.
+            // A value referenced many times is written as many times, so the text can be far longer
+            // than the value is large. What each member adds is counted as JSON.stringify writes it,
+            // and the count is a lower bound of its UTF-8 bytes (a code unit is at least one byte,
+            // an escape only adds), so a value whose text is within the limit is never given up.
+            // The members JSON.stringify visits are counted as well, also those it leaves out (a
+            // function, undefined): at most as many as the limit has bytes.
+            var TOO_LARGE = {};
+            function stringifyWithin(value, limit) {
+              var bytes = 0;
+              var visits = 0;
+              var root = true;
+              return stringify(value, function (key, member) {
+                if (++visits > limit) throw TOO_LARGE;
+                // A String or Number object is written as what it converts to; converted here, the
+                // way JSON.stringify converts it and once, so the count is of what is written.
+                if (member !== null && typeof member === 'object') {
+                  if (hasSlot(stringValueOf, member)) member = StringOf(member);
+                  else if (hasSlot(numberValueOf, member)) member = +member;
+                }
+                var added;
+                var kind = typeof member;
+                if (kind === 'string') added = member.length + 2;
+                else if (kind === 'number') added = member - member === 0 ? ('' + member).length : 4;
+                else if (kind === 'boolean') added = member ? 4 : 5;
+                else if (kind === 'object' || kind === 'bigint') added = member === null ? 4 : 2;
+                else added = 0;
+                if (!root) {
+                  // An element of an array is written, as null if nothing else; a member of an
+                  // object that is written has its key in front of it.
+                  if (isArray(this)) added = added || 4;
+                  else if (added > 0) added += key.length + 3;
+                }
+                root = false;
+                bytes += added;
+                if (bytes > limit) throw TOO_LARGE;
+                return member;
+              });
+            }
+
             return async function __safe_callTool(toolName, args, options) {
               // callTool options: only { throwOnError: false } changes behavior. Tool failures
               // then resolve to { success: false, error }; the enclave's own refusals still throw.
@@ -1332,11 +1386,23 @@ export class VmAdapter implements SandboxAdapter {
                 throw makeError('Tool bridge is not available', 'Error');
               }
 
-              // Defense-in-depth: ensure JSON-serializable input.
+              // Counted here, where the call is made and before anything is done with its
+              // arguments: the first maxToolCalls calls are the ones that run, also when several
+              // are made before any of them is started, and a call over the limit costs nothing.
+              if (countCall() !== true) {
+                throw makeError(limitMessage, 'ToolLimitError');
+              }
+
+              // Defense-in-depth: ensure JSON-serializable input. The text is written within the
+              // payload limit (see stringifyWithin), so what is done before the request is
+              // measured is in proportion to the limit.
               var sanitizedArgs;
               try {
-                sanitizedArgs = parse(stringify(args));
+                sanitizedArgs = parse(stringifyWithin(args, maxBytes));
               } catch (e) {
+                if (e === TOO_LARGE) {
+                  throw makeError('Tool request exceeds maximum size (' + maxBytes + ' bytes)', 'RangeError');
+                }
                 throw makeError('Tool arguments must be JSON-serializable', 'TypeError');
               }
 
@@ -1351,11 +1417,6 @@ export class VmAdapter implements SandboxAdapter {
                 throw makeError('Tool request exceeds maximum size (' + maxBytes + ' bytes)', 'RangeError');
               }
 
-              // Counted here, where the call is made: the first maxToolCalls calls are the ones
-              // that run, also when several are made before any of them is started.
-              if (countCall() !== true) {
-                throw makeError(limitMessage, 'ToolLimitError');
-              }
               var responseJson = await callBridge(requestJson);
               if (typeof responseJson !== 'string') {
                 throw makeError('Tool bridge returned invalid response', 'Error');
