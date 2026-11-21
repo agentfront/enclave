@@ -214,13 +214,24 @@ export function findRegexLiterals(source: string): Array<{
   // The identifier last completed, and whether the one being scanned follows a `.` (a property
   // name, never a keyword)
   let lastIdentifier = '';
+  let lastIdentifierStartedStatement = false;
   let identifierAfterDot = false;
   let identifierStartedStatement = false;
+  let exportStatementPrefix = false;
   let lastPunctuation = '';
   let statementStart = true;
   // A case expression may contain object literals, ternaries, or even nested switch blocks.
   // Only the colon at the case keyword's own nesting depth ends that case expression.
   const pendingCases: Array<{ parenDepth: number; braceDepth: number; bracketDepth: number }> = [];
+  const pendingFunctions: Array<{
+    parenDepth: number;
+    braceDepth: number;
+    bracketDepth: number;
+    expression: boolean;
+    paramsClosed: boolean;
+  }> = [];
+  const pendingClasses: Array<{ parenDepth: number; braceDepth: number; bracketDepth: number; expression: boolean }> =
+    [];
   let pendingLabel = false;
   let ternaryDepth = 0;
   let statementColon = false;
@@ -235,8 +246,8 @@ export function findRegexLiterals(source: string): Array<{
   // A closing object literal is a value (so a following slash divides); a closing statement
   // block can be followed by a regex literal that starts the next statement.
   const expressionBraces: boolean[] = [];
-  // An arrow body is a statement block inside, but the completed arrow is a value outside.
-  const arrowBraces: boolean[] = [];
+  // An arrow or function-expression body is a statement block inside, but a value outside.
+  const valueBodyBraces: boolean[] = [];
 
   const flushIdentifier = (): void => {
     if (!identifierBuffer) return;
@@ -246,8 +257,35 @@ export function findRegexLiterals(source: string): Array<{
     if (caseKeyword && identifierStartedStatement) {
       pendingCases.push({ parenDepth: parens.length, braceDepth, bracketDepth });
     }
+    if (!identifierAfterDot && identifierBuffer === 'function') {
+      const declaration =
+        identifierStartedStatement ||
+        (lastIdentifier === 'async' && lastIdentifierStartedStatement) ||
+        exportStatementPrefix;
+      pendingFunctions.push({
+        parenDepth: parens.length,
+        braceDepth,
+        bracketDepth,
+        expression: !declaration,
+        paramsClosed: false,
+      });
+      exportStatementPrefix = false;
+    } else if (!identifierAfterDot && identifierBuffer === 'class') {
+      pendingClasses.push({
+        parenDepth: parens.length,
+        braceDepth,
+        bracketDepth,
+        expression: !identifierStartedStatement && !exportStatementPrefix,
+      });
+      exportStatementPrefix = false;
+    } else if (!identifierAfterDot && identifierBuffer === 'export' && identifierStartedStatement) {
+      exportStatementPrefix = true;
+    } else if (identifierBuffer !== 'default' && identifierBuffer !== 'async') {
+      exportStatementPrefix = false;
+    }
     token.last = keyword ? 'other' : 'identifier';
     lastIdentifier = identifierAfterDot ? '' : identifierBuffer;
+    lastIdentifierStartedStatement = identifierStartedStatement;
     identifierBuffer = '';
     // The property name took the dot: what follows it is not a property name too
     lastPunctuation = '';
@@ -317,7 +355,7 @@ export function findRegexLiterals(source: string): Array<{
         templateBraces.push(braceDepth);
         braceDepth++;
         expressionBraces.push(true);
-        arrowBraces.push(false);
+        valueBodyBraces.push(false);
         i++;
         token.last = 'other';
         lastPunctuation = '{';
@@ -389,12 +427,15 @@ export function findRegexLiterals(source: string): Array<{
       if (isDigit(char)) {
         token.last = 'number';
       } else if (char === '(') {
+        exportStatementPrefix = false;
         // The condition of if/while/for/with: a statement follows its closing parenthesis
         parens.push(token.last === 'identifier' && CONDITION_KEYWORDS.has(lastIdentifier));
         token.last = 'other';
         statementStart = false;
       } else if (char === ')') {
         const condition = parens.pop() === true;
+        const pendingFunction = pendingFunctions[pendingFunctions.length - 1];
+        if (pendingFunction && pendingFunction.parenDepth === parens.length) pendingFunction.paramsClosed = true;
         token.last = condition ? 'other' : 'close';
         statementStart = condition;
       } else if (char === '[') {
@@ -406,15 +447,35 @@ export function findRegexLiterals(source: string): Array<{
         token.last = 'close';
       } else if (char === '{') {
         const arrowBody = pendingArrowBody;
+        const pendingFunction = pendingFunctions[pendingFunctions.length - 1];
+        const functionBody =
+          pendingFunction?.paramsClosed === true &&
+          pendingFunction.parenDepth === parens.length &&
+          pendingFunction.braceDepth === braceDepth &&
+          pendingFunction.bracketDepth === bracketDepth
+            ? pendingFunctions.pop()
+            : undefined;
+        const pendingClass = pendingClasses[pendingClasses.length - 1];
+        const classBody =
+          !functionBody &&
+          pendingClass !== undefined &&
+          pendingClass.parenDepth === parens.length &&
+          pendingClass.braceDepth === braceDepth &&
+          pendingClass.bracketDepth === bracketDepth
+            ? pendingClasses.pop()
+            : undefined;
+        const valueBody = arrowBody || functionBody?.expression === true || classBody?.expression === true;
         const expression =
           !statementStart &&
           !arrowBody &&
+          !functionBody &&
+          !classBody &&
           (token.last === 'operator' ||
             (lastPunctuation !== '' && '([{,:?'.includes(lastPunctuation) && !statementColon) ||
             ['return', 'throw', 'yield', 'await'].includes(lastIdentifier));
         pendingArrowBody = false;
         expressionBraces.push(expression);
-        arrowBraces.push(arrowBody);
+        valueBodyBraces.push(valueBody);
         braceDepth++;
         token.last = 'other';
         statementStart = !expression;
@@ -424,10 +485,16 @@ export function findRegexLiterals(source: string): Array<{
         while (pendingCases.length > 0 && pendingCases[pendingCases.length - 1]!.braceDepth > braceDepth) {
           pendingCases.pop();
         }
+        while (pendingFunctions.length > 0 && pendingFunctions[pendingFunctions.length - 1]!.braceDepth > braceDepth) {
+          pendingFunctions.pop();
+        }
+        while (pendingClasses.length > 0 && pendingClasses[pendingClasses.length - 1]!.braceDepth > braceDepth) {
+          pendingClasses.pop();
+        }
         const expression = expressionBraces.pop() === true;
-        const arrowBody = arrowBraces.pop() === true;
-        token.last = expression || arrowBody ? 'close' : 'other';
-        statementStart = !(expression || arrowBody);
+        const valueBody = valueBodyBraces.pop() === true;
+        token.last = expression || valueBody ? 'close' : 'other';
+        statementStart = !(expression || valueBody);
         if (templateBraces.length > 0 && templateBraces[templateBraces.length - 1] === braceDepth) {
           // The end of a template interpolation: back in the template's text
           templateBraces.pop();
