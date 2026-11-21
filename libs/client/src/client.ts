@@ -429,6 +429,7 @@ export class EnclaveClient {
       return;
     }
 
+    const wasCreating = session.creating;
     // Stop listening first: nothing is delivered once the session was cancelled.
     this.endSession(session, this.cancelledResult(session, reason));
 
@@ -437,9 +438,15 @@ export class EnclaveClient {
     let failure = stop.failure;
 
     // A stop that cannot identify the creation while its POST is pending is retried after POST.
-    if (stop.retryIfCreating && session.creating) {
+    if (stop.retryIfCreating && wasCreating) {
       failure ??= 'the session was still being created';
-      session.stopAfterCreation = true;
+      if (session.creating) {
+        session.stopAfterCreation = true;
+      } else {
+        // The POST settled while DELETE was in flight. Its identity-bound retry is still needed
+        // because the broker may have produced the 404 before it created this session.
+        void this.sendStop(session);
+      }
     }
 
     if (failure !== null) {
@@ -528,9 +535,9 @@ export class EnclaveClient {
         // A stop that came while the session was being created and was not confirmed
         if (session.stopAfterCreation) {
           session.stopAfterCreation = false;
-          // A newer local session can use the same ID after this one ended. Its server-side
-          // creation must not be undone by the old session's deferred stop.
-          if (!this.activeSessions.has(session.sessionId)) void this.sendStop(session);
+          // The instance header confines the retry to this creation even when a newer local
+          // session has reused the same ID.
+          void this.sendStop(session);
         }
       }
 
