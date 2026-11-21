@@ -1,6 +1,7 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
 import { staticPropertyName } from '../utils/ast-walk';
+import { tryGetStaticComputedKeys } from './coercion-utils';
 
 /**
  * Options for ResourceExhaustionRule
@@ -250,8 +251,8 @@ export class ResourceExhaustionRule implements ValidationRule {
           return;
         }
 
-        // Computed access with string literal ["constructor"]
-        if (node.computed && node.property.type === 'Literal' && node.property.value === 'constructor') {
+        // Computed access with a statically known key, including concatenation and array joins.
+        if (node.computed && tryGetStaticComputedKeys(node.property, { foldConstants: true }).includes('constructor')) {
           context.report({
             code: 'CONSTRUCTOR_ACCESS',
             message: 'Computed ["constructor"] access is not allowed (potential sandbox escape vector)',

@@ -521,8 +521,20 @@ export class Enclave {
    * @param toolHandler Optional tool handler (overrides constructor config)
    * @returns Execution result
    */
-  async run<T = unknown>(code: string, toolHandler?: ToolHandler): Promise<ExecutionResult<T>> {
-    const result = await this.execute<T>(code, toolHandler);
+  async run<T = unknown>(
+    code: string,
+    toolHandler?: ToolHandler,
+    options: { onToolBridgeFailure?: () => void; maxToolResultBytes?: number } = {},
+  ): Promise<ExecutionResult<T>> {
+    if (
+      options.maxToolResultBytes !== undefined &&
+      (typeof options.maxToolResultBytes !== 'number' ||
+        !Number.isFinite(options.maxToolResultBytes) ||
+        options.maxToolResultBytes <= 0)
+    ) {
+      throw new TypeError('maxToolResultBytes must be a positive finite number');
+    }
+    const result = await this.execute<T>(code, toolHandler, options);
     return this.applyStackTracePolicy(result);
   }
 
@@ -547,7 +559,11 @@ export class Enclave {
   /**
    * Transform, validate and execute. `run` applies the stack-trace policy to what this returns.
    */
-  private async execute<T>(code: string, toolHandler?: ToolHandler): Promise<ExecutionResult<T>> {
+  private async execute<T>(
+    code: string,
+    toolHandler?: ToolHandler,
+    options: { onToolBridgeFailure?: () => void; maxToolResultBytes?: number } = {},
+  ): Promise<ExecutionResult<T>> {
     const startTime = Date.now();
 
     // Initialize stats
@@ -808,6 +824,16 @@ export class Enclave {
           abortRequested = value;
         },
         toolHandler: hostToolHandler ? trackToolCalls(hostToolHandler, hostActivity) : undefined,
+        maxToolResultBytes: options.maxToolResultBytes,
+        onToolBridgeFailure: options.onToolBridgeFailure
+          ? () => {
+              try {
+                options.onToolBridgeFailure?.();
+              } catch {
+                // An observer cannot change the bridge result.
+              }
+            }
+          : undefined,
         hostActivity,
         consoleHandler: hostConsoleHandler
           ? (level, message) =>

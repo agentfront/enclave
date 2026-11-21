@@ -522,7 +522,9 @@ export class EnclaveClient {
         // A stop that came while the session was being created and was not confirmed
         if (session.stopAfterCreation) {
           session.stopAfterCreation = false;
-          void this.sendStop(session);
+          // A newer local session can use the same ID after this one ended. Its server-side
+          // creation must not be undone by the old session's deferred stop.
+          if (!this.activeSessions.has(session.sessionId)) void this.sendStop(session);
         }
       }
 

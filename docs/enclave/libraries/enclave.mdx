@@ -105,6 +105,8 @@ const customEnclave = new Enclave({
 | sanitizeStackTraces   | YES    | YES    | NO       | NO         |
 | allowFunctionsInGlobals | NO   | NO     | NO       | YES        |
 
+`maxSanitizeProperties` counts keys, array slots, Map entries and Set entries across the whole returned value. A Map entry with a non-string key counts even though that entry is omitted when the Map is copied into script-visible data.
+
 <Warning>
   Use `STRICT` for any untrusted code, including AI-generated scripts from external sources or user-submitted scripts.
 </Warning>

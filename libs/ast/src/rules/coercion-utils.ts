@@ -298,6 +298,26 @@ function collectStaticKeys(node: any, out: string[], foldConstants: boolean): vo
     return;
   }
 
+  // A literal array joined with a constant separator has a fixed property name as well.
+  if (foldConstants && node.type === 'CallExpression' && node.callee?.type === 'MemberExpression') {
+    const callee = node.callee;
+    const method = callee.computed ? constantValue(callee.property) : callee.property?.name;
+    if (method === 'join' && callee.object?.type === 'ArrayExpression' && node.arguments?.length <= 1) {
+      const separator = node.arguments.length === 0 ? ',' : constantValue(node.arguments[0]);
+      if (separator !== NOT_CONSTANT) {
+        const parts: string[] = [];
+        for (const element of callee.object.elements) {
+          if (element?.type === 'SpreadElement') return;
+          const value = element ? constantValue(element) : null;
+          if (value === NOT_CONSTANT) return;
+          parts.push(value === null ? '' : String(value));
+        }
+        out.push(parts.join(String(separator)));
+      }
+    }
+    return;
+  }
+
   // Conditional: obj[true ? 'constructor' : 'x'] — collect BOTH branches
   if (node.type === 'ConditionalExpression') {
     collectStaticKeys(node.consequent, out, foldConstants);

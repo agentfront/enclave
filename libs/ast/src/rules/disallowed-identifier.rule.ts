@@ -113,7 +113,7 @@ export class DisallowedIdentifierRule implements ValidationRule {
         } else if (node.computed) {
           // Handle all computed key coercion vectors:
           // literals, arrays, objects, template literals, conditionals, sequences, etc.
-          const keys = tryGetStaticComputedKeys(node.property);
+          const keys = tryGetStaticComputedKeys(node.property, { foldConstants: true });
           for (const key of keys) {
             if (disallowedSet.has(key)) {
               context.report({
@@ -159,7 +159,9 @@ export class DisallowedIdentifierRule implements ValidationRule {
           }
           return;
         }
-        const blockedKey = tryGetStaticComputedKeys(node.property).find((key) => properties.has(key));
+        const blockedKey = tryGetStaticComputedKeys(node.property, { foldConstants: true }).find((key) =>
+          properties.has(key),
+        );
         if (blockedKey !== undefined) report(blockedKey, node.property);
         return;
       }

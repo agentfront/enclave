@@ -190,13 +190,14 @@ export function detectRegexLiterals(source: string, config: PreScannerConfig, st
  * Find regex literals in source code.
  * Returns position, line, pattern, and flags for each.
  */
-function findRegexLiterals(source: string): Array<{
+export function findRegexLiterals(source: string): Array<{
   pattern: string;
   flags: string;
   position: number;
+  end: number;
   line: number;
 }> {
-  const results: Array<{ pattern: string; flags: string; position: number; line: number }> = [];
+  const results: Array<{ pattern: string; flags: string; position: number; end: number; line: number }> = [];
 
   let inString: string | null = null;
   let inTemplateString = false;
@@ -237,10 +238,11 @@ function findRegexLiterals(source: string): Array<{
     const nextChar = source[i + 1];
 
     // Track line numbers
-    if (char === '\n') {
+    if (char === '\n' || char === '\r' || char === '\u2028' || char === '\u2029') {
       line++;
       inLineComment = false;
       if (!inString && !inTemplateString) flushIdentifier();
+      if (char === '\r' && nextChar === '\n') i++;
       continue;
     }
 
@@ -335,6 +337,7 @@ function findRegexLiterals(source: string): Array<{
             pattern: regexResult.pattern,
             flags: regexResult.flags,
             position: i,
+            end: regexResult.endIndex,
             line,
           });
           i = regexResult.endIndex;
@@ -434,7 +437,7 @@ function tryParseRegex(source: string, start: number): { pattern: string; flags:
       break;
     }
 
-    if (char === '\n' || char === '\r') {
+    if (char === '\n' || char === '\r' || char === '\u2028' || char === '\u2029') {
       // Invalid - newline in regex
       return null;
     }
@@ -462,7 +465,7 @@ function tryParseRegex(source: string, start: number): { pattern: string; flags:
  * Maximum safe pattern length for ReDoS detection.
  * Limits input length to prevent ReDoS in the detection patterns themselves.
  */
-const MAX_SAFE_PATTERN_LENGTH = 500;
+export const MAX_SAFE_PATTERN_LENGTH = 500;
 
 /**
  * Safely test a pattern against input with bounded backtracking.

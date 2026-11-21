@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Computed property keys:** STRICT, SECURE and AgentScript reject `constructor` when a key is assembled from constant concatenation, a constant template substitution or a literal array join.
+- **Regex string patterns:** `NoRegexMethodsRule` skips declared host object methods and refuses string patterns longer than the 500 characters its analyzer can inspect.
+- **Pre-scanner code walk:** line comments and line numbers handle CR, CRLF and JavaScript line separators; regex pattern text inside template interpolations is not counted as source-code operators.
 - **The pre-scanner's string, nesting and operator limits apply inside template interpolations** (`${...}`): a string, a bracket or a run of operators written there is measured like any other. The three checks share one walk of the source.
 - **`NoRegexMethodsRule` option `analyzeStringPatterns`**: the string `match`, `matchAll` or `search` compiles into a pattern is analyzed for ReDoS like a regex literal. The STRICT and SECURE presets use it.
 - **`RequiredFunctionCallRule` option `directCallsOnly`**, used by the AgentScript preset: a method of the script's own object named `callTool` is not taken for the host's. In `mode: 'any'` the rule applies `maxCalls` to all the required names together.

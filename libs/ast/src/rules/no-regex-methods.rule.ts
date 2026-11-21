@@ -3,7 +3,7 @@ import { ValidationRule, ValidationContext, ValidationSeverity } from '../interf
 import { analyzeScopes } from '../utils/scope-analysis';
 import { staticPropertyName, walkAll, type AnyNode } from '../utils/ast-walk';
 import { tryGetStaticComputedKeys } from './coercion-utils';
-import { analyzeForReDoS, REDOS_THRESHOLDS } from '../pre-scanner/checks/regex-check';
+import { analyzeForReDoS, MAX_SAFE_PATTERN_LENGTH, REDOS_THRESHOLDS } from '../pre-scanner/checks/regex-check';
 
 /**
  * Options for the NoRegexMethodsRule
@@ -356,7 +356,11 @@ export class NoRegexMethodsRule implements ValidationRule {
       if (this.allowStringArguments && this.hasStringArgument(node)) {
         // match / matchAll / search compile the string into a regular expression: it is analyzed
         // like a regex literal where the rule is asked to
-        if (this.stringPatternAnalysis && PATTERN_COMPILING_STRING_METHODS.has(methodName)) {
+        if (
+          this.stringPatternAnalysis &&
+          PATTERN_COMPILING_STRING_METHODS.has(methodName) &&
+          !(callee.object?.type === 'Identifier' && freeReferences.has(callee.object))
+        ) {
           this.analyzeStringPattern(node, callee, methodName, context);
         }
         return;
@@ -525,6 +529,15 @@ export class NoRegexMethodsRule implements ValidationRule {
     const pattern: unknown =
       firstArg.type === 'Literal' ? firstArg.value : (firstArg.quasis?.[0]?.value?.cooked ?? undefined);
     if (typeof pattern !== 'string') return;
+    if (pattern.length > MAX_SAFE_PATTERN_LENGTH) {
+      context.report({
+        code: 'REGEX_PATTERN_TOO_LONG',
+        message: `The string pattern passed to .${methodName}() exceeds the ${MAX_SAFE_PATTERN_LENGTH}-character analysis limit`,
+        location: this.getLocation(callee),
+        data: { method: methodName, length: pattern.length, limit: MAX_SAFE_PATTERN_LENGTH },
+      });
+      return;
+    }
     const result = analyzeForReDoS(pattern, analysis.analysisLevel);
     if (result.score >= analysis.blockThreshold) {
       context.report({

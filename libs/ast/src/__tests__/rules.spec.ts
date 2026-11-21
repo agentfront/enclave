@@ -229,7 +229,7 @@ describe('Validation Rules', () => {
       const rule = new DisallowedIdentifierRule({ disallowed: ['constructor'] });
       const validator = new JSAstValidator([rule]);
 
-      const result = await validator.validate("obj[`${'con'}structor`]", {
+      const result = await validator.validate("const part = 'field'; obj[`some${part}`]", {
         rules: { 'disallowed-identifier': true },
       });
       expect(result.valid).toBe(true);

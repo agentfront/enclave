@@ -375,7 +375,7 @@ export class ReservedPrefixRule implements ValidationRule {
       propName = String(node.property.value);
     } else if (node.computed) {
       // obj[`__safe_foo`] = ..., obj[['__safe_foo']] = ...: every statically resolvable key form
-      const staticKeys = tryGetStaticComputedKeys(node.property);
+      const staticKeys = tryGetStaticComputedKeys(node.property, { foldConstants: true });
       propName = staticKeys.find((k) => this.reservedMatch(k) !== undefined) ?? null;
     } else if (node.property.type === 'Identifier') {
       // obj.__safe_foo = ...

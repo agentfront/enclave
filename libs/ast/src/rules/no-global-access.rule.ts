@@ -165,7 +165,7 @@ export class NoGlobalAccessRule implements ValidationRule {
           node.property &&
           ((node.property.type === 'Identifier' && node.property.name === 'constructor') ||
             (node.property.type === 'Literal' && node.property.value === 'constructor') ||
-            (node.computed && tryGetStaticComputedKeys(node.property).includes('constructor')))
+            (node.computed && tryGetStaticComputedKeys(node.property, { foldConstants: true }).includes('constructor')))
         ) {
           report({
             code: 'NO_CONSTRUCTOR_ACCESS',

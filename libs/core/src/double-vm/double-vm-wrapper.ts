@@ -41,7 +41,10 @@ import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-pat
  * gets for each (`callTool(..., { throwOnError: false })`), as through the string bridge.
  */
 const resultRefusals = new WeakMap<object, string>();
-function resultRefusal(message: string, code: 'TOOL_RESULT_NOT_STORED' | 'TOOL_BRIDGE_RESPONSE_TOO_LARGE'): Error {
+function resultRefusal(
+  message: string,
+  code: 'TOOL_RESULT_NOT_STORED' | 'TOOL_BRIDGE_RESPONSE_TOO_LARGE' | 'TOOL_RESULT_TOO_LARGE',
+): Error {
   const error = new Error(message);
   resultRefusals.set(error, code);
   return error;
@@ -518,8 +521,10 @@ export class DoubleVmWrapper implements SandboxAdapter {
       }
 
       // Execute the tool call
+      let handlerCompleted = false;
       try {
         const result = await toolHandler(toolName, resolvedArgs);
+        handlerCompleted = true;
 
         // Sanitize the return value using configured limits from security level
         const sanitized = sanitizeValue(result, {
@@ -528,6 +533,21 @@ export class DoubleVmWrapper implements SandboxAdapter {
           allowDates: true,
           allowErrors: true,
         });
+
+        const resultLimit = executionContext.maxToolResultBytes;
+        if (resultLimit !== undefined && Number.isFinite(resultLimit) && resultLimit > 0) {
+          try {
+            const resultJson = stringifyWithin(sanitized, resultLimit);
+            if (resultJson !== undefined && utf8Length(resultJson) > resultLimit) {
+              throw resultRefusal(`Tool result exceeds the limit of ${resultLimit} bytes`, 'TOOL_RESULT_TOO_LARGE');
+            }
+          } catch (error: unknown) {
+            if (error instanceof JsonTooLargeError) {
+              throw resultRefusal(`Tool result exceeds the limit of ${resultLimit} bytes`, 'TOOL_RESULT_TOO_LARGE');
+            }
+            throw error;
+          }
+        }
 
         // Lift large string results to sidecar if configured. Such a result reaches the script
         // as a reference or not at all (as through the string bridge).
@@ -566,6 +586,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
 
         return outgoing;
       } catch (error: unknown) {
+        if (handlerCompleted) executionContext.onToolBridgeFailure?.();
         // SECURITY: Use createSafeError to prevent prototype chain escape attacks
         // This is critical - the original error from the tool handler could expose
         // the host Function constructor via error.constructor.constructor

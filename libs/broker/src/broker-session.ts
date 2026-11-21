@@ -259,14 +259,6 @@ export class BrokerSession {
 
     // The lifetime of the session (sessionTtlMs; for an HTTP session, the maxExecutionMs of its
     // request) ends work that is still running when it is reached, not only at the next cleanup
-    const lifetimeLeft = this.expiresAt - Date.now();
-    this.lifetimeTimer = setTimeout(
-      () => {
-        if (!this.isTerminal()) this.cancel('Session lifetime exceeded');
-      },
-      timerDelay(Math.max(0, lifetimeLeft)),
-    );
-
     // Set up deadline timer if configured (compute remaining from createdAt epoch)
     const deadlineMs = this.limits.deadlineMs;
     if (deadlineMs > 0) {
@@ -310,6 +302,14 @@ export class BrokerSession {
       }
     }
 
+    const lifetimeLeft = this.expiresAt - Date.now();
+    this.lifetimeTimer = setTimeout(
+      () => {
+        if (!this.isTerminal()) this.cancel('Session lifetime exceeded');
+      },
+      timerDelay(Math.max(0, lifetimeLeft)),
+    );
+
     // Transition to running
     this._state = 'running';
 
@@ -328,14 +328,28 @@ export class BrokerSession {
 
     try {
       // Execute in enclave with direct tool handler
-      const enclaveResult = await this.enclave.run(code, async (toolName, args) => {
-        // Check if cancelled
-        if (this.abortController.signal.aborted) {
-          throw new Error('Session cancelled');
-        }
+      const enclaveResult = await this.enclave.run(
+        code,
+        async (toolName, args) => {
+          // Check if cancelled
+          if (this.abortController.signal.aborted) {
+            throw new Error('Session cancelled');
+          }
 
-        return this.executeTool(toolName, args as Record<string, unknown>);
-      });
+          return this.executeTool(toolName, args as Record<string, unknown>);
+        },
+        {
+          maxToolResultBytes:
+            this.checkResultSize &&
+            Number.isFinite(this.limits.maxToolResultBytes) &&
+            this.limits.maxToolResultBytes > 0
+              ? this.limits.maxToolResultBytes
+              : undefined,
+          onToolBridgeFailure: () => {
+            if (this.limits.cancelOnFirstError) this.abortController.abort();
+          },
+        },
+      );
 
       const endTime = Date.now();
       const stats = this.buildStats(startTime, endTime);

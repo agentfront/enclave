@@ -18,6 +18,8 @@ A follow-up to 2.19.0: two more layers behind the validator, and the dependency 
 
 ### Security
 
+- `@enclave-vm/broker`: `cancelOnFirstError` also stops later tools when the core bridge refuses a successful handler result. `maxToolResultBytes` measures the sanitized Map or Set copy, so a collection whose raw JSON is small cannot bypass the result limit.
+- `@enclave-vm/client`: a deferred stop after a cancelled creation does not delete a newer session with the same ID. `@enclave-vm/react` keeps the current render's configuration in context when an equal new object reuses its client.
 - `@enclave-vm/broker`: the kept history and a tool-call event are measured in UTF-8 bytes, as `history.maxBytes` states it; nothing is appended after a session's `final` event; and `sessionTtlMs` (for an HTTP session, its request's `maxExecutionMs`) cancels a session that is still running when it is reached, where it used to wait for the next cleanup (ATK-BRK-16, ATK-BRK-112, ATK-BRK-113, ATK-BRK-115).
 - `@enclave-vm/client`: a stop that gets 404 while the request creating the session has not settled is not taken for a confirmation: `onError` gets `CANCEL_FAILED`, and the stop is sent again once the creation request settles (ATK-CLIENT-18).
 - `@enclave-vm/react`: the provider compares its configuration with a copy of what it held when the client was built, so a configuration changed in place gets a new client (ATK-REACT-03).

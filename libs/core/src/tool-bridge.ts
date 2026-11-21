@@ -1,6 +1,7 @@
 import type { ExecutionContext } from './types';
 import { sanitizeValue } from './value-sanitizer';
 import { ReferenceResolver, ResolutionLimitError } from './sidecar/reference-resolver';
+import { JsonTooLargeError, stringifyWithin } from './bounded-json';
 
 const TOOL_BRIDGE_PROTOCOL_VERSION = 1 as const;
 
@@ -469,6 +470,7 @@ export function createHostToolBridge(
           'Tool returned an unsupported value',
           'TOOL_RESULT_NOT_SAFE',
         );
+        executionContext.onToolBridgeFailure?.();
         return serializeResponse(
           {
             v: TOOL_BRIDGE_PROTOCOL_VERSION,
@@ -477,6 +479,35 @@ export function createHostToolBridge(
           },
           maxPayloadBytes,
         );
+      }
+
+      // A host may impose a result limit below the bridge cap. Measure the sanitized copy:
+      // JSON.stringify(Map) is "{}", while the copy delivered to the script can be large.
+      const resultLimit = executionContext.maxToolResultBytes;
+      if (resultLimit !== undefined && Number.isFinite(resultLimit) && resultLimit > 0) {
+        let tooLarge = false;
+        try {
+          const resultJson = stringifyWithin(sanitizedResult, resultLimit);
+          tooLarge = resultJson !== undefined && utf8ByteLength(resultJson) > resultLimit;
+        } catch (error: unknown) {
+          tooLarge = error instanceof JsonTooLargeError;
+        }
+        if (tooLarge) {
+          executionContext.onToolBridgeFailure?.();
+          return serializeResponse(
+            {
+              v: TOOL_BRIDGE_PROTOCOL_VERSION,
+              ok: false,
+              error: {
+                name: 'ToolBridgeError',
+                message: `Tool result exceeds the limit of ${resultLimit} bytes`,
+                code: 'TOOL_RESULT_TOO_LARGE',
+                toolError: true,
+              },
+            },
+            maxPayloadBytes,
+          );
+        }
       }
 
       // Lift large string results to sidecar if configured. Such a result reaches the script as
@@ -489,6 +520,7 @@ export function createHostToolBridge(
             const refId = sidecar.store(sanitizedResult, 'tool-result', { origin: tool });
             sanitizedResult = refId;
           } catch {
+            executionContext.onToolBridgeFailure?.();
             return serializeResponse(
               {
                 v: TOOL_BRIDGE_PROTOCOL_VERSION,
@@ -521,6 +553,7 @@ export function createHostToolBridge(
           'Tool result must be JSON-serializable',
           'TOOL_RESULT_NOT_JSON',
         );
+        executionContext.onToolBridgeFailure?.();
         return serializeResponse(
           {
             v: TOOL_BRIDGE_PROTOCOL_VERSION,
@@ -532,6 +565,7 @@ export function createHostToolBridge(
       }
 
       if (utf8ByteLength(okJson) > maxPayloadBytes) {
+        executionContext.onToolBridgeFailure?.();
         return serializeResponse(
           {
             v: TOOL_BRIDGE_PROTOCOL_VERSION,
