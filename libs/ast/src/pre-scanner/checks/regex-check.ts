@@ -218,26 +218,33 @@ export function findRegexLiterals(source: string): Array<{
   let identifierStartedStatement = false;
   let lastPunctuation = '';
   let statementStart = true;
-  let pendingCase = false;
+  // A case expression may contain object literals, ternaries, or even nested switch blocks.
+  // Only the colon at the case keyword's own nesting depth ends that case expression.
+  const pendingCases: Array<{ parenDepth: number; braceDepth: number; bracketDepth: number }> = [];
   let pendingLabel = false;
   let ternaryDepth = 0;
   let statementColon = false;
+  let pendingArrowBody = false;
   // For each open parenthesis: whether it holds the condition of if/while/for/with
   const parens: boolean[] = [];
   // Brace depth, and the depths at which a template interpolation `${` was opened: its code is
   // scanned like any code, up to its closing brace
   let braceDepth = 0;
+  let bracketDepth = 0;
   const templateBraces: number[] = [];
   // A closing object literal is a value (so a following slash divides); a closing statement
   // block can be followed by a regex literal that starts the next statement.
   const expressionBraces: boolean[] = [];
+  // An arrow body is a statement block inside, but the completed arrow is a value outside.
+  const arrowBraces: boolean[] = [];
 
   const flushIdentifier = (): void => {
     if (!identifierBuffer) return;
     const keyword = !identifierAfterDot && REGEX_KEYWORD_PREFIXES.has(identifierBuffer);
-    pendingLabel = !identifierAfterDot && identifierStartedStatement && !keyword;
-    if (!identifierAfterDot) {
-      if (identifierBuffer === 'case' || identifierBuffer === 'default') pendingCase = true;
+    const caseKeyword = !identifierAfterDot && (identifierBuffer === 'case' || identifierBuffer === 'default');
+    pendingLabel = identifierStartedStatement && !keyword && !caseKeyword && !identifierAfterDot;
+    if (caseKeyword && identifierStartedStatement) {
+      pendingCases.push({ parenDepth: parens.length, braceDepth, bracketDepth });
     }
     token.last = keyword ? 'other' : 'identifier';
     lastIdentifier = identifierAfterDot ? '' : identifierBuffer;
@@ -310,6 +317,7 @@ export function findRegexLiterals(source: string): Array<{
         templateBraces.push(braceDepth);
         braceDepth++;
         expressionBraces.push(true);
+        arrowBraces.push(false);
         i++;
         token.last = 'other';
         lastPunctuation = '{';
@@ -325,6 +333,8 @@ export function findRegexLiterals(source: string): Array<{
       }
       continue;
     }
+
+    if (!isWhitespace(char) && char !== '{' && char !== '>') pendingArrowBody = false;
 
     // A character that ends an identifier: the identifier is classified before the character is
     if (!isIdentifierChar(char)) flushIdentifier();
@@ -387,23 +397,37 @@ export function findRegexLiterals(source: string): Array<{
         const condition = parens.pop() === true;
         token.last = condition ? 'other' : 'close';
         statementStart = condition;
+      } else if (char === '[') {
+        bracketDepth++;
+        token.last = 'other';
+        statementStart = false;
       } else if (char === ']') {
+        bracketDepth--;
         token.last = 'close';
       } else if (char === '{') {
+        const arrowBody = pendingArrowBody;
         const expression =
-          token.last === 'operator' ||
-          (lastPunctuation !== '' && '([{,:?'.includes(lastPunctuation) && !statementColon) ||
-          ['return', 'throw', 'yield', 'await'].includes(lastIdentifier);
+          !statementStart &&
+          !arrowBody &&
+          (token.last === 'operator' ||
+            (lastPunctuation !== '' && '([{,:?'.includes(lastPunctuation) && !statementColon) ||
+            ['return', 'throw', 'yield', 'await'].includes(lastIdentifier));
+        pendingArrowBody = false;
         expressionBraces.push(expression);
+        arrowBraces.push(arrowBody);
         braceDepth++;
         token.last = 'other';
         statementStart = !expression;
         statementColon = false;
       } else if (char === '}') {
         braceDepth--;
+        while (pendingCases.length > 0 && pendingCases[pendingCases.length - 1]!.braceDepth > braceDepth) {
+          pendingCases.pop();
+        }
         const expression = expressionBraces.pop() === true;
-        token.last = expression ? 'close' : 'other';
-        statementStart = !expression;
+        const arrowBody = arrowBraces.pop() === true;
+        token.last = expression || arrowBody ? 'close' : 'other';
+        statementStart = !(expression || arrowBody);
         if (templateBraces.length > 0 && templateBraces[templateBraces.length - 1] === braceDepth) {
           // The end of a template interpolation: back in the template's text
           templateBraces.pop();
@@ -418,8 +442,14 @@ export function findRegexLiterals(source: string): Array<{
           ternaryDepth--;
           statementColon = false;
         } else {
-          statementColon = pendingCase || pendingLabel;
-          pendingCase = false;
+          const pendingCase = pendingCases[pendingCases.length - 1];
+          const caseColon =
+            pendingCase !== undefined &&
+            pendingCase.parenDepth === parens.length &&
+            pendingCase.braceDepth === braceDepth &&
+            pendingCase.bracketDepth === bracketDepth;
+          statementColon = caseColon || pendingLabel;
+          if (caseColon) pendingCases.pop();
           pendingLabel = false;
         }
         token.last = 'other';
@@ -428,6 +458,7 @@ export function findRegexLiterals(source: string): Array<{
         token.last = 'other';
         statementStart = true;
       } else if (isOperator(char)) {
+        if (char === '>' && source[i - 1] === '=') pendingArrowBody = true;
         token.last = 'operator';
         statementStart = false;
       } else if (!isWhitespace(char)) {
