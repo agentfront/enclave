@@ -11,6 +11,7 @@ import {
 import { ParseError, InvalidSourceError, ConfigurationError } from './errors';
 import { transformAst, generateCode } from './transformer';
 import { PreScanner, PreScannerError, type PreScannerPresetLevel, type PartialPreScannerConfig } from './pre-scanner';
+import { StaticKeyExpansionError } from './rules/coercion-utils';
 
 /**
  * How many issues one validation collects when the caller sets no `maxIssues`.
@@ -262,7 +263,14 @@ export class JSAstValidator {
         await rule.validate(context);
       }
     } catch (err) {
-      if (!(err instanceof StopValidationError)) {
+      if (err instanceof StaticKeyExpansionError) {
+        collect({
+          code: 'STATIC_KEY_TOO_LONG',
+          severity: ValidationSeverity.ERROR,
+          message: err.message,
+          location: err.location,
+        });
+      } else if (!(err instanceof StopValidationError)) {
         throw err;
       }
       stopped = true;

@@ -160,7 +160,7 @@ Defined in `@enclave-vm/types`.
 | `perToolDeadlineMs` | `30000` | One tool call; a tool's own `config.timeout` applies when it is lower |
 | `deadlineMs` | `0` (none) | The whole session, counted from its creation |
 | `sessionTtlMs` | `60000` | How long a session stays registered |
-| `maxToolResultBytes` | `5242880` | JSON bytes of a tool result, including its sanitized Map or Set copy, before sidecar storage |
+| `maxToolResultBytes` | `5242880` | JSON bytes of the raw tool result before sanitization or sidecar storage; removed keys still count. The bridge also checks the sanitized Map or Set copy |
 | `heartbeatIntervalMs` | `15000` | Interval of `heartbeat` events |
 | `cancelOnFirstError` | `false` | Whether the first failed tool call cancels the session |
 | `maxStdoutBytes` | `262144` | Not used by the broker: it emits no `stdout` events |

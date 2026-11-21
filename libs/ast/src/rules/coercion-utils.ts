@@ -12,6 +12,23 @@ const NOT_CONSTANT = Symbol('not-constant');
 type Constant = string | number | boolean | null;
 
 /**
+ * Static keys are compared with short property names. A larger key cannot match one of them,
+ * and materializing it during validation would spend host memory before execution limits apply.
+ */
+const MAX_STATIC_KEY_LENGTH = 4096;
+
+/** A statically folded key would require an unsafe host allocation during validation. */
+export class StaticKeyExpansionError extends Error {
+  readonly location?: { line: number; column: number };
+
+  constructor(node: { loc?: { start?: { line: number; column: number } } }) {
+    super(`Static computed property key exceeds ${MAX_STATIC_KEY_LENGTH} characters`);
+    this.name = 'StaticKeyExpansionError';
+    this.location = node.loc?.start ? { line: node.loc.start.line, column: node.loc.start.column } : undefined;
+  }
+}
+
+/**
  * The value of an expression made only of literals: a string, number, boolean or `null` literal,
  * a template literal whose substitutions are constant, and `+` between constants (with the
  * language's own rule: a concatenation when either side is a string, a sum otherwise).
@@ -305,14 +322,20 @@ function collectStaticKeys(node: any, out: string[], foldConstants: boolean): vo
     if (method === 'join' && callee.object?.type === 'ArrayExpression' && node.arguments?.length <= 1) {
       const separator = node.arguments.length === 0 ? ',' : constantValue(node.arguments[0]);
       if (separator !== NOT_CONSTANT) {
+        const separatorText = String(separator);
+        let projectedLength = Math.max(0, callee.object.elements.length - 1) * separatorText.length;
+        if (projectedLength > MAX_STATIC_KEY_LENGTH) throw new StaticKeyExpansionError(node);
         const parts: string[] = [];
         for (const element of callee.object.elements) {
           if (element?.type === 'SpreadElement') return;
           const value = element ? constantValue(element) : null;
           if (value === NOT_CONSTANT) return;
-          parts.push(value === null ? '' : String(value));
+          const part = value === null ? '' : String(value);
+          projectedLength += part.length;
+          if (projectedLength > MAX_STATIC_KEY_LENGTH) throw new StaticKeyExpansionError(node);
+          parts.push(part);
         }
-        out.push(parts.join(String(separator)));
+        out.push(parts.join(separatorText));
       }
     }
     return;

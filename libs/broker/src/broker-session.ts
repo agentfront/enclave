@@ -150,12 +150,10 @@ export class BrokerSession {
     // before it reaches a timer or the configuration of the sandbox.
     this.limits = resolveSessionLimits(config.limits);
 
-    // The sandbox bounds a tool result by its own payload limit. The session checks the size
-    // itself only where its limit is the lower one, or where the sandbox does not serialize.
+    // The session checks its limit on the raw serialized result before the bridge sanitizes or
+    // stores it in the sidecar. The bridge also checks the sanitized result before storage.
     const bridge = config.enclaveConfig?.toolBridge;
-    this.checkResultSize =
-      (bridge?.mode ?? 'string') !== 'string' ||
-      this.limits.maxToolResultBytes < (bridge?.maxPayloadBytes ?? DEFAULT_BRIDGE_PAYLOAD_BYTES);
+    this.checkResultSize = true;
     this.bridgePayloadBytes =
       (bridge?.mode ?? 'string') === 'string' ? (bridge?.maxPayloadBytes ?? DEFAULT_BRIDGE_PAYLOAD_BYTES) : undefined;
     const sidecar = config.enclaveConfig?.sidecar;

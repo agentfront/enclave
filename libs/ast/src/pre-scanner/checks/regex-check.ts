@@ -6,7 +6,7 @@
  */
 
 import type { PreScannerConfig } from '../config';
-import type { ScanState, DetectedRegex } from '../scan-state';
+import type { ScanState } from '../scan-state';
 import { PRESCANNER_ERROR_CODES } from '../errors';
 
 /**
@@ -222,6 +222,9 @@ export function findRegexLiterals(source: string): Array<{
   // scanned like any code, up to its closing brace
   let braceDepth = 0;
   const templateBraces: number[] = [];
+  // A closing object literal is a value (so a following slash divides); a closing statement
+  // block can be followed by a regex literal that starts the next statement.
+  const expressionBraces: boolean[] = [];
 
   const flushIdentifier = (): void => {
     if (!identifierBuffer) return;
@@ -242,6 +245,9 @@ export function findRegexLiterals(source: string): Array<{
       line++;
       inLineComment = false;
       if (!inString && !inTemplateString) flushIdentifier();
+      // A backslash followed by a line terminator is a complete string continuation. CRLF is
+      // consumed as one terminator below, so the following quote must not remain escaped.
+      escaped = false;
       if (char === '\r' && nextChar === '\n') i++;
       continue;
     }
@@ -293,6 +299,7 @@ export function findRegexLiterals(source: string): Array<{
         inTemplateString = false;
         templateBraces.push(braceDepth);
         braceDepth++;
+        expressionBraces.push(true);
         i++;
         token.last = 'other';
         lastPunctuation = '{';
@@ -366,11 +373,16 @@ export function findRegexLiterals(source: string): Array<{
       } else if (char === ']') {
         token.last = 'close';
       } else if (char === '{') {
+        expressionBraces.push(
+          token.last === 'operator' ||
+            (lastPunctuation !== '' && '([{,:?'.includes(lastPunctuation)) ||
+            ['return', 'throw', 'yield', 'await', 'case'].includes(lastIdentifier),
+        );
         braceDepth++;
         token.last = 'other';
       } else if (char === '}') {
         braceDepth--;
-        token.last = 'other';
+        token.last = expressionBraces.pop() ? 'close' : 'other';
         if (templateBraces.length > 0 && templateBraces[templateBraces.length - 1] === braceDepth) {
           // The end of a template interpolation: back in the template's text
           templateBraces.pop();

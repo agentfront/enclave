@@ -105,7 +105,7 @@ const broker = createBroker(config);
 | `perToolDeadlineMs` | 30000 | One tool call: the handler's `signal` is aborted. A tool's own `config.timeout` applies when it is lower |
 | `deadlineMs` | 0 (none) | The whole session, counted from its creation |
 | `sessionTtlMs` | 60000 | How long a session stays registered; a session past it is cancelled at the next cleanup |
-| `maxToolResultBytes` | 5 MB | JSON bytes of a tool result after sanitization and before sidecar storage; a larger one fails the call |
+| `maxToolResultBytes` | 5 MB | JSON bytes of the raw tool result before sanitization or sidecar storage; removed keys still count, and a larger result fails the call |
 | `heartbeatIntervalMs` | 15000 | Interval of `heartbeat` events |
 | `cancelOnFirstError` | false | Whether the first failed tool call cancels the session |
 
