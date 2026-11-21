@@ -284,7 +284,9 @@ describe('SessionHandler', () => {
         .split(',')
         .map((name) => name.trim().toLowerCase());
       // What the client sends by itself, and the header its `headers` option is documented with
-      expect(allowed).toEqual(expect.arrayContaining(['content-type', 'accept', 'last-event-id', 'authorization']));
+      expect(allowed).toEqual(
+        expect.arrayContaining(['content-type', 'accept', 'last-event-id', 'authorization', 'x-session-instance-id']),
+      );
     });
 
     it('allows the additional headers of allowedHeaders, once each', async () => {

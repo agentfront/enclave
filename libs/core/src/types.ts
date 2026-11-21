@@ -745,6 +745,12 @@ export interface ExecutionContext {
    */
   toolHandler?: ToolHandler;
 
+  /** Called when a successful host tool result is refused before it reaches the script. */
+  onToolBridgeFailure?: () => void;
+
+  /** Optional host limit on the JSON bytes of one sanitized tool result. */
+  maxToolResultBytes?: number;
+
   /**
    * What the host has in flight for this execution: tool calls and async functions from
    * `globals` (see ./execution-deadline). Set by the enclave, which ends the execution once the

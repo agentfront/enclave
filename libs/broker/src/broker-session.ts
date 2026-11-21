@@ -94,6 +94,9 @@ export interface BrokerSessionConfig {
    * one is given here, and is then not reachable over routes that identify their callers.
    */
   owner?: string;
+
+  /** Optional creation identifier used by the HTTP routes for conditional cancellation. */
+  instanceId?: string;
 }
 
 /**
@@ -110,6 +113,8 @@ export class BrokerSession {
    * The caller this session belongs to, if any.
    */
   readonly owner?: string;
+  /** Creation identifier supplied by the HTTP client, if any. */
+  readonly instanceId?: string;
 
   private readonly emitter: BoundedSessionEmitter;
   private readonly toolRegistry: ToolRegistry;
@@ -136,6 +141,13 @@ export class BrokerSession {
 
   constructor(toolRegistry: ToolRegistry, config: BrokerSessionConfig = {}) {
     this.sessionId = config.sessionId ?? generateSessionId();
+    if (
+      config.instanceId !== undefined &&
+      (typeof config.instanceId !== 'string' || !/^[A-Za-z0-9._:~-]{1,128}$/.test(config.instanceId))
+    ) {
+      throw new TypeError('Session instance id must be a short header-safe string');
+    }
+    this.instanceId = config.instanceId;
     if (config.owner !== undefined) {
       if (typeof config.owner !== 'string' || config.owner.length === 0) {
         throw new TypeError('Session owner must be a non-empty string');
@@ -150,12 +162,10 @@ export class BrokerSession {
     // before it reaches a timer or the configuration of the sandbox.
     this.limits = resolveSessionLimits(config.limits);
 
-    // The sandbox bounds a tool result by its own payload limit. The session checks the size
-    // itself only where its limit is the lower one, or where the sandbox does not serialize.
+    // The session checks its limit on the raw serialized result before the bridge sanitizes or
+    // stores it in the sidecar. The bridge also checks the sanitized result before storage.
     const bridge = config.enclaveConfig?.toolBridge;
-    this.checkResultSize =
-      (bridge?.mode ?? 'string') !== 'string' ||
-      this.limits.maxToolResultBytes < (bridge?.maxPayloadBytes ?? DEFAULT_BRIDGE_PAYLOAD_BYTES);
+    this.checkResultSize = true;
     this.bridgePayloadBytes =
       (bridge?.mode ?? 'string') === 'string' ? (bridge?.maxPayloadBytes ?? DEFAULT_BRIDGE_PAYLOAD_BYTES) : undefined;
     const sidecar = config.enclaveConfig?.sidecar;
@@ -259,14 +269,6 @@ export class BrokerSession {
 
     // The lifetime of the session (sessionTtlMs; for an HTTP session, the maxExecutionMs of its
     // request) ends work that is still running when it is reached, not only at the next cleanup
-    const lifetimeLeft = this.expiresAt - Date.now();
-    this.lifetimeTimer = setTimeout(
-      () => {
-        if (!this.isTerminal()) this.cancel('Session lifetime exceeded');
-      },
-      timerDelay(Math.max(0, lifetimeLeft)),
-    );
-
     // Set up deadline timer if configured (compute remaining from createdAt epoch)
     const deadlineMs = this.limits.deadlineMs;
     if (deadlineMs > 0) {
@@ -310,6 +312,14 @@ export class BrokerSession {
       }
     }
 
+    const lifetimeLeft = this.expiresAt - Date.now();
+    this.lifetimeTimer = setTimeout(
+      () => {
+        if (!this.isTerminal()) this.cancel('Session lifetime exceeded');
+      },
+      timerDelay(Math.max(0, lifetimeLeft)),
+    );
+
     // Transition to running
     this._state = 'running';
 
@@ -328,14 +338,28 @@ export class BrokerSession {
 
     try {
       // Execute in enclave with direct tool handler
-      const enclaveResult = await this.enclave.run(code, async (toolName, args) => {
-        // Check if cancelled
-        if (this.abortController.signal.aborted) {
-          throw new Error('Session cancelled');
-        }
+      const enclaveResult = await this.enclave.run(
+        code,
+        async (toolName, args) => {
+          // Check if cancelled
+          if (this.abortController.signal.aborted) {
+            throw new Error('Session cancelled');
+          }
 
-        return this.executeTool(toolName, args as Record<string, unknown>);
-      });
+          return this.executeTool(toolName, args as Record<string, unknown>);
+        },
+        {
+          maxToolResultBytes:
+            this.checkResultSize &&
+            Number.isFinite(this.limits.maxToolResultBytes) &&
+            this.limits.maxToolResultBytes > 0
+              ? this.limits.maxToolResultBytes
+              : undefined,
+          onToolBridgeFailure: () => {
+            if (this.limits.cancelOnFirstError) this.abortController.abort();
+          },
+        },
+      );
 
       const endTime = Date.now();
       const stats = this.buildStats(startTime, endTime);

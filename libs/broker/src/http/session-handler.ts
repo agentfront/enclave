@@ -23,10 +23,13 @@ import type { RequestedLimits } from './request-validation';
  */
 /**
  * The request headers every answer allows a cross-origin page to send: what the client sends by
- * itself, and `Authorization`, which is how a browser client carries a credential (the client's
- * `headers` option).
+ * itself, `Authorization` for a credential, and `X-Session-Instance-ID` to make cancellation
+ * conditional on the creation that sent it.
  */
-const CORS_REQUEST_HEADERS = ['Content-Type', 'Accept', 'Last-Event-ID', 'Authorization'];
+const CORS_REQUEST_HEADERS = ['Content-Type', 'Accept', 'Last-Event-ID', 'Authorization', 'X-Session-Instance-ID'];
+
+/** A bounded value that can safely travel in one HTTP header. */
+const SESSION_INSTANCE_ID = /^[A-Za-z0-9._:~-]{1,128}$/;
 
 /** A header name as HTTP writes one (RFC 9110 token): nothing that could end the header line. */
 const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -288,6 +291,18 @@ export class SessionHandler {
     return session;
   }
 
+  /** Optional identifier for one creation, sent again on a conditional stop. */
+  private instanceIdOf(req: BrokerRequest, res: BrokerResponse): { value?: string } | undefined {
+    const values = Object.entries(req.headers).filter(([name]) => name.toLowerCase() === 'x-session-instance-id');
+    const value = values[0]?.[1];
+    if (values.length === 0) return {};
+    if (values.length !== 1 || typeof value !== 'string' || !SESSION_INSTANCE_ID.test(value)) {
+      this.sendError(res, 400, 'INVALID_REQUEST', 'Invalid X-Session-Instance-ID header');
+      return undefined;
+    }
+    return { value };
+  }
+
   /**
    * List sessions: all of them, or the caller's own when callers are identified
    *
@@ -331,6 +346,9 @@ export class SessionHandler {
     const identity = await this.callerOf(req, res);
     if (!identity) return;
 
+    const instanceId = this.instanceIdOf(req, res);
+    if (!instanceId) return;
+
     // Validate the request body as a whole before any part of it is used
     const parsed = parseCreateSessionRequest(req.body);
     if (!parsed.ok) {
@@ -357,7 +375,7 @@ export class SessionHandler {
       }
 
       // Create session (an id that is in use is refused by the session manager)
-      session = this.broker.createSession({ sessionId, limits, owner: identity.caller });
+      session = this.broker.createSession({ sessionId, limits, owner: identity.caller, instanceId: instanceId.value });
     } catch (error) {
       this.sendCreateFailure(res, error);
       return;
@@ -412,7 +430,7 @@ export class SessionHandler {
     } catch {
       // The stream could not be set up: the session does not stay registered without one
       cleanup();
-      await this.broker.terminateSession(session.sessionId).catch(() => false);
+      await this.broker.terminateSession(session.sessionId, undefined, session).catch(() => false);
       this.sendError(res, 500, 'SESSION_CREATE_ERROR', 'Failed to create session');
       return;
     }
@@ -593,8 +611,19 @@ export class SessionHandler {
     const session = await this.sessionOf(req, res);
     if (!session) return;
 
+    const instanceId = this.instanceIdOf(req, res);
+    if (!instanceId) return;
+    if (instanceId.value !== undefined && session.instanceId === undefined) {
+      this.sendError(res, 409, 'SESSION_INSTANCE_UNAVAILABLE', 'Session has no creation identifier');
+      return;
+    }
+    if (session.instanceId !== instanceId.value) {
+      this.sendError(res, 412, 'SESSION_INSTANCE_MISMATCH', 'Session was replaced');
+      return;
+    }
+
     const sessionId = session.sessionId;
-    const success = await this.broker.terminateSession(sessionId);
+    const success = await this.broker.terminateSession(sessionId, undefined, session);
     if (!success) {
       this.sendError(res, 404, 'NOT_FOUND', 'Session not found');
       return;

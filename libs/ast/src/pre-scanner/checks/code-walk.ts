@@ -12,6 +12,14 @@
  * @module pre-scanner/checks/code-walk
  */
 
+import { findRegexLiterals } from './regex-check';
+
+function lineBreakWidth(source: string, index: number): number {
+  const char = source[index];
+  if (char === '\r') return source[index + 1] === '\n' ? 2 : 1;
+  return char === '\n' || char === '\u2028' || char === '\u2029' ? 1 : 0;
+}
+
 export interface CodeWalkHandlers {
   /** A character of code. Return `true` to stop the walk. */
   code?(index: number, char: string): boolean | void;
@@ -40,6 +48,7 @@ interface InterpolationFrame {
  */
 export function walkCode(source: string, handlers: CodeWalkHandlers): void {
   const stack: Array<TemplateFrame | InterpolationFrame> = [];
+  const regexEnds = new Map(findRegexLiterals(source).map((regex) => [regex.position, regex.end]));
   let line = 1;
   let i = 0;
 
@@ -49,11 +58,18 @@ export function walkCode(source: string, handlers: CodeWalkHandlers): void {
 
     // The text of a template literal
     if (top && top.kind === 'template') {
-      if (char === '\n') line++;
       if (char === '\\' && i + 1 < source.length) {
-        if (source[i + 1] === '\n') line++;
+        const escapedBreak = lineBreakWidth(source, i + 1);
+        if (escapedBreak) line++;
         top.length++;
-        i += 2;
+        i += 1 + (escapedBreak || 1);
+        continue;
+      }
+      const breakWidth = lineBreakWidth(source, i);
+      if (breakWidth) {
+        line++;
+        top.length += breakWidth;
+        i += breakWidth;
         continue;
       }
       if (char === '`') {
@@ -75,25 +91,35 @@ export function walkCode(source: string, handlers: CodeWalkHandlers): void {
     }
 
     // Code: at the top level or inside an interpolation
-    if (char === '\n') {
+    const breakWidth = lineBreakWidth(source, i);
+    if (breakWidth) {
       line++;
       if (handlers.code?.(i, char) === true) return;
-      i++;
+      i += breakWidth;
       continue;
     }
 
     // Comments
     if (char === '/' && source[i + 1] === '/') {
-      while (i < source.length && source[i] !== '\n') i++;
+      while (i < source.length && !lineBreakWidth(source, i)) i++;
       continue;
     }
     if (char === '/' && source[i + 1] === '*') {
       i += 2;
       while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) {
-        if (source[i] === '\n') line++;
-        i++;
+        const commentBreak = lineBreakWidth(source, i);
+        if (commentBreak) line++;
+        i += commentBreak || 1;
       }
       i += 2;
+      continue;
+    }
+
+    // A regex is an opaque value. Its pattern characters are not source-code operators or braces.
+    const regexEnd = regexEnds.get(i);
+    if (regexEnd !== undefined) {
+      if (handlers.code?.(i, 'r') === true) return;
+      i = regexEnd + 1;
       continue;
     }
 
@@ -104,14 +130,17 @@ export function walkCode(source: string, handlers: CodeWalkHandlers): void {
       let length = 0;
       i++;
       while (i < source.length && source[i] !== char) {
-        if (source[i] === '\n') line++;
         if (source[i] === '\\' && i + 1 < source.length) {
-          i += 2;
+          const escapedBreak = lineBreakWidth(source, i + 1);
+          if (escapedBreak) line++;
+          i += 1 + (escapedBreak || 1);
           length++;
           continue;
         }
-        length++;
-        i++;
+        const stringBreak = lineBreakWidth(source, i);
+        if (stringBreak) line++;
+        length += stringBreak || 1;
+        i += stringBreak || 1;
       }
       i++;
       if (handlers.string?.(start, startLine, length) === true) return;

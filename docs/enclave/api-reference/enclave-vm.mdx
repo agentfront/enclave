@@ -53,24 +53,33 @@ The constructor throws a `TypeError` for an option outside its type or range (a 
 | `scoringGate` | `ScoringGateConfig` | `undefined` | AI scoring configuration |
 | `doubleVm` | `PartialDoubleVmConfig` | `{ enabled: true }` | Double VM configuration |
 | `adapter` | `'vm' \| 'worker_threads'` | `'vm'` | Where the sandbox runs: in this process, or in a pool of worker threads. In both cases the script runs in the double VM (a single VM with `doubleVm: { enabled: false }`) |
+
 | `workerPoolConfig` | `Partial<WorkerPoolConfig>` | by level | Worker pool settings for `adapter: 'worker_threads'` |
 | `sandboxAdapter` | `SandboxAdapter` | `undefined` | Run scripts with this adapter instead of the double VM (for hosts without `node:vm`); not disposed by the enclave |
+
+`maxSanitizeProperties` counts keys, array slots, Map entries and Set entries across the whole value. Every Map entry counts, including one with a non-string key that is omitted from the copy returned to the script. A value over the limit is refused.
 
 See [Configuration](/core-libraries/enclave-vm/configuration) for the ranges and for what each limit covers.
 
 ### Methods
 
-#### run(code, toolHandler?)
+#### run(code, toolHandler?, options?)
 
 Execute code in the sandbox.
 
 ```ts
-async run<T = unknown>(code: string, toolHandler?: ToolHandler): Promise<ExecutionResult<T>>
+async run<T = unknown>(
+  code: string,
+  toolHandler?: ToolHandler,
+  options?: { onToolBridgeFailure?: () => void; maxToolResultBytes?: number },
+): Promise<ExecutionResult<T>>
 ```
 
 **Parameters:**
 - `code` - The script to execute, at most 5,242,880 characters
 - `toolHandler` - Optional tool handler for this run; replaces the one from the constructor
+- `options.onToolBridgeFailure` - Optional observer called when a successful tool result is refused by the bridge before it reaches the script. An error thrown by the observer does not change the bridge result.
+- `options.maxToolResultBytes` - Optional limit on the JSON bytes of a sanitized tool result before sidecar storage. A larger result fails its tool call.
 
 **Returns:** `ExecutionResult`. `run()` does not reject for a failing script: the failure is in the result.
 

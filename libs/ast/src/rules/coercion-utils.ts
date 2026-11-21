@@ -12,6 +12,23 @@ const NOT_CONSTANT = Symbol('not-constant');
 type Constant = string | number | boolean | null;
 
 /**
+ * Static keys are compared with short property names. A larger key cannot match one of them,
+ * and materializing it during validation would spend host memory before execution limits apply.
+ */
+const MAX_STATIC_KEY_LENGTH = 4096;
+
+/** A statically folded key would require an unsafe host allocation during validation. */
+export class StaticKeyExpansionError extends Error {
+  readonly location?: { line: number; column: number };
+
+  constructor(node: { loc?: { start?: { line: number; column: number } } }) {
+    super(`Static computed property key exceeds ${MAX_STATIC_KEY_LENGTH} characters`);
+    this.name = 'StaticKeyExpansionError';
+    this.location = node.loc?.start ? { line: node.loc.start.line, column: node.loc.start.column } : undefined;
+  }
+}
+
+/**
  * The value of an expression made only of literals: a string, number, boolean or `null` literal,
  * a template literal whose substitutions are constant, and `+` between constants (with the
  * language's own rule: a concatenation when either side is a string, a sum otherwise).
@@ -294,6 +311,33 @@ function collectStaticKeys(node: any, out: string[], foldConstants: boolean): vo
     if (foldConstants) {
       const val = constantValue(node);
       if (val !== NOT_CONSTANT) out.push(String(val));
+    }
+    return;
+  }
+
+  // A literal array joined with a constant separator has a fixed property name as well.
+  if (foldConstants && node.type === 'CallExpression' && node.callee?.type === 'MemberExpression') {
+    const callee = node.callee;
+    const method = callee.computed ? constantValue(callee.property) : callee.property?.name;
+    if (method === 'join' && callee.object?.type === 'ArrayExpression' && node.arguments?.length <= 1) {
+      const separator = node.arguments.length === 0 ? ',' : constantValue(node.arguments[0]);
+      if (separator !== NOT_CONSTANT) {
+        const separatorText = String(separator);
+        const parts: string[] = [];
+        for (const element of callee.object.elements) {
+          if (element?.type === 'SpreadElement') return;
+          const value = element ? constantValue(element) : null;
+          if (value === NOT_CONSTANT) return;
+          parts.push(value === null ? '' : String(value));
+        }
+        let projectedLength = Math.max(0, parts.length - 1) * separatorText.length;
+        if (projectedLength > MAX_STATIC_KEY_LENGTH) throw new StaticKeyExpansionError(node);
+        for (const part of parts) {
+          projectedLength += part.length;
+          if (projectedLength > MAX_STATIC_KEY_LENGTH) throw new StaticKeyExpansionError(node);
+        }
+        out.push(parts.join(separatorText));
+      }
     }
     return;
   }

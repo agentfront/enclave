@@ -25,6 +25,14 @@ export class JsonTooLargeError extends Error {
   }
 }
 
+/** A separate work limit for values with many members omitted from their JSON text. */
+export class JsonTraversalLimitError extends Error {
+  constructor(limit: number) {
+    super(`JSON traversal exceeds ${limit} members`);
+    this.name = 'JsonTraversalLimitError';
+  }
+}
+
 /** Whether a value has the internal slot that a built-in's valueOf reads. */
 function hasSlot(valueOf: () => unknown, value: unknown): boolean {
   try {
@@ -40,16 +48,18 @@ function hasSlot(valueOf: () => unknown, value: unknown): boolean {
  * as it would be longer than `limit` bytes. What each member adds is counted as it is written,
  * and the count is a lower bound of its UTF-8 bytes (a code unit is at least one byte, an escape
  * only adds), so a value whose text is within the limit is never given up. The members
- * `JSON.stringify` visits are counted as well, also those it leaves out (a function, undefined):
- * at most as many as the limit has bytes. Any other error of `JSON.stringify` (a cycle, a BigInt,
+ * `JSON.stringify` visits are bounded separately, including members it omits (a function,
+ * undefined). The work cap allows at least 10,000 visits and at most 1,000,000. A traversal
+ * refusal raises {@link JsonTraversalLimitError}. Any other error of `JSON.stringify` (a cycle, a BigInt,
  * a getter that throws) is thrown as it is.
  */
 export function stringifyWithin(value: unknown, limit: number): string | undefined {
   let bytes = 0;
   let visits = 0;
+  const maxVisits = Math.max(10_000, Math.min(1_000_000, limit * 10));
   let root = true;
   return JSONStringify(value, function (this: unknown, key: string, member: unknown): unknown {
-    if (++visits > limit) throw new JsonTooLargeError(limit);
+    if (++visits > maxVisits) throw new JsonTraversalLimitError(maxVisits);
     // A String or Number object is written as what it converts to; converted here, the way
     // JSON.stringify converts it and once, so the count is of what is written.
     if (member !== null && typeof member === 'object') {

@@ -78,11 +78,9 @@ export function EnclaveProvider({
   client: providedClient,
   children,
 }: EnclaveProviderProps): React.ReactElement {
-  // The client this provider created, with the configuration it was created from and a copy of
-  // what that configuration held then
+  // The client this provider created and a copy of the configuration it was built from.
   const createdRef = useRef<{
     client: EnclaveClient;
-    config: EnclaveClientConfig;
     snapshot: EnclaveClientConfig;
   } | null>(null);
 
@@ -97,10 +95,10 @@ export function EnclaveProvider({
     clientConfig = config;
   } else {
     if (!createdRef.current || !sameConfig(createdRef.current.snapshot, config)) {
-      createdRef.current = { client: new EnclaveClient(config), config, snapshot: snapshotConfig(config) };
+      createdRef.current = { client: new EnclaveClient(config), snapshot: snapshotConfig(config) };
     }
     client = createdRef.current.client;
-    clientConfig = createdRef.current.config;
+    clientConfig = config;
   }
 
   // Memoize context value

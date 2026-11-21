@@ -1341,7 +1341,10 @@ describe('EnclaveClient', () => {
       expect(stopCalls).toHaveLength(1);
       expect(stopCalls[0].url).toBe(`https://api.example.com/sessions/${handle.sessionId}`);
       expect(stopCalls[0].method).toBe('DELETE');
-      expect(stopCalls[0].headers).toEqual({ Authorization: 'Bearer token123' });
+      expect(stopCalls[0].headers).toEqual({
+        Authorization: 'Bearer token123',
+        'X-Session-Instance-ID': expect.stringMatching(/^s_/),
+      });
     });
 
     it('should report a stop the server did not confirm through onError', async () => {

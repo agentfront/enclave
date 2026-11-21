@@ -134,6 +134,8 @@ export class SessionManager {
         (sessionConfig as Record<string, unknown>)[key] = value;
       }
     }
+    // This identifier belongs to one HTTP creation and must never come from defaults.
+    sessionConfig.instanceId = config?.instanceId;
     sessionConfig.limits = mergeSessionLimits(defaults.limits, config?.limits);
 
     const session = createBrokerSession(this.toolRegistry, sessionConfig);
@@ -183,15 +185,15 @@ export class SessionManager {
   /**
    * Terminate a session
    */
-  async terminate(sessionId: SessionId, reason?: string): Promise<boolean> {
+  async terminate(sessionId: SessionId, reason?: string, expectedSession?: BrokerSession): Promise<boolean> {
     const session = this.sessions.get(sessionId);
-    if (!session) {
+    if (!session || (expectedSession !== undefined && session !== expectedSession)) {
       return false;
     }
 
     await session.cancel(reason ?? 'Terminated by session manager');
     session.dispose();
-    this.sessions.delete(sessionId);
+    if (this.sessions.get(sessionId) === session) this.sessions.delete(sessionId);
     return true;
   }
 
@@ -220,7 +222,7 @@ export class SessionManager {
     } finally {
       // Clean up
       session.dispose();
-      this.sessions.delete(sessionId);
+      if (this.sessions.get(sessionId) === session) this.sessions.delete(sessionId);
     }
   }
 

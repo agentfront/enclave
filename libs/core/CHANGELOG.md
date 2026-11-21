@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Tool result boundary:** a per-run result cap measures the sanitized value before sidecar storage, and a host can observe a result that the bridge refuses. The broker uses both so a refused result triggers `cancelOnFirstError` and a Map cannot bypass its result size limit.
 - **Sanitizer, Map and Set entries.** Every entry of a Map or Set counts against `maxSanitizeProperties` as it is walked, also a Map entry whose key is not a string (it is not copied, and was not counted) (ATK-MAPBOUND-01, ATK-MAPBOUND-02).
 - **Single VM, regular expressions.** With a realm allowlist that does not name `RegExp` (the default for validated AgentScript), the single VM's realm cannot run a regular expression, as the double VM's cannot: the matcher methods of `RegExp.prototype` throw `TypeError: Regular expressions are not available in this sandbox`. A string method that compiles its argument into a pattern, reached in a way the validator does not see, is stopped there (ATK-REGEX-ALIAS-01).
 - **Scoring gate, first evaluations.** Evaluations that arrive together before the scorer is set up wait for one setup: one scorer is made and initialized (a model loaded once), not one per evaluation. A setup that fails is tried again by the next evaluation (ATK-SCORING-01).

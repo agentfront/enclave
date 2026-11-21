@@ -169,8 +169,11 @@ import { RequiredFunctionCallRule } from '@enclave-vm/ast';
 const rule = new RequiredFunctionCallRule({
   required: ['callTool'],
   minCalls: 1,
+  directCallsOnly: true,
 });
 ```
+
+`directCallsOnly: true` counts `callTool(...)` and ignores a method with the same name, such as `local.callTool(...)`. The default is `false`. With several names and `mode: 'any'`, `minCalls` and `maxCalls` apply to the combined count across those names; with the default `mode: 'all'`, they apply to each name.
 
 ## UnknownGlobalRule
 
@@ -288,13 +291,16 @@ Blocks the string and regex methods that run a regular expression.
 import { NoRegexMethodsRule } from '@enclave-vm/ast';
 
 const rule = new NoRegexMethodsRule({
-  allowStringArguments: false, // Also refuse a string argument (default: true)
-  hostObjectNames: ['docs'],   // Globals that are host objects, not strings
-  requireDirectCall: false,    // true: the methods cannot be read as values (default: false)
+  allowStringArguments: true,
+  analyzeStringPatterns: { analysisLevel: 'catastrophic' },
+  hostObjectNames: ['docs'], // Globals that are host objects, not strings
+  requireDirectCall: false,  // true: the methods cannot be read as values (default: false)
 });
 ```
 
 `match`, `matchAll` and `search` compile a string argument into a regular expression, so with `allowStringArguments: false` they are refused with any argument. The method name is resolved in every static spelling (`x.match`, `x['match']`, a template literal without substitutions), and the call is seen through `call` / `apply` / `bind`, as a template tag and without an argument.
+
+With `allowStringArguments: true`, `analyzeStringPatterns` checks quoted string arguments and template literals without expressions for ReDoS. It accepts `analysisLevel: 'catastrophic' | 'polynomial'` and an optional `blockThreshold` (default: 80). Patterns over 500 characters are refused because the analysis is bounded to that length. Calls on a free global listed in `hostObjectNames` are treated as host object methods; a local variable with the same name is still analyzed. STRICT and SECURE enable catastrophic analysis.
 
 With `requireDirectCall: true`, a property named `match`, `matchAll` or `search` can only be called where it stands: reading it, passing or storing it and taking it by destructuring are refused. That also refuses reading a field of ordinary data with such a name (`params.search`), which is why it is off by default.
 

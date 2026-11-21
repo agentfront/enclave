@@ -77,6 +77,8 @@ Test names carry a category code, `ATK-<CODE>-NN`, with the weakness class in th
 
 Broader suites of the same layer, organised by attack scenario rather than by rule: `agentscript.attack-matrix`, `known-cve-exploits`, `isolation-breakout`, `security`, `security-pentest`, `advanced-security`, `advanced-attack-vectors`, `unicode-security`, `modern-javascript`, `agentscript-transformer.security`, and the public rule and transform unit tests (`rules`, `presets`, `agentscript`, `transformer`, `agentscript-transformer`, `transforms`, `validator`, `tool-namespaces`).
 
+Focused static regressions in the private suite: `computed-constructor-folding` (ATK-PCHAIN), `regex-string-analysis-boundaries` (ATK-RXSTR) and `pre-scanner.line-and-regex` (pre-scanner line and regex boundaries).
+
 ## Layer 2: realm (`security-tests/specs/core`)
 
 | Code        | Invariant                                                                                                                                                                                                                                                                                                                                                                                           | Jest suite                                                                      | Case folder           |
@@ -204,6 +206,8 @@ No script runs in these packages. The broker is a server in front of the sandbox
 | ATK-RUNTIME   | Executing says it is not implemented and the session ends on the channel; requests that are not served leave no session; a session limit is never "no limit"; the buffer of a disconnected channel is bounded; the CLI exits with an error; a connect in progress ends when the channel is closed                                                                                                   | `runtime.not-implemented` |
 
 The encryption of `@enclave-vm/stream` is a set of primitives that no client or broker of this repository uses, and its key exchange is not authenticated: ATK-STREAMENC pins what the primitives do, not a protocol. `broker.openapi` (ATK-BRK-83), `client.cancel` (ATK-CLIENT-17) and `runtime.not-implemented` use built packages or the broker's source behind a local server: run `yarn build` first.
+
+Focused network regressions in the private suite: `broker.cancel-on-error` checks result refusals against `cancelOnFirstError` and the broker result cap; `broker.session-instance` checks that a delayed stop applies only to its own creation; `client.cancel-creation-race` checks deferred stops when a session ID is reused; `provider.config` checks the context after an equal replacement configuration.
 
 ## Case folders (`security-tests/test-script/cases`)
 

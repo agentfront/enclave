@@ -10,7 +10,7 @@
 import type { CallToolOptions, ExecutionContext, SecureProxyLevelConfig } from './types';
 import type { GlobalFunctionCallGate } from './global-function-gate';
 import { sanitizeValue } from './value-sanitizer';
-import { JsonTooLargeError, stringifyWithin, utf8Length } from './bounded-json';
+import { JsonTooLargeError, JsonTraversalLimitError, stringifyWithin, utf8Length } from './bounded-json';
 import { createSafeError, createSafeTypeError } from './safe-error';
 import { ReferenceSidecar } from './sidecar/reference-sidecar';
 import { ReferenceResolver, ResolutionLimitError } from './sidecar/reference-resolver';
@@ -110,6 +110,10 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
 
   /** An error of the host with a code, reported to the script as a failure of the tool. */
   const codedError = (message: string, code: string): Error => Object.assign(new Error(message), { code });
+  const refuseToolResult = (message: string, code: string): never => {
+    context.onToolBridgeFailure?.();
+    throw codedError(message, code);
+  };
 
   // Build proxy options from config for consistent usage
   const proxyOptions: SecureProxyOptions = {
@@ -173,6 +177,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
       if (error instanceof JsonTooLargeError) {
         throw createSafeError(`Tool request exceeds maximum size (${maxPayloadBytes} bytes)`, 'RangeError');
       }
+      if (error instanceof JsonTraversalLimitError) {
+        throw createSafeError('Tool request exceeds traversal limit', 'RangeError');
+      }
       throw createSafeTypeError('Tool arguments must be JSON-serializable');
     }
     if (requestJson !== undefined && utf8Length(requestJson) > maxPayloadBytes) {
@@ -213,12 +220,37 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
       // - Deeply nested objects (DoS)
       // - Large object graphs (DoS)
       // The configured limits, as through the string bridge.
-      const sanitized = sanitizeValue(result, {
-        maxDepth: config.maxSanitizeDepth ?? 20,
-        maxProperties: config.maxSanitizeProperties ?? 10000,
-        allowDates: true,
-        allowErrors: true,
-      });
+      let sanitized: unknown;
+      try {
+        sanitized = sanitizeValue(result, {
+          maxDepth: config.maxSanitizeDepth ?? 20,
+          maxProperties: config.maxSanitizeProperties ?? 10000,
+          allowDates: true,
+          allowErrors: true,
+        });
+      } catch {
+        refuseToolResult('Tool returned an unsupported value', 'TOOL_RESULT_NOT_SAFE');
+      }
+
+      // Match the string bridge's per-run cap on the sanitized value, before a large string can
+      // become a small sidecar reference. The broker uses the failure hook to stop later tools.
+      const resultLimit = context.maxToolResultBytes;
+      if (resultLimit !== undefined && Number.isFinite(resultLimit) && resultLimit > 0) {
+        let tooLarge = false;
+        try {
+          const resultJson = stringifyWithin(sanitized, resultLimit);
+          tooLarge = resultJson !== undefined && utf8Length(resultJson) > resultLimit;
+        } catch (error: unknown) {
+          if (error instanceof JsonTraversalLimitError) {
+            refuseToolResult('Tool result exceeds the traversal limit', 'TOOL_RESULT_TOO_COMPLEX');
+          }
+          if (!(error instanceof JsonTooLargeError)) throw error;
+          tooLarge = true;
+        }
+        if (tooLarge) {
+          refuseToolResult(`Tool result exceeds the limit of ${resultLimit} bytes`, 'TOOL_RESULT_TOO_LARGE');
+        }
+      }
 
       // Lift large string results to sidecar if configured. Such a result reaches the script as
       // a reference or not at all (as through the string bridge).
@@ -229,7 +261,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
           try {
             value = sidecar.store(sanitized, 'tool-result', { origin: toolName });
           } catch {
-            throw codedError('Tool result could not be stored in the reference sidecar', 'TOOL_RESULT_NOT_STORED');
+            refuseToolResult('Tool result could not be stored in the reference sidecar', 'TOOL_RESULT_NOT_STORED');
           }
         }
       }
@@ -240,14 +272,17 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
       try {
         responseJson = value === undefined ? undefined : stringifyWithin(value, maxPayloadBytes);
       } catch (error: unknown) {
+        if (error instanceof JsonTraversalLimitError) {
+          refuseToolResult('Tool response exceeds traversal limit', 'TOOL_RESULT_TOO_COMPLEX');
+        }
         if (!(error instanceof JsonTooLargeError)) throw error;
-        throw codedError(
+        refuseToolResult(
           `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
           'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
         );
       }
       if (responseJson !== undefined && utf8Length(responseJson) > maxPayloadBytes) {
-        throw codedError(
+        refuseToolResult(
           `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
           'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
         );
@@ -272,7 +307,8 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
           }),
         });
       }
-      throw createSafeError(message);
+      const code = (error as { code?: unknown } | null)?.code;
+      throw createSafeError(message, 'Error', typeof code === 'string' ? code : undefined);
     }
   }
 

@@ -92,6 +92,8 @@ interface Connection {
  */
 interface ActiveSession {
   sessionId: SessionId;
+  /** Unique to this creation, even if a later session reuses sessionId. */
+  instanceId: SessionId;
   events: StreamEvent[];
   resolve: (result: SessionResult) => void;
   handlers: SessionEventHandlers;
@@ -288,6 +290,7 @@ export class EnclaveClient {
     // Store session state
     const session: ActiveSession = {
       sessionId,
+      instanceId: generateSessionId(),
       events: [],
       resolve: resolveResult!,
       handlers: options,
@@ -426,6 +429,7 @@ export class EnclaveClient {
       return;
     }
 
+    const wasCreating = session.creating;
     // Stop listening first: nothing is delivered once the session was cancelled.
     this.endSession(session, this.cancelledResult(session, reason));
 
@@ -433,11 +437,16 @@ export class EnclaveClient {
     const stop = await this.sendStop(session);
     let failure = stop.failure;
 
-    // 404 while the request that creates the session has not settled: the server may create it
-    // still. That is no confirmation; the stop is sent again once the creation request settles.
-    if (failure === null && stop.notFound && session.creating) {
-      failure = 'the session was still being created';
-      session.stopAfterCreation = true;
+    // A stop that cannot identify the creation while its POST is pending is retried after POST.
+    if (stop.retryIfCreating && wasCreating) {
+      failure ??= 'the session was still being created';
+      if (session.creating) {
+        session.stopAfterCreation = true;
+      } else {
+        // The POST settled while DELETE was in flight. Its identity-bound retry is still needed
+        // because the broker may have produced the 404 before it created this session.
+        void this.sendStop(session);
+      }
     }
 
     if (failure !== null) {
@@ -454,25 +463,29 @@ export class EnclaveClient {
 
   /**
    * Ask the server to end a session (`DELETE /sessions/:sessionId`). Never rejects: a failure is
-   * what it answers with. 404 is no failure (the server does not have the session), and is said.
+   * what it answers with. An absent or replaced creation is no failure after its POST settles.
    */
-  private async sendStop(session: ActiveSession): Promise<{ failure: string | null; notFound: boolean }> {
+  private async sendStop(session: ActiveSession): Promise<{ failure: string | null; retryIfCreating: boolean }> {
     const url = `${this.config.baseUrl}/sessions/${sessionPathSegment(session.sessionId)}`;
     let failure: string | null = null;
-    let notFound = false;
+    let retryIfCreating = false;
 
     try {
       await this.withDeadline('Stopping the session', async (signal) => {
         const response = await this.config.fetch(url, {
           method: 'DELETE',
-          headers: this.buildHeaders(),
+          headers: this.sessionHeaders(session),
           signal,
         });
         void response.body?.cancel().catch(() => undefined);
 
-        // 404: the server does not have the session, so there is nothing left to stop
-        if (response.status === 404) {
-          notFound = true;
+        // The original creation is absent if its ID is gone or now belongs to another one.
+        if (response.status === 404 || response.status === 412) {
+          retryIfCreating = true;
+        } else if (response.status === 409) {
+          // The broker could not associate this ID with the creation being stopped.
+          retryIfCreating = true;
+          failure = 'the server could not confirm the session creation';
         } else if (!response.ok) {
           failure = `the server answered ${response.status}`;
         }
@@ -480,7 +493,7 @@ export class EnclaveClient {
     } catch (error) {
       failure = error instanceof Error ? error.message : 'the request failed';
     }
-    return { failure, notFound };
+    return { failure, retryIfCreating };
   }
 
   /**
@@ -510,7 +523,7 @@ export class EnclaveClient {
         response = await this.config.fetch(url, {
           method: 'POST',
           headers: {
-            ...this.buildHeaders(),
+            ...this.sessionHeaders(session),
             'Content-Type': 'application/json',
             Accept: 'application/x-ndjson',
           },
@@ -522,6 +535,8 @@ export class EnclaveClient {
         // A stop that came while the session was being created and was not confirmed
         if (session.stopAfterCreation) {
           session.stopAfterCreation = false;
+          // The instance header confines the retry to this creation even when a newer local
+          // session has reused the same ID.
           void this.sendStop(session);
         }
       }
@@ -898,5 +913,15 @@ export class EnclaveClient {
     return {
       ...this.config.headers,
     };
+  }
+
+  /** The creation identifier always takes precedence over configured headers. */
+  private sessionHeaders(session: ActiveSession): Record<string, string> {
+    const headers = this.buildHeaders();
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === 'x-session-instance-id') delete headers[name];
+    }
+    headers['X-Session-Instance-ID'] = session.instanceId;
+    return headers;
   }
 }

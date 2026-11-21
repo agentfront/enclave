@@ -303,6 +303,8 @@ interface ValidationContext {
 
 See [Security Rules](/core-libraries/ast-guard/security-rules) for the options.
 
+`NoRegexMethodsRule` can analyze quoted strings and template literals without expressions passed to `match`, `matchAll` or `search` with `analyzeStringPatterns`. `RequiredFunctionCallRule` can count only direct calls with `directCallsOnly`; in `mode: 'any'`, `maxCalls` bounds the total across all required names.
+
 ### AllowedSyntaxRule
 
 A syntax allowlist: every node of the parsed script must have a type the rule was given, and any other construct is reported with the code `DISALLOWED_SYNTAX`. The [AgentScript preset](/core-libraries/ast-guard/agentscript-preset) uses it with `AGENTSCRIPT_ALLOWED_NODE_TYPES`, so a construct no other rule names (`this`, classes, `new.target`, `debugger`, generators) is refused rather than passed.
