@@ -54,7 +54,10 @@ function boundedInteger(name: string, value: unknown, max: number): void {
   }
 }
 
-function referenceConfig(level: keyof typeof REFERENCE_CONFIGS, sidecar: CreateEnclaveOptions['sidecar']): ReferenceConfig | undefined {
+function referenceConfig(
+  level: keyof typeof REFERENCE_CONFIGS,
+  sidecar: CreateEnclaveOptions['sidecar'],
+): ReferenceConfig | undefined {
   if (!sidecar?.enabled) return undefined;
   const base = REFERENCE_CONFIGS[level];
   return {
@@ -179,14 +182,30 @@ export class PortableEnclave {
     if (options.validate === false || options.transform === false) {
       throw new TypeError('PortableEnclave requires validation, transformation and pre-scan');
     }
+    if (options.preScan?.preset !== undefined && options.preScan.preset !== 'agentscript') {
+      throw new TypeError('PortableEnclave requires the AgentScript pre-scan preset');
+    }
+    if (options.preScan?.config !== undefined) {
+      throw new TypeError('PortableEnclave does not allow pre-scan overrides');
+    }
     if (options.toolBridge?.mode === 'direct') throw new TypeError('PortableEnclave requires the string tool bridge');
+    if (options.toolBridge?.acknowledgeInsecureDirect === true) {
+      throw new TypeError('PortableEnclave does not support direct bridge acknowledgement');
+    }
     if (options.adapter || options.sandboxAdapter || options.workerPoolConfig || options.scoringGate) {
       throw new TypeError('PortableEnclave does not support VM adapters or scoring gates');
+    }
+    if (options.allowBuiltins === true || options.toolCallGraceMs !== undefined) {
+      throw new TypeError('PortableEnclave does not support VM builtin or tool grace overrides');
     }
     if (options.secureProxyConfig || options.realmGlobals === 'security-level') {
       throw new TypeError('PortableEnclave does not support VM realm proxy overrides');
     }
-    if (options.doubleVm?.enabled === false || options.doubleVm?.parentValidation?.suspiciousPatterns?.length) {
+    if (
+      options.doubleVm?.enabled === false ||
+      options.doubleVm?.parentTimeoutBuffer !== undefined ||
+      options.doubleVm?.parentValidation?.suspiciousPatterns?.length
+    ) {
       throw new TypeError('PortableEnclave cannot disable or replace its tool policy');
     }
     boundedInteger('interpreter.maxSteps', interpreter?.maxSteps, MAX_PORTABLE_STEPS);
@@ -199,10 +218,22 @@ export class PortableEnclave {
     boundedInteger('toolBridge.maxPayloadBytes', maxPayloadBytes, MAX_PORTABLE_ALLOCATION_BYTES);
     const security = SECURITY_LEVEL_CONFIGS[level];
     const maxToolCalls = options.maxToolCalls ?? security.maxToolCalls;
+    if (maxToolCalls > 100_000) throw new TypeError('maxToolCalls cannot exceed 100000 in PortableEnclave');
+    if ((options.maxIterations ?? security.maxIterations) > MAX_PORTABLE_STEPS) {
+      throw new TypeError(`maxIterations cannot exceed ${MAX_PORTABLE_STEPS} in PortableEnclave`);
+    }
+    if ((options.maxSanitizeDepth ?? security.maxSanitizeDepth) > 100) {
+      throw new TypeError('maxSanitizeDepth cannot exceed 100 in PortableEnclave');
+    }
+    if ((options.maxSanitizeProperties ?? security.maxSanitizeProperties) > 20_000) {
+      throw new TypeError('maxSanitizeProperties cannot exceed 20000 in PortableEnclave');
+    }
     const maxGlobalFunctionCalls = options.maxGlobalFunctionCalls ?? Math.max(10, maxToolCalls * 10);
     boundedInteger('maxGlobalFunctionCalls', maxGlobalFunctionCalls, 1_000_000);
     options.globals = copyPortableGlobals(options.globals, options.allowFunctionsInGlobals === true, maxPayloadBytes);
-    this.namespaces = normalizeToolNamespaces(options.toolNamespaces, { reservedNames: Object.keys(options.globals ?? {}) });
+    this.namespaces = normalizeToolNamespaces(options.toolNamespaces, {
+      reservedNames: Object.keys(options.globals ?? {}),
+    });
     this.customNames = [...Object.keys(options.globals ?? {}), ...this.namespaces.map((entry) => entry.name)];
     const allowed = [
       ...getAgentScriptGlobals(level),
@@ -217,7 +248,10 @@ export class PortableEnclave {
       ...Object.keys(options.globals ?? {}).filter((name) => typeof options.globals?.[name] !== 'string'),
       ...this.namespaces.map((entry) => entry.name),
     ];
-    this.preScanner = new PreScanner({ preset: options.preScan?.preset ?? 'agentscript', config: options.preScan?.config });
+    this.preScanner = new PreScanner({
+      preset: options.preScan?.preset ?? 'agentscript',
+      config: options.preScan?.config,
+    });
     this.validator = new JSAstValidator(
       createAgentScriptPreset({
         securityLevel: level,
@@ -253,7 +287,11 @@ export class PortableEnclave {
     this.options = options;
   }
 
-  async run<T = unknown>(code: string, toolHandler?: ToolHandler, runOptions: PortableRunOptions = {}): Promise<ExecutionResult<T>> {
+  async run<T = unknown>(
+    code: string,
+    toolHandler?: ToolHandler,
+    runOptions: PortableRunOptions = {},
+  ): Promise<ExecutionResult<T>> {
     if (this.disposed) throw new Error('PortableEnclave has been disposed');
     boundedInteger('maxToolResultBytes', runOptions.maxToolResultBytes, MAX_PORTABLE_ALLOCATION_BYTES);
     const startTime = Date.now();
@@ -296,7 +334,11 @@ export class PortableEnclave {
       });
     } catch (error: unknown) {
       const message = (error as { message?: unknown } | null)?.message;
-      return failure('ValidationError', typeof message === 'string' ? message.slice(0, 2048) : 'AgentScript parse failed', 'VALIDATION_ERROR');
+      return failure(
+        'ValidationError',
+        typeof message === 'string' ? message.slice(0, 2048) : 'AgentScript parse failed',
+        'VALIDATION_ERROR',
+      );
     }
     const validation = await this.validator.validate(transformed, { preScan: { enabled: false } });
     if (!validation.valid) {
@@ -350,7 +392,11 @@ export class PortableEnclave {
       }
     } catch (error: unknown) {
       const message = (error as { message?: unknown } | null)?.message;
-      return failure('ExecutionError', typeof message === 'string' ? message.slice(0, 2048) : 'Portable execution failed', 'EXECUTION_ERROR');
+      return failure(
+        'ExecutionError',
+        typeof message === 'string' ? message.slice(0, 2048) : 'Portable execution failed',
+        'EXECUTION_ERROR',
+      );
     } finally {
       sidecar?.dispose();
     }
@@ -363,8 +409,10 @@ export class PortableEnclave {
 }
 
 /** The worker entry's CodeCall-facing contract for one validated AgentScript run. */
-export interface AgentScriptRunnerOptions
-  extends Omit<PortableEnclaveOptions, 'interpreter' | 'globals' | 'doubleVm' | 'maxGlobalFunctionCalls'> {
+export interface AgentScriptRunnerOptions extends Omit<
+  PortableEnclaveOptions,
+  'interpreter' | 'globals' | 'doubleVm' | 'maxGlobalFunctionCalls'
+> {
   hostFunctions: Readonly<Record<string, (...args: unknown[]) => unknown>>;
   maxHostFunctionCalls: number;
   maxSteps?: number;
