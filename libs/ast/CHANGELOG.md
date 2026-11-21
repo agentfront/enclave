@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`transformConcatenation` with `arraySpread: true` hands every array literal that has elements to the runtime**, not only one with a spread: `[a, b]` becomes `__safe_array(0, [a, b])`, so that a runtime that accounts for arrays counts it like any other array. The empty literal is left as it is.
+
 ### After 2.19.1: a review of every package
 
 Draft for the maintainer. The invariants are listed under "Layer 1: static" in `SECURITY-TESTS.md`.

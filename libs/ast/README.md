@@ -936,7 +936,7 @@ With `maxIterations` the limit is a number in each loop's own check. Without it 
 
 The transforms `@enclave-vm/core` applies after validation are exported as well:
 
-- `transformConcatenation(ast, options)` rewrites `a + b` to `__safe_concat(a, b)`. `compoundAssignment` (default `true`) rewrites `x += y` the same way, so that it is charged like `x + y`; `arraySpread` (default `false`) wraps array literals that contain a spread, for a runtime that defines the helpers for it.
+- `transformConcatenation(ast, options)` rewrites `a + b` to `__safe_concat(a, b)`. `compoundAssignment` (default `true`) rewrites `x += y` the same way, so that it is charged like `x + y`; `arraySpread` (default `false`) hands every array literal that has elements to the runtime, for a runtime that defines the helpers for it: one with a spread as `__safe_array(__safe_arrayStart(), [a, ...__safe_spread(b)])`, one without as `__safe_array(0, [a, b])` (`0`: no spread). The empty literal is left as it is.
 - `rewriteImports(code, config)` rewrites imports of npm packages to CDN URLs. The package allowlist applies to import declarations, re-exports and dynamic `import()` alike: a dynamic import of a listed package is rewritten, one of another package is refused, and a specifier computed at run time is refused. Versions with path or URL characters, and a base URL with credentials, a query or a fragment, are refused.
 - The validator's `transform` option with `transformComputed` prints a computed key it rewrites as one string literal, whatever characters the key holds.
 
