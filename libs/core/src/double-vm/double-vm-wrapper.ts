@@ -11,6 +11,7 @@
 import * as vm from 'vm';
 import type { SandboxAdapter, ExecutionContext, ExecutionResult, SecurityLevel } from '../types';
 import { sanitizeValue, checkSerializedSize } from '../value-sanitizer';
+import { JsonTooLargeError, stringifyWithin, utf8Length } from '../bounded-json';
 import { getBlockedPropertiesForLevel, buildBlockedPropertiesFromConfig } from '../secure-proxy';
 import { createSafeError } from '../safe-error';
 import { ReferenceResolver } from '../sidecar/reference-resolver';
@@ -34,6 +35,17 @@ import {
 import type { DoubleVmConfig, SerializableParentValidationConfig, SerializableSuspiciousPattern } from './types';
 import { generateParentVmBootstrap } from './parent-vm-bootstrap';
 import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-patterns';
+
+/**
+ * The errors the direct tool path raises itself for a result it refuses, with the code a script
+ * gets for each (`callTool(..., { throwOnError: false })`), as through the string bridge.
+ */
+const resultRefusals = new WeakMap<object, string>();
+function resultRefusal(message: string, code: 'TOOL_RESULT_NOT_STORED' | 'TOOL_BRIDGE_RESPONSE_TOO_LARGE'): Error {
+  const error = new Error(message);
+  resultRefusals.set(error, code);
+  return error;
+}
 
 /**
  * Double VM Wrapper
@@ -517,31 +529,52 @@ export class DoubleVmWrapper implements SandboxAdapter {
           allowErrors: true,
         });
 
-        // Lift large string results to sidecar if configured
+        // Lift large string results to sidecar if configured. Such a result reaches the script
+        // as a reference or not at all (as through the string bridge).
+        let outgoing: unknown = sanitized;
         if (sidecar && referenceConfig && typeof sanitized === 'string') {
           const size = Buffer.byteLength(sanitized, 'utf-8');
           if (size >= referenceConfig.extractionThreshold) {
             try {
-              const refId = sidecar.store(sanitized, 'tool-result', { origin: toolName });
-              return refId;
-            } catch (storageError) {
-              // If storage fails (e.g., sidecar limits reached), log and return original value
-              if (process.env['NODE_ENV'] !== 'production') {
-                console.debug(
-                  `[DoubleVmWrapper] Sidecar storage failed for tool "${toolName}": ${(storageError as Error).message}`,
-                );
-              }
-              return sanitized;
+              outgoing = sidecar.store(sanitized, 'tool-result', { origin: toolName });
+            } catch {
+              throw resultRefusal('Tool result could not be stored in the reference sidecar', 'TOOL_RESULT_NOT_STORED');
             }
           }
         }
 
-        return sanitized;
+        // What crosses (the value, or the reference in its place) is held to
+        // toolBridge.maxPayloadBytes, as through the string bridge, and measured within it: a
+        // value referenced many times is not written out in full before it is refused.
+        const maxPayloadBytes = config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
+        let responseJson: string | undefined;
+        try {
+          responseJson = outgoing === undefined ? undefined : stringifyWithin(outgoing, maxPayloadBytes);
+        } catch (error: unknown) {
+          if (!(error instanceof JsonTooLargeError)) throw error;
+          throw resultRefusal(
+            `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
+            'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+          );
+        }
+        if (responseJson !== undefined && utf8Length(responseJson) > maxPayloadBytes) {
+          throw resultRefusal(
+            `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
+            'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+          );
+        }
+
+        return outgoing;
       } catch (error: unknown) {
         // SECURITY: Use createSafeError to prevent prototype chain escape attacks
         // This is critical - the original error from the tool handler could expose
         // the host Function constructor via error.constructor.constructor
         const err = error as Error;
+        // A result refused here keeps its own code and text, as through the string bridge.
+        const refused = resultRefusals.get(error as object);
+        if (refused) {
+          throw createSafeError(err.message, 'Error', refused);
+        }
         // The code marks a failure of the tool itself (not a refusal by the enclave), which a
         // script's `callTool(..., { throwOnError: false })` receives as a result object.
         throw createSafeError(

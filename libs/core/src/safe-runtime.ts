@@ -10,6 +10,7 @@
 import type { CallToolOptions, ExecutionContext, SecureProxyLevelConfig } from './types';
 import type { GlobalFunctionCallGate } from './global-function-gate';
 import { sanitizeValue } from './value-sanitizer';
+import { JsonTooLargeError, stringifyWithin, utf8Length } from './bounded-json';
 import { createSafeError, createSafeTypeError } from './safe-error';
 import { ReferenceSidecar } from './sidecar/reference-sidecar';
 import { ReferenceResolver, ResolutionLimitError } from './sidecar/reference-resolver';
@@ -105,6 +106,10 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
   const secureProxyConfig = options?.secureProxyConfig;
   const memoryTracker = options?.memoryTracker;
   const resolver = sidecar && referenceConfig ? new ReferenceResolver(sidecar, referenceConfig) : undefined;
+  const maxPayloadBytes = config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
+
+  /** An error of the host with a code, reported to the script as a failure of the tool. */
+  const codedError = (message: string, code: string): Error => Object.assign(new Error(message), { code });
 
   // Build proxy options from config for consistent usage
   const proxyOptions: SecureProxyOptions = {
@@ -159,6 +164,21 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
       throw createSafeError('No tool handler configured. Cannot execute tool calls.');
     }
 
+    // The request is held to toolBridge.maxPayloadBytes, as through the string bridge: measured
+    // as the JSON request it would be, and written within the limit.
+    let requestJson: string | undefined;
+    try {
+      requestJson = stringifyWithin({ v: 1, tool: toolName, args }, maxPayloadBytes);
+    } catch (error: unknown) {
+      if (error instanceof JsonTooLargeError) {
+        throw createSafeError(`Tool request exceeds maximum size (${maxPayloadBytes} bytes)`, 'RangeError');
+      }
+      throw createSafeTypeError('Tool arguments must be JSON-serializable');
+    }
+    if (requestJson !== undefined && utf8Length(requestJson) > maxPayloadBytes) {
+      throw createSafeError(`Tool request exceeds maximum size (${maxPayloadBytes} bytes)`, 'RangeError');
+    }
+
     // Resolve references if sidecar is available
     let resolvedArgs = args;
     if (resolver && resolver.containsReferences(args)) {
@@ -192,14 +212,16 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
       // - Prototype pollution (__proto__, constructor)
       // - Deeply nested objects (DoS)
       // - Large object graphs (DoS)
+      // The configured limits, as through the string bridge.
       const sanitized = sanitizeValue(result, {
-        maxDepth: 20,
-        maxProperties: 10000,
+        maxDepth: config.maxSanitizeDepth ?? 20,
+        maxProperties: config.maxSanitizeProperties ?? 10000,
         allowDates: true,
         allowErrors: true,
       });
 
-      // Lift large string results to sidecar if configured
+      // Lift large string results to sidecar if configured. Such a result reaches the script as
+      // a reference or not at all (as through the string bridge).
       let value: unknown = sanitized;
       if (sidecar && referenceConfig && typeof sanitized === 'string') {
         const size = Buffer.byteLength(sanitized, 'utf-8');
@@ -207,10 +229,28 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
           try {
             value = sidecar.store(sanitized, 'tool-result', { origin: toolName });
           } catch {
-            // If storage fails (limits), return original value
-            value = sanitized;
+            throw codedError('Tool result could not be stored in the reference sidecar', 'TOOL_RESULT_NOT_STORED');
           }
         }
+      }
+
+      // The response is held to toolBridge.maxPayloadBytes, as through the string bridge, and
+      // measured within it: a value referenced many times is not written out in full first
+      let responseJson: string | undefined;
+      try {
+        responseJson = value === undefined ? undefined : stringifyWithin(value, maxPayloadBytes);
+      } catch (error: unknown) {
+        if (!(error instanceof JsonTooLargeError)) throw error;
+        throw codedError(
+          `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
+          'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+        );
+      }
+      if (responseJson !== undefined && utf8Length(responseJson) > maxPayloadBytes) {
+        throw codedError(
+          `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
+          'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+        );
       }
 
       return throwOnError ? value : plainResult({ success: true, data: value });

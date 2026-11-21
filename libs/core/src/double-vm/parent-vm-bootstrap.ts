@@ -2678,8 +2678,11 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       throw createSafeError('Operation name must be a non-empty string', 'TypeError');
     }
 
-    // Operation name pattern validation (whitelist)
+    // Operation name pattern validation (whitelist). Each test starts at the beginning of the
+    // name: a global or sticky pattern would otherwise go on from where its last match ended,
+    // and decide the same name differently on the next call.
     if (validationConfig.validateOperationNames && typeof allowedOperationPattern !== 'undefined') {
+      allowedOperationPattern.lastIndex = 0;
       if (!allowedOperationPattern.test(operationName)) {
         throw createSafeError('Operation "' + operationName + '" does not match allowed pattern');
       }
@@ -2688,6 +2691,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     // Operation name pattern validation (blacklist)
     if (typeof blockedOperationPatterns !== 'undefined') {
       for (var i = 0; i < blockedOperationPatterns.length; i++) {
+        blockedOperationPatterns[i].lastIndex = 0;
         if (blockedOperationPatterns[i].test(operationName)) {
           throw createSafeError('Operation "' + operationName + '" matches blocked pattern');
         }
@@ -2839,14 +2843,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       throw createSafeError('Tool arguments must be an object', 'TypeError');
     }
 
-    // Double sanitization (defense in depth). Through the string bridge the text is written
-    // within its payload limit (see stringifyWithin), so what is done before the request is
-    // measured is in proportion to the limit.
+    // Double sanitization (defense in depth). The text is written within the payload limit (see
+    // stringifyWithin), so what is done before the request is measured is in proportion to the
+    // limit; in direct mode as well, where the request is held to the same limit below.
     var sanitizedArgs;
     try {
-      sanitizedArgs = JSON.parse(
-        toolBridgeMode === 'string' ? stringifyWithin(args, toolBridgeMaxPayloadBytes) : JSON.stringify(args)
-      );
+      sanitizedArgs = JSON.parse(stringifyWithin(args, toolBridgeMaxPayloadBytes));
     } catch (e) {
       if (e === TOO_LARGE) {
         throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
@@ -2942,8 +2944,12 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         throw createSafeError('Tool bridge returned invalid response');
       });
     } else {
-      // Direct mode: the rejection is mapped here rather than by launderThrown alone, which
-      // would drop the code the host uses to mark a failure of the tool itself.
+      // Direct mode: the request is held to the payload limit as through the string bridge.
+      if (exceedsPayloadLimit(JSON.stringify({ v: 1, tool: toolName, args: sanitizedArgs }), toolBridgeMaxPayloadBytes)) {
+        throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
+      }
+      // The rejection is mapped here rather than by launderThrown alone, which would drop the
+      // code the host uses to mark a failure of the tool itself.
       promise = deferHostCall(function() {
         return hostCallTool(toolName, sanitizedArgs);
       }, function(error) {
@@ -2953,9 +2959,10 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
           code = error && error.code;
           message = error && error.message;
         } catch (e) { /* treated as an unmarked failure */ }
-        if (code === 'TOOL_CALL_FAILED') {
+        // A failure of the tool, or a result the host refused, keeps its code.
+        if (code === 'TOOL_CALL_FAILED' || code === 'TOOL_RESULT_NOT_STORED' || code === 'TOOL_BRIDGE_RESPONSE_TOO_LARGE') {
           var text = typeof message === 'string' ? message : 'Tool call failed';
-          return markToolFailure(createSafeError(text), toolName, 'Error', text, 'TOOL_CALL_FAILED');
+          return markToolFailure(createSafeError(text), toolName, 'Error', text, code);
         }
         return launderThrown(error);
       });

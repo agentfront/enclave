@@ -71,7 +71,12 @@ const RAPID_ENUMERATION: SuspiciousPattern = {
       if (localConfig) {
         const defaultThreshold = localConfig.rapidEnumerationThreshold ?? 30;
         const overrides = localConfig.rapidEnumerationOverrides ?? {};
-        threshold = overrides[operationName] ?? defaultThreshold;
+        // Only a number the overrides list for this name themselves: a name such as toString or
+        // constructor would otherwise read what the object inherits, and no count is above that.
+        const override = Object.prototype.hasOwnProperty.call(overrides, operationName)
+          ? overrides[operationName]
+          : undefined;
+        threshold = typeof override === 'number' ? override : defaultThreshold;
       }
     } catch {
       // Fallback to default if config is not accessible

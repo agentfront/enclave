@@ -671,6 +671,10 @@ export class Enclave {
         }
       }
 
+      // What the scoring gate scores (Step 2.5): the script before the sidecar replaces its large
+      // literals with references, so the gate sees the text the tools will receive.
+      const codeForScoring = transformedCode;
+
       // Step 2: Apply sidecar transforms if enabled
       // These transforms extract large strings and convert concatenation to safe calls
       if (sidecar && this.referenceConfig) {
@@ -730,7 +734,7 @@ export class Enclave {
       // This runs AFTER AST validation but BEFORE code execution
       let scoringResult: ScoringGateResult | undefined;
       if (this.scoringGate) {
-        scoringResult = await this.scoringGate.evaluate(transformedCode);
+        scoringResult = await this.scoringGate.evaluate(codeForScoring);
 
         if (!scoringResult.allowed) {
           // A refusal without a score is one where the scorer could not answer (failOpen: false):
