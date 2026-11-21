@@ -16,6 +16,8 @@
 
 export { InterpreterAdapter } from './adapters/interpreter-adapter';
 export type { InterpreterAdapterOptions } from './adapters/interpreter-adapter';
+export { PortableEnclave, AgentScriptRunner } from './portable-enclave';
+export type { PortableEnclaveOptions, PortableRunOptions, AgentScriptRunnerOptions } from './portable-enclave';
 export { Interpreter, InterpreterError, StepLimitError } from './interpreter/interpreter';
 export type { InterpreterOptions } from './interpreter/interpreter';
 export type { ExecutionContext, ExecutionResult, ExecutionError, ExecutionStats, ToolHandler } from './types';

@@ -745,6 +745,12 @@ export interface ExecutionContext {
    */
   toolHandler?: ToolHandler;
 
+  /** Portable runner policy, applied to the copied JSON request before a tool can run. */
+  beforeToolCall?: (name: string, args: Record<string, unknown>) => void;
+
+  /** Portable runner policy, applied before any custom host global function can run. */
+  beforeGlobalCall?: () => void;
+
   /** Called when a successful host tool result is refused before it reaches the script. */
   onToolBridgeFailure?: () => void;
 

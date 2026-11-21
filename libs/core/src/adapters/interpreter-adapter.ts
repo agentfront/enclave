@@ -41,6 +41,7 @@ import { ReferenceResolver } from '../sidecar/reference-resolver';
 import { sanitizeStackTrace } from '../stack-trace';
 import { MAX_THROWN_MESSAGE_LENGTH } from '../thrown-value';
 import { createHostToolBridge, encodeToolBridgeRequest } from '../tool-bridge';
+import { stringifyWithin, utf8Length } from '../bounded-json';
 import type { ExecutionContext, ExecutionError, ExecutionResult, ExecutionStats, SandboxAdapter } from '../types';
 import { checkSerializedSize, sanitizeValue } from '../value-sanitizer';
 
@@ -519,10 +520,66 @@ export class InterpreterAdapter implements SandboxAdapter {
 
     const custom = (config as { globals?: Record<string, unknown> }).globals;
     if (custom && typeof custom === 'object') {
+      const maxGlobalCalls = config.maxGlobalFunctionCalls ?? Math.max(10, config.maxToolCalls * 10);
+      const payloadLimit = config.toolBridge?.maxPayloadBytes ?? DEFAULT_MAX_TOOL_PAYLOAD_BYTES;
+      let globalCalls = 0;
+      const copy = (value: unknown): unknown => {
+        const sanitized = sanitizeValue(value, {
+          maxDepth: config.maxSanitizeDepth,
+          maxProperties: config.maxSanitizeProperties,
+          allowDates: false,
+          allowErrors: true,
+        });
+        const json = stringifyWithin(sanitized, payloadLimit);
+        if (json === undefined) return undefined;
+        if (utf8Length(json) > payloadLimit) throw sandboxError('Global function value exceeds bridge limit');
+        return JSON.parse(json);
+      };
+      const safeHostCall = (name: string, fn: (...args: unknown[]) => unknown) =>
+        (...args: unknown[]): unknown => {
+          if (callbacks.over || context.aborted) throw executionOver();
+          if (++globalCalls > maxGlobalCalls) throw sandboxError(`Global function call limit exceeded (${maxGlobalCalls})`);
+          context.beforeGlobalCall?.();
+          let safeArgs: unknown[];
+          try {
+            safeArgs = copy(args) as unknown[];
+          } catch {
+            throw sandboxError(`Global function ${name} received unsupported arguments`, 'TypeError');
+          }
+          let outcome: unknown;
+          try {
+            outcome = fn(...safeArgs);
+          } catch (error: unknown) {
+            const message = (error as { message?: unknown } | null)?.message;
+            throw sandboxError(typeof message === 'string' ? message.slice(0, 1024) : 'Global function failed');
+          }
+          const settle = (value: unknown): unknown => {
+            if (callbacks.over || context.aborted) throw executionOver();
+            try {
+              return copy(value);
+            } catch {
+              throw sandboxError(`Global function ${name} returned an unsupported value`);
+            }
+          };
+          if (outcome !== null && (typeof outcome === 'object' || typeof outcome === 'function')) {
+            let then: unknown;
+            try {
+              then = (outcome as { then?: unknown }).then;
+            } catch {
+              throw sandboxError(`Global function ${name} returned an unsupported value`);
+            }
+            if (typeof then === 'function') {
+              return observed(async () => settle(await Promise.resolve(outcome)))();
+            }
+          }
+          return settle(outcome);
+        };
       for (const name of Object.keys(custom)) {
         // A custom global never replaces something the runtime provides.
         if (name.startsWith('__') || Object.prototype.hasOwnProperty.call(globals, name)) continue;
-        globals[name] = frozenDataCopy(name, custom[name]);
+        const value = custom[name];
+        globals[name] =
+          typeof value === 'function' ? safeHostCall(name, value as (...args: unknown[]) => unknown) : frozenDataCopy(name, value);
       }
     }
 
@@ -578,6 +635,13 @@ export class InterpreterAdapter implements SandboxAdapter {
         requestJson = encodeToolBridgeRequest(toolName, args as Record<string, unknown>);
       } catch {
         throw sandboxError('Tool arguments must be JSON-serializable', 'TypeError');
+      }
+      if (utf8Length(requestJson) > maxPayloadBytes) {
+        throw sandboxError(`Tool request exceeds maximum size (${maxPayloadBytes} bytes)`, 'ToolBridgeError');
+      }
+      if (context.beforeToolCall) {
+        const request = JSON.parse(requestJson) as { args: Record<string, unknown> };
+        context.beforeToolCall(toolName, request.args);
       }
 
       let response: unknown;

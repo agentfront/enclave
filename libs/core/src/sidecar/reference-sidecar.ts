@@ -8,7 +8,6 @@
  * @packageDocumentation
  */
 
-import { randomUUID } from 'crypto';
 import {
   ReferenceConfig,
   REF_ID_PREFIX,
@@ -163,6 +162,8 @@ export class ReferenceSidecar {
     }
 
     // Generate cryptographically secure reference ID
+    const randomUUID = globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
+    if (!randomUUID) throw new Error('Secure random UUID generation is unavailable');
     const refId = `${REF_ID_PREFIX}${randomUUID()}${REF_ID_SUFFIX}`;
 
     // Store with defensive copy (prevent external mutations)
