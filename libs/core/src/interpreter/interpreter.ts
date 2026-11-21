@@ -571,6 +571,10 @@ class AccumulatedText {
 class ReturnSignal {
   constructor(readonly value: unknown) {}
 }
+/** Distinguishes a value thrown by the script from a host rejection reason. */
+class ScriptThrown {
+  constructor(readonly value: unknown) {}
+}
 class BreakSignal {}
 class ContinueSignal {}
 /** An optional chain met `null` or `undefined`: the whole chain is `undefined`. */
@@ -865,25 +869,31 @@ export class Interpreter {
   }
 
   async run(program: ESTree.Program): Promise<unknown> {
-    const root = new Scope(undefined, 0, (bytes) => this.charge(bytes));
-    // Hoist function + var/const declarations so `__ag_main` is callable.
-    for (const stmt of program.body) {
-      if (stmt.type === 'FunctionDeclaration' && stmt.id) {
-        root.declare(stmt.id.name, this.makeFunction(stmt, root), false);
+    try {
+      const root = new Scope(undefined, 0, (bytes) => this.charge(bytes));
+      // Hoist function + var/const declarations so `__ag_main` is callable.
+      for (const stmt of program.body) {
+        if (stmt.type === 'FunctionDeclaration' && stmt.id) {
+          root.declare(stmt.id.name, this.makeFunction(stmt, root), false);
+        }
       }
+      let last: unknown;
+      for (const stmt of program.body) {
+        if (stmt.type === 'FunctionDeclaration') continue; // already hoisted
+        // Script-mode (no ES modules) → body items are statements/directives.
+        last = await this.execStatement(stmt as ESTree.Statement, root);
+      }
+      // The transform wraps user code in `async function __ag_main()`. Invoke it.
+      if (root.has('__ag_main')) {
+        const main = root.get('__ag_main');
+        if (typeof main === 'function') return await (main as (...a: unknown[]) => unknown)();
+      }
+      return last;
+    } catch (thrown) {
+      // Outside the interpreter, preserve the normal result of an uncaught script throw.
+      if (thrown instanceof ScriptThrown) throw thrown.value;
+      throw thrown;
     }
-    let last: unknown;
-    for (const stmt of program.body) {
-      if (stmt.type === 'FunctionDeclaration') continue; // already hoisted
-      // Script-mode (no ES modules) → body items are statements/directives.
-      last = await this.execStatement(stmt as ESTree.Statement, root);
-    }
-    // The transform wraps user code in `async function __ag_main()`. Invoke it.
-    if (root.has('__ag_main')) {
-      const main = root.get('__ag_main');
-      if (typeof main === 'function') return (main as (...a: unknown[]) => unknown)();
-    }
-    return last;
   }
 
   /**
@@ -1081,8 +1091,7 @@ export class Interpreter {
       case 'TryStatement':
         return this.execTry(node, scope);
       case 'ThrowStatement':
-        // The value itself is thrown: what a script throws, a script (or the caller) catches.
-        throw await this.evalExpr(node.argument, scope);
+        throw new ScriptThrown(await this.evalExpr(node.argument, scope));
       case 'ReturnStatement':
         throw new ReturnSignal(node.argument ? await this.evalReturned(node.argument, scope) : undefined);
       case 'BreakStatement':
@@ -1225,12 +1234,12 @@ export class Interpreter {
   }
 
   /**
-   * What a `catch` clause receives. A value the script threw is its own. A host Error (a refusal
-   * by the interpreter, a failed tool call, a TypeError of a built-in) is replaced by a plain
-   * copy with its name, message and code.
+   * What a `catch` clause receives. A value the script threw is its own. A host Error is copied
+   * with its name, message and code; every other host rejection reason becomes a generic error.
    */
   private toScriptValue(thrown: unknown): unknown {
-    if (!(thrown instanceof Error)) return thrown;
+    if (thrown instanceof ScriptThrown) return thrown.value;
+    if (!(thrown instanceof Error)) return createScriptError('Error', 'Host operation failed');
     const known = this.errorCopies.get(thrown);
     if (known) return known;
     const code = (thrown as { code?: unknown }).code;

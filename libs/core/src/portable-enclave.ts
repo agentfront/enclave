@@ -26,6 +26,7 @@ import { DEFAULT_DOUBLE_VM_CONFIG, SECURITY_LEVEL_CONFIGS } from './types';
 import type { CreateEnclaveOptions, ExecutionContext, ExecutionResult, ExecutionStats, ToolHandler } from './types';
 import { normalizeEnclaveOptions } from './enclave-options';
 import { copyPortableGlobals } from './portable-globals';
+import { createSafeGlobals } from './interpreter/safe-globals';
 import { ReferenceSidecar, REFERENCE_CONFIGS, type ReferenceConfig } from './sidecar';
 import { DEFAULT_SUSPICIOUS_PATTERNS } from './double-vm/suspicious-patterns';
 import type { OperationHistory, ParentValidationConfig } from './double-vm/types';
@@ -137,7 +138,7 @@ class PortableOperationPolicy {
         : undefined;
       const threshold = override ?? this.config.rapidEnumerationThreshold;
       const recentSame = this.history.filter((entry) => entry.operationName === name && now - entry.timestamp < 5000);
-      if (recentSame.length > threshold) {
+      if (recentSame.length >= threshold) {
         throw new Error('Suspicious pattern detected: Rapid enumeration of resources [RAPID_ENUMERATION]');
       }
       for (const pattern of DEFAULT_SUSPICIOUS_PATTERNS) {
@@ -231,6 +232,10 @@ export class PortableEnclave {
     const maxGlobalFunctionCalls = options.maxGlobalFunctionCalls ?? Math.max(10, maxToolCalls * 10);
     boundedInteger('maxGlobalFunctionCalls', maxGlobalFunctionCalls, 1_000_000);
     options.globals = copyPortableGlobals(options.globals, options.allowFunctionsInGlobals === true, maxPayloadBytes);
+    const standardNames = new Set([...Object.keys(createSafeGlobals().globals), 'callTool', 'parallel', 'console']);
+    for (const name of Object.keys(options.globals)) {
+      if (standardNames.has(name)) throw new TypeError(`PortableEnclave cannot replace standard global ${name}`);
+    }
     this.namespaces = normalizeToolNamespaces(options.toolNamespaces, {
       reservedNames: Object.keys(options.globals ?? {}),
     });
@@ -265,7 +270,8 @@ export class PortableEnclave {
     this.policyConfig = {
       ...DEFAULT_DOUBLE_VM_CONFIG.parentValidation,
       ...options.doubleVm?.parentValidation,
-      rapidEnumerationOverrides: options.doubleVm?.parentValidation?.rapidEnumerationOverrides ?? {},
+      rapidEnumerationOverrides: { ...options.doubleVm?.parentValidation?.rapidEnumerationOverrides },
+      blockedOperationPatterns: [...(options.doubleVm?.parentValidation?.blockedOperationPatterns ?? [])],
       suspiciousPatterns: [],
     };
     this.config = {
@@ -283,7 +289,12 @@ export class PortableEnclave {
       globals: options.globals ?? {},
       toolHandler: options.toolHandler,
     } as ExecutionContext['config'];
-    this.adapter = new InterpreterAdapter(interpreter);
+    this.adapter = new InterpreterAdapter({
+      maxSteps: interpreter?.maxSteps,
+      maxCallDepth: interpreter?.maxCallDepth,
+      maxPendingCalls: interpreter?.maxPendingCalls,
+      maxAllocationBytes: interpreter?.maxAllocationBytes,
+    });
     this.options = options;
   }
 
@@ -376,8 +387,14 @@ export class PortableEnclave {
         },
         toolHandler: toolHandler ?? this.options.toolHandler,
         toolNamespaces: this.namespaces,
-        beforeToolCall: (name, args) => policy.toolCall(name, args),
-        beforeGlobalCall: () => policy.globalCall(),
+        beforeToolCall: (name, args) => {
+          policy.toolCall(name, args);
+          return true;
+        },
+        beforeGlobalCall: () => {
+          policy.globalCall();
+          return true;
+        },
         maxToolResultBytes: runOptions.maxToolResultBytes,
         onToolBridgeFailure: runOptions.onToolBridgeFailure,
         sidecar,
@@ -413,7 +430,8 @@ export interface AgentScriptRunnerOptions extends Omit<
   PortableEnclaveOptions,
   'interpreter' | 'globals' | 'doubleVm' | 'maxGlobalFunctionCalls'
 > {
-  hostFunctions: Readonly<Record<string, (...args: unknown[]) => unknown>>;
+  /** Each callback keeps its own parameter types; arguments are validated at the host boundary. */
+  hostFunctions: Readonly<Record<string, (...args: never[]) => unknown>>;
   maxHostFunctionCalls: number;
   maxSteps?: number;
   maxCallDepth?: number;

@@ -58,7 +58,7 @@ describe('PortableEnclave AgentScript', () => {
       maxIterations: 100,
       maxSteps: 100_000,
       maxHostFunctionCalls: 20,
-      hostFunctions: { lookup: (name) => ({ name }) },
+      hostFunctions: { lookup: (name: string) => ({ name }) },
     });
     try {
       expect(AgentScriptRunner.capabilities).toContain('validated-agentscript');

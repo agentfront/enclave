@@ -61,7 +61,12 @@ export function copyPortableGlobals(
         charge(key);
         if (array) {
           const index = Number(key);
-          if (!Number.isSafeInteger(index) || index < 0 || String(index) !== key) {
+          if (
+            !Number.isSafeInteger(index) ||
+            index < 0 ||
+            index >= (value as unknown[]).length ||
+            String(index) !== key
+          ) {
             throw new TypeError('portable global arrays cannot contain named properties');
           }
           (destination as unknown[])[index] = copy(descriptor.value, depth + 1);

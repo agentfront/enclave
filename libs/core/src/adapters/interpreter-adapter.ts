@@ -333,7 +333,7 @@ export class InterpreterAdapter implements SandboxAdapter {
     callbacks: CallbackInvoker,
   ): Record<string, unknown> {
     const { config } = context;
-    const callTool = observed(this.createCallTool(context, callbacks));
+    const callTool = observed(this.createCallTool(context, callbacks, charge));
     const resolver =
       context.sidecar && context.referenceConfig
         ? new ReferenceResolver(context.sidecar, context.referenceConfig)
@@ -523,7 +523,7 @@ export class InterpreterAdapter implements SandboxAdapter {
       const maxGlobalCalls = config.maxGlobalFunctionCalls ?? Math.max(10, config.maxToolCalls * 10);
       const payloadLimit = config.toolBridge?.maxPayloadBytes ?? DEFAULT_MAX_TOOL_PAYLOAD_BYTES;
       let globalCalls = 0;
-      const copy = (value: unknown): unknown => {
+      const serialize = (value: unknown): string | undefined => {
         const sanitized = sanitizeValue(value, {
           maxDepth: config.maxSanitizeDepth,
           maxProperties: config.maxSanitizeProperties,
@@ -533,13 +533,21 @@ export class InterpreterAdapter implements SandboxAdapter {
         const json = stringifyWithin(sanitized, payloadLimit);
         if (json === undefined) return undefined;
         if (utf8Length(json) > payloadLimit) throw sandboxError('Global function value exceeds bridge limit');
-        return JSON.parse(json);
+        return json;
       };
-      const safeHostCall = (name: string, fn: (...args: unknown[]) => unknown) =>
+      const copy = (value: unknown): unknown => {
+        const json = serialize(value);
+        return json === undefined ? undefined : JSON.parse(json);
+      };
+      const safeHostCall =
+        (name: string, fn: (...args: unknown[]) => unknown) =>
         (...args: unknown[]): unknown => {
           if (callbacks.over || context.aborted) throw executionOver();
-          if (++globalCalls > maxGlobalCalls) throw sandboxError(`Global function call limit exceeded (${maxGlobalCalls})`);
-          context.beforeGlobalCall?.();
+          if (++globalCalls > maxGlobalCalls)
+            throw sandboxError(`Global function call limit exceeded (${maxGlobalCalls})`);
+          if (context.beforeGlobalCall && context.beforeGlobalCall() !== true) {
+            throw sandboxError('Global function policy refused the call');
+          }
           let safeArgs: unknown[];
           try {
             safeArgs = copy(args) as unknown[];
@@ -549,17 +557,23 @@ export class InterpreterAdapter implements SandboxAdapter {
           let outcome: unknown;
           try {
             outcome = fn(...safeArgs);
-          } catch (error: unknown) {
-            const message = (error as { message?: unknown } | null)?.message;
-            throw sandboxError(typeof message === 'string' ? message.slice(0, 1024) : 'Global function failed');
+          } catch {
+            // Host rejection details, including non-Error objects, never become script data.
+            throw sandboxError('Global function failed');
           }
           const settle = (value: unknown): unknown => {
             if (callbacks.over || context.aborted) throw executionOver();
+            let json: string | undefined;
             try {
-              return copy(value);
+              json = serialize(value);
             } catch {
               throw sandboxError(`Global function ${name} returned an unsupported value`);
             }
+            if (json === undefined) return undefined;
+            // The copied result may be retained by the script. Charge its JSON size as part of
+            // the cumulative allocation budget, before creating the script-visible copy.
+            if (value !== null && typeof value === 'object') charge(Math.max(json.length * 2, utf8Length(json)));
+            return JSON.parse(json);
           };
           if (outcome !== null && (typeof outcome === 'object' || typeof outcome === 'function')) {
             let then: unknown;
@@ -569,7 +583,15 @@ export class InterpreterAdapter implements SandboxAdapter {
               throw sandboxError(`Global function ${name} returned an unsupported value`);
             }
             if (typeof then === 'function') {
-              return observed(async () => settle(await Promise.resolve(outcome)))();
+              return observed(async () => {
+                let value: unknown;
+                try {
+                  value = await Promise.resolve(outcome);
+                } catch {
+                  throw sandboxError('Global function failed');
+                }
+                return settle(value);
+              })();
             }
           }
           return settle(outcome);
@@ -579,7 +601,9 @@ export class InterpreterAdapter implements SandboxAdapter {
         if (name.startsWith('__') || Object.prototype.hasOwnProperty.call(globals, name)) continue;
         const value = custom[name];
         globals[name] =
-          typeof value === 'function' ? safeHostCall(name, value as (...args: unknown[]) => unknown) : frozenDataCopy(name, value);
+          typeof value === 'function'
+            ? safeHostCall(name, value as (...args: unknown[]) => unknown)
+            : frozenDataCopy(name, value);
       }
     }
 
@@ -594,6 +618,7 @@ export class InterpreterAdapter implements SandboxAdapter {
   private createCallTool(
     context: ExecutionContext,
     execution: CallbackInvoker,
+    charge: (bytes: number) => void,
   ): (toolName: unknown, args: unknown, options?: unknown) => Promise<unknown> {
     // Hosts that build the context by hand may keep the handler in the configuration.
     const configured = (context.config as { toolHandler?: ExecutionContext['toolHandler'] }).toolHandler;
@@ -641,12 +666,16 @@ export class InterpreterAdapter implements SandboxAdapter {
       }
       if (context.beforeToolCall) {
         const request = JSON.parse(requestJson) as { args: Record<string, unknown> };
-        context.beforeToolCall(toolName, request.args);
+        if (context.beforeToolCall(toolName, request.args) !== true) {
+          throw sandboxError('Tool policy refused the call');
+        }
       }
 
       let response: unknown;
+      let responseJson: string;
       try {
-        response = JSON.parse(await bridge(requestJson));
+        responseJson = await bridge(requestJson);
+        response = JSON.parse(responseJson);
       } catch {
         throw sandboxError('Tool bridge returned invalid JSON');
       }
@@ -656,6 +685,9 @@ export class InterpreterAdapter implements SandboxAdapter {
 
       const reply = response as { ok?: unknown; value?: unknown; error?: Record<string, unknown> };
       if (reply.ok === true) {
+        // The bridge returns a fresh script-visible value on every call. Account for its
+        // serialized size before the script can retain repeated results.
+        charge(Math.max(responseJson.length * 2, utf8Length(responseJson)));
         return throwOnError ? reply.value : { success: true, data: reply.value };
       }
       if (reply.ok === false && reply.error && typeof reply.error === 'object') {

@@ -493,9 +493,11 @@ export interface EnclaveConfig {
    * When set, the VM adapter tracks String and Array allocations and throws
    * a MemoryLimitError if the limit is exceeded. Tracking adds ~5-10% overhead.
    *
-   * Note: This is enforced via allocation tracking, not V8 heap limits. It counts the
-   * operations that make text and arrays grow; a copy is not charged, and objects, Maps and
-   * Sets are not counted. For the engine's own limit, use the worker_threads adapter.
+   * Note: This is enforced via allocation tracking, not V8 heap limits. The VM adapter counts
+   * operations that make text and arrays grow; copies, objects, Maps and Sets are not counted.
+   * The portable interpreter additionally charges copied host-function results and tool responses
+   * by serialized size.
+   * For the engine's own limit, use the worker_threads adapter.
    *
    * Default: 1 * 1024 * 1024 (1 MB); 0 switches the tracking off
    */
@@ -745,11 +747,11 @@ export interface ExecutionContext {
    */
   toolHandler?: ToolHandler;
 
-  /** Portable runner policy, applied to the copied JSON request before a tool can run. */
-  beforeToolCall?: (name: string, args: Record<string, unknown>) => void;
+  /** Synchronous policy: return true to allow the copied request, or throw/return false to refuse. */
+  beforeToolCall?: (name: string, args: Record<string, unknown>) => boolean;
 
-  /** Portable runner policy, applied before any custom host global function can run. */
-  beforeGlobalCall?: () => void;
+  /** Synchronous policy: return true before a custom host global function may run. */
+  beforeGlobalCall?: () => boolean;
 
   /** Called when a successful host tool result is refused before it reaches the script. */
   onToolBridgeFailure?: () => void;
