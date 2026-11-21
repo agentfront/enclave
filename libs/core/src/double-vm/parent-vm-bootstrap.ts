@@ -1374,6 +1374,10 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   const __ag_FunctionToString = Function.prototype.toString;
   const __ag_ObjectToLocaleString = Object.prototype.toLocaleString;
   const __ag_Promise = Promise;
+  const __ag_JSONStringify = JSON.stringify;
+  const __ag_String = String;
+  const __ag_StringValueOf = String.prototype.valueOf;
+  const __ag_NumberValueOf = Number.prototype.valueOf;
 
   /**
    * Creates a "safe" error object that cannot be used to escape the sandbox.
@@ -2756,6 +2760,58 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     return false;
   }
 
+  /** Whether a value has the internal slot that a built-in's valueOf reads. */
+  function hasSlot(valueOf, value) {
+    try {
+      __ag_ReflectApply(valueOf, value, []);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * The JSON text of a value, given up as soon as it would be longer than limit bytes. A value
+   * referenced many times is written as many times, so the text can be far longer than the value
+   * is large. What each member adds is counted as JSON.stringify writes it, and the count is a
+   * lower bound of its UTF-8 bytes (a code unit is at least one byte, an escape only adds), so a
+   * value whose text is within the limit is never given up. The members JSON.stringify visits are
+   * counted as well, also those it leaves out (a function, undefined): at most as many as the limit
+   * has bytes.
+   */
+  var TOO_LARGE = {};
+  function stringifyWithin(value, limit) {
+    var bytes = 0;
+    var visits = 0;
+    var root = true;
+    return __ag_JSONStringify(value, function(key, member) {
+      if (++visits > limit) throw TOO_LARGE;
+      // A String or Number object is written as what it converts to; converted here, the way
+      // JSON.stringify converts it and once, so the count is of what is written.
+      if (member !== null && typeof member === 'object') {
+        if (hasSlot(__ag_StringValueOf, member)) member = __ag_String(member);
+        else if (hasSlot(__ag_NumberValueOf, member)) member = +member;
+      }
+      var added;
+      var kind = typeof member;
+      if (kind === 'string') added = member.length + 2;
+      else if (kind === 'number') added = member - member === 0 ? ('' + member).length : 4;
+      else if (kind === 'boolean') added = member ? 4 : 5;
+      else if (kind === 'object' || kind === 'bigint') added = member === null ? 4 : 2;
+      else added = 0;
+      if (!root) {
+        // An element of an array is written, as null if nothing else; a member of an object
+        // that is written has its key in front of it.
+        if (__ag_ArrayIsArray(this)) added = added || 4;
+        else if (added > 0) added += key.length + 3;
+      }
+      root = false;
+      bytes += added;
+      if (bytes > limit) throw TOO_LARGE;
+      return member;
+    });
+  }
+
   /**
    * Inner VM's callTool function
    * Proxies through parent VM with validation
@@ -2783,11 +2839,18 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       throw createSafeError('Tool arguments must be an object', 'TypeError');
     }
 
-    // Double sanitization (defense in depth)
+    // Double sanitization (defense in depth). Through the string bridge the text is written
+    // within its payload limit (see stringifyWithin), so what is done before the request is
+    // measured is in proportion to the limit.
     var sanitizedArgs;
     try {
-      sanitizedArgs = JSON.parse(JSON.stringify(args));
+      sanitizedArgs = JSON.parse(
+        toolBridgeMode === 'string' ? stringifyWithin(args, toolBridgeMaxPayloadBytes) : JSON.stringify(args)
+      );
     } catch (e) {
+      if (e === TOO_LARGE) {
+        throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
+      }
       throw createSafeError('Tool arguments must be JSON-serializable');
     }
 
