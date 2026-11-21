@@ -578,6 +578,9 @@ export class DoubleVmWrapper implements SandboxAdapter {
         try {
           responseJson = outgoing === undefined ? undefined : stringifyWithin(outgoing, maxPayloadBytes);
         } catch (error: unknown) {
+          if (error instanceof JsonTraversalLimitError) {
+            throw resultRefusal('Tool response exceeds traversal limit', 'TOOL_RESULT_TOO_COMPLEX');
+          }
           if (!(error instanceof JsonTooLargeError)) throw error;
           throw resultRefusal(
             `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,

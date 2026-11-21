@@ -177,6 +177,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
       if (error instanceof JsonTooLargeError) {
         throw createSafeError(`Tool request exceeds maximum size (${maxPayloadBytes} bytes)`, 'RangeError');
       }
+      if (error instanceof JsonTraversalLimitError) {
+        throw createSafeError('Tool request exceeds traversal limit', 'RangeError');
+      }
       throw createSafeTypeError('Tool arguments must be JSON-serializable');
     }
     if (requestJson !== undefined && utf8Length(requestJson) > maxPayloadBytes) {
@@ -269,6 +272,9 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
       try {
         responseJson = value === undefined ? undefined : stringifyWithin(value, maxPayloadBytes);
       } catch (error: unknown) {
+        if (error instanceof JsonTraversalLimitError) {
+          refuseToolResult('Tool response exceeds traversal limit', 'TOOL_RESULT_TOO_COMPLEX');
+        }
         if (!(error instanceof JsonTooLargeError)) throw error;
         refuseToolResult(
           `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
