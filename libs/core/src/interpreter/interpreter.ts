@@ -852,15 +852,23 @@ export class Interpreter {
    * For a host helper that is handed a callback (`parallel(items, fn)`): `fn` may be a function
    * of the script, or a built-in or host function the script passed along.
    */
-  call(fn: unknown, args: unknown[]): unknown {
-    // A helper that is still going when the run has been ended starts nothing more for the script
-    if (this.fatal !== undefined) throw this.fatal;
-    if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
-    // The call continues the chain of the helper that makes it, one call deeper, when the helper
-    // makes it while its own call is starting (`parallel` starts every task that way). A call a
-    // helper makes later, after an `await`, starts a chain of its own.
-    if (this.interpretedFunctions.has(fn)) return (fn as (...a: unknown[]) => unknown)(...args);
-    return this.callFunction(fn, undefined, args, this.callerDepth);
+  async call(fn: unknown, args: unknown[]): Promise<unknown> {
+    try {
+      // A helper that is still going when the run has been ended starts nothing more for the script
+      if (this.fatal !== undefined) throw this.fatal;
+      if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
+      // The call continues the chain of the helper that makes it, one call deeper, when the helper
+      // makes it while its own call is starting (`parallel` starts every task that way). A call a
+      // helper makes later, after an `await`, starts a chain of its own.
+      if (this.interpretedFunctions.has(fn)) return await (fn as (...a: unknown[]) => unknown)(...args);
+      return await this.callFunction(fn, undefined, args, this.callerDepth);
+    } catch (thrown) {
+      // This is the boundary where a script callback returns to a host helper. Expose values the
+      // script threw, while keeping arbitrary host rejection objects out of helper diagnostics.
+      if (thrown instanceof ScriptThrown) throw thrown.value;
+      if (!(thrown instanceof Error)) throw new InterpreterError('Host operation failed');
+      throw thrown;
+    }
   }
 
   /** Number of AST nodes evaluated so far (for execution stats). */

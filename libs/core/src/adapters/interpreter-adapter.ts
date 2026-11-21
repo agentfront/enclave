@@ -687,7 +687,16 @@ export class InterpreterAdapter implements SandboxAdapter {
       if (reply.ok === true) {
         // The bridge returns a fresh script-visible value on every call. Account for its
         // serialized size before the script can retain repeated results.
-        charge(Math.max(responseJson.length * 2, utf8Length(responseJson)));
+        try {
+          charge(Math.max(responseJson.length * 2, utf8Length(responseJson)));
+        } catch (error) {
+          try {
+            context.onToolBridgeFailure?.();
+          } catch {
+            // An observer cannot replace the allocation refusal.
+          }
+          throw error;
+        }
         return throwOnError ? reply.value : { success: true, data: reply.value };
       }
       if (reply.ok === false && reply.error && typeof reply.error === 'object') {
