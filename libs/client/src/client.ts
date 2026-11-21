@@ -436,10 +436,9 @@ export class EnclaveClient {
     const stop = await this.sendStop(session);
     let failure = stop.failure;
 
-    // 404 while the request that creates the session has not settled: the server may create it
-    // still. That is no confirmation; the stop is sent again once the creation request settles.
-    if (failure === null && stop.notFound && session.creating) {
-      failure = 'the session was still being created';
+    // A stop that cannot identify the creation while its POST is pending is retried after POST.
+    if (stop.retryIfCreating && session.creating) {
+      failure ??= 'the session was still being created';
       session.stopAfterCreation = true;
     }
 
@@ -457,12 +456,12 @@ export class EnclaveClient {
 
   /**
    * Ask the server to end a session (`DELETE /sessions/:sessionId`). Never rejects: a failure is
-   * what it answers with. 404 is no failure (the server does not have the session), and is said.
+   * what it answers with. An absent or replaced creation is no failure after its POST settles.
    */
-  private async sendStop(session: ActiveSession): Promise<{ failure: string | null; notFound: boolean }> {
+  private async sendStop(session: ActiveSession): Promise<{ failure: string | null; retryIfCreating: boolean }> {
     const url = `${this.config.baseUrl}/sessions/${sessionPathSegment(session.sessionId)}`;
     let failure: string | null = null;
-    let notFound = false;
+    let retryIfCreating = false;
 
     try {
       await this.withDeadline('Stopping the session', async (signal) => {
@@ -475,7 +474,11 @@ export class EnclaveClient {
 
         // The original creation is absent if its ID is gone or now belongs to another one.
         if (response.status === 404 || response.status === 412) {
-          notFound = true;
+          retryIfCreating = true;
+        } else if (response.status === 409) {
+          // The broker could not associate this ID with the creation being stopped.
+          retryIfCreating = true;
+          failure = 'the server could not confirm the session creation';
         } else if (!response.ok) {
           failure = `the server answered ${response.status}`;
         }
@@ -483,7 +486,7 @@ export class EnclaveClient {
     } catch (error) {
       failure = error instanceof Error ? error.message : 'the request failed';
     }
-    return { failure, notFound };
+    return { failure, retryIfCreating };
   }
 
   /**

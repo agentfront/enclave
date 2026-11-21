@@ -613,6 +613,10 @@ export class SessionHandler {
 
     const instanceId = this.instanceIdOf(req, res);
     if (!instanceId) return;
+    if (instanceId.value !== undefined && session.instanceId === undefined) {
+      this.sendError(res, 409, 'SESSION_INSTANCE_UNAVAILABLE', 'Session has no creation identifier');
+      return;
+    }
     if (session.instanceId !== instanceId.value) {
       this.sendError(res, 412, 'SESSION_INSTANCE_MISMATCH', 'Session was replaced');
       return;
