@@ -3215,8 +3215,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
    * Rate-limited console for inner VM
    */
   var consoleStats = { totalBytes: 0, callCount: 0 };
-  var maxConsoleBytes = hostConfig.maxConsoleOutputBytes || 65536;
-  var maxConsoleCalls = hostConfig.maxConsoleCalls || 100;
+  // A limit of 0 is a limit: nothing may be written (it is not "unset").
+  var maxConsoleBytes = typeof hostConfig.maxConsoleOutputBytes === 'number' ? hostConfig.maxConsoleOutputBytes : 65536;
+  var maxConsoleCalls = typeof hostConfig.maxConsoleCalls === 'number' ? hostConfig.maxConsoleCalls : 100;
 
   function createSafeConsoleMethod(level) {
     return function() {
