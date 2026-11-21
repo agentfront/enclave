@@ -261,6 +261,8 @@ export function createStrictPreset(options: PresetOptions = {}): ValidationRule[
   rules.push(
     new NoRegexMethodsRule({
       allowStringArguments: true, // Allow safe string arguments
+      // ...but analyze the pattern match / matchAll / search compile from one
+      analyzeStringPatterns: { analysisLevel: 'catastrophic' },
     }),
   );
 

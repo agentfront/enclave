@@ -89,9 +89,29 @@ export class ResourceExhaustionRule implements ValidationRule {
               return;
             }
 
-            // Check for large exponent
+            // Check for large exponent. An exponent that is not an integer has no BigInt value
+            // (and is a TypeError at run time): it is reported rather than converted.
             if (node.right.type === 'Literal') {
-              const exponent = node.right.bigint ? BigInt(node.right.bigint) : BigInt(node.right.value || 0);
+              const raw = node.right.bigint ?? node.right.value ?? 0;
+              if (typeof raw === 'number' && !Number.isInteger(raw)) {
+                context.report({
+                  code: 'RESOURCE_EXHAUSTION',
+                  message: `BigInt exponent ${raw} is not an integer`,
+                  location: this.getLocation(node),
+                });
+                return;
+              }
+              let exponent: bigint;
+              try {
+                exponent = BigInt(raw);
+              } catch {
+                context.report({
+                  code: 'RESOURCE_EXHAUSTION',
+                  message: 'BigInt exponent is not an integer',
+                  location: this.getLocation(node),
+                });
+                return;
+              }
               if (exponent > maxBigIntExponent) {
                 context.report({
                   code: 'RESOURCE_EXHAUSTION',

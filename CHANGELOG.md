@@ -18,6 +18,10 @@ A follow-up to 2.19.0: two more layers behind the validator, and the dependency 
 
 ### Security
 
+- `@enclave-vm/broker`: the kept history and a tool-call event are measured in UTF-8 bytes, as `history.maxBytes` states it; nothing is appended after a session's `final` event; and `sessionTtlMs` (for an HTTP session, its request's `maxExecutionMs`) cancels a session that is still running when it is reached, where it used to wait for the next cleanup (ATK-BRK-16, ATK-BRK-112, ATK-BRK-113, ATK-BRK-115).
+- `@enclave-vm/client`: a stop that gets 404 while the request creating the session has not settled is not taken for a confirmation: `onError` gets `CANCEL_FAILED`, and the stop is sent again once the creation request settles (ATK-CLIENT-18).
+- `@enclave-vm/react`: the provider compares its configuration with a copy of what it held when the client was built, so a configuration changed in place gets a new client (ATK-REACT-03).
+- `@enclave-vm/runtime`: a WebSocket connect in progress fails when the channel is closed or the socket closes before it opened, instead of staying pending (ATK-RUNTIME-12).
 - `@enclave-vm/react`: the state of `useEnclaveSession` belongs to the latest `execute` of the current client. When the provider's client changes, the state is reset and a run of the previous client no longer writes to it or calls the hook's callbacks; a run that finishes after a later one started leaves the later run's state and its cancellation alone, so `cancel()` still reaches it. Each `execute` still resolves with its own result (ATK-REACT-01, ATK-REACT-02).
 - `@enclave-vm/broker`: a tool result larger than the sandbox's `toolBridge.maxPayloadBytes` is a failed call in the session itself (`TOOL_BRIDGE_RESPONSE_TOO_LARGE`), so `cancelOnFirstError` stops the session at it. The bridge refused it after the session had counted the call as a success, and a later tool could still run (ATK-BRK-114).
 - `@enclave-vm/broker`: the periodic poll of an OpenAPI specification sends the source's `headers` to the specification's origin only; a redirect to another origin is followed without them, as for the first load (ATK-BRK-110).

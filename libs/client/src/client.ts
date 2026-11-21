@@ -109,6 +109,10 @@ interface ActiveSession {
   ended: boolean;
   /** Removes the listener on the caller's abort signal. */
   detachSignal: () => void;
+  /** While the request that creates the session has not settled. */
+  creating?: boolean;
+  /** Set when a stop could not be confirmed while the session was being created: it is sent again. */
+  stopAfterCreation?: boolean;
 }
 
 function invalidConfig(message: string): never {
@@ -426,25 +430,14 @@ export class EnclaveClient {
     this.endSession(session, this.cancelledResult(session, reason));
 
     // Send the stop request to the server
-    const url = `${this.config.baseUrl}/sessions/${sessionPathSegment(session.sessionId)}`;
-    let failure: string | null = null;
+    const stop = await this.sendStop(session);
+    let failure = stop.failure;
 
-    try {
-      await this.withDeadline('Stopping the session', async (signal) => {
-        const response = await this.config.fetch(url, {
-          method: 'DELETE',
-          headers: this.buildHeaders(),
-          signal,
-        });
-        void response.body?.cancel().catch(() => undefined);
-
-        // 404: the server no longer has the session, so there is nothing left to stop
-        if (!response.ok && response.status !== 404) {
-          failure = `the server answered ${response.status}`;
-        }
-      });
-    } catch (error) {
-      failure = error instanceof Error ? error.message : 'the request failed';
+    // 404 while the request that creates the session has not settled: the server may create it
+    // still. That is no confirmation; the stop is sent again once the creation request settles.
+    if (failure === null && stop.notFound && session.creating) {
+      failure = 'the session was still being created';
+      session.stopAfterCreation = true;
     }
 
     if (failure !== null) {
@@ -457,6 +450,37 @@ export class EnclaveClient {
         // A handler's own error does not change the outcome of cancel()
       }
     }
+  }
+
+  /**
+   * Ask the server to end a session (`DELETE /sessions/:sessionId`). Never rejects: a failure is
+   * what it answers with. 404 is no failure (the server does not have the session), and is said.
+   */
+  private async sendStop(session: ActiveSession): Promise<{ failure: string | null; notFound: boolean }> {
+    const url = `${this.config.baseUrl}/sessions/${sessionPathSegment(session.sessionId)}`;
+    let failure: string | null = null;
+    let notFound = false;
+
+    try {
+      await this.withDeadline('Stopping the session', async (signal) => {
+        const response = await this.config.fetch(url, {
+          method: 'DELETE',
+          headers: this.buildHeaders(),
+          signal,
+        });
+        void response.body?.cancel().catch(() => undefined);
+
+        // 404: the server does not have the session, so there is nothing left to stop
+        if (response.status === 404) {
+          notFound = true;
+        } else if (!response.ok) {
+          failure = `the server answered ${response.status}`;
+        }
+      });
+    } catch (error) {
+      failure = error instanceof Error ? error.message : 'the request failed';
+    }
+    return { failure, notFound };
   }
 
   /**
@@ -480,16 +504,27 @@ export class EnclaveClient {
     }
 
     await this.runConnection(session, async (signal) => {
-      const response = await this.config.fetch(url, {
-        method: 'POST',
-        headers: {
-          ...this.buildHeaders(),
-          'Content-Type': 'application/json',
-          Accept: 'application/x-ndjson',
-        },
-        body: JSON.stringify(body),
-        signal,
-      });
+      session.creating = true;
+      let response: Response;
+      try {
+        response = await this.config.fetch(url, {
+          method: 'POST',
+          headers: {
+            ...this.buildHeaders(),
+            'Content-Type': 'application/json',
+            Accept: 'application/x-ndjson',
+          },
+          body: JSON.stringify(body),
+          signal,
+        });
+      } finally {
+        session.creating = false;
+        // A stop that came while the session was being created and was not confirmed
+        if (session.stopAfterCreation) {
+          session.stopAfterCreation = false;
+          void this.sendStop(session);
+        }
+      }
 
       if (!response.ok) {
         const errorText = (await response.text()).slice(0, 500);

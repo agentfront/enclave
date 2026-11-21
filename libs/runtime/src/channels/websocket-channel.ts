@@ -90,6 +90,8 @@ export class WebSocketChannel implements RuntimeChannel {
   private readonly messageHandlers: Set<(message: RuntimeChannelMessage) => void> = new Set();
   private retryCount = 0;
   private retryTimeout: ReturnType<typeof setTimeout> | null = null;
+  /** Fails the connect that is in progress, if any. */
+  private pendingConnectFailure: ((error: Error) => void) | null = null;
   private messageBuffer: string[] = [];
 
   constructor(config: WebSocketChannelConfig) {
@@ -133,12 +135,24 @@ export class WebSocketChannel implements RuntimeChannel {
   /**
    * Connect to the WebSocket server
    */
-  async connect(): Promise<void> {
+  connect(): Promise<void> {
     if (this.state === 'connected' || this.state === 'connecting') {
-      return;
+      return Promise.resolve();
     }
 
+    // Not an async function: the promise below is the one the caller gets, so its outcome reaches
+    // the caller without the extra steps of a promise that adopts another
+
     return new Promise((resolve, reject) => {
+      // Settled once: by the open, by an error or the timeout, or by a close before the open
+      let settled = false;
+      const fail = (error: Error): void => {
+        if (settled) return;
+        settled = true;
+        this.pendingConnectFailure = null;
+        reject(error);
+      };
+      this.pendingConnectFailure = fail;
       this.state = 'connecting';
       this.log(`Connecting to ${this.config.url}`);
 
@@ -150,13 +164,17 @@ export class WebSocketChannel implements RuntimeChannel {
 
       const timeout = setTimeout(() => {
         if (this.state === 'connecting') {
+          // The reason first: closing the socket may report its close at once
+          fail(new Error('Connection timeout'));
           socket.close();
-          reject(new Error('Connection timeout'));
         }
       }, this.config.connectionTimeoutMs);
 
       socket.onopen = () => {
         clearTimeout(timeout);
+        if (settled) return;
+        settled = true;
+        this.pendingConnectFailure = null;
         this.state = 'connected';
         this.retryCount = 0;
         this.log('Connected');
@@ -170,6 +188,8 @@ export class WebSocketChannel implements RuntimeChannel {
       socket.onclose = (event: CloseEvent) => {
         clearTimeout(timeout);
         this.log(`Disconnected: ${event.code} ${event.reason}`);
+        // Closed before it opened: the connect fails
+        fail(new Error('Connection closed before it opened'));
 
         if (this.state !== 'closed') {
           this.state = 'disconnected';
@@ -182,7 +202,7 @@ export class WebSocketChannel implements RuntimeChannel {
         this.log(`Error: ${error}`);
 
         if (this.state === 'connecting') {
-          reject(new Error('Connection failed'));
+          fail(new Error('Connection failed'));
         }
       };
 
@@ -224,6 +244,8 @@ export class WebSocketChannel implements RuntimeChannel {
    */
   close(): void {
     this.state = 'closed';
+    // A connect in progress fails now, whether or not the socket reports its close
+    this.pendingConnectFailure?.(new Error('Channel closed'));
 
     if (this.retryTimeout) {
       clearTimeout(this.retryTimeout);

@@ -36,6 +36,13 @@ function sameConfig(a: EnclaveClientConfig, b: EnclaveClientConfig): boolean {
   return true;
 }
 
+/** A copy of a configuration, its headers included, that a change in place does not reach. */
+function snapshotConfig(config: EnclaveClientConfig): EnclaveClientConfig {
+  const copy: EnclaveClientConfig = { ...config };
+  if (config.headers) copy.headers = { ...config.headers };
+  return copy;
+}
+
 function sameHeaders(a: Record<string, string> | undefined, b: Record<string, string> | undefined): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -71,24 +78,30 @@ export function EnclaveProvider({
   client: providedClient,
   children,
 }: EnclaveProviderProps): React.ReactElement {
-  // The client this provider created, with the configuration it was created from
-  const createdRef = useRef<{ client: EnclaveClient; config: EnclaveClientConfig } | null>(null);
+  // The client this provider created, with the configuration it was created from and a copy of
+  // what that configuration held then
+  const createdRef = useRef<{
+    client: EnclaveClient;
+    config: EnclaveClientConfig;
+    snapshot: EnclaveClientConfig;
+  } | null>(null);
 
-  // Create or use provided client
-  const { client, clientConfig } = useMemo(() => {
-    if (providedClient) {
-      return { client: providedClient, clientConfig: config };
+  // Create or use provided client. Compared on every render with a copy of what the configuration
+  // held when the client was built, not by the identity of `config`: a configuration changed in
+  // place (another server, other credentials) is another configuration, and a client is never
+  // used with a configuration it was not built from.
+  let client: EnclaveClient;
+  let clientConfig: EnclaveClientConfig;
+  if (providedClient) {
+    client = providedClient;
+    clientConfig = config;
+  } else {
+    if (!createdRef.current || !sameConfig(createdRef.current.snapshot, config)) {
+      createdRef.current = { client: new EnclaveClient(config), config, snapshot: snapshotConfig(config) };
     }
-
-    // Create a new client if there is none yet, or if the one there is was created from a
-    // configuration with other values: a client is never used with a configuration it was
-    // not built from
-    if (!createdRef.current || !sameConfig(createdRef.current.config, config)) {
-      createdRef.current = { client: new EnclaveClient(config), config };
-    }
-
-    return { client: createdRef.current.client, clientConfig: createdRef.current.config };
-  }, [providedClient, config]);
+    client = createdRef.current.client;
+    clientConfig = createdRef.current.config;
+  }
 
   // Memoize context value
   const contextValue = useMemo<EnclaveContextValue>(

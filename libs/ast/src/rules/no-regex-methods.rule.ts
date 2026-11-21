@@ -3,6 +3,7 @@ import { ValidationRule, ValidationContext, ValidationSeverity } from '../interf
 import { analyzeScopes } from '../utils/scope-analysis';
 import { staticPropertyName, walkAll, type AnyNode } from '../utils/ast-walk';
 import { tryGetStaticComputedKeys } from './coercion-utils';
+import { analyzeForReDoS, REDOS_THRESHOLDS } from '../pre-scanner/checks/regex-check';
 
 /**
  * Options for the NoRegexMethodsRule
@@ -57,6 +58,13 @@ export interface NoRegexMethodsOptions {
    * Default: false
    */
   requireDirectCall?: boolean;
+  /**
+   * With `allowStringArguments`, analyze the string that `match`, `matchAll` or `search` compiles
+   * into a regular expression, as a regex literal is analyzed (`REGEX_REDOS_VULNERABLE` at or above
+   * the threshold). Without it a string argument is taken as safe whatever pattern it spells.
+   * Default: off
+   */
+  analyzeStringPatterns?: { analysisLevel?: 'catastrophic' | 'polynomial'; blockThreshold?: number };
 
   /**
    * Custom error message template.
@@ -161,6 +169,7 @@ export class NoRegexMethodsRule implements ValidationRule {
   private readonly hostObjectNames: ReadonlySet<string>;
   private readonly requireDirectCall: boolean;
   private readonly messageTemplate: string;
+  private readonly stringPatternAnalysis?: { analysisLevel: 'catastrophic' | 'polynomial'; blockThreshold: number };
 
   constructor(options: NoRegexMethodsOptions = {}) {
     this.requireDirectCall = options.requireDirectCall === true;
@@ -169,6 +178,12 @@ export class NoRegexMethodsRule implements ValidationRule {
     this.blockedRegexMethods = new Set(options.blockedRegexMethods ?? DEFAULT_REGEX_METHODS);
     this.allowStringArguments = options.allowStringArguments ?? true;
     this.messageTemplate = options.messageTemplate ?? 'Use of .{method}() with regex is not allowed (ReDoS risk)';
+    if (options.analyzeStringPatterns) {
+      this.stringPatternAnalysis = {
+        analysisLevel: options.analyzeStringPatterns.analysisLevel ?? 'catastrophic',
+        blockThreshold: options.analyzeStringPatterns.blockThreshold ?? REDOS_THRESHOLDS.BLOCK,
+      };
+    }
   }
 
   validate(context: ValidationContext): void {
@@ -339,7 +354,12 @@ export class NoRegexMethodsRule implements ValidationRule {
     if (this.blockedStringMethods.has(methodName)) {
       // If allowing string arguments, check the first argument
       if (this.allowStringArguments && this.hasStringArgument(node)) {
-        return; // Safe - using string, not regex
+        // match / matchAll / search compile the string into a regular expression: it is analyzed
+        // like a regex literal where the rule is asked to
+        if (this.stringPatternAnalysis && PATTERN_COMPILING_STRING_METHODS.has(methodName)) {
+          this.analyzeStringPattern(node, callee, methodName, context);
+        }
+        return;
       }
 
       // Check if argument is a regex literal or RegExp constructor
@@ -495,6 +515,27 @@ export class NoRegexMethodsRule implements ValidationRule {
   /** The blocked method among `names` that compiles its argument into a pattern, if any. */
   private patternCompilingName(names: readonly string[]): string | undefined {
     return names.find((name) => PATTERN_COMPILING_STRING_METHODS.has(name) && this.blockedStringMethods.has(name));
+  }
+
+  /** The string a pattern-compiling method gets, analyzed for ReDoS like a regex literal. */
+  private analyzeStringPattern(node: any, callee: any, methodName: string, context: ValidationContext): void {
+    const analysis = this.stringPatternAnalysis;
+    const firstArg = node.arguments[0];
+    if (!analysis || !firstArg) return;
+    const pattern: unknown =
+      firstArg.type === 'Literal' ? firstArg.value : (firstArg.quasis?.[0]?.value?.cooked ?? undefined);
+    if (typeof pattern !== 'string') return;
+    const result = analyzeForReDoS(pattern, analysis.analysisLevel);
+    if (result.score >= analysis.blockThreshold) {
+      context.report({
+        code: 'REGEX_REDOS_VULNERABLE',
+        message:
+          `ReDoS vulnerability detected in the pattern .${methodName}() compiles from a string ` +
+          `(${result.vulnerabilityType}): ${result.explanation}`,
+        location: this.getLocation(callee),
+        data: { method: methodName, pattern, score: result.score, vulnerabilityType: result.vulnerabilityType },
+      });
+    }
   }
 
   private hasStringArgument(node: any): boolean {
