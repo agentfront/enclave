@@ -406,7 +406,8 @@ export function findRegexLiterals(source: string): Array<{
             line,
           });
           i = regexResult.endIndex;
-          token.last = 'other';
+          // A completed regex literal is a value. A following slash divides that value.
+          token.last = 'close';
           continue;
         }
       }
@@ -524,6 +525,15 @@ export function findRegexLiterals(source: string): Array<{
       } else if (char === ';') {
         token.last = 'other';
         statementStart = true;
+      } else if (
+        (char === '+' || char === '-') &&
+        nextChar === char &&
+        (token.last === 'identifier' || token.last === 'number' || token.last === 'close')
+      ) {
+        // A postfix increment/decrement completes a value; a slash after it is division.
+        i++;
+        token.last = 'close';
+        statementStart = false;
       } else if (isOperator(char)) {
         if (char === '>' && source[i - 1] === '=') pendingArrowBody = true;
         token.last = 'operator';
