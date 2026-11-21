@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Membrane (double VM), array arguments.** An array a script passes to a built-in method of host data is seen through a guard, as an object already was: a method of its own that the built-in calls receives values behind the membrane (ATK-HVAL-09). It is still an array to the built-in, which reads its elements and its length as they are.
 - **Interpreter adapter, property keys.** A property is read under a key of the script through one function that checks the key where the read happens, a write and a delete check it again, and `Object.prototype` and `Array.prototype` are never data a script may change (ATK-INTERP). These keys were refused before; nothing changes for a script. It closes the two code-scanning alerts on the interpreter.
 
 ### After 2.19.1: a review of every package
