@@ -21,6 +21,7 @@ GHSA-jqf3-vx4j-7p22 and what is like it. The report named two spellings of a com
 - **The evaluation follows the engine where the review of this change found it did not**: the function given to `Array.from` is called with the value and the index only, an object spread of a string copies its code units (not its characters), and `this` in a computed key of a class member is the `this` around the class, so a write through it is not taken for a write to an object of the class. A copy onto a frozen object and a method that changes a frozen list are not computed as writes that succeed, through whichever name the object is reached.
 - **`NoEvalRule` finds a timer that is taken as a value through a key a `const` holds** (`timers[name].call(...)`, `const { [name]: later } = timers`), as it found one that is called. A timer taken out under its own name (`const { [name]: setTimeout } = timers`) is accepted like `const { setTimeout } = timers`: it is called by that name, and that call is checked.
 - **`NoRegexMethodsRule` checks a call as every blocked method its computed name may be** (`value[flag ? 'replace' : 'exec'](...)`), and no longer only as the first of them. A call that is refused is reported once.
+- **The names a value may be are each listed once.** `ResourceExhaustionRule` compared every name a variable's value could be with all the names before it, so a short script whose key could be one of tens of thousands of names kept the host busy for the better part of a minute. The cost now grows with the number of names, which is bounded.
 
 ### Changed
 
@@ -32,6 +33,8 @@ GHSA-jqf3-vx4j-7p22 and what is like it. The report named two spellings of a com
 - **`ResourceExhaustionRule` follows a key held in a variable by the variable, not by the spelling of its name**: the default of a parameter no longer marks another variable of the same name (`CONSTRUCTOR_ACCESS`).
 - **`DisallowedIdentifierRule` reports `__proto__` as an object key once** where both `blockProtoInObjectLiterals` and `disallowedObjectKeys` refuse it.
 - **A rule does not change `ValidationContext.ast`.** This is now stated: the rules of a validation share the tree and what is worked out about it.
+- **A rule that runs out of stack by itself is thrown.** `SOURCE_TOO_DEEP` is the answer where the source nests deeply (more than 256 levels). On a source that does not, the stack error is the rule's own, and `validate()` throws it, as it did before `SOURCE_TOO_DEEP` existed.
+- **A template literal without a substitution is read as it is written**, like a string literal, however long it is. `STATIC_KEY_TOO_LONG` is for what an expression builds.
 
 ## [2.20.0] - 2026-11-21
 

@@ -154,9 +154,10 @@ export function staticKeyCandidates(
   node: AnyNode,
   options: StaticEvaluationOptions = {},
 ): string[] {
-  const names: string[] = [];
+  // (A set: an expression may be one of very many names, and each is looked up once)
+  const names = new Set<string>();
   for (const alternative of evaluateStatic(context.ast, node, options)) {
-    if (alternative.key !== undefined && !names.includes(alternative.key)) names.push(alternative.key);
+    if (alternative.key !== undefined) names.add(alternative.key);
   }
-  return names;
+  return [...names];
 }

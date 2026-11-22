@@ -2865,6 +2865,11 @@ class StaticEvaluator {
   private template(node: AnyNode, env: Env | undefined): Value[] {
     const quasis: AnyNode[] = node.quasis ?? [];
     const expressions: AnyNode[] = node.expressions ?? [];
+    if (expressions.length === 0 && quasis.length === 1) {
+      // Without a substitution nothing is built: it is read as it is written, like a string literal
+      const written = quasis[0].value?.cooked;
+      return typeof written === 'string' ? [primitive(written)] : this.giveUp(node, env);
+    }
     let acc: Value[] = [primitive('')];
     for (let index = 0; index < quasis.length; index++) {
       const cooked = quasis[index].value?.cooked;
