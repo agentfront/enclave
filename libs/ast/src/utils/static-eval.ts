@@ -572,6 +572,74 @@ function isHolder(name: string): boolean {
   return HOST_OBJECTS.has(name) || GLOBAL_OBJECT_NAMES.has(name);
 }
 
+/**
+ * Methods of a text, a number or a list that every engine a script may run in has: those of
+ * ES2019 and before. A newer one (`at`, `replaceAll`, `toSorted`, ...) may be missing.
+ */
+const BASELINE_METHODS: ReadonlySet<string> = new Set([
+  // String.prototype
+  'charAt',
+  'charCodeAt',
+  'codePointAt',
+  'concat',
+  'endsWith',
+  'includes',
+  'indexOf',
+  'lastIndexOf',
+  'localeCompare',
+  'match',
+  'normalize',
+  'padEnd',
+  'padStart',
+  'repeat',
+  'replace',
+  'search',
+  'slice',
+  'split',
+  'startsWith',
+  'substr',
+  'substring',
+  'toLocaleLowerCase',
+  'toLocaleUpperCase',
+  'toLowerCase',
+  'toString',
+  'toUpperCase',
+  'trim',
+  'trimEnd',
+  'trimStart',
+  'valueOf',
+  // Number.prototype
+  'toExponential',
+  'toFixed',
+  'toLocaleString',
+  'toPrecision',
+  // Array.prototype
+  'copyWithin',
+  'entries',
+  'every',
+  'fill',
+  'filter',
+  'find',
+  'findIndex',
+  'flat',
+  'flatMap',
+  'forEach',
+  'join',
+  'keys',
+  'map',
+  'pop',
+  'push',
+  'reduce',
+  'reduceRight',
+  'reverse',
+  'shift',
+  'some',
+  'sort',
+  'splice',
+  'unshift',
+  'values',
+]);
+
 /** Methods of a string that take and return plain values and compile no pattern. */
 const STRING_METHODS: ReadonlySet<string> = new Set([
   'at',
@@ -841,7 +909,11 @@ type PatternStep =
   | { type: 'default'; node: AnyNode };
 
 /** An assignment to a variable that is not its declaration. */
-type Write = { operator: string; right: AnyNode } | { target: AnyNode };
+type Write =
+  | { operator: string; right: AnyNode }
+  | { target: AnyNode }
+  /** The variable starts as another one, with every value that one may hold (`function f(k = 1) { var k; }`) */
+  | { copies: ScopeBinding };
 
 /** What a key is: a name, a symbol, or not known */
 type KeyName = { name: string } | { symbol: SymbolValue } | 'dynamic' | 'unresolved';
@@ -879,6 +951,15 @@ class StaticEvaluator {
   private readonly inWith = new WeakSet<AnyNode>();
   private readonly bindingMemo = new Map<ScopeBinding, Value[]>();
   private readonly computing = new Set<ScopeBinding>();
+  /**
+   * Of a variable being computed: what it is known to hold so far, and what an earlier pass found.
+   * A variable read again while it is computed (`let k = 'a'; let j = k; k = j + 'b'`) is that,
+   * or anything else: not only "anything else", which would lose the names it already has.
+   */
+  private readonly partial = new Map<ScopeBinding, Value[]>();
+  private readonly seeded = new Map<ScopeBinding, Value[]>();
+  /** The variables read again while they were computed, in order (see `computeBinding`) */
+  private readonly cuts: ScopeBinding[] = [];
   private readonly dependencies = new Map<ScopeBinding, ScopeBinding[]>();
   /** Answers that do not depend on a function being applied, for each of the two ways to read a variable */
   private readonly closedMemo = { followed: new WeakMap<AnyNode, boolean>(), plain: new WeakMap<AnyNode, boolean>() };
@@ -1023,13 +1104,17 @@ class StaticEvaluator {
       }
     }
 
+    const record = (into: ScopeBinding, write: Write): void => {
+      const list = this.writesTo.get(into);
+      if (list) list.push(write);
+      else this.writesTo.set(into, [write]);
+    };
     for (const binding of scopes.bindings) {
       // `catch (e) { var e = value; }`: the declaration gives its value to the catch parameter
-      const assigned = binding.initializes;
-      if (!assigned) continue;
-      const list = this.writesTo.get(assigned);
-      if (list) list.push({ target: binding.node });
-      else this.writesTo.set(assigned, [{ target: binding.node }]);
+      if (binding.initializes) record(binding.initializes, { target: binding.node });
+      // `function f(k = 1) { var k; }`: the body's variable starts as the parameter, with whatever
+      // the parameter holds by then (what the parameter list assigns to it included). Both can hold.
+      if (binding.startsAs) record(binding, { copies: binding.startsAs });
     }
 
     // The built-ins that are named: one that is assigned to is changed; one that holds the
@@ -1669,7 +1754,8 @@ class StaticEvaluator {
               : this.toPrimitive(value, 'string', node, undefined);
           // A key is converted with `toString` first. An object that also has a `valueOf` is
           // converted with that first wherever it is added to a string (`'' + object`), which
-          // is one edit away: the name it would give there is reported here as well.
+          // is one edit away: the name it would give there is reported here as well. (A refusal
+          // the engine would not need, on purpose: see rules.spec, "valueOf arrow".)
           if (value.kind === 'object' && value.properties.has('valueOf')) {
             conversions.push(...this.toPrimitive(value, 'number', node, undefined));
           }
@@ -2134,14 +2220,25 @@ class StaticEvaluator {
    */
   private bindingValues(binding: ScopeBinding): Value[] {
     const cached = this.bindingMemo.get(binding);
-    if (cached) return cached;
-    if (this.computing.has(binding)) return [DYNAMIC];
+    if (cached) {
+      // (While it is computed, what is kept for it is what it holds so far, not all it holds: what
+      // is computed from it is not kept either)
+      if (this.computing.has(binding)) this.cuts.push(binding);
+      return cached;
+    }
+    if (this.computing.has(binding)) {
+      this.cuts.push(binding);
+      return [...(this.seeded.get(binding) ?? []), ...(this.partial.get(binding) ?? []), DYNAMIC];
+    }
 
     // A chain of constants (`const b = a + ''; const c = b + ''; ...`) is computed from its start,
     // one constant at a time, so that its length is not the depth of this evaluation.
     if (this.isSimpleConst(binding)) {
       const pending: ScopeBinding[] = [binding];
       const expanded = new Set<ScopeBinding>();
+      // (What was computed for it, also where it is not kept because it rests on a variable that
+      // was still being computed)
+      let computed: Value[] | undefined;
       while (pending.length > 0) {
         const current = pending[pending.length - 1];
         if (this.bindingMemo.has(current) || this.computing.has(current)) {
@@ -2159,9 +2256,10 @@ class StaticEvaluator {
           }
         }
         pending.pop();
-        this.computeBinding(current);
+        const values = this.computeBinding(current);
+        if (current === binding) computed = values;
       }
-      return this.bindingMemo.get(binding) ?? [DYNAMIC];
+      return this.bindingMemo.get(binding) ?? computed ?? [DYNAMIC];
     }
 
     return this.computeBinding(binding);
@@ -2192,8 +2290,25 @@ class StaticEvaluator {
     this.epoch = ++this.epochs;
     this.lenient = false;
     try {
-      const values = this.readBinding(binding);
-      this.bindingMemo.set(binding, values);
+      const mark = this.cuts.length;
+      let values = this.readBinding(binding);
+      // Read again while it was computed: what it was found to hold feeds the next pass, until
+      // that finds nothing more (a few times at most, as for `k += 'x'`)
+      for (let pass = 1; pass < MAX_PASSES && this.cuts.slice(mark).includes(binding); pass++) {
+        this.seeded.set(
+          binding,
+          values.filter((value) => value.kind !== 'dynamic'),
+        );
+        this.cuts.length = mark;
+        const next = this.readBinding(binding);
+        const grew = next.length > values.length;
+        values = next;
+        if (!grew) break;
+      }
+      // What was read of another variable still being computed is not all it holds: what is
+      // computed from it is not kept, and is computed again when it is asked for again
+      const incomplete = this.cuts.slice(mark).some((cut) => cut !== binding && this.computing.has(cut));
+      if (!incomplete) this.bindingMemo.set(binding, values);
       return values;
     } finally {
       this.steps = saved.steps;
@@ -2207,6 +2322,10 @@ class StaticEvaluator {
       this.epoch = saved.epoch;
       this.lenient = saved.lenient;
       this.computing.delete(binding);
+      this.partial.delete(binding);
+      this.seeded.delete(binding);
+      // (Once no variable is being computed, what was read again is settled)
+      if (this.computing.size === 0) this.cuts.length = 0;
     }
   }
 
@@ -2232,6 +2351,7 @@ class StaticEvaluator {
     // The constants the variable can be seen holding, and "or anything else"
     this.lenient = true;
     const known: Value[] = [];
+    this.partial.set(binding, known);
     const seen = new Set<string>();
     let unresolved = false;
     const take = (values: Value[]): boolean => {
@@ -2270,6 +2390,10 @@ class StaticEvaluator {
     for (const write of this.writesTo.get(binding) ?? []) {
       if ('target' in write) {
         take(this.attempt(() => this.sourceValues(this.sourceOf(write.target), undefined)));
+        continue;
+      }
+      if ('copies' in write) {
+        take(this.attempt(() => this.bindingValues(write.copies)));
         continue;
       }
       const { operator, right } = write;
@@ -2336,9 +2460,11 @@ class StaticEvaluator {
         const values =
           'target' in write
             ? this.attempt(() => this.sourceValues(this.sourceOf(write.target), undefined))
-            : write.operator === '=' || LOGICAL_ASSIGNMENTS.has(write.operator)
-              ? this.attempt(() => this.ev(write.right, undefined))
-              : [];
+            : 'copies' in write
+              ? this.attempt(() => this.bindingValues(write.copies))
+              : write.operator === '=' || LOGICAL_ASSIGNMENTS.has(write.operator)
+                ? this.attempt(() => this.ev(write.right, undefined))
+                : [];
         known.push(...values.filter(isResolved));
         if (values.some((value) => value.kind === 'unresolved' && !value.object)) missed = true;
       }
@@ -2656,13 +2782,16 @@ class StaticEvaluator {
       }
     }
 
-    // By name: `const f = (k) => ...; f('a')`, `function f(k) { ... } f('a')`
+    // By name: `const f = (k) => ...; f('a')`, `function f(k) { ... } f('a')`, and the default of a
+    // parameter, `function g(f = (k) => ...) { f('a'); }`
     const declarator =
       fn.type === 'FunctionDeclaration'
         ? fn.id
         : parent?.type === 'VariableDeclarator' && parent.init === node && parent.id?.type === 'Identifier'
           ? parent.id
-          : undefined;
+          : parent?.type === 'AssignmentPattern' && parent.right === node && parent.left?.type === 'Identifier'
+            ? parent.left
+            : undefined;
     const binding = declarator ? this.declared.get(declarator) : undefined;
     for (const read of binding ? (this.readsOf.get(binding) ?? []) : []) {
       this.tick();
@@ -3148,11 +3277,9 @@ class StaticEvaluator {
       if (left.length + right.length > MAX_STATIC_KEY_LENGTH) throw new TooLong(node);
       return [this.text(left + right, node)];
     }
-    // (Converting a text to a number reads all of it, and so can comparing two texts, as far as
-    // they are alike. Values of one type that are equal or not are compared at once.)
-    const equality = operator === '===' || operator === '!==' || operator === '==' || operator === '!=';
-    const reads = !equality || ((operator === '==' || operator === '!=') && typeof x !== typeof y);
-    if (reads) this.read(x, y);
+    // (Converting a text to a number reads all of it, and so can comparing two texts, for order
+    // or for equality, as far as they are alike)
+    this.read(x, y);
     if (typeof x === 'bigint' && typeof y === 'bigint') {
       // A BigInt has no size limit of its own: bound what an operation may build
       const limit = BigInt(MAX_BIGINT_BITS);
@@ -3963,8 +4090,11 @@ class StaticEvaluator {
           else if (node.optional === true && this.isMissing(receiver, key.name, callee, env)) {
             out.push(STOPPED); // `receiver.method?.()` where there is no such method
           } else {
-            // (A method of the engine may be missing where the script runs: then the call stops)
-            if (node.optional === true && receiver.kind !== 'object') out.push(STOPPED);
+            // (A method of the engine may be missing where the script runs: then the call stops.
+            // One every engine has, a method of a text or a list of ES2019 or before, does not.)
+            const standard =
+              (receiver.kind === 'primitive' || receiver.kind === 'array') && BASELINE_METHODS.has(key.name);
+            if (node.optional === true && receiver.kind !== 'object' && !standard) out.push(STOPPED);
             // The function is read before the arguments are evaluated, and reading it can run a
             // getter. (Arguments that were evaluated for another alternative, before this
             // getter changed something, are not the ones this call gets.)
@@ -4487,6 +4617,8 @@ class StaticEvaluator {
     }
     const implementation: unknown = Reflect.get(String.prototype, name);
     if (typeof implementation !== 'function') return this.giveUp(node, env, givesArray);
+    // (Reading a text costs its length, before anything here searches it)
+    this.tick(1 + (text.length >> 4));
 
     // What the method may build, before it builds it. A result that is made of the text itself
     // is as large as the text, which the script holds already.
@@ -4529,8 +4661,6 @@ class StaticEvaluator {
       return this.giveUp(node, env, true);
     }
     if (name === 'normalize' && text.length > MAX_STATIC_KEY_LENGTH) throw new TooLong(node);
-    // (Reading a text costs its length)
-    this.tick(1 + (text.length >> 4));
 
     let result: unknown;
     try {
@@ -5631,10 +5761,11 @@ function hostNumberFunction(path: string, args: StaticPrimitive[]): StaticPrimit
     case 'parseFloat':
     case 'Number.parseFloat':
       return parseFloat(String(first));
+    // (The global ones convert their argument as a number does, and throw for a BigInt)
     case 'isNaN':
-      return Number.isNaN(Number(first));
+      return isNaN(first as number);
     case 'isFinite':
-      return Number.isFinite(Number(first));
+      return isFinite(first as number);
     case 'Number.isInteger':
       return Number.isInteger(first);
     case 'Number.isFinite':

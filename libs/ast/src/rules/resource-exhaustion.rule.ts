@@ -407,6 +407,11 @@ export class ResourceExhaustionRule implements ValidationRule {
       if (!variableOf.has(binding.node)) variableOf.set(binding.node, binding);
       for (const again of binding.redeclarations ?? []) variableOf.set(again.node, binding);
     }
+    // A body's `var` that starts as a parameter (`function f(k = 1) { var k; }`) carries what the
+    // parameter was given: taken as that variable here, which can only report more
+    for (const binding of scopes.bindings) {
+      if (binding.startsAs) variableOf.set(binding.node, variableOf.get(binding.startsAs.node) ?? binding.startsAs);
+    }
     // `catch (e) { var e = value; }` gives its value to the catch parameter: where such a
     // declaration is initialized, the catch parameter is what is tainted. (The declaration stays
     // the variable it is, which another `var` of the name may initialize.)
