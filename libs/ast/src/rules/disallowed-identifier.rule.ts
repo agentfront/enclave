@@ -271,7 +271,10 @@ export class DisallowedIdentifierRule implements ValidationRule {
           ? staticKeyNames(context, key, keys).includes('__proto__')
           : (key?.type === 'Identifier' && key.name === '__proto__') ||
             (key?.type === 'Literal' && key.value === '__proto__');
-        if (isProto) report('__proto__', key);
+        if (isProto) {
+          report('__proto__', key);
+          return; // (once, also where `disallowedObjectKeys` lists the name)
+        }
       }
 
       if (

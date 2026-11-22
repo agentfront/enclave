@@ -294,7 +294,7 @@ export class NoEvalRule implements ValidationRule {
       // As a member: `window.setTimeout`, `timers['setTimeout']`
       if (node.type === 'MemberExpression' && !called.has(node)) {
         const names = node.computed
-          ? peekKeyNames(context, node.property)
+          ? peekKeyNames(context, node.property, KEYS)
           : node.property?.type === 'Identifier'
             ? [String(node.property.name)]
             : [];
@@ -318,7 +318,7 @@ export class NoEvalRule implements ValidationRule {
 
       // Taken out of an object under another name: `const { setTimeout: later } = scheduler`
       if (node.type === 'Property' && ancestors[ancestors.length - 1]?.type === 'ObjectPattern') {
-        const names = node.computed ? peekKeyNames(context, node.key) : propertyKeyNames(context, node);
+        const names = node.computed ? peekKeyNames(context, node.key, KEYS) : propertyKeyNames(context, node);
         const timer = names.find((name) => STRING_TIMERS.has(name));
         if (timer === undefined) return;
         // Under its own name it is called by that name, and the call is checked

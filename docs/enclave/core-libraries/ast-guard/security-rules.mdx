@@ -156,7 +156,7 @@ A computed key is evaluated, not matched against a list of spellings. A key that
 |-----|--------|
 | Made of constants, and a refused name | `DISALLOWED_IDENTIFIER` |
 | Made of constants, and not computed by the validator | `STATIC_KEY_UNRESOLVED`: a name the validator cannot read is not accepted unread |
-| Made of constants, and longer than 4096 characters | `STATIC_KEY_TOO_LONG`, without building it |
+| Made of constants, and built to more than 4096 characters (`'ab'.repeat(5000)`) | `STATIC_KEY_TOO_LONG`, without building it. A literal that long is not built: it is read as it is written |
 | Held in a variable (`resolveVariableKeys`) | A `const` that holds a constant is that constant. For any other variable, and for a parameter, the constants the script can be seen giving it are compared with the refused names: an assignment, a pattern, a loop, a call that can be seen, a value stored into the list or the object it holds. This is a search, not a proof: a name a script assembles at run time over several statements is a run-time value |
 | Depends on a run-time value (a parameter, the result of a call into the host) | Not decided by the validator. `guardComputedMemberKeys` checks it where the script runs |
 

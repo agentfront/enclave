@@ -204,13 +204,13 @@ A blocked name is refused as a property as well, however the key is spelled: `ob
 const value = row[new Map([['k', 'total']]).get('k')];
 
 // Accepted
-const value = row.total;
-const value = row['total'];
-const value = row['to' + 'tal'];          // evaluated: 'total'
-const value = row[field];                 // a run-time value: checked where the script runs
+const direct = row.total;
+const quoted = row['total'];
+const joined = row['to' + 'tal'];         // evaluated: 'total'
+const chosen = row[field];                // a run-time value: checked where the script runs
 ```
 
-A key that would be longer than 4096 characters is refused the same way, with `STATIC_KEY_TOO_LONG`.
+A key that the expression would build to more than 4096 characters (`row['ab'.repeat(5000)]`) is refused the same way, with `STATIC_KEY_TOO_LONG`, without being built. The limit is on what is built: a string literal is read as it is written, however long it is.
 
 ### Timer used as a value
 

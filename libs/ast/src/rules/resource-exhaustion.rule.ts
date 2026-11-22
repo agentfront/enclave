@@ -1,5 +1,6 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
+import { sharedScopes, type ScopeBinding } from '../utils/scope-analysis';
 import { memberKeyNames, staticKeyCandidates, staticKeyNames } from './static-keys';
 
 /**
@@ -67,7 +68,7 @@ export class ResourceExhaustionRule implements ValidationRule {
     // such a laundered key at the `obj[c]` use-site, so we track the binding and flag its use as a
     // computed key below. (The runtime guard is the exhaustive backstop; this fails fast with a
     // clear validation error for the common obfuscation forms.)
-    const dangerousKeyVars = blockConstructorAccess ? this.collectDangerousKeyVars(context) : new Map<string, string>();
+    const dangerousKeyOf = blockConstructorAccess ? this.collectDangerousKeyVars(context) : () => undefined;
 
     walk.simple(context.ast as any, {
       // Detect BigInt exponentiation: 2n ** 1000000n
@@ -286,8 +287,9 @@ export class ResourceExhaustionRule implements ValidationRule {
 
         // Detect computed access via a variable that was built from a coercion resolving to a
         // dangerous property name, e.g. `const c = String.fromCharCode(...); obj[c]`.
-        if (node.computed && node.property.type === 'Identifier' && dangerousKeyVars.has(node.property.name)) {
-          const resolvedKey = dangerousKeyVars.get(node.property.name);
+        const resolvedKey =
+          node.computed && node.property.type === 'Identifier' ? dangerousKeyOf(node.property) : undefined;
+        if (resolvedKey !== undefined) {
           context.report({
             code: 'CONSTRUCTOR_ACCESS',
             message:
@@ -396,40 +398,49 @@ export class ResourceExhaustionRule implements ValidationRule {
    * literal, pieces that are joined, a conversion, a method of a constant). These are the
    * laundered keys that evade use-site static detection.
    */
-  private collectDangerousKeyVars(context: ValidationContext): Map<string, string> {
-    const tainted = new Map<string, string>();
+  private collectDangerousKeyVars(context: ValidationContext): (identifier: any) => string | undefined {
+    // The variable an identifier stands for: its declaration where it has one (a name declared
+    // twice in a scope is one variable), its name where it is a global
+    const scopes = sharedScopes(context.ast);
+    const variableOf = new Map<unknown, ScopeBinding>();
+    for (const binding of scopes.bindings) {
+      if (!variableOf.has(binding.node)) variableOf.set(binding.node, binding);
+      for (const again of binding.redeclarations ?? []) variableOf.set(again.node, binding);
+    }
+    for (const reference of scopes.references) {
+      if (reference.binding)
+        variableOf.set(reference.node, variableOf.get(reference.binding.node) ?? reference.binding);
+    }
+    const keyOf = (identifier: any): ScopeBinding | string => variableOf.get(identifier) ?? String(identifier.name);
 
-    const consider = (name: unknown, valueNode: any): void => {
-      if (typeof name !== 'string' || !valueNode) return;
+    const tainted = new Map<ScopeBinding | string, string>();
+    const consider = (identifier: any, valueNode: any): void => {
+      if (identifier?.type !== 'Identifier' || !valueNode) return;
       const resolved = staticKeyCandidates(context, valueNode).find((key) =>
         ResourceExhaustionRule.DANGEROUS_KEYS.has(key),
       );
       if (resolved !== undefined) {
-        tainted.set(name, resolved);
+        tainted.set(keyOf(identifier), resolved);
       }
     };
 
     walk.simple(context.ast as any, {
       VariableDeclarator: (node: any) => {
-        if (node.id?.type === 'Identifier') {
-          consider(node.id.name, node.init);
-        }
+        consider(node.id, node.init);
       },
       AssignmentExpression: (node: any) => {
-        if (node.operator === '=' && node.left?.type === 'Identifier') {
-          consider(node.left.name, node.right);
+        if (node.operator === '=') {
+          consider(node.left, node.right);
         }
       },
       // A default value initializes a variable as well: `(key = 'constructor') => ...`,
       // `const { key = 'constructor' } = source`
       AssignmentPattern: (node: any) => {
-        if (node.left?.type === 'Identifier') {
-          consider(node.left.name, node.right);
-        }
+        consider(node.left, node.right);
       },
     });
 
-    return tainted;
+    return (identifier: any) => tainted.get(keyOf(identifier));
   }
 
   private getLocation(node: any): { line: number; column: number } | undefined {

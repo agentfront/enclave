@@ -235,11 +235,12 @@ export class NoRegexMethodsRule implements ValidationRule {
    * nothing needs to call a method of these names this way.
    */
   private checkIndirectCall(node: AnyNode, context: ValidationContext, freeReferences: ReadonlySet<unknown>): void {
-    if (!memberKeyNames(context, node).some((name) => INVOKERS.has(name))) return;
-
+    // Only a member of a member can be `receiver.method.call`: the key of any other member is
+    // not this rule's to read (an ordinary `rows[key]` is not asked whether it is `call`)
     const method = unwrap(node.object);
     if (method?.type !== 'MemberExpression') return;
     if (method.object?.type === 'Identifier' && freeReferences.has(method.object)) return;
+    if (!memberKeyNames(context, node).some((name) => INVOKERS.has(name))) return;
 
     const methodName = this.blockedMethodName(method, context);
     if (!methodName) return;
@@ -333,16 +334,31 @@ export class NoRegexMethodsRule implements ValidationRule {
       return;
     }
 
-    // Get method name
+    // Every blocked method the call may be: a computed key that may be one of two names is
+    // checked as each of them (the ones that compile their argument first)
     const names = this.calledMethodNames(callee, context);
-    const methodName =
-      this.patternCompilingName(names) ??
-      names.find((name) => this.blockedStringMethods.has(name)) ??
-      names.find((name) => this.blockedRegexMethods.has(name));
-    if (!methodName) {
-      return;
+    const first = this.patternCompilingName(names);
+    const blocked = names.filter(
+      (name) => name !== first && (this.blockedStringMethods.has(name) || this.blockedRegexMethods.has(name)),
+    );
+    for (const methodName of new Set(first === undefined ? blocked : [first, ...blocked])) {
+      // (A call that is refused as one method is not reported again as another)
+      if (this.checkNamedMethodCall(node, callee, methodName, context, freeReferences)) return;
     }
+  }
 
+  /**
+   * The checks of a call for one method it may be a call of.
+   *
+   * @returns Whether the call is refused as a call of that method
+   */
+  private checkNamedMethodCall(
+    node: any,
+    callee: AnyNode,
+    methodName: string,
+    context: ValidationContext,
+    freeReferences: ReadonlySet<unknown>,
+  ): boolean {
     // Check string methods (e.g., str.match, str.replace)
     if (this.blockedStringMethods.has(methodName)) {
       // If allowing string arguments, check the first argument
@@ -356,13 +372,13 @@ export class NoRegexMethodsRule implements ValidationRule {
         ) {
           this.analyzeStringPattern(node, callee, methodName, context);
         }
-        return;
+        return false;
       }
 
       // Check if argument is a regex literal or RegExp constructor
       if (this.hasRegexArgument(node)) {
         this.report(callee, methodName, context);
-        return;
+        return true;
       }
 
       // match / matchAll / search turn a string argument into a regex, so when string arguments
@@ -380,7 +396,7 @@ export class NoRegexMethodsRule implements ValidationRule {
           location: this.getLocation(callee),
           data: { method: methodName, form: 'string-pattern' },
         });
-        return;
+        return true;
       }
 
       // The same three methods with anything else. What is accepted is what can be seen not to be
@@ -405,7 +421,7 @@ export class NoRegexMethodsRule implements ValidationRule {
           location: this.getLocation(callee),
           data: { method: methodName, form: withoutArgument ? 'no-pattern' : 'dynamic-pattern' },
         });
-        return;
+        return true;
       }
 
       // For dynamic arguments, we need to be cautious
@@ -426,7 +442,7 @@ export class NoRegexMethodsRule implements ValidationRule {
       // Check if caller is a regex literal
       if (this.isRegexLiteral(callee.object)) {
         this.report(callee, methodName, context);
-        return;
+        return true;
       }
 
       // Check if caller might be a regex (we can't always tell statically)
@@ -441,6 +457,7 @@ export class NoRegexMethodsRule implements ValidationRule {
         });
       }
     }
+    return false;
   }
 
   /**

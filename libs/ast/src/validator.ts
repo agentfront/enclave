@@ -13,7 +13,7 @@ import { transformAst, generateCode } from './transformer';
 import { PreScanner, PreScannerError, type PreScannerPresetLevel, type PartialPreScannerConfig } from './pre-scanner';
 import { StaticKeyExpansionError, releaseStaticEvaluation } from './utils/static-eval';
 import { releaseSharedScopes } from './utils/scope-analysis';
-import { reportUnresolvedKeys } from './rules/static-keys';
+import { unresolvedKeyIssue, unresolvedKeysOf } from './rules/static-keys';
 
 /**
  * How many issues one validation collects when the caller sets no `maxIssues`.
@@ -220,6 +220,30 @@ export class JSAstValidator {
     const enabledRules = this.getEnabledRules(config);
 
     // Execute rules
+    // The issue of each key no rule could read: there is one for a key, however many rules read it
+    const unresolvedIssues = new Map<unknown, ValidationIssue>();
+
+    /** Stop the validation where the configuration says to, after an issue of `severity`. */
+    const stopAfter = (severity: ValidationSeverity): void => {
+      // Stop on first error if configured
+      if (config.stopOnFirstError && severity === ValidationSeverity.ERROR) {
+        throw new StopValidationError();
+      }
+
+      // Stop at the cap only once an error is on the list. While everything collected is a
+      // warning the remaining rules still have to run: one of them may refuse the source,
+      // and a validation that stopped before it would have called the source valid.
+      if (hasError && issues.length >= maxIssues) {
+        throw new StopValidationError();
+      }
+    };
+
+    /** Keep an issue, and stop the validation where the configuration says to. */
+    const emit = (issue: ValidationIssue): void => {
+      collect(issue);
+      stopAfter(issue.severity);
+    };
+
     let rulesExecuted = 0;
     // The rules did not all run to their end: what they would have reported is unknown
     let stopped = false;
@@ -240,31 +264,27 @@ export class JSAstValidator {
             // Precedence: issue.severity → ruleConfig.severity → rule.defaultSeverity → ERROR fallback
             const severity = issue.severity ?? configSeverity ?? rule.defaultSeverity ?? ValidationSeverity.ERROR;
 
-            const fullIssue: ValidationIssue = {
-              ...issue,
-              severity,
-            };
-
-            collect(fullIssue);
-
-            // Stop on first error if configured
-            if (config.stopOnFirstError && fullIssue.severity === ValidationSeverity.ERROR) {
-              throw new StopValidationError();
-            }
-
-            // Stop at the cap only once an error is on the list. While everything collected is a
-            // warning the remaining rules still have to run: one of them may refuse the source,
-            // and a validation that stopped before it would have called the source valid.
-            if (hasError && issues.length >= maxIssues) {
-              throw new StopValidationError();
-            }
+            emit({ ...issue, severity });
           },
         };
 
         rulesExecuted++;
         await rule.validate(context);
-        // A key made of constants that the rule could not read is refused (see rules/static-keys)
-        reportUnresolvedKeys(context, configSeverity ?? rule.defaultSeverity ?? ValidationSeverity.ERROR);
+        // A key made of constants that the rule could not read is refused (see rules/static-keys).
+        // A key an earlier rule reported for less keeps its issue, raised to this severity.
+        const severity = configSeverity ?? rule.defaultSeverity ?? ValidationSeverity.ERROR;
+        for (const key of unresolvedKeysOf(context, severity)) {
+          const reported = unresolvedIssues.get(key);
+          if (reported && issues.includes(reported)) {
+            reported.severity = severity;
+            if (severity === ValidationSeverity.ERROR) hasError = true;
+            stopAfter(severity);
+            continue;
+          }
+          const issue: ValidationIssue = { ...unresolvedKeyIssue(key), severity };
+          unresolvedIssues.set(key, issue);
+          emit(issue);
+        }
       }
     } catch (err) {
       if (err instanceof StaticKeyExpansionError) {

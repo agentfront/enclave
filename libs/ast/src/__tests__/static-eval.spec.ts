@@ -2,16 +2,23 @@ import * as acorn from 'acorn';
 
 import { JSAstValidator } from '../validator';
 import { ValidationSeverity } from '../interfaces';
-import { DisallowedIdentifierRule, NoEvalRule, NoGlobalAccessRule } from '../rules';
+import {
+  DisallowedIdentifierRule,
+  NoEvalRule,
+  NoGlobalAccessRule,
+  NoRegexMethodsRule,
+  ResourceExhaustionRule,
+} from '../rules';
 import { createStrictPreset, createSecurePreset, createAgentScriptPreset } from '../presets';
-import { evaluateStatic, resolveStaticKey, StaticKeyExpansionError } from '../utils/static-eval';
+import { evaluateStatic, resolveStaticKey } from '../utils/static-eval';
 
 /**
  * Functional tests of the static evaluation of property keys: what it resolves, what it calls
  * unresolved, what it leaves to run time, and what the rules do with each answer.
  *
  * The names used here are ordinary ones (`alpha`, `secret`). The tests that hold attempts to
- * reach a refused name are with the security tests (see SECURITY-TESTS.md, ATK-PCHAIN).
+ * reach a refused name, or to make the evaluation cost more than it may, are with the security
+ * tests (see SECURITY-TESTS.md, ATK-PCHAIN and ATK-VBOUND).
  */
 
 /** The key of the last `o[<key>]` in `source` */
@@ -82,6 +89,24 @@ describe('static evaluation of a property key', () => {
       ['a regular expression', `/x/`, ['/x/']],
       ['an object', `{}`, ['[object Object]']],
       ['null', `null`, ['null']],
+      ['a list made by Array.from', `Array.from(['al', 'pha']).join('')`, ['alpha']],
+      [
+        'a list mapped by Array.from',
+        `Array.from(['al', 'pha'], (piece, index) => piece + index).join('')`,
+        ['al0pha1'],
+      ],
+      ['Array.from with a mapper that is undefined', `Array.from(['alpha'], undefined)[0]`, ['alpha']],
+      // (`Array.from` calls its mapper with the value and the index, and nothing else)
+      [
+        'a parameter the mapper of Array.from is not given',
+        `Array.from(['x'], (v, i, rest = 'alpha') => rest)[0]`,
+        ['alpha'],
+      ],
+      ['a member of a frozen object', `Object.freeze({ a: 'alpha' }).a`, ['alpha']],
+      ['a copy of a frozen list', `Object.freeze(['pha', 'al']).slice().reverse().join('')`, ['alpha']],
+      // (An object spread copies the code units of a string: two for this character)
+      ['the code units of a string spread into an object', `Object.keys({ ...'a\u{1F600}' }).length`, ['3']],
+      ['the characters of a string spread into a list', `[...'a\u{1F600}'].length`, ['2']],
     ])('%s', (_name, expression, names) => {
       expect(keyOf(expression)).toEqual({ names, unresolved: false });
     });
@@ -109,6 +134,9 @@ describe('static evaluation of a property key', () => {
       ],
       ['a class', `(class { static k = 'ab'; }).k`],
       ['a function that calls itself', `(function again() { return again(); })()`],
+      // (A write to a frozen object throws: it is not computed as one that succeeds)
+      ['a copy onto a frozen object', `Object.assign(Object.freeze({}), { a: 'alpha' }).a`],
+      ['a frozen list changed in place', `Object.freeze(['a', 'b']).reverse()[0]`],
     ])('%s', (_name, expression) => {
       // (What the search for names saw in it is listed next to that: it is not the value)
       expect(keyOf(expression).unresolved).toBe(true);
@@ -311,25 +339,13 @@ describe('static evaluation of a property key', () => {
     });
   });
 
+  // (What a key may cost, and what happens past that, is pinned by the security tests: ATK-VBOUND)
   describe('bounds', () => {
-    it('refuses to build a key longer than a property name can usefully be', () => {
-      expect(() => keyOf(`'x'.repeat(1e9)`)).toThrow(StaticKeyExpansionError);
-      expect(() => keyOf(`Array(1e8).join('x')`)).toThrow(StaticKeyExpansionError);
-    });
-
     it('reads a long literal without building anything from it', () => {
       const long = 'x'.repeat(5000);
 
       expect(keyOf(`'${long}'`).names).toEqual([long]);
       expect(keyOf(`[].join('${long}')`).names).toEqual(['']);
-    });
-
-    it('does not enumerate more values than it can list', () => {
-      const pieces = Array.from({ length: 40 }, (_unused, index) => `(flags[${index}] ? 'a' : 'b')`).join(' + ');
-
-      // 2^40 combinations of a run-time choice. A list that stops short would leave values out:
-      // the key is not read, which is an answer a rule refuses.
-      expect(typesOf(pieces, { prelude: 'const f = (flags) =>' })).toEqual(['unresolved']);
     });
 
     it('is the same answer however often it is asked', () => {
@@ -450,21 +466,76 @@ describe('how the rules read a key', () => {
     ]);
   });
 
-  it('a source nested too deep to walk is refused, not thrown', async () => {
-    const result = await new JSAstValidator(rule()).validate(`const o = {}; const v = o${'.a'.repeat(5000)};`, {
-      preScan: { enabled: false },
-    });
+  it('reports a refused object key once, whichever option refuses it', async () => {
+    const rules = [
+      new DisallowedIdentifierRule({
+        disallowed: ['secret'],
+        blockProtoInObjectLiterals: true,
+        disallowedObjectKeys: ['__proto__', 'hidden'],
+      }),
+    ];
 
-    expect(result.valid).toBe(false);
-    expect(result.issues.map((issue) => issue.code)).toContain('SOURCE_TOO_DEEP');
+    expect(await codesOf(rules, 'const t = { __proto__: null };')).toEqual(['DISALLOWED_IDENTIFIER']);
+    expect(await codesOf(rules, 'const t = { hidden: 1, __proto__: null };')).toEqual([
+      'DISALLOWED_IDENTIFIER',
+      'DISALLOWED_IDENTIFIER',
+    ]);
   });
 
-  it('a key that is too long to build ends the validation as before', async () => {
-    const result = await new JSAstValidator(rule()).validate("const o = {}; const v = o['x'.repeat(1e9)];");
+  describe('a key no rule can read', () => {
+    // (A call through a computed key: the rule for timers reads the key, and so does the rule for names)
+    const SOURCE = "const v = o[new Map([['k', 'alpha']]).get('k')]();";
+    const rules = () => [new NoEvalRule(), new DisallowedIdentifierRule({ disallowed: ['secret'] })];
+    const unresolved = async (config: Parameters<JSAstValidator['validate']>[1]) => {
+      const result = await new JSAstValidator(rules()).validate(SOURCE, { preScan: { enabled: false }, ...config });
+      return {
+        valid: result.valid,
+        issues: result.issues.filter((issue) => issue.code === 'STATIC_KEY_UNRESOLVED').map((issue) => issue.severity),
+      };
+    };
 
-    expect(result.valid).toBe(false);
-    expect(result.incomplete).toBe(true);
-    expect(result.issues.map((issue) => issue.code)).toEqual(['STATIC_KEY_TOO_LONG']);
+    it('has one issue, however many rules read it', async () => {
+      expect(await unresolved({})).toEqual({ valid: false, issues: [ValidationSeverity.ERROR] });
+    });
+
+    it('keeps one issue, at the severity of the rule that counts for most', async () => {
+      // The first rule only warns: the issue it made is raised by the second, not doubled
+      const warned = { rules: { 'no-eval': { severity: ValidationSeverity.WARNING } } };
+      expect(await unresolved(warned)).toEqual({ valid: false, issues: [ValidationSeverity.ERROR] });
+
+      const both = {
+        rules: {
+          'no-eval': { severity: ValidationSeverity.WARNING },
+          'disallowed-identifier': { severity: ValidationSeverity.WARNING },
+        },
+      };
+      expect(await unresolved(both)).toEqual({ valid: true, issues: [ValidationSeverity.WARNING] });
+    });
+
+    it('is refused where the first error ends the validation', async () => {
+      const warned = {
+        rules: { 'no-eval': { severity: ValidationSeverity.WARNING } },
+        stopOnFirstError: true,
+      };
+      expect(await unresolved(warned)).toEqual({ valid: false, issues: [ValidationSeverity.ERROR] });
+    });
+  });
+
+  it('a rule asks about a key only where the answer is its own', async () => {
+    // `rows[key]` cannot be `receiver.method.call`: the rule for the methods of a pattern does
+    // not read its key, and so does not refuse a script for it
+    const source = "const value = rows[new Map([['k', 'alpha']]).get('k')];";
+
+    expect(await codesOf([new NoRegexMethodsRule()], source)).toEqual([]);
+  });
+
+  it('a default value marks the variable it initializes, not another one of the same name', async () => {
+    const rules = () => [new ResourceExhaustionRule()];
+    const refused = "const pick = (key = 'prototype') => rows[key];";
+    const other = "const label = (key = 'prototype') => key; const key = 'alpha'; const value = rows[key];";
+
+    expect(await codesOf(rules(), refused)).toEqual(['CONSTRUCTOR_ACCESS']);
+    expect(await codesOf(rules(), other)).toEqual([]);
   });
 
   describe('NoEvalRule and timers', () => {
@@ -485,6 +556,8 @@ describe('how the rules read a key', () => {
       ['a timer passed to a function', `run(setTimeout);`],
       ['a timer called through call', `setTimeout.call(null, () => 1, 10);`],
       ['a timer taken out of an object under another name', `const { setTimeout: later } = timers;`],
+      ['a timer named by a const, called through call', `const k = 'setTimeout'; timers[k].call(null, () => 1, 10);`],
+      ['a timer named by a const, taken out by a pattern', `const k = 'setTimeout'; const { [k]: later } = timers;`],
     ])('refuses %s', async (_name, source) => {
       expect(await codesOf([new NoEvalRule()], source)).toEqual(['NO_EVAL']);
     });

@@ -13,7 +13,7 @@
  * @packageDocumentation
  */
 
-import { ValidationSeverity, type ValidationContext } from '../interfaces';
+import { ValidationSeverity, type ValidationContext, type ValidationIssue } from '../interfaces';
 import type { AnyNode } from '../utils/ast-walk';
 import {
   StaticKeyExpansionError,
@@ -49,7 +49,7 @@ export function staticKeyNames(
   return names;
 }
 
-/** How much an issue of a severity counts: a key is reported again when a later rule counts for more. */
+/** How much an issue of a severity counts: a rule that counts for more raises an issue a lesser one made. */
 const SEVERITY_RANK: Record<string, number> = {
   [ValidationSeverity.INFO]: 1,
   [ValidationSeverity.WARNING]: 2,
@@ -57,32 +57,28 @@ const SEVERITY_RANK: Record<string, number> = {
 };
 
 /**
- * Report the keys the rule that just ran could not resolve. Called by the validator after each
- * rule, with that rule's context: the issue has the severity of the rule that read the key.
- *
- * A key several rules read is reported once, at the severity of the rule that counts for most: a
- * rule a host has turned down to a warning does not make the refusal of another rule a warning.
+ * The keys the rule that just ran could not resolve and that are not yet reported at its
+ * severity or above. The validator reports each one once (`unresolvedKeyIssue`): a key several
+ * rules read keeps one issue, at the highest of their severities, so that a rule a host has
+ * turned down to a warning does not make the refusal of another rule a warning.
  *
  * @param context The context the rule ran with
- * @param severity The severity the rule reports at (default: error)
+ * @param severity The severity the rule reports at
  */
-export function reportUnresolvedKeys(
-  context: ValidationContext,
-  severity: ValidationSeverity = ValidationSeverity.ERROR,
-): void {
-  for (const key of takeUnresolvedKeys(
-    context.ast,
-    SEVERITY_RANK[severity] ?? SEVERITY_RANK[ValidationSeverity.ERROR],
-  )) {
-    context.report({
-      code: 'STATIC_KEY_UNRESOLVED',
-      message:
-        'Computed property key cannot be resolved. It is made of constants, so it names one fixed property, ' +
-        'and the validator cannot tell which. Write the property name directly.',
-      location: key?.loc ? { line: key.loc.start.line, column: key.loc.start.column } : undefined,
-      data: { keyType: key?.type },
-    });
-  }
+export function unresolvedKeysOf(context: ValidationContext, severity: ValidationSeverity): AnyNode[] {
+  return takeUnresolvedKeys(context.ast, SEVERITY_RANK[severity] ?? SEVERITY_RANK[ValidationSeverity.ERROR]);
+}
+
+/** The issue for a key that is made of constants and that no rule could read. */
+export function unresolvedKeyIssue(key: AnyNode): Omit<ValidationIssue, 'severity'> {
+  return {
+    code: 'STATIC_KEY_UNRESOLVED',
+    message:
+      'Computed property key cannot be resolved. It is made of constants, so it names one fixed property, ' +
+      'and the validator cannot tell which. Write the property name directly.',
+    location: key?.loc ? { line: key.loc.start.line, column: key.loc.start.column } : undefined,
+    data: { keyType: key?.type },
+  };
 }
 
 /**

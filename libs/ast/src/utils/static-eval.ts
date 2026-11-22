@@ -218,6 +218,8 @@ interface Stamp {
 interface ArrayValue extends Stamp {
   readonly kind: 'array';
   readonly items: readonly Value[];
+  /** Frozen, sealed or not extensible: a write to it throws, or may */
+  readonly locked?: true;
   /**
    * Not an array of the script: the values the script can be seen storing into what a variable
    * holds, in the order they are written. Any element of it may be read at any index.
@@ -227,6 +229,8 @@ interface ArrayValue extends Stamp {
 interface ObjectValue extends Stamp {
   readonly kind: 'object';
   readonly properties: Map<string, Slot>;
+  /** Frozen, sealed or not extensible: a write to it throws, or may */
+  readonly locked?: true;
   /** Properties whose key is a well-known symbol, by its name */
   readonly symbols: Map<string, Slot>;
   /** `undefined`: the default prototype. `null`: none. */
@@ -873,6 +877,8 @@ class StaticEvaluator {
     followed: new WeakMap<AnyNode, StaticAlternative[]>(),
     plain: new WeakMap<AnyNode, StaticAlternative[]>(),
   };
+  /** The expressions that are too large to build, with the node that says where */
+  private readonly tooLong = new WeakMap<AnyNode, AnyNode>();
   /** Keys found unresolved, with the rank each was last reported at */
   private readonly reportedAt = new Map<AnyNode, number>();
   private pending = new Set<AnyNode>();
@@ -1092,46 +1098,75 @@ class StaticEvaluator {
   }
 
   /**
+   * What gives `this` its value where a node stands: the nearest function that is not an arrow
+   * function, a field or a static block of a class, or the program. A computed key of a class
+   * member is evaluated where the class is written, not in the class: its `this` is the one
+   * outside.
+   */
+  private thisScope(node: AnyNode): AnyNode | undefined {
+    let child: AnyNode = node;
+    let current = this.parentOf.get(node);
+    while (current) {
+      switch (current.type) {
+        case 'PropertyDefinition':
+        case 'MethodDefinition':
+          if (current.key === child) {
+            // Out of the class: on from the class itself
+            const body = this.parentOf.get(current);
+            current = body ? this.parentOf.get(body) : undefined;
+            if (!current) return undefined;
+            break;
+          }
+          if (current.type === 'PropertyDefinition') return current;
+          break;
+        case 'StaticBlock':
+        case 'FunctionDeclaration':
+        case 'FunctionExpression':
+        case 'Program':
+          return current;
+        default:
+          break;
+      }
+      child = current;
+      current = this.parentOf.get(current);
+    }
+    return undefined;
+  }
+
+  /** The class a field or a method belongs to. */
+  private classOfMember(member: AnyNode | undefined): AnyNode | undefined {
+    const body = member ? this.parentOf.get(member) : undefined;
+    return body?.type === 'ClassBody' ? this.parentOf.get(body) : undefined;
+  }
+
+  /**
    * Whether `this` is an object the class it is written in made: in the constructor or in a
    * field of a class that extends nothing (after `super(x)`, `this` is whatever the constructor
    * of the base returned), or in a static field or block (the class itself). In a method it is
    * whatever the method is called on, and a method can be called on anything.
    */
   private isOwnThis(node: AnyNode): boolean {
-    for (let current = this.parentOf.get(node); current; current = this.parentOf.get(current)) {
-      switch (current.type) {
-        case 'ArrowFunctionExpression':
-          break; // (the `this` of where it is written)
-        case 'StaticBlock':
-          return true;
-        case 'PropertyDefinition':
-          return current.static === true || !this.parentOf.get(this.parentOf.get(current))?.superClass;
-        case 'FunctionExpression': {
-          const method = this.parentOf.get(current);
-          if (method?.type !== 'MethodDefinition' || method.kind !== 'constructor') return false;
-          return !this.parentOf.get(this.parentOf.get(method))?.superClass;
-        }
-        case 'FunctionDeclaration':
-        case 'Program':
-          return false;
-        default:
-          break;
+    const scope = this.thisScope(node);
+    switch (scope?.type) {
+      case 'StaticBlock':
+        return true;
+      case 'PropertyDefinition':
+        return scope.static === true || !this.classOfMember(scope)?.superClass;
+      case 'FunctionExpression': {
+        const method = this.parentOf.get(scope);
+        if (method?.type !== 'MethodDefinition' || method.kind !== 'constructor') return false;
+        return !this.classOfMember(method)?.superClass;
       }
+      default:
+        return false;
     }
-    return false;
   }
 
-  /** Whether `this` is written in a class: it is then never the global object. */
+  /** Whether `this` is given its value by a class it is written in: it is then never the global object. */
   private isInClass(node: AnyNode): boolean {
-    for (let current = this.parentOf.get(node); current; current = this.parentOf.get(current)) {
-      if (current.type === 'ClassBody') return true;
-      if (current.type === 'FunctionDeclaration' || current.type === 'FunctionExpression') {
-        // (A method of a class is a function expression that is the value of a member of its body)
-        const holder = this.parentOf.get(current);
-        if (holder?.type !== 'MethodDefinition' && holder?.type !== 'PropertyDefinition') return false;
-      }
-    }
-    return false;
+    const scope = this.thisScope(node);
+    if (scope?.type === 'StaticBlock' || scope?.type === 'PropertyDefinition') return true;
+    return scope?.type === 'FunctionExpression' && this.parentOf.get(scope)?.type === 'MethodDefinition';
   }
 
   /**
@@ -1429,6 +1464,13 @@ class StaticEvaluator {
     const memo = variables ? this.described.followed : this.described.plain;
     const cached = memo.get(node);
     if (cached) return cached;
+    // (Known to be too large to build: an error for a key, an unresolved value elsewhere,
+    // whichever way it was asked about first)
+    const large = this.tooLong.get(node);
+    if (large) {
+      if (asKey) throw new StaticKeyExpansionError(large.loc ? large : node);
+      return [{ type: 'unresolved' }];
+    }
 
     this.variables = variables;
     this.lenient = false;
@@ -1465,8 +1507,12 @@ class StaticEvaluator {
         // Following the variables is a search, and it ends where it costs too much: the
         // expression is then read as it is written, which is a limit of its own
         result = this.describe(node, asKey, false);
-      } else if (signal instanceof TooLong && asKey) {
-        throw new StaticKeyExpansionError(signal.node?.loc ? signal.node : node);
+        if (this.tooLong.has(node)) return result;
+      } else if (signal instanceof TooLong) {
+        const large: AnyNode = signal.node?.loc ? signal.node : node;
+        this.tooLong.set(node, large);
+        if (asKey) throw new StaticKeyExpansionError(large);
+        return [{ type: 'unresolved' }];
       } else {
         result = [{ type: 'unresolved' }];
       }
@@ -3102,7 +3148,7 @@ class StaticEvaluator {
         lists = next;
       }
       // What a spread builds is bounded; what is written out is as long as the script
-      if (spread && lists[0].length > MAX_ITEMS) throw new TooLong(node);
+      if (spread && lists.some((list) => list.length > MAX_ITEMS)) throw new TooLong(node);
     }
     return lists.map((items) => this.rawArray(items));
   }
@@ -3160,9 +3206,13 @@ class StaticEvaluator {
           source.items.forEach((item, index) => properties.set(String(index), { values: [item] }));
         } else if (source.kind === 'primitive' && !source.boxed) {
           if (typeof source.value === 'string') {
-            this.characters(source.value, node).forEach((character, index) =>
-              properties.set(String(index), { values: [primitive(character)] }),
-            );
+            // (One property for each code unit: two for a character outside the basic plane)
+            const text = source.value;
+            if (text.length > MAX_ITEMS) throw new TooLong(node);
+            this.tick(text.length);
+            for (let index = 0; index < text.length; index++) {
+              properties.set(String(index), { values: [primitive(text[index])] });
+            }
           }
         } else {
           return this.giveUp(node, env, true);
@@ -4386,6 +4436,8 @@ class StaticEvaluator {
     const items = array.items;
     this.tick(items.length);
     const givesArray = ARRAY_RETURNING_METHODS.has(name);
+    // (A method that changes a frozen list throws)
+    if (array.locked && MUTATING_ARRAY_METHODS.has(name)) return this.giveUp(node, env, givesArray);
     // These read one element or keep the slots as they are. Every other method walks the array
     // and treats an empty slot in a way of its own.
     if (hasHole(items) && !HOLE_NEUTRAL_METHODS.has(name)) return this.giveUp(node, env, givesArray);
@@ -4794,7 +4846,23 @@ class StaticEvaluator {
         } else return this.giveUp(node, env, true);
         if (args.length === 1) return [this.arrayOf(items, node)];
         if (args.length > 2) return this.giveUp(node, env, true);
-        return this.arrayMethod(this.arrayOf(items, node), 'map', [args[1]], node, env);
+        const mapper = args[1];
+        if (isUndefined(mapper)) return [this.arrayOf(items, node)];
+        if (!isResolved(mapper)) {
+          this.skipped();
+          return [through(mapper)];
+        }
+        if (!isCallable(mapper)) return this.giveUp(node, env, true); // a TypeError
+        // (Unlike `map`, the mapper is not given the list: a third parameter keeps its default)
+        const source = this.arrayOf(items, node);
+        const mapped: Value[] = [];
+        for (let index = 0; index < items.length; index++) {
+          const result = this.callOnce(mapper, [items[index], primitive(index)], node, env);
+          // (The mapper may have changed the list that is read)
+          if (result === null || !this.fresh(source)) return this.giveUp(node, env, true);
+          mapped.push(result);
+        }
+        return [this.arrayOf(mapped, node)];
       }
 
       case 'String.fromCharCode':
@@ -4848,7 +4916,16 @@ class StaticEvaluator {
         if (indent !== undefined && (indent.kind !== 'primitive' || indent.boxed || typeof indent.value === 'bigint')) {
           return this.giveUp(node, env);
         }
-        const data = this.toHostData(first, node, env, { left: MAX_ITEMS }, 0);
+        // (The indentation: at most ten characters for each level, as the engine takes it)
+        const gap =
+          indent?.kind !== 'primitive'
+            ? 0
+            : typeof indent.value === 'number'
+              ? Math.max(0, Math.min(10, Math.trunc(indent.value) || 0))
+              : typeof indent.value === 'string'
+                ? Math.min(10, indent.value.length)
+                : 0;
+        const data = this.toHostData(first, node, env, { left: MAX_ITEMS, written: 0, gap }, 0);
         if (data === NO_VALUE) return this.giveUp(node, env);
         let text: unknown;
         try {
@@ -4931,7 +5008,10 @@ class StaticEvaluator {
       case 'Object.freeze':
       case 'Object.seal':
       case 'Object.preventExtensions':
-        return first === undefined ? [UNDEFINED] : [first];
+        if (first === undefined) return [UNDEFINED];
+        // The same object, holding what it held. A write to what the call returns throws (to a
+        // sealed one, may throw): it is not computed as a write that succeeds.
+        return first.kind === 'array' || first.kind === 'object' ? [{ ...first, locked: true }] : [first];
 
       case 'Object.assign': {
         if (first === undefined) return this.giveUp(node, env);
@@ -4939,7 +5019,7 @@ class StaticEvaluator {
           this.skipped();
           return [plain(first)];
         }
-        if (first.kind !== 'object' || !this.fresh(first)) return this.giveUp(node, env, true);
+        if (first.kind !== 'object' || !this.fresh(first) || first.locked) return this.giveUp(node, env, true);
         // (What the target holds is copied: that costs what the target is large)
         this.tick(first.properties.size + first.symbols.size);
         const properties = new Map(first.properties);
@@ -5030,24 +5110,41 @@ class StaticEvaluator {
     return this.giveUp(node, env, isNew);
   }
 
-  /** A value as plain host data, for `JSON.stringify`. */
+  /**
+   * A value as plain host data, for `JSON.stringify`.
+   *
+   * The same string can be held many times, and it is written out each time: how many values
+   * there are does not bound what the host would write. `budget.written` counts characters that
+   * are written for certain (a string and its quotes, a key and its colon, what separates and
+   * indents two elements), and the data is not built past the length a key can have. The count
+   * is never more than what is written, so nothing that fits is refused by it.
+   */
   private toHostData(
     value: Value,
     node: AnyNode,
     env: Env | undefined,
-    budget: { left: number },
+    budget: { left: number; written: number; gap: number },
     depth: number,
   ): unknown {
     if (--budget.left < 0) throw new TooLong(node);
     if (depth > 64) return NO_VALUE;
     this.tick();
+    const written = (count: number): void => {
+      budget.written += count;
+      if (budget.written > MAX_STATIC_KEY_LENGTH) throw new TooLong(node);
+    };
+    /** A line of its own, indented, for what is inside an array or an object. */
+    const line = budget.gap > 0 ? 1 + budget.gap * (depth + 1) : 0;
     switch (value.kind) {
       case 'primitive':
-        return value.boxed ? NO_VALUE : value.value;
+        if (value.boxed) return NO_VALUE;
+        if (typeof value.value === 'string') written(value.value.length + 2);
+        return value.value;
       case 'array': {
         if (!this.fresh(value)) return NO_VALUE;
         const out: unknown[] = [];
         for (const item of value.items) {
+          written(1 + line); // (a comma or a bracket)
           const data = this.toHostData(item, node, env, budget, depth + 1);
           if (data === NO_VALUE) return NO_VALUE;
           out.push(data);
@@ -5064,6 +5161,8 @@ class StaticEvaluator {
           if (values.length !== 1 || !this.fresh(value)) return NO_VALUE;
           const data = this.toHostData(values[0], node, env, budget, depth + 1);
           if (data === NO_VALUE) return NO_VALUE;
+          // (A property whose value is `undefined` is left out)
+          if (data !== undefined) written(key.length + 3 + line);
           Object.defineProperty(out, key, { value: data, enumerable: true, writable: true, configurable: true });
         }
         return out;
