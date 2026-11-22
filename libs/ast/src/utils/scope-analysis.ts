@@ -28,6 +28,13 @@ export interface ScopeBinding {
   node: AnyNode;
   name: string;
   kind: BindingKind;
+  /**
+   * The other declarations of this name in the same scope (`var x; var x;`, two parameters or two
+   * functions of one name, a parameter named like its function expression). They are one variable,
+   * and which declaration gives it its value depends on the kind of each: a consumer that needs
+   * the value treats such a variable as one it cannot follow.
+   */
+  redeclarations?: ScopeBinding[];
 }
 
 /** An identifier that reads and/or writes a variable. */
@@ -40,6 +47,8 @@ export interface ScopeReference {
   write: boolean;
   /** A binding of this name is in scope at the reference; `false` means it reaches a global. */
   resolved: boolean;
+  /** The declaration the reference resolves to (the first one, where a name is declared twice) */
+  binding?: ScopeBinding;
   /** The node that holds the identifier, when there is one */
   parent?: AnyNode;
 }
@@ -56,7 +65,7 @@ interface Scope {
   parent: Scope | null;
   /** The nearest enclosing function (or program) scope: where `var` lands. */
   functionScope: Scope;
-  names: Set<string>;
+  names: Map<string, ScopeBinding>;
 }
 
 interface PendingReference {
@@ -70,16 +79,39 @@ interface PendingReference {
 type Role = 'read' | 'write' | 'readwrite' | 'binding';
 
 function createScope(parent: Scope | null, isFunctionScope: boolean): Scope {
-  const scope: Scope = { parent, functionScope: null as unknown as Scope, names: new Set() };
+  const scope: Scope = { parent, functionScope: null as unknown as Scope, names: new Map() };
   scope.functionScope = isFunctionScope || !parent ? scope : parent.functionScope;
   return scope;
 }
 
-function isResolved(scope: Scope | null, name: string): boolean {
+function lookup(scope: Scope | null, name: string): ScopeBinding | undefined {
   for (let current = scope; current; current = current.parent) {
-    if (current.names.has(name)) return true;
+    const binding = current.names.get(name);
+    if (binding) return binding;
   }
-  return false;
+  return undefined;
+}
+
+const shared = new WeakMap<object, ScopeAnalysis>();
+
+/**
+ * The analysis of a program that does not change while it is asked about: computed once, for
+ * everything that reads it during one validation. (`analyzeScopes` analyzes anew on every call,
+ * which is what a caller that rewrites the tree needs.)
+ */
+export function sharedScopes(ast: unknown): ScopeAnalysis {
+  if (typeof ast !== 'object' || ast === null) return analyzeScopes(ast);
+  let analysis = shared.get(ast);
+  if (!analysis) {
+    analysis = analyzeScopes(ast);
+    shared.set(ast, analysis);
+  }
+  return analysis;
+}
+
+/** Drop the shared analysis of a program: the validator calls it when the rules have run. */
+export function releaseSharedScopes(ast: unknown): void {
+  if (typeof ast === 'object' && ast !== null) shared.delete(ast);
 }
 
 /**
@@ -92,8 +124,13 @@ export function analyzeScopes(ast: unknown): ScopeAnalysis {
   const declare = (scope: Scope, node: AnyNode, kind: BindingKind): void => {
     // `var` belongs to the enclosing function; everything else to the scope it is written in.
     const target = kind === 'var' ? scope.functionScope : scope;
-    target.names.add(node.name);
-    bindings.push({ node, name: node.name, kind });
+    const binding: ScopeBinding = { node, name: node.name, kind };
+    // A name declared twice in one scope (`var x; var x;`) is one variable: references resolve to
+    // its first declaration, which lists the others
+    const first = target.names.get(node.name);
+    if (first) (first.redeclarations ??= []).push(binding);
+    else target.names.set(node.name, binding);
+    bindings.push(binding);
   };
 
   const reference = (scope: Scope, node: AnyNode, role: Role, parent?: AnyNode): void => {
@@ -350,14 +387,18 @@ export function analyzeScopes(ast: unknown): ScopeAnalysis {
   }
 
   // Declarations are visible throughout their scope, so resolve only once every scope is complete.
-  const references: ScopeReference[] = pending.map((ref) => ({
-    node: ref.node,
-    name: ref.node.name,
-    read: ref.read,
-    write: ref.write,
-    resolved: isResolved(ref.scope, ref.node.name),
-    parent: ref.parent,
-  }));
+  const references: ScopeReference[] = pending.map((ref) => {
+    const binding = lookup(ref.scope, ref.node.name);
+    return {
+      node: ref.node,
+      name: ref.node.name,
+      read: ref.read,
+      write: ref.write,
+      resolved: binding !== undefined,
+      ...(binding ? { binding } : {}),
+      parent: ref.parent,
+    };
+  });
 
   return { bindings, references, freeReferences: references.filter((ref) => !ref.resolved) };
 }

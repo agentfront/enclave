@@ -4,7 +4,7 @@ import type { ValidationRule, ValidationContext } from '../interfaces';
 import { ValidationSeverity } from '../interfaces';
 import { analyzeScopes } from '../utils/scope-analysis';
 import { walkAll } from '../utils/ast-walk';
-import { tryGetStaticComputedKeys } from './coercion-utils';
+import { staticKeyNames } from './static-keys';
 
 /**
  * Names of the runtime that have no reserved prefix. The loop instrumentation compares a loop's
@@ -375,7 +375,7 @@ export class ReservedPrefixRule implements ValidationRule {
       propName = String(node.property.value);
     } else if (node.computed) {
       // obj[`__safe_foo`] = ..., obj[['__safe_foo']] = ...: every statically resolvable key form
-      const staticKeys = tryGetStaticComputedKeys(node.property, { foldConstants: true });
+      const staticKeys = staticKeyNames(context, node.property);
       propName = staticKeys.find((k) => this.reservedMatch(k) !== undefined) ?? null;
     } else if (node.property.type === 'Identifier') {
       // obj.__safe_foo = ...

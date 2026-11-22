@@ -9,6 +9,8 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## [Unreleased]
 
+- `@enclave-vm/ast`: GHSA-jqf3-vx4j-7p22 and what is like it (ATK-PCHAIN, ATK-REFL, ATK-TSTR, ATK-VBOUND). A computed property key that is made of constants is evaluated and compared with the refused names in whatever way it is spelled, and one the validator cannot compute, or whose computed value could differ from the engine's, is refused (`STATIC_KEY_UNRESOLVED`) instead of accepted unread. The STRICT and SECURE presets refuse a listed name as the key of a destructuring pattern and look for it in the variable or parameter a key is read through; they refuse the reflection entry points and the structured stack trace API by property name, and `{ __proto__: x }`. `NoEvalRule` reads a string handed to a timer in every spelling and refuses a timer used as a value. The work done for a key is bounded, and a source too deep to walk is an issue (`SOURCE_TOO_DEEP`), not an exception. A script these presets accepted can be refused now; `libs/ast/CHANGELOG.md` says which. Scripts validated as AgentScript by `@enclave-vm/core` were stopped by the key guard at run time; they are refused by the validator now.
+
 ## [2.20.0] - 2026-11-21
 
 A follow-up to 2.19.0: two more layers behind the validator, and the dependency and code-scanning alerts of the repository. `libs/core/CHANGELOG.md` has the changes a host of `@enclave-vm/core` will notice.

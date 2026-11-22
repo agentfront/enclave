@@ -11,7 +11,9 @@ import {
 import { ParseError, InvalidSourceError, ConfigurationError } from './errors';
 import { transformAst, generateCode } from './transformer';
 import { PreScanner, PreScannerError, type PreScannerPresetLevel, type PartialPreScannerConfig } from './pre-scanner';
-import { StaticKeyExpansionError } from './rules/coercion-utils';
+import { StaticKeyExpansionError, releaseStaticEvaluation } from './utils/static-eval';
+import { releaseSharedScopes } from './utils/scope-analysis';
+import { reportUnresolvedKeys } from './rules/static-keys';
 
 /**
  * How many issues one validation collects when the caller sets no `maxIssues`.
@@ -261,6 +263,8 @@ export class JSAstValidator {
 
         rulesExecuted++;
         await rule.validate(context);
+        // A key made of constants that the rule could not read is refused (see rules/static-keys)
+        reportUnresolvedKeys(context, configSeverity ?? rule.defaultSeverity ?? ValidationSeverity.ERROR);
       }
     } catch (err) {
       if (err instanceof StaticKeyExpansionError) {
@@ -270,11 +274,23 @@ export class JSAstValidator {
           message: err.message,
           location: err.location,
         });
+      } else if (err instanceof RangeError && /call stack/i.test(err.message)) {
+        // A rule ran out of stack on a source that nests deeper than it can be walked: the source
+        // is not validated, which is an answer, not an exception for the host to catch
+        collect({
+          code: 'SOURCE_TOO_DEEP',
+          severity: ValidationSeverity.ERROR,
+          message: 'Source is nested too deeply to be validated',
+        });
       } else if (!(err instanceof StopValidationError)) {
         throw err;
       }
       stopped = true;
       incomplete = true;
+    } finally {
+      // What the rules computed about the keys of this program is not needed any more
+      releaseStaticEvaluation(ast);
+      releaseSharedScopes(ast);
     }
 
     const durationMs = Date.now() - startTime;

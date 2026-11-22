@@ -1,7 +1,6 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
-import { staticPropertyName } from '../utils/ast-walk';
-import { tryGetStaticComputedKeys } from './coercion-utils';
+import { memberKeyNames, staticKeyCandidates, staticKeyNames } from './static-keys';
 
 /**
  * Options for ResourceExhaustionRule
@@ -68,9 +67,7 @@ export class ResourceExhaustionRule implements ValidationRule {
     // such a laundered key at the `obj[c]` use-site, so we track the binding and flag its use as a
     // computed key below. (The runtime guard is the exhaustive backstop; this fails fast with a
     // clear validation error for the common obfuscation forms.)
-    const dangerousKeyVars = blockConstructorAccess
-      ? this.collectDangerousKeyVars(context.ast)
-      : new Map<string, string>();
+    const dangerousKeyVars = blockConstructorAccess ? this.collectDangerousKeyVars(context) : new Map<string, string>();
 
     walk.simple(context.ast as any, {
       // Detect BigInt exponentiation: 2n ** 1000000n
@@ -143,13 +140,11 @@ export class ResourceExhaustionRule implements ValidationRule {
 
       // Detect string.repeat() with large counts
       CallExpression: (node: any) => {
-        // The method that is called, in every static spelling: x.repeat(), x['repeat'](), x[`repeat`]()
-        const method =
-          node.callee.type === 'MemberExpression'
-            ? staticPropertyName(node.callee.property, node.callee.computed === true)
-            : undefined;
+        // The method that is called, in every spelling of its name that is made of constants:
+        // x.repeat(), x['repeat'](), x[`repeat`](), x['rep' + 'eat']()
+        const methods = node.callee.type === 'MemberExpression' ? memberKeyNames(context, node.callee) : [];
 
-        if (method === 'repeat' && node.arguments.length >= 1) {
+        if (methods.includes('repeat') && node.arguments.length >= 1) {
           const arg = node.arguments[0];
           if (arg.type === 'Literal' && typeof arg.value === 'number') {
             if (arg.value > maxStringRepeat) {
@@ -163,7 +158,7 @@ export class ResourceExhaustionRule implements ValidationRule {
         }
 
         // Also check Array().join() with large arrays
-        if (method === 'join') {
+        if (methods.includes('join')) {
           // Check if this is new Array(n).join() or Array(n).join()
           const object = node.callee.object;
           if (object.type === 'NewExpression' || object.type === 'CallExpression') {
@@ -189,7 +184,7 @@ export class ResourceExhaustionRule implements ValidationRule {
         // Detect Array(n).fill() pattern - CPU/memory exhaustion via large array fill
         // This is particularly dangerous because .fill() immediately allocates and initializes memory
         // Attack vector (Vector 1110): Array(500000).fill(0.12345).reduce((acc, val) => acc + Math.sin(val), 0)
-        if (method === 'fill') {
+        if (methods.includes('fill')) {
           const object = node.callee.object;
           // Check if this is new Array(n).fill() or Array(n).fill()
           if (object.type === 'NewExpression' || object.type === 'CallExpression') {
@@ -251,8 +246,9 @@ export class ResourceExhaustionRule implements ValidationRule {
           return;
         }
 
-        // Computed access with a statically known key, including concatenation and array joins.
-        if (node.computed && tryGetStaticComputedKeys(node.property, { foldConstants: true }).includes('constructor')) {
+        // Computed access with a key that is made of constants, however it is spelled
+        const names: string[] = node.computed ? staticKeyNames(context, node.property) : [];
+        if (names.includes('constructor')) {
           context.report({
             code: 'CONSTRUCTOR_ACCESS',
             message: 'Computed ["constructor"] access is not allowed (potential sandbox escape vector)',
@@ -264,7 +260,7 @@ export class ResourceExhaustionRule implements ValidationRule {
         // Detect obfuscated constructor access via string concatenation
         // e.g., obj['con' + 'struc' + 'tor'] or obj[c] where c = 'con' + 'struc' + 'tor'
         if (node.computed && node.property.type === 'BinaryExpression') {
-          if (this.isSuspiciousStringConcat(node.property)) {
+          if (names.some((name) => name === 'constructor' || name === 'prototype' || name === '__proto__')) {
             context.report({
               code: 'CONSTRUCTOR_ACCESS',
               message:
@@ -308,8 +304,10 @@ export class ResourceExhaustionRule implements ValidationRule {
         if (!blockConstructorAccess) return;
 
         if (node.init && node.init.type === 'BinaryExpression') {
-          const result = this.evaluateStringConcat(node.init);
-          if (result === 'constructor' || result === 'prototype') {
+          const result = staticKeyCandidates(context, node.init).find(
+            (name) => name === 'constructor' || name === 'prototype',
+          );
+          if (result !== undefined) {
             context.report({
               code: 'CONSTRUCTOR_ACCESS',
               message: `Variable assigned to "${result}" via string concatenation. This is a potential sandbox escape vector.`,
@@ -319,14 +317,6 @@ export class ResourceExhaustionRule implements ValidationRule {
         }
       },
     });
-  }
-
-  /**
-   * Check if a binary expression looks like suspicious string concatenation
-   */
-  private isSuspiciousStringConcat(node: any): boolean {
-    const result = this.evaluateStringConcat(node);
-    return result === 'constructor' || result === 'prototype' || result === '__proto__';
   }
 
   /**
@@ -401,22 +391,25 @@ export class ResourceExhaustionRule implements ValidationRule {
   private static readonly DANGEROUS_KEYS = new Set(['constructor', 'prototype']);
 
   /**
-   * Collect the names of variables that are initialized (or assigned) to a dangerous property
-   * name produced by a static coercion. These are the laundered keys that evade use-site static
-   * detection.
+   * Collect the names of variables that are initialized (or assigned, or given as a default
+   * value) a dangerous property name, in any spelling of the value that is made of constants (a
+   * literal, pieces that are joined, a conversion, a method of a constant). These are the
+   * laundered keys that evade use-site static detection.
    */
-  private collectDangerousKeyVars(ast: any): Map<string, string> {
+  private collectDangerousKeyVars(context: ValidationContext): Map<string, string> {
     const tainted = new Map<string, string>();
 
     const consider = (name: unknown, valueNode: any): void => {
       if (typeof name !== 'string' || !valueNode) return;
-      const resolved = this.staticStringValue(valueNode);
-      if (resolved !== null && ResourceExhaustionRule.DANGEROUS_KEYS.has(resolved)) {
+      const resolved = staticKeyCandidates(context, valueNode).find((key) =>
+        ResourceExhaustionRule.DANGEROUS_KEYS.has(key),
+      );
+      if (resolved !== undefined) {
         tainted.set(name, resolved);
       }
     };
 
-    walk.simple(ast, {
+    walk.simple(context.ast as any, {
       VariableDeclarator: (node: any) => {
         if (node.id?.type === 'Identifier') {
           consider(node.id.name, node.init);
@@ -427,125 +420,16 @@ export class ResourceExhaustionRule implements ValidationRule {
           consider(node.left.name, node.right);
         }
       },
+      // A default value initializes a variable as well: `(key = 'constructor') => ...`,
+      // `const { key = 'constructor' } = source`
+      AssignmentPattern: (node: any) => {
+        if (node.left?.type === 'Identifier') {
+          consider(node.left.name, node.right);
+        }
+      },
     });
 
     return tainted;
-  }
-
-  /**
-   * Statically resolve an expression to its string value when it is built from constant parts.
-   * Handles string literals, `+` concatenation, `String.fromCharCode(...numbers)`, and
-   * `[...literals].join(sep)` / `[literal].toString()`. Returns null when it cannot be resolved
-   * statically.
-   */
-  private staticStringValue(node: any): string | null {
-    if (!node) return null;
-
-    if (node.type === 'Literal' && typeof node.value === 'string') {
-      return node.value;
-    }
-
-    if (node.type === 'TemplateLiteral' && node.expressions.length === 0 && node.quasis.length === 1) {
-      return node.quasis[0].value.cooked ?? node.quasis[0].value.raw ?? null;
-    }
-
-    if (node.type === 'BinaryExpression' && node.operator === '+') {
-      const left = this.staticStringValue(node.left);
-      const right = this.staticStringValue(node.right);
-      if (left !== null && right !== null) return left + right;
-      return null;
-    }
-
-    if (node.type === 'CallExpression') {
-      const fromCharCode = this.evaluateFromCharCode(node);
-      if (fromCharCode !== null) return fromCharCode;
-      return this.evaluateArrayJoin(node);
-    }
-
-    return null;
-  }
-
-  /**
-   * Evaluate `String.fromCharCode(...)` when every argument is a numeric literal.
-   */
-  private evaluateFromCharCode(node: any): string | null {
-    const callee = node.callee;
-    if (!callee || callee.type !== 'MemberExpression') return null;
-    if (callee.object.type !== 'Identifier' || callee.object.name !== 'String') return null;
-    const prop = callee.property;
-    const isFromCharCode =
-      (prop.type === 'Identifier' && prop.name === 'fromCharCode') ||
-      ((prop.type === 'Literal' || prop.type === 'StringLiteral') && prop.value === 'fromCharCode');
-    if (!isFromCharCode) return null;
-
-    let result = '';
-    for (const arg of node.arguments) {
-      if (arg.type === 'Literal' && typeof arg.value === 'number') {
-        result += String.fromCharCode(arg.value);
-      } else {
-        return null;
-      }
-    }
-    return result;
-  }
-
-  /**
-   * Evaluate `[...literals].join(sep)` and `[literal].toString()` array coercions.
-   */
-  private evaluateArrayJoin(node: any): string | null {
-    const callee = node.callee;
-    if (!callee || callee.type !== 'MemberExpression' || callee.object.type !== 'ArrayExpression') return null;
-    if (callee.property.type !== 'Identifier') return null;
-    const method = callee.property.name;
-    if (method !== 'join' && method !== 'toString') return null;
-
-    const parts: string[] = [];
-    for (const element of callee.object.elements) {
-      if (
-        element &&
-        element.type === 'Literal' &&
-        (typeof element.value === 'string' || typeof element.value === 'number')
-      ) {
-        parts.push(String(element.value));
-      } else {
-        return null;
-      }
-    }
-
-    // Array.prototype.toString() and Array.prototype.join() with no argument both join with a
-    // comma at runtime; only an explicit join(sep) argument overrides it.
-    let separator = ',';
-    if (method === 'join') {
-      const sepArg = node.arguments[0];
-      if (sepArg === undefined) {
-        separator = ',';
-      } else if (sepArg.type === 'Literal' && (typeof sepArg.value === 'string' || typeof sepArg.value === 'number')) {
-        separator = String(sepArg.value);
-      } else {
-        return null;
-      }
-    }
-    return parts.join(separator);
-  }
-
-  /**
-   * Try to evaluate a string concatenation expression
-   * Returns the result if it's a simple string concat, or null if too complex
-   */
-  private evaluateStringConcat(node: any): string | null {
-    if (node.type === 'Literal' && typeof node.value === 'string') {
-      return node.value;
-    }
-
-    if (node.type === 'BinaryExpression' && node.operator === '+') {
-      const left = this.evaluateStringConcat(node.left);
-      const right = this.evaluateStringConcat(node.right);
-      if (left !== null && right !== null) {
-        return left + right;
-      }
-    }
-
-    return null;
   }
 
   private getLocation(node: any): { line: number; column: number } | undefined {
