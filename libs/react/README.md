@@ -1,36 +1,26 @@
 # @enclave-vm/react
 
+React bindings for EnclaveJS: a provider that shares an `EnclaveClient` with a component tree, and a hook that runs a script on a broker and keeps the state of the run, for React applications.
+
 [![npm version](https://img.shields.io/npm/v/@enclave-vm/react.svg)](https://www.npmjs.com/package/@enclave-vm/react)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/agentfront/enclave/blob/main/LICENSE)
 
-> React hooks and components for the EnclaveJS streaming runtime
+The package is a thin layer over [`@enclave-vm/client`](https://www.npmjs.com/package/@enclave-vm/client), which talks to the HTTP routes of [`@enclave-vm/broker`](https://www.npmjs.com/package/@enclave-vm/broker). Scripts and tools run on the broker; the hooks only start runs and report what happens.
 
-The @enclave-vm/react package provides React bindings for EnclaveJS: a provider that shares an `EnclaveClient` with a component tree, and hooks that run code on an EnclaveJS broker and keep the state of the run.
-
-## Features
-
-- **React Hooks**: `useEnclaveSession` and `useEnclaveClient` hooks
-- **Context Provider**: Share client instance across components
-- **Session State**: State, result, error, stdout and events of a run as React state
-- **TypeScript Support**: Full type definitions
-
-## Installation
+## Install
 
 ```bash
-npm install @enclave-vm/react @enclave-vm/client
-# or
-yarn add @enclave-vm/react @enclave-vm/client
-# or
-pnpm add @enclave-vm/react @enclave-vm/client
+npm install @enclave-vm/react react
 ```
 
-## Quick Start
+`react` (18 or later) is a peer dependency. `@enclave-vm/client` is installed as a dependency; add it to your own dependencies as well if you import from it directly, for example to create a client for the `client` prop.
+
+## Quick start
 
 ```tsx
 import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
 
-function App() {
+export function App() {
   return (
     <EnclaveProvider config={{ baseUrl: 'https://api.example.com' }}>
       <CodeRunner />
@@ -41,9 +31,10 @@ function App() {
 function CodeRunner() {
   const { execute, isRunning, result, error } = useEnclaveSession();
 
+  // `getUser` is a tool registered on the broker
   const runCode = () =>
     execute(`
-      const user = await callTool('getUser', { id: 1 });
+      const user = await callTool('getUser', { id: '1' });
       return user.name;
     `);
 
@@ -59,186 +50,99 @@ function CodeRunner() {
 }
 ```
 
-## Hooks
-
-### useEnclaveSession
-
-Main hook for running code and following the run:
+## EnclaveProvider
 
 ```tsx
-import { useEnclaveSession } from '@enclave-vm/react';
-
-function MyComponent() {
-  const {
-    // Execution
-    execute,
-    cancel,
-    reset,
-
-    // State
-    state,
-    isRunning,
-    sessionId,
-
-    // Output
-    result,
-    error,
-    stdout,
-    events,
-  } = useEnclaveSession({
-    // Limits requested for the session
-    timeoutMs: 30000,
-    maxToolCalls: 20,
-
-    // Callbacks
-    onToolCall: (callId, toolName, args) => {
-      console.log('Tool called:', toolName, args);
-    },
-    onComplete: (sessionResult) => {
-      console.log('Finished:', sessionResult.success);
-    },
-    onError: (sessionError) => {
-      console.error(sessionError.code, sessionError.message);
-    },
-  });
-
-  return <div>{state}</div>;
-}
-```
-
-| Value       | Description                                                                             |
-| ----------- | --------------------------------------------------------------------------------------- |
-| `execute`   | `(code) => Promise<SessionResult>`: starts a run and resolves with its result           |
-| `cancel`    | `(reason?) => Promise<void>`: cancels the running session                               |
-| `reset`     | Puts the hook back to `'idle'` and clears its values. Does not cancel a running session |
-| `state`     | `'idle'`, `'running'`, `'completed'`, `'error'` or `'cancelled'`                        |
-| `isRunning` | `true` while `state` is `'running'`                                                     |
-| `sessionId` | ID of the latest session; `null` before the first run and after `reset()`               |
-| `result`    | The `SessionResult` of the latest run, once it has ended                                |
-| `error`     | `{ code?, message }` when the latest run failed                                         |
-| `stdout`    | The stdout of the run so far                                                            |
-| `events`    | The events of the run so far                                                            |
-
-The options are `sessionId`, `timeoutMs`, `maxToolCalls`, `heartbeatIntervalMs`, and the callbacks `onStart`, `onStdout`, `onLog`, `onToolCall`, `onToolResultApplied`, `onComplete` and `onError`.
-
-### useEnclaveClient
-
-Hook for using the `EnclaveClient` of the provider directly:
-
-```tsx
-import { useEnclaveClient } from '@enclave-vm/react';
-
-function ExecutionComponent() {
-  const client = useEnclaveClient();
-
-  const handleClick = async () => {
-    const result = await client.execute('return 1 + 1');
-    console.log(result.value);
-  };
-
-  return <button onClick={handleClick}>Execute</button>;
-}
-```
-
-### useEnclaveContext
-
-Hook for reading the context value: the client, and the configuration it was built from.
-
-```tsx
-import { useEnclaveContext } from '@enclave-vm/react';
-
-function BrokerInfo() {
-  const { config } = useEnclaveContext();
-
-  return <div>Broker: {config.baseUrl}</div>;
-}
-```
-
-All three hooks throw when they are used outside an `EnclaveProvider`.
-
-## Provider Options
-
-```tsx
+import type { ReactNode } from 'react';
 import { EnclaveProvider } from '@enclave-vm/react';
 
-function Root({ token }: { token: string }) {
+function Root({ token, children }: { token: string; children: ReactNode }) {
   return (
     <EnclaveProvider
       config={{
         baseUrl: 'https://api.example.com',
         headers: { Authorization: `Bearer ${token}` },
         timeout: 60000,
-        autoReconnect: true,
-        maxReconnectAttempts: 3,
       }}
     >
-      <App />
+      {children}
     </EnclaveProvider>
   );
 }
 ```
 
-`config` takes exactly the options of `EnclaveClient`: `baseUrl`, `headers`, `timeout`, `autoReconnect`, `maxReconnectAttempts`, `reconnectDelay`, `maxEventLength` and `fetch`. Any other option, such as `encryption`, `auth` or `serverUrl`, throws when the provider renders.
+| Prop       | Type                  | Meaning                                                                                      |
+| ---------- | --------------------- | -------------------------------------------------------------------------------------------- |
+| `config`   | `EnclaveClientConfig` | Required. Options of the `EnclaveClient` the provider builds                                 |
+| `client`   | `EnclaveClient`       | Optional. A client you created; the provider then builds none, and `config` is only reported |
+| `children` | `ReactNode`           | The component tree                                                                           |
 
-The provider builds the client from `config`. When a render brings a configuration with other values, for example a renewed token in `headers`, the provider builds a new client from it. A render with an equal configuration, such as the inline object above, keeps the client. A session that was started before the change finishes on the client it was started with.
+`config` takes exactly the options of `EnclaveClient`: `baseUrl`, `headers`, `timeout`, `autoReconnect`, `maxReconnectAttempts`, `reconnectDelay`, `maxEventLength` and `fetch` (see the [client's README](https://github.com/agentfront/enclave/tree/main/libs/client#configuration)). Any other option, such as `encryption`, `auth` or `serverUrl`, throws when the provider renders.
 
-To use a client that you created yourself, pass it with the `client` prop. The provider then builds none, and `config` is only what `useEnclaveContext()` reports.
+Without a `client` prop, the provider builds the client from `config`. When a render brings a configuration with other values, for example a renewed token in `headers`, the provider builds a new client from it. A render with an equal configuration, such as an inline object literal, keeps the client (`headers` are compared by their entries, every other option by identity). A session that was started before the change finishes on the client it was started with, but it no longer reaches the hook: its callbacks (`onStdout`, `onLog`, `onToolCall`, `onToolResultApplied`, `onError`, `onComplete`) are not called, and its output and result do not appear in `state`, `result`, `error`, `stdout` or `events`, which start from `'idle'` for the new client. The promise `execute` returned still resolves with the session's result; use it to get that result. With a `client` prop, the provider uses that client as it is: a change to `config`, a renewed token in `headers` included, does not reach it, and a new client has to be passed in.
 
-The client does not encrypt: requests and events travel as plain JSON over HTTP. Use an `https:` base URL, and send credentials with `headers`.
+## Hooks
 
-## Streaming Results
+All three hooks throw when they are used outside an `EnclaveProvider`.
 
-`stdout` and `events` grow while the session runs, and the callbacks are called as the events arrive:
+### useEnclaveSession
 
 ```tsx
-import { useState } from 'react';
 import { useEnclaveSession } from '@enclave-vm/react';
 
-function StreamingComponent() {
-  const [toolNames, setToolNames] = useState<string[]>([]);
-
-  const { execute, isRunning, stdout } = useEnclaveSession({
-    onStart: () => setToolNames([]),
-    onToolCall: (callId, toolName) => {
-      setToolNames((prev) => [...prev, toolName]);
-    },
+function MyComponent() {
+  const { execute, cancel, reset, state, isRunning, sessionId, result, error, stdout, events } = useEnclaveSession({
+    timeoutMs: 30000,
+    maxToolCalls: 20,
+    onToolCall: (callId, toolName, args) => console.log('Tool called:', toolName, args),
+    onComplete: (sessionResult) => console.log('Finished:', sessionResult.success),
+    onError: (sessionError) => console.error(sessionError.code, sessionError.message),
   });
 
-  const runStreaming = () =>
-    execute(`
-      for (const i of [1, 2, 3, 4, 5]) {
-        await callTool('processItem', { id: i });
-      }
-      return 'done';
-    `);
-
-  return (
-    <div>
-      <button onClick={runStreaming} disabled={isRunning}>
-        Start Streaming
-      </button>
-      <pre>{stdout}</pre>
-      <ul>
-        {toolNames.map((name, i) => (
-          <li key={i}>{name}</li>
-        ))}
-      </ul>
-    </div>
-  );
+  return <div>{state}</div>;
 }
 ```
 
-Tools run on the broker. The hook is told about tool calls; it executes nothing.
+Options:
 
-## Error Handling
+| Option                | Type                                  | Meaning                                                                                                                                                  |
+| --------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sessionId`           | `SessionId`                           | Id for the session; generated by the client when left out                                                                                                |
+| `timeoutMs`           | `number`                              | Sent as the session's `sessionTtlMs` (its lifetime); the broker may lower it                                                                             |
+| `maxToolCalls`        | `number`                              | Sent as `maxToolCalls`; the broker may lower it                                                                                                          |
+| `heartbeatIntervalMs` | `number`                              | Sent as `heartbeatIntervalMs`; the broker keeps it within its bounds                                                                                     |
+| `onStart`             | `() => void`                          | Called when `execute` starts a run                                                                                                                       |
+| `onStdout`            | `(chunk) => void`                     | A `stdout` event                                                                                                                                         |
+| `onLog`               | `(level, message, data?) => void`     | A `log` event                                                                                                                                            |
+| `onToolCall`          | `(callId, toolName, args) => void`    | A `tool_call` event                                                                                                                                      |
+| `onToolResultApplied` | `(callId) => void`                    | A `tool_result_applied` event                                                                                                                            |
+| `onComplete`          | `(result) => void`                    | The run ended, successfully or not                                                                                                                       |
+| `onError`             | `(error: { code?, message }) => void` | An `error` event during the run, or the run failed. Not called for a cancelled run, except with `CANCEL_FAILED` when the broker did not confirm the stop |
+
+Return value:
+
+| Value       | Description                                                                                                                                                                                                                                       |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `execute`   | `(code) => Promise<SessionResult>`: starts a run and resolves with its result                                                                                                                                                                     |
+| `cancel`    | `(reason?) => Promise<void>`: cancels the running session. It resolves, and the run ends as `'cancelled'`, also when the broker does not confirm the stop: `onError` then gets `CANCEL_FAILED`, and the script may still be running on the broker |
+| `reset`     | Puts the hook back to `'idle'` and clears its values. Does not cancel a running session, and `cancel()` no longer reaches it afterward                                                                                                            |
+| `state`     | `'idle'`, `'running'`, `'completed'`, `'error'` or `'cancelled'`                                                                                                                                                                                  |
+| `isRunning` | `true` while `state` is `'running'`                                                                                                                                                                                                               |
+| `sessionId` | Id of the latest session; `null` before the first run and after `reset()`                                                                                                                                                                         |
+| `result`    | The `SessionResult` of the latest run, once it has ended                                                                                                                                                                                          |
+| `error`     | `{ code?, message }` when the latest run failed                                                                                                                                                                                                   |
+| `stdout`    | The stdout of the run so far                                                                                                                                                                                                                      |
+| `events`    | The events of the run so far                                                                                                                                                                                                                      |
 
 A run that fails does not throw. `execute` resolves with a result whose `success` is `false`, `state` becomes `'error'`, and `error` holds the code and the message. A cancelled run ends in the state `'cancelled'`.
+
+`reset()` does not stop a running session from writing to the hook. Until a new run starts, that session's later output and events, and then its result and final state, appear in the hook again, so the hook leaves `'idle'` without a new run.
 
 ```tsx
 import { useEnclaveSession } from '@enclave-vm/react';
 
-function CodeRunner() {
-  const { execute, cancel, reset, state, error } = useEnclaveSession();
+function Runner() {
+  const { execute, cancel, reset, state, error, stdout } = useEnclaveSession();
 
   return (
     <div>
@@ -253,14 +157,47 @@ function CodeRunner() {
           <button onClick={reset}>Try again</button>
         </div>
       )}
+      <pre>{stdout}</pre>
     </div>
   );
 }
 ```
 
-## Server Components (Next.js)
+### useEnclaveClient
 
-The provider and the hooks use React context and state. For Next.js App Router, use client components:
+Returns the `EnclaveClient` of the provider, for direct use:
+
+```tsx
+import { useEnclaveClient } from '@enclave-vm/react';
+
+function ExecuteButton() {
+  const client = useEnclaveClient();
+
+  const handleClick = async () => {
+    const result = await client.execute('return 1 + 1');
+    console.log(result.value);
+  };
+
+  return <button onClick={handleClick}>Execute</button>;
+}
+```
+
+### useEnclaveContext
+
+Returns the context value: `client`, and `config`, the configuration it was built from.
+
+```tsx
+import { useEnclaveContext } from '@enclave-vm/react';
+
+function BrokerInfo() {
+  const { config } = useEnclaveContext();
+  return <div>Broker: {config.baseUrl}</div>;
+}
+```
+
+## Next.js App Router
+
+The provider and the hooks use React context and state, so they belong in client components:
 
 ```tsx
 // components/code-runner.tsx
@@ -287,15 +224,26 @@ function RunnerInner() {
 }
 ```
 
-## Related Packages
+## Security notes
 
-| Package                           | Description                                             |
-| --------------------------------- | ------------------------------------------------------- |
-| [@enclave-vm/types](../types)     | Type definitions and Zod schemas                        |
-| [@enclave-vm/client](../client)   | Browser/Node.js client SDK                              |
-| [@enclave-vm/stream](../stream)   | Streaming protocol implementation                       |
-| [@enclave-vm/runtime](../runtime) | Runtime worker building blocks (not a runnable service) |
+- The client does not encrypt: requests and events travel as plain JSON over HTTP. Use an `https:` base URL.
+- The package does no authentication. Send credentials with `headers` in `config`; anything in `config` is visible in the browser, so do not put a long-lived secret there.
+- Tool names, tool arguments and the script's result reach the browser in the events (`events`, `onToolCall`).
+
+## Related packages
+
+| Package                                                                | Role                                             |
+| ---------------------------------------------------------------------- | ------------------------------------------------ |
+| [@enclave-vm/client](https://www.npmjs.com/package/@enclave-vm/client) | The client these hooks use                       |
+| [@enclave-vm/broker](https://www.npmjs.com/package/@enclave-vm/broker) | The server side: tools, sessions and HTTP routes |
+| [@enclave-vm/types](https://www.npmjs.com/package/@enclave-vm/types)   | Protocol types and Zod schemas                   |
+
+## Documentation
+
+- Documentation: https://agentfront.dev/docs/guides/enclave
+- Repository: https://github.com/agentfront/enclave
+- Security policy: https://github.com/agentfront/enclave/blob/main/SECURITY.md
 
 ## License
 
-Apache-2.0
+Apache-2.0. See [LICENSE](https://github.com/agentfront/enclave/blob/main/LICENSE).

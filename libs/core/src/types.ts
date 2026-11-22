@@ -915,7 +915,7 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    *
    * Presets:
    * - agentscript: Specialized for AI agent tool orchestration (DEFAULT)
-   * - strict: Bank-grade security, blocks almost everything
+   * - strict: The most restrictive preset; refuses most built-in globals, loops and async
    * - secure: High security with reasonable flexibility
    * - standard: Balanced security for most use cases
    * - permissive: Minimal restrictions for trusted code

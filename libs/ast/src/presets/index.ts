@@ -2,7 +2,7 @@
  * AST Guard Presets - Pre-configured security levels
  *
  * Security levels (high → low):
- * - STRICT: Maximum security (bank-grade)
+ * - STRICT: The most restrictive preset
  * - SECURE: High security with flexibility
  * - STANDARD: Balanced security
  * - PERMISSIVE: Minimal restrictions
@@ -62,7 +62,7 @@ import { createPermissivePreset } from './permissive.preset';
  * ```typescript
  * import { createPreset, PresetLevel } from '@enclave-vm/ast';
  *
- * // Create a strict preset (bank-grade)
+ * // Create a strict preset (the most restrictive one)
  * const rules = createPreset(PresetLevel.STRICT);
  *
  * // Create a standard preset with custom options
@@ -91,7 +91,7 @@ export function createPreset(level: PresetLevel, options: PresetOptions = {}): V
  * Convenience object with all preset factory functions
  *
  * Security levels (high → low):
- * - strict: Maximum security (bank-grade)
+ * - strict: The most restrictive preset
  * - secure: High security with flexibility
  * - standard: Balanced security
  * - permissive: Minimal restrictions
@@ -107,7 +107,7 @@ export function createPreset(level: PresetLevel, options: PresetOptions = {}): V
  * ```
  */
 export const Presets = {
-  /** Creates a strict preset (maximum security, bank-grade) */
+  /** Creates a strict preset (the most restrictive preset) */
   strict: createStrictPreset,
   /** Creates a secure preset (high security) */
   secure: createSecurePreset,

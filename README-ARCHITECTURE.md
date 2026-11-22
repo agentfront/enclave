@@ -1,6 +1,6 @@
 # Enclave VM Streaming Runtime — Architecture
 
-This document captures the architecture and decisions for turning `enclave-vm` into a **remote, continuous, streaming runtime** that supports `callTool()` roundtrips without requiring developers to run their own VPC runtime.
+This document captures the architecture and decisions for turning `@enclave-vm/core` (formerly published as `enclave-vm`, the name the diagrams below still use) into a **remote, continuous, streaming runtime** that supports `callTool()` roundtrips without requiring developers to run their own VPC runtime.
 
 It is a design document. Parts of it are implemented and parts are not; the table below and the notes marked **Status** say which. Where this document and a package's README disagree, the README describes the code.
 
@@ -14,15 +14,17 @@ The design is for:
 
 ## Implementation Status
 
-| Package               | Status             | Description                                                                                                 |
-| --------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------- |
-| `@enclave-vm/core`    | ✅ Done            | Core sandbox VM engine                                                                                      |
-| `@enclave-vm/types`   | ✅ Done            | Shared TypeScript types and Zod schemas                                                                     |
-| `@enclave-vm/stream`  | ✅ Done            | NDJSON parsing and reconnection helpers. Its encryption primitives are not used by any other package        |
-| `@enclave-vm/broker`  | ✅ Done            | Tool broker with sessions and HTTP routes, running the sandbox in process. No authentication, no encryption |
-| `@enclave-vm/client`  | ✅ Done            | Browser + Node client SDK. No encryption, no authentication of its own (credentials go in `headers`)        |
-| `@enclave-vm/react`   | ✅ Done            | React provider and hooks around the client                                                                  |
-| `@enclave-vm/runtime` | ❌ Not implemented | Building blocks only: session bookkeeping and channels. `execute` rejects with `RuntimeNotImplementedError` |
+| Package               | Status          | Description                                                                                                 |
+| --------------------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
+| `@enclave-vm/core`    | Implemented     | Core sandbox VM engine                                                                                      |
+| `@enclave-vm/types`   | Implemented     | Shared TypeScript types and Zod schemas                                                                     |
+| `@enclave-vm/stream`  | Implemented     | NDJSON parsing and reconnection helpers. Its encryption primitives are not used by any other package        |
+| `@enclave-vm/broker`  | Implemented     | Tool broker with sessions and HTTP routes, running the sandbox in process. No authentication, no encryption |
+| `@enclave-vm/client`  | Implemented     | Browser + Node client SDK. No encryption, no authentication of its own (credentials go in `headers`)        |
+| `@enclave-vm/react`   | Implemented     | React provider and hooks around the client                                                                  |
+| `@enclave-vm/runtime` | Not implemented | Building blocks only: session bookkeeping and channels. `execute` rejects with `RuntimeNotImplementedError` |
+
+`@enclave-vm/ast` (the static validator the sandbox uses) and `@enclave-vm/browser` (the sandbox for browsers) are not part of the streaming runtime and are not covered here.
 
 What works today is the **embedded** deployment (scenarios 1 and 3 below): the broker runs the sandbox in its own process. The **extracted** deployment (scenarios 2 and 4), in which a broker hands execution to a separate runtime worker, is a design: the broker has no option to connect to a worker, and the runtime package does not execute scripts.
 
@@ -52,7 +54,7 @@ What works today is the **embedded** deployment (scenarios 1 and 3 below): the b
   - runtime executes continuously and streams events
   - runtime can request tool execution (`tool_call`) and continue once it receives `tool_result`
 - Support two deployment modes:
-  - **Embedded runtime**: the middleware runs `enclave-vm` directly (single app / VPC). Implemented.
+  - **Embedded runtime**: the middleware runs `@enclave-vm/core` directly (single app / VPC). Implemented.
   - **Extracted runtime**: the middleware launches/connects to an external runtime worker (Lambda/edge/server) and proxies streaming + tool calls. Not implemented.
 - Keep secrets and tool execution in the middleware/tool-broker by default (the runtime worker should not have secrets).
 - Keep tool contracts safe and explicit via **zod input/output schemas**.
@@ -69,7 +71,7 @@ What works today is the **embedded** deployment (scenarios 1 and 3 below): the b
 
 | Term                    | Description                                                                                                                           |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **Runtime**             | The component that runs AgentScript continuously (built on `enclave-vm`).                                                             |
+| **Runtime**             | The component that runs AgentScript continuously (built on `@enclave-vm/core`).                                                       |
 | **Client**              | JS SDK used from browser/server to start a session with the middleware and consume the streamed events/results.                       |
 | **Middleware / Broker** | Node.js service (often inside a VPC) that owns secrets and executes tool calls. Implemented in `@enclave-vm/broker`.                  |
 | **Session**             | A long-lived, continuous execution context for a single piece of code (plus its stream + tool roundtrips).                            |
@@ -109,7 +111,7 @@ What works today is the **embedded** deployment (scenarios 1 and 3 below): the b
 
 | Package               | npm                   | Description                                                               |
 | --------------------- | --------------------- | ------------------------------------------------------------------------- |
-| `@enclave-vm/core`    | `@enclave-vm/core`    | Core sandbox VM engine. Executes untrusted code safely.                   |
+| `@enclave-vm/core`    | `@enclave-vm/core`    | Core sandbox VM engine. Validates scripts and runs them with limits.      |
 | `@enclave-vm/types`   | `@enclave-vm/types`   | Shared TypeScript types, Zod schemas, protocol constants.                 |
 | `@enclave-vm/stream`  | `@enclave-vm/stream`  | NDJSON streaming protocol, event parsing, reconnection logic.             |
 | `@enclave-vm/broker`  | `@enclave-vm/broker`  | Middleware: tool registry, secret management, session API, HTTP handlers. |
@@ -191,13 +193,22 @@ const response = await fetch('https://your-server.com/sessions', {
   }),
 });
 
-// Parse NDJSON stream
+// A refused request (an invalid body, an unidentified caller, a disposed broker) is answered with a JSON error, not a stream
+if (!response.ok) {
+  const error = await response.json(); // { code, message }
+  throw new Error(`${response.status} ${error.code}: ${error.message}`);
+}
+
+// Parse the NDJSON stream (@enclave-vm/client does this for you, with reconnection)
 const reader = response.body.getReader();
 const decoder = new TextDecoder();
+let buffer = '';
 while (true) {
   const { done, value } = await reader.read();
   if (done) break;
-  const lines = decoder.decode(value).split('\n');
+  buffer += decoder.decode(value, { stream: true });
+  const lines = buffer.split('\n');
+  buffer = lines.pop() ?? ''; // keep a line that is not complete yet
   for (const line of lines) {
     if (line.trim()) {
       const event = JSON.parse(line);
@@ -304,7 +315,7 @@ const broker = createBroker()
     handler: async (args) => sendgrid.send(args),
   });
 
-// Execute AI-generated code safely
+// Run AI-generated code in the broker's sandbox
 async function runAgentCode(agentCode: string) {
   const result = await broker.execute(agentCode, {
     onEvent: (event) => {
@@ -389,7 +400,7 @@ If a session must be truly continuous and keep an in-memory sidecar, then all se
 
 In this architecture, that typically means:
 
-- **Embedded runtime**: the middleware is the session host (it owns the sidecar and runs `enclave-vm`), so it must be stateful for the session lifetime.
+- **Embedded runtime**: the middleware is the session host (it owns the sidecar and runs `@enclave-vm/core`), so it must be stateful for the session lifetime.
 - **Extracted runtime** (design, not implemented): the middleware and the runtime worker both hold session state and communicate over a per-session channel; each side must be reachable for the duration.
 
 ### What does NOT work by itself
@@ -679,12 +690,12 @@ The design is per-hop encryption using:
 
 ### Capability Matrix
 
-| Platform                       | Continuous Session         | Bidirectional Channel    | Recommended Role  |
-| ------------------------------ | -------------------------- | ------------------------ | ----------------- |
-| **Server/Container (Node)**    | ✅ Yes                     | WebSocket or NDJSON      | Universal runtime |
-| **Cloudflare Durable Objects** | ✅ Yes (actor per session) | WebSocket                | Edge runtime      |
-| **AWS Lambda**                 | ⚠️ Bounded (≤15 min)       | Outbound WS/HTTP         | Short sessions    |
-| **Vercel Edge/Serverless**     | ❌ Not reliable            | Don't rely on inbound WS | Gateway only      |
+| Platform                       | Continuous Session      | Bidirectional Channel    | Recommended Role  |
+| ------------------------------ | ----------------------- | ------------------------ | ----------------- |
+| **Server/Container (Node)**    | Yes                     | WebSocket or NDJSON      | Universal runtime |
+| **Cloudflare Durable Objects** | Yes (actor per session) | WebSocket                | Edge runtime      |
+| **AWS Lambda**                 | Bounded (up to 15 min)  | Outbound WS/HTTP         | Short sessions    |
+| **Vercel Edge/Serverless**     | Not reliable            | Don't rely on inbound WS | Gateway only      |
 
 ### Recommendations
 
