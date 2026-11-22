@@ -25,6 +25,15 @@ function firstElementOf(list: AnyNode): AnyNode {
   };
 }
 
+/** Whether a list that is spread is written out, with a first element: it gives an argument. */
+function givesAnElement(list: AnyNode): boolean {
+  let node = list;
+  while (node?.type === 'ParenthesizedExpression') node = node.expression;
+  if (node?.type !== 'ArrayExpression' || !node.elements?.length) return false;
+  // (A hole is an element, `undefined`. A spread inside the list may give none.)
+  return node.elements[0]?.type !== 'SpreadElement';
+}
+
 /** Methods and functions whose result is a text or a list, never a function. */
 const TEXT_RESULTS: ReadonlySet<string> = new Set([
   'String',
@@ -163,15 +172,18 @@ export class NoEvalRule implements ValidationRule {
       const reference = this.timerReference(callee, context);
       if (!reference) return;
       called.add(reference.node);
-      // The first argument the timer gets: `...list` may give none, so what follows it may be first
-      let count = 0;
-      while (count < args.length && args[count].type === 'SpreadElement') count++;
-      if (args.slice(0, count + 1).some((argument) => this.isCode(argument, context))) {
-        context.report({
-          code: 'NO_EVAL',
-          message: `Use of ${reference.name} with string argument is not allowed (acts like eval)`,
-          location: locationOf(callee),
-        });
+      // The first argument the timer gets: `...list` may give none, so what follows it may be
+      // first. A list that is written out with an element in it gives the first argument.
+      for (const argument of args) {
+        if (this.isCode(argument, context)) {
+          context.report({
+            code: 'NO_EVAL',
+            message: `Use of ${reference.name} with string argument is not allowed (acts like eval)`,
+            location: locationOf(callee),
+          });
+          break;
+        }
+        if (argument.type !== 'SpreadElement' || givesAnElement(argument.argument)) break;
       }
     };
 
@@ -353,6 +365,12 @@ export class NoEvalRule implements ValidationRule {
    */
   private isCode(argument: AnyNode, context: ValidationContext): boolean {
     if (argument.type === 'Literal') return typeof argument.value === 'string';
+    // A call that is computed, and gives a function: the name of what was called says nothing
+    // (`{ map: () => tick }.map()` is not a list)
+    if (argument.type === 'CallExpression') {
+      const values = evaluateStatic(context.ast, argument, { variables: true });
+      if (values.length > 0 && values.every((value) => value.type === 'function')) return false;
+    }
     if (isNeverFunction(argument)) return true;
     // `timer(...list)`: a list that is written out gives its first element
     if (argument.type === 'SpreadElement' && argument.argument?.type === 'ArrayExpression') {

@@ -30,11 +30,19 @@ export interface ScopeBinding {
   kind: BindingKind;
   /**
    * The other declarations of this name in the same scope (`var x; var x;`, two parameters or two
-   * functions of one name, a parameter named like its function expression). They are one variable,
-   * and which declaration gives it its value depends on the kind of each: a consumer that needs
-   * the value treats such a variable as one it cannot follow.
+   * functions of one name, a parameter named like its function expression, a `var` in a function
+   * body named like a parameter). They are one variable, and which declaration gives it its value
+   * depends on the kind of each: a consumer that needs the value treats such a variable as one it
+   * cannot follow.
    */
   redeclarations?: ScopeBinding[];
+  /**
+   * On a `var` that is declared in a catch block under the name of the catch parameter
+   * (`catch (e) { var e = 1; }`): that parameter. The `var` is a variable of the function, which
+   * the declaration leaves as it is; what the declaration assigns goes to the catch parameter,
+   * which is the variable the block reads.
+   */
+  initializes?: ScopeBinding;
 }
 
 /** An identifier that reads and/or writes a variable. */
@@ -66,6 +74,8 @@ interface Scope {
   /** The nearest enclosing function (or program) scope: where `var` lands. */
   functionScope: Scope;
   names: Map<string, ScopeBinding>;
+  /** On the scope of a function body: the scope of the parameters of that function. */
+  parameters?: Scope;
 }
 
 interface PendingReference {
@@ -123,8 +133,20 @@ export function analyzeScopes(ast: unknown): ScopeAnalysis {
 
   const declare = (scope: Scope, node: AnyNode, kind: BindingKind): void => {
     // `var` belongs to the enclosing function; everything else to the scope it is written in.
-    const target = kind === 'var' ? scope.functionScope : scope;
+    let target = kind === 'var' ? scope.functionScope : scope;
     const binding: ScopeBinding = { node, name: node.name, kind };
+    if (kind === 'var') {
+      // Between the declaration and its function only a catch parameter can have the same name
+      for (let inner: Scope | null = scope; inner && inner !== target; inner = inner.parent) {
+        const shadowing = inner.names.get(node.name);
+        if (!shadowing) continue;
+        if (shadowing.kind === 'catch') binding.initializes = shadowing;
+        break;
+      }
+      // `function f(k) { var k; }`: the `var` is the parameter, not a second variable. It holds
+      // what the call gave the parameter until the body assigns it.
+      if (target.parameters?.names.get(node.name)?.kind === 'param') target = target.parameters;
+    }
     // A name declared twice in one scope (`var x; var x;`) is one variable: references resolve to
     // its first declaration, which lists the others
     const first = target.names.get(node.name);
@@ -189,8 +211,10 @@ export function analyzeScopes(ast: unknown): ScopeAnalysis {
     if (node.type === 'FunctionExpression' && node.id) declare(paramScope, node.id, 'function');
     for (const param of node.params ?? []) visitPattern(param, paramScope, 'binding', 'param', node);
 
-    // The body sees the parameters; its own `var` declarations stay in the body.
+    // The body sees the parameters; its own `var` declarations stay in the body, except one that
+    // is named like a parameter, which is that parameter (see `declare`).
     const bodyScope = createScope(paramScope, true);
+    bodyScope.parameters = paramScope;
     if (node.body?.type === 'BlockStatement') {
       visitStatements(node.body.body, bodyScope, node.body);
     } else {

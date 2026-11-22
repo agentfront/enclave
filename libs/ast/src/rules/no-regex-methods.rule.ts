@@ -98,6 +98,14 @@ const CONVERSION_KEYS = new Set(['toString', 'valueOf']);
 /** Function members that call a function with a receiver and arguments of the caller's choice */
 const INVOKERS = new Set(['call', 'apply', 'bind']);
 
+/** The name of a member where it is written in the source: `o.name`, `o['name']`, `o[0]`. */
+function writtenName(member: AnyNode): string | undefined {
+  const property = member.property;
+  if (!member.computed) return property?.type === 'Identifier' ? String(property.name) : undefined;
+  if (property?.type !== 'Literal' || property.regex || property.bigint !== undefined) return undefined;
+  return typeof property.value === 'string' || typeof property.value === 'number' ? String(property.value) : undefined;
+}
+
 /** The expression inside the wrappers that do not change what it evaluates to: `(a?.b)`, `(a)`. */
 function unwrap(node: AnyNode): AnyNode {
   let inner = node;
@@ -240,6 +248,12 @@ export class NoRegexMethodsRule implements ValidationRule {
     const method = unwrap(node.object);
     if (method?.type !== 'MemberExpression') return;
     if (method.object?.type === 'Identifier' && freeReferences.has(method.object)) return;
+    // A member whose name is written out and is not a blocked method (`rows[0][key]`,
+    // `data.items[key]`) is not called through its key, whatever that key is
+    const written = writtenName(method);
+    if (written !== undefined && !this.blockedStringMethods.has(written) && !this.blockedRegexMethods.has(written)) {
+      return;
+    }
     if (!memberKeyNames(context, node).some((name) => INVOKERS.has(name))) return;
 
     const methodName = this.blockedMethodName(method, context);
@@ -266,9 +280,10 @@ export class NoRegexMethodsRule implements ValidationRule {
     context: ValidationContext,
     freeReferences: ReadonlySet<unknown>,
   ): void {
+    // (A host object is exempt whatever is read from it: its key is not read for this)
+    if (node.object?.type === 'Identifier' && freeReferences.has(node.object)) return;
     const methodName = this.patternCompilingName(memberKeyNames(context, node));
     if (!methodName) return;
-    if (node.object?.type === 'Identifier' && freeReferences.has(node.object)) return;
 
     // The node that decides what happens to the value, past the wrappers that change nothing
     let child = node;
