@@ -11,13 +11,19 @@ import {
   NoRegexMethodsRule,
 } from '../rules';
 import { PresetOptions } from './types';
+import { AGENTSCRIPT_DISALLOWED_PROPERTIES } from './agentscript.preset';
+import { STACK_FRAME_OBJECT_KEYS, STACK_FRAME_PROPERTIES } from './stack-frame-properties';
 
 /**
  * Creates a SECURE preset with high security but some flexibility
  *
  * Blocks:
  * - All eval-like constructs (including constructor exploits)
- * - Most dangerous identifiers
+ * - Most dangerous identifiers, as a variable, as a member and as the key of a destructuring
+ *   pattern
+ * - The property names that reach a prototype or a property descriptor (`__lookupGetter__`,
+ *   `getPrototypeOf`, `getOwnPropertyDescriptor`, `defineProperty`, ...), on any object, and the
+ *   `{ __proto__: x }` key of an object literal. The other functions of `Object` stay usable.
  * - Infinite loops (allows bounded loops)
  * - Async functions (allows await if needed)
  *
@@ -128,7 +134,17 @@ export function createSecurePreset(options: PresetOptions = {}): ValidationRule[
 
     ...(options.additionalDisallowedIdentifiers || []),
   ];
-  rules.push(new DisallowedIdentifierRule({ disallowed: disallowedIdentifiers }));
+  rules.push(
+    new DisallowedIdentifierRule({
+      disallowed: disallowedIdentifiers,
+      // Reflection entry points, refused by property name on any object. This preset leaves
+      // `Object` usable, so its prototype and descriptor functions are refused by their names.
+      disallowedProperties: [...AGENTSCRIPT_DISALLOWED_PROPERTIES, ...STACK_FRAME_PROPERTIES],
+      disallowedObjectKeys: [...STACK_FRAME_OBJECT_KEYS],
+      // `{ __proto__: x }` sets a prototype; it is the one key that is not a plain property
+      blockProtoInObjectLiterals: true,
+    }),
+  );
 
   // Allow for and for-of loops, block while/do-while (can be overridden)
   rules.push(

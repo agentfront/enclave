@@ -11,7 +11,9 @@ import {
 import { ParseError, InvalidSourceError, ConfigurationError } from './errors';
 import { transformAst, generateCode } from './transformer';
 import { PreScanner, PreScannerError, type PreScannerPresetLevel, type PartialPreScannerConfig } from './pre-scanner';
-import { StaticKeyExpansionError } from './rules/coercion-utils';
+import { StaticKeyExpansionError, releaseStaticEvaluation } from './utils/static-eval';
+import { releaseSharedScopes } from './utils/scope-analysis';
+import { unresolvedKeyIssue, unresolvedKeysOf } from './rules/static-keys';
 
 /**
  * How many issues one validation collects when the caller sets no `maxIssues`.
@@ -20,6 +22,32 @@ import { StaticKeyExpansionError } from './rules/coercion-utils';
  * bound, the list of issues grows with the source for as long as the source is refused.
  */
 export const DEFAULT_MAX_ISSUES = 100;
+
+/**
+ * Levels of nesting from which a rule that ran out of stack is taken to have run out on the
+ * source. The rules of this library walk a tree several times as deep, and source that people
+ * write stays far below it: a stack error on a shallower tree is the rule's own.
+ */
+const DEEP_SOURCE_LEVELS = 256;
+
+/** Whether a tree nests deeper than `levels`. Walked without recursion: it may be very deep. */
+function nestsDeeperThan(ast: unknown, levels: number): boolean {
+  const seen = new Set<unknown>();
+  const pending: Array<[value: unknown, depth: number]> = [[ast, 1]];
+  for (let entry = pending.pop(); entry; entry = pending.pop()) {
+    const [value, depth] = entry;
+    if (!value || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    if (depth > levels) return true;
+    // A list of nodes is at the level of the node that holds it: its nodes are one level down
+    const children = Array.isArray(value) ? value : Object.values(value);
+    for (const child of children) {
+      if (Array.isArray(child)) pending.push([child, depth]);
+      else if (child && typeof (child as { type?: unknown }).type === 'string') pending.push([child, depth + 1]);
+    }
+  }
+  return false;
+}
 
 /**
  * The cap of one validation. `0` (or `Infinity`) is the documented way to ask for every issue;
@@ -218,6 +246,30 @@ export class JSAstValidator {
     const enabledRules = this.getEnabledRules(config);
 
     // Execute rules
+    // The issue of each key no rule could read: there is one for a key, however many rules read it
+    const unresolvedIssues = new Map<unknown, ValidationIssue>();
+
+    /** Stop the validation where the configuration says to, after an issue of `severity`. */
+    const stopAfter = (severity: ValidationSeverity): void => {
+      // Stop on first error if configured
+      if (config.stopOnFirstError && severity === ValidationSeverity.ERROR) {
+        throw new StopValidationError();
+      }
+
+      // Stop at the cap only once an error is on the list. While everything collected is a
+      // warning the remaining rules still have to run: one of them may refuse the source,
+      // and a validation that stopped before it would have called the source valid.
+      if (hasError && issues.length >= maxIssues) {
+        throw new StopValidationError();
+      }
+    };
+
+    /** Keep an issue, and stop the validation where the configuration says to. */
+    const emit = (issue: ValidationIssue): void => {
+      collect(issue);
+      stopAfter(issue.severity);
+    };
+
     let rulesExecuted = 0;
     // The rules did not all run to their end: what they would have reported is unknown
     let stopped = false;
@@ -238,29 +290,27 @@ export class JSAstValidator {
             // Precedence: issue.severity → ruleConfig.severity → rule.defaultSeverity → ERROR fallback
             const severity = issue.severity ?? configSeverity ?? rule.defaultSeverity ?? ValidationSeverity.ERROR;
 
-            const fullIssue: ValidationIssue = {
-              ...issue,
-              severity,
-            };
-
-            collect(fullIssue);
-
-            // Stop on first error if configured
-            if (config.stopOnFirstError && fullIssue.severity === ValidationSeverity.ERROR) {
-              throw new StopValidationError();
-            }
-
-            // Stop at the cap only once an error is on the list. While everything collected is a
-            // warning the remaining rules still have to run: one of them may refuse the source,
-            // and a validation that stopped before it would have called the source valid.
-            if (hasError && issues.length >= maxIssues) {
-              throw new StopValidationError();
-            }
+            emit({ ...issue, severity });
           },
         };
 
         rulesExecuted++;
         await rule.validate(context);
+        // A key made of constants that the rule could not read is refused (see rules/static-keys).
+        // A key an earlier rule reported for less keeps its issue, raised to this severity.
+        const severity = configSeverity ?? rule.defaultSeverity ?? ValidationSeverity.ERROR;
+        for (const key of unresolvedKeysOf(context, severity)) {
+          const reported = unresolvedIssues.get(key);
+          if (reported && issues.includes(reported)) {
+            reported.severity = severity;
+            if (severity === ValidationSeverity.ERROR) hasError = true;
+            stopAfter(severity);
+            continue;
+          }
+          const issue: ValidationIssue = { ...unresolvedKeyIssue(key), severity };
+          unresolvedIssues.set(key, issue);
+          emit(issue);
+        }
       }
     } catch (err) {
       if (err instanceof StaticKeyExpansionError) {
@@ -270,11 +320,28 @@ export class JSAstValidator {
           message: err.message,
           location: err.location,
         });
+      } else if (
+        err instanceof RangeError &&
+        /call stack/i.test(err.message) &&
+        nestsDeeperThan(ast, DEEP_SOURCE_LEVELS)
+      ) {
+        // A rule ran out of stack on a source that nests deeper than it can be walked: the source
+        // is not validated, which is an answer, not an exception for the host to catch. (On a
+        // source that does not nest deeply the rule ran out by itself, and that is thrown.)
+        collect({
+          code: 'SOURCE_TOO_DEEP',
+          severity: ValidationSeverity.ERROR,
+          message: 'Source is nested too deeply to be validated',
+        });
       } else if (!(err instanceof StopValidationError)) {
         throw err;
       }
       stopped = true;
       incomplete = true;
+    } finally {
+      // What the rules computed about the keys of this program is not needed any more
+      releaseStaticEvaluation(ast);
+      releaseSharedScopes(ast);
     }
 
     const durationMs = Date.now() - startTime;
