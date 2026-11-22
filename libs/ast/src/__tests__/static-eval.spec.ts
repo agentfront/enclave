@@ -158,6 +158,10 @@ describe('static evaluation of a property key', () => {
       expect(typesOf(`((list) => (touch(list), list[0]))(['alpha'])`)).toContain('dynamic');
     });
 
+    it('an assignment that nothing is evaluated after is the value that was assigned', () => {
+      expect(keyOf(`(name = 'alpha')`, { prelude: 'let name;' })).toEqual({ names: ['alpha'], unresolved: false });
+    });
+
     it('a method that changes the list it is called on is computed', () => {
       expect(keyOf(`'ahpla'.split('').reverse().join('')`)).toEqual({ names: ['alpha'], unresolved: false });
       expect(keyOf(`['b', 'a'].sort().join('')`)).toEqual({ names: ['ab'], unresolved: false });

@@ -910,6 +910,11 @@ class StaticEvaluator {
    * changes the list it is called on, `reverse` or `sort`, is evaluated: it does not count.)
    */
   private disturbed = false;
+  /**
+   * A variable was assigned, and nothing has been evaluated since. (The value of `k = 'a'` is
+   * what was assigned; it is what comes after an assignment that may read what it changed.)
+   */
+  private effect = false;
   /** Whether something in it was computed on the assumption that a built-in is unchanged */
   private assumed = false;
   /** The number of the expression that is evaluated: each one evaluated on its own has one */
@@ -1076,9 +1081,7 @@ class StaticEvaluator {
           this.bindingOf.get(node.callee) === null
         );
       case 'ThisExpression':
-        // The instance of a class that extends nothing. (After `super(x)`, `this` is whatever
-        // the constructor of the base class returned.)
-        return this.isInClass(node, true);
+        return this.isOwnThis(node);
       case 'Identifier': {
         const init = this.localInit(node);
         return init !== undefined && hops < 4 && this.isOwnObject(init, hops + 1);
@@ -1089,14 +1092,39 @@ class StaticEvaluator {
   }
 
   /**
-   * Whether `this` is the instance (or the class) of a class it is written in, never the global
-   * object.
-   *
-   * @param base Only a class that extends nothing
+   * Whether `this` is an object the class it is written in made: in the constructor or in a
+   * field of a class that extends nothing (after `super(x)`, `this` is whatever the constructor
+   * of the base returned), or in a static field or block (the class itself). In a method it is
+   * whatever the method is called on, and a method can be called on anything.
    */
-  private isInClass(node: AnyNode, base = false): boolean {
+  private isOwnThis(node: AnyNode): boolean {
     for (let current = this.parentOf.get(node); current; current = this.parentOf.get(current)) {
-      if (current.type === 'ClassBody') return !base || !this.parentOf.get(current)?.superClass;
+      switch (current.type) {
+        case 'ArrowFunctionExpression':
+          break; // (the `this` of where it is written)
+        case 'StaticBlock':
+          return true;
+        case 'PropertyDefinition':
+          return current.static === true || !this.parentOf.get(this.parentOf.get(current))?.superClass;
+        case 'FunctionExpression': {
+          const method = this.parentOf.get(current);
+          if (method?.type !== 'MethodDefinition' || method.kind !== 'constructor') return false;
+          return !this.parentOf.get(this.parentOf.get(method))?.superClass;
+        }
+        case 'FunctionDeclaration':
+        case 'Program':
+          return false;
+        default:
+          break;
+      }
+    }
+    return false;
+  }
+
+  /** Whether `this` is written in a class: it is then never the global object. */
+  private isInClass(node: AnyNode): boolean {
+    for (let current = this.parentOf.get(node); current; current = this.parentOf.get(current)) {
+      if (current.type === 'ClassBody') return true;
       if (current.type === 'FunctionDeclaration' || current.type === 'FunctionExpression') {
         // (A method of a class is a function expression that is the value of a member of its body)
         const holder = this.parentOf.get(current);
@@ -1124,7 +1152,9 @@ class StaticEvaluator {
     } else if (holder?.type === 'CallExpression' && holder.callee === top) {
       const name = staticName(top);
       if (name !== undefined && STORING_METHODS.has(name)) {
-        nodes = name === 'splice' ? (holder.arguments ?? []).slice(2) : (holder.arguments ?? []);
+        // (`splice(start, count, ...items)` and `set(key, value)` store what comes after)
+        const skip = name === 'splice' ? 2 : name === 'set' ? 1 : 0;
+        nodes = (holder.arguments ?? []).slice(skip);
       }
     }
     if (nodes.length === 0) return;
@@ -1408,6 +1438,7 @@ class StaticEvaluator {
     this.writes = 0;
     this.heap = 0;
     this.disturbed = false;
+    this.effect = false;
     this.assumed = false;
     this.epoch = ++this.epochs;
     let result: StaticAlternative[];
@@ -1460,6 +1491,7 @@ class StaticEvaluator {
     this.heap = 0;
     const assumed = this.assumed;
     this.disturbed = false;
+    this.effect = false;
     this.epoch = ++this.epochs;
     try {
       return this.summarize(this.ev(node, undefined), node).filter(
@@ -2002,6 +2034,7 @@ class StaticEvaluator {
       writes: this.writes,
       heap: this.heap,
       disturbed: this.disturbed,
+      effect: this.effect,
       assumed: this.assumed,
       epoch: this.epoch,
       lenient: this.lenient,
@@ -2011,6 +2044,7 @@ class StaticEvaluator {
     this.writes = 0;
     this.heap = 0;
     this.disturbed = false;
+    this.effect = false;
     this.assumed = false;
     this.epoch = ++this.epochs;
     this.lenient = false;
@@ -2024,6 +2058,7 @@ class StaticEvaluator {
       this.writes = saved.writes;
       this.heap = saved.heap;
       this.disturbed = saved.disturbed;
+      this.effect = saved.effect;
       // (An expression that reads a variable whose value rests on a built-in rests on it too)
       this.assumed = saved.assumed || this.assumed;
       this.epoch = saved.epoch;
@@ -2145,7 +2180,7 @@ class StaticEvaluator {
     const cached = this.globalMemo.get(name);
     if (cached) return cached;
     this.globalMemo.set(name, [DYNAMIC]); // (while it is computed: a name that is assigned itself)
-    const saved = { lenient: this.lenient, disturbed: this.disturbed, assumed: this.assumed };
+    const saved = { lenient: this.lenient, disturbed: this.disturbed, effect: this.effect, assumed: this.assumed };
     this.lenient = true;
     const known: Value[] = [];
     try {
@@ -2161,6 +2196,7 @@ class StaticEvaluator {
     } finally {
       this.lenient = saved.lenient;
       this.disturbed = saved.disturbed;
+      this.effect = saved.effect;
       this.assumed = saved.assumed;
     }
     const values = [...known, DYNAMIC];
@@ -2530,6 +2566,8 @@ class StaticEvaluator {
 
   private ev(node: AnyNode, env: Env | undefined): Value[] {
     this.tick();
+    // (Something is evaluated after an assignment: see `disturbed`)
+    if (this.effect) this.disturbed = true;
     if (!isAstNode(node)) return [DYNAMIC];
     if (this.depth >= MAX_DEPTH) throw new OutOfBudget();
     this.depth++;
@@ -2998,7 +3036,7 @@ class StaticEvaluator {
     const changed = (values?: Value[]): void => {
       if (target?.type === 'Identifier') {
         this.writes++;
-        this.disturbed = true;
+        this.effect = true;
         // (Where names are looked for, the variable is read for what it was given here as well)
         if (this.lenient && values) {
           const binding = this.bindingOf.get(target);
@@ -4607,8 +4645,11 @@ class StaticEvaluator {
         const items: Value[] = [];
         const first = args[0];
         for (const entry of first?.kind === 'array' ? dense(first.items) : []) {
-          if (path === 'Map' && entry.kind === 'array') items.push(...dense(entry.items).filter(isResolved));
-          else if (isResolved(entry)) items.push(entry);
+          // (Of a map, the values: they are what `get` gives)
+          if (path === 'Map') {
+            const value = entry.kind === 'array' ? dense(entry.items)[1] : undefined;
+            if (value && isResolved(value)) items.push(value);
+          } else if (isResolved(entry)) items.push(entry);
         }
         return [
           { kind: 'array', items, bag: true, epoch: this.epoch, born: this.heap },
