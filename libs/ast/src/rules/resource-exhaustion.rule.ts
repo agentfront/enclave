@@ -407,6 +407,11 @@ export class ResourceExhaustionRule implements ValidationRule {
       if (!variableOf.has(binding.node)) variableOf.set(binding.node, binding);
       for (const again of binding.redeclarations ?? []) variableOf.set(again.node, binding);
     }
+    for (const binding of scopes.bindings) {
+      // `catch (e) { var e = value; }` gives the value to the catch parameter
+      const assigned = binding.initializes;
+      if (assigned) variableOf.set(binding.node, variableOf.get(assigned.node) ?? assigned);
+    }
     for (const reference of scopes.references) {
       if (reference.binding)
         variableOf.set(reference.node, variableOf.get(reference.binding.node) ?? reference.binding);

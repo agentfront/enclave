@@ -677,6 +677,9 @@ const MUTATING_ARRAY_METHODS: ReadonlySet<string> = new Set([
   'unshift',
 ]);
 
+/** Those of them that write the elements a list has, and neither add one nor take one away. */
+const SHAPE_KEEPING_METHODS: ReadonlySet<string> = new Set(['copyWithin', 'fill', 'reverse', 'sort']);
+
 /** Methods of an array whose result is an array. */
 const ARRAY_RETURNING_METHODS: ReadonlySet<string> = new Set([
   'concat',
@@ -816,7 +819,15 @@ function staticName(member: AnyNode): string | undefined {
 type Source =
   | { kind: 'simple'; init: AnyNode | null | undefined; loop?: AnyNode; defaultNode?: AnyNode }
   | { kind: 'pattern'; init: AnyNode | null | undefined; loop?: AnyNode; path: PatternStep[]; defaultNode?: AnyNode }
-  | { kind: 'param'; fn: AnyNode; index: number; path: PatternStep[]; defaultNode?: AnyNode }
+  | {
+      kind: 'param';
+      fn: AnyNode;
+      index: number;
+      path: PatternStep[];
+      defaultNode?: AnyNode;
+      /** `(...rest)`: the list of the arguments from `index` on */
+      rest?: true;
+    }
   | { kind: 'function'; node: AnyNode }
   | { kind: 'class'; node: AnyNode }
   | { kind: 'catch'; block: AnyNode }
@@ -864,6 +875,8 @@ class StaticEvaluator {
   /** Functions declared in a block, by name: outside the block the name may still reach them */
   private readonly blockFunctions = new Map<string, AnyNode[]>();
   private readonly parentOf = new Map<AnyNode, AnyNode>();
+  /** What is written in the body of a `with`: a name there may be a property of its object */
+  private readonly inWith = new WeakSet<AnyNode>();
   private readonly bindingMemo = new Map<ScopeBinding, Value[]>();
   private readonly computing = new Set<ScopeBinding>();
   private readonly dependencies = new Map<ScopeBinding, ScopeBinding[]>();
@@ -886,7 +899,7 @@ class StaticEvaluator {
    * The arrays and objects `Object.freeze`, `seal` or `preventExtensions` was called on, by what
    * holds their content: every reference to the object shares it, a copy does not.
    */
-  private readonly locked = new WeakSet<object>();
+  private readonly locked = new WeakMap<object, 'frozen' | 'sealed'>();
   /** Keys found unresolved, with the rank each was last reported at */
   private readonly reportedAt = new Map<AnyNode, number>();
   private pending = new Set<AnyNode>();
@@ -944,6 +957,9 @@ class StaticEvaluator {
     let current: AnyNode = ast;
     const adopt = (child: AnyNode): void => {
       this.parentOf.set(child, current);
+      if (this.inWith.has(current) || (current.type === 'WithStatement' && child === current.body)) {
+        this.inWith.add(child);
+      }
       stack.push(child);
     };
     let nodes = 0;
@@ -1007,6 +1023,15 @@ class StaticEvaluator {
       }
     }
 
+    for (const binding of scopes.bindings) {
+      // `catch (e) { var e = value; }`: the declaration gives its value to the catch parameter
+      const assigned = binding.initializes;
+      if (!assigned) continue;
+      const list = this.writesTo.get(assigned);
+      if (list) list.push({ target: binding.node });
+      else this.writesTo.set(assigned, [{ target: binding.node }]);
+    }
+
     // The built-ins that are named: one that is assigned to is changed; one that holds the
     // functions the evaluation computes with (`Math`, `String`, the global object) and is handed
     // on as a value can be changed by whoever gets it. And what makes code from text, or reads
@@ -1053,6 +1078,17 @@ class StaticEvaluator {
       if (names === undefined || names.some((name) => PROTOTYPE_NAMES.has(name))) this.trusted = false;
       else if (names.includes('assign')) this.looseWrite = true;
     }
+  }
+
+  /** Whether an expression reads or writes a variable, or a global, by its name. */
+  private namesAnything(root: AnyNode): boolean {
+    const stack: AnyNode[] = [root];
+    while (stack.length > 0) {
+      const node = stack.pop() as AnyNode;
+      if (node.type === 'Identifier' && this.bindingOf.get(node) !== undefined) return true;
+      forEachChild(node, (child) => stack.push(child));
+    }
+    return false;
   }
 
   /** The names a computed key is, read as it is written; `undefined` where a constant is not computed. */
@@ -1480,6 +1516,13 @@ class StaticEvaluator {
       if (asKey) throw new StaticKeyExpansionError(large.loc ? large : node);
       return [{ type: 'unresolved' }];
     }
+    // Inside `with`, a name may be a property of its object, whatever it is outside: an
+    // expression that names anything is not computed
+    if (this.inWith.has(node) && this.namesAnything(node)) {
+      const unread: StaticAlternative[] = [{ type: 'unresolved' }];
+      memo.set(node, unread);
+      return unread;
+    }
 
     this.variables = variables;
     this.lenient = false;
@@ -1513,8 +1556,8 @@ class StaticEvaluator {
     } catch (signal) {
       if (!isSignal(signal)) throw signal;
       if (variables) {
-        // Following the variables is a search, and it ends where it costs too much: the
-        // expression is then read as it is written, which is a limit of its own
+        // Following the variables ends where it costs too much: the expression is then read as
+        // it is written, which is a limit of its own
         try {
           result = this.describe(node, asKey, false);
         } finally {
@@ -1523,6 +1566,13 @@ class StaticEvaluator {
           if (written) sized.set(node, written);
         }
         if (sized.has(node)) return result;
+        // As it is written, a variable is a run-time value. Here it is one that was not followed
+        // to its end: what depends on it is not known, and a key that is not known is refused.
+        // (A limit that is reached never makes a key one that is decided at run time.)
+        if (result.some((alternative) => alternative.type === 'dynamic')) {
+          result = result.filter((alternative) => alternative.type !== 'dynamic');
+          if (!result.some((alternative) => alternative.type === 'unresolved')) result.push({ type: 'unresolved' });
+        }
       } else if (signal instanceof TooLong) {
         const large: AnyNode = signal.node?.loc ? signal.node : node;
         sized.set(node, large);
@@ -1560,7 +1610,10 @@ class StaticEvaluator {
       );
     } catch (signal) {
       if (!isSignal(signal)) throw signal;
-      return [];
+      // The search ended on a limit. Where the variables are followed, the names it would have
+      // found are what decides the key: it is not known. (Where they are not, the key is one
+      // for the check that follows the validator, with or without the names.)
+      return this.variables ? [{ type: 'unresolved' }] : [];
     } finally {
       this.lenient = false;
       this.assumed = assumed;
@@ -1668,6 +1721,19 @@ class StaticEvaluator {
     if (value.length > MAX_STATIC_KEY_LENGTH) throw new TooLong(node);
     this.tick(value.length >> 6);
     return primitive(value);
+  }
+
+  /**
+   * What a native operation costs for the texts it reads: a step for every 16 characters, as a
+   * method of a text costs. What the evaluation builds is short; a literal is as long as it is
+   * written, and is read again by every operation it is handed to.
+   */
+  private read(...operands: StaticPrimitive[]): void {
+    let length = 0;
+    for (const operand of operands) {
+      if (typeof operand === 'string') length += operand.length;
+    }
+    if (length >= 16) this.tick(length >> 4);
   }
 
   /** An array that is built here. */
@@ -1960,6 +2026,15 @@ class StaticEvaluator {
           // `[first, ...rest]`: what is left of an array. `{ a, ...rest }`: what is left of an
           // object, which is read as the object (it holds no more than the object does).
           const holder = this.parentOf.get(parent);
+          if (
+            (holder?.type === 'FunctionExpression' ||
+              holder?.type === 'ArrowFunctionExpression' ||
+              holder?.type === 'FunctionDeclaration') &&
+            (holder.params ?? []).includes(parent)
+          ) {
+            // `(...rest)`: the arguments of each call, from where it stands on, in a list
+            return { kind: 'param', fn: holder, index: holder.params.indexOf(parent), path, defaultNode, rest: true };
+          }
           if (holder?.type === 'ObjectPattern') {
             path.push({ type: 'objectRest' });
           } else {
@@ -2216,7 +2291,9 @@ class StaticEvaluator {
       }
     }
 
-    const bag = this.bagOf(binding, known);
+    const bag = this.bagOf(binding, known, () => {
+      unresolved = true;
+    });
 
     if (building.length > 0) {
       // `k += 'b'`, `k = k + 'b'`: from what the variable is known to hold, a few times over.
@@ -2234,6 +2311,8 @@ class StaticEvaluator {
         }
       } catch (signal) {
         if (!isSignal(signal)) throw signal;
+        // (What it would have built is not known)
+        unresolved = true;
       } finally {
         this.limit = limit;
         this.bindingMemo.delete(binding);
@@ -2251,6 +2330,7 @@ class StaticEvaluator {
     const saved = { lenient: this.lenient, disturbed: this.disturbed, effect: this.effect, assumed: this.assumed };
     this.lenient = true;
     const known: Value[] = [];
+    let missed = false;
     try {
       for (const write of writes) {
         const values =
@@ -2260,6 +2340,7 @@ class StaticEvaluator {
               ? this.attempt(() => this.ev(write.right, undefined))
               : [];
         known.push(...values.filter(isResolved));
+        if (values.some((value) => value.kind === 'unresolved' && !value.object)) missed = true;
       }
     } finally {
       this.lenient = saved.lenient;
@@ -2267,13 +2348,14 @@ class StaticEvaluator {
       this.effect = saved.effect;
       this.assumed = saved.assumed;
     }
-    const values = [...known, DYNAMIC];
+    // (A constant it was given that is not computed is one of the things it may hold)
+    const values = [...known, ...(missed ? [UNRESOLVED] : []), DYNAMIC];
     this.globalMemo.set(name, values);
     return values;
   }
 
   /** The values the script can be seen storing into the array or the collection a variable holds. */
-  private bagOf(binding: ScopeBinding, known: Value[]): ArrayValue | undefined {
+  private bagOf(binding: ScopeBinding, known: Value[], missed: () => void): ArrayValue | undefined {
     const nodes = this.storesTo.get(binding);
     if (!nodes) return undefined;
     const items: Value[] = [];
@@ -2293,6 +2375,8 @@ class StaticEvaluator {
             )
           : this.attempt(() => this.ev(node, undefined));
       items.push(...values.filter(isResolved));
+      // (A constant that was stored and is not computed is one of the things it may hold)
+      if (values.some((value) => value.kind === 'unresolved' && !value.object)) missed();
     }
     return { kind: 'array', items, bag: true, epoch: this.epoch, born: this.heap };
   }
@@ -2320,7 +2404,9 @@ class StaticEvaluator {
         break;
       case 'param':
         // What the calls of the function that can be seen give the parameter
-        if (source.index >= 0) out.push(...this.project(this.argumentsSeen(source.fn, source.index), source.path));
+        if (source.index >= 0) {
+          out.push(...this.project(this.argumentsSeen(source.fn, source.index, source.rest === true), source.path));
+        }
         break;
       case 'function':
         out.push({ kind: 'function', node: source.node, env: undefined, name: source.node.id?.name });
@@ -2505,10 +2591,23 @@ class StaticEvaluator {
    * written (`((k) => ...)('a')`), by a method that walks a list and calls it with each element
    * (`list.forEach((k) => ...)`), and by the calls of the name it is declared under.
    */
-  private argumentsSeen(fn: AnyNode, index: number): Value[] {
+  private argumentsSeen(fn: AnyNode, index: number, rest = false): Value[] {
     const out: Value[] = [];
     const fromCall = (call: AnyNode): void => {
       const args: AnyNode[] = call.arguments ?? [];
+      if (rest) {
+        // (Before a spread, which argument is which is not known; from it on, they are listed)
+        if (args.slice(0, index).some((argument) => argument.type === 'SpreadElement')) return;
+        try {
+          const lists = this.argumentLists(args.slice(index), call, undefined);
+          if (!lists) out.push(UNRESOLVED);
+          else for (const list of lists) out.push(this.arrayOf(list, call));
+        } catch (signal) {
+          if (!isSignal(signal)) throw signal;
+          out.push(UNRESOLVED);
+        }
+        return;
+      }
       // (After a spread, which argument is which is not known)
       if (args.slice(0, index + 1).some((argument) => argument.type === 'SpreadElement')) return;
       const argument = args[index];
@@ -2532,7 +2631,20 @@ class StaticEvaluator {
       while (callee?.type === 'ChainExpression' || callee?.type === 'ParenthesizedExpression')
         callee = callee.expression;
       const name = callee?.type === 'MemberExpression' ? staticName(callee) : undefined;
-      if (name !== undefined && WALKING_METHODS.has(name)) {
+      if (name !== undefined && WALKING_METHODS.has(name) && rest) {
+        // `list.forEach((...args) => ...)`: a list that holds an element, its index, the list, and
+        // for `reduce` what was returned so far. Taken together: any of the elements, or the start.
+        if (index === 0) {
+          const start: AnyNode | undefined = parent.arguments[1];
+          const items = [
+            ...((name === 'reduce' || name === 'reduceRight') && start
+              ? this.attempt(() => this.ev(start, undefined))
+              : []),
+            ...elementsOf(callee.object),
+          ].filter(isResolved);
+          out.push({ kind: 'array', items, bag: true, epoch: this.epoch, born: this.heap }, DYNAMIC);
+        }
+      } else if (name !== undefined && WALKING_METHODS.has(name)) {
         const reducing = name === 'reduce' || name === 'reduceRight';
         const comparing = name === 'sort' || name === 'toSorted';
         // `reduce((sum, item) => ...)`: the first parameter is what was returned so far, or the start
@@ -2804,6 +2916,9 @@ class StaticEvaluator {
   private identifier(node: AnyNode, env: Env | undefined): Value[] {
     const binding = this.bindingOf.get(node);
     if (binding === undefined) return [DYNAMIC];
+    // Inside `with` a name may be a property of its object: it is not read as the variable, or
+    // the built-in, of that name
+    if (this.inWith.has(node)) return binding && !this.variables ? [DYNAMIC] : this.giveUp(node, env);
     if (binding === null) {
       // `arguments` of a function that is being applied: what it was called with, not followed
       if (node.name === 'arguments' && ownsSelf(env)) return this.giveUp(node, env);
@@ -2905,7 +3020,12 @@ class StaticEvaluator {
         this.tick();
         if (a.kind === 'dynamic' || b.kind === 'dynamic') out.push(DYNAMIC);
         else if (a.kind !== 'primitive' || b.kind !== 'primitive') out.push(UNRESOLVED);
-        else out.push(this.text(String(a.value) + String(b.value), node));
+        else {
+          const first = String(a.value);
+          const second = String(b.value);
+          if (first.length + second.length > MAX_STATIC_KEY_LENGTH) throw new TooLong(node);
+          out.push(this.text(first + second, node));
+        }
       }
     }
     return this.settle(out);
@@ -2942,6 +3062,7 @@ class StaticEvaluator {
           out.push(...(operand.kind === 'symbol' ? this.giveUp(node, env) : [plain(operand)]));
           continue;
         }
+        this.read(operand.value);
         const result = hostUnary(operator, operand.value);
         if (result === NO_VALUE) out.push(...this.giveUp(node, env));
         else out.push(primitive(result));
@@ -3021,8 +3142,20 @@ class StaticEvaluator {
     env: Env | undefined,
   ): Value[] {
     if (operator === '+' && (typeof x === 'string' || typeof y === 'string')) {
-      return [this.text(String(x) + String(y), node)];
+      const left = String(x);
+      const right = String(y);
+      // (Measured before it is built: a literal can be long)
+      if (left.length + right.length > MAX_STATIC_KEY_LENGTH) throw new TooLong(node);
+      return [this.text(left + right, node)];
     }
+    // (Converting a text to a number reads all of it. Two texts that are compared, or values of
+    // one type that are equal or not, are not converted.)
+    const compared = operator === '<' || operator === '>' || operator === '<=' || operator === '>=';
+    const equality = operator === '===' || operator === '!==' || operator === '==' || operator === '!=';
+    const converted = equality
+      ? (operator === '==' || operator === '!=') && typeof x !== typeof y
+      : !(compared && typeof x === 'string' && typeof y === 'string');
+    if (converted) this.read(x, y);
     if (typeof x === 'bigint' && typeof y === 'bigint') {
       // A BigInt has no size limit of its own: bound what an operation may build
       const limit = BigInt(MAX_BIGINT_BITS);
@@ -3767,7 +3900,8 @@ class StaticEvaluator {
       for (const list of lists) {
         for (const expansion of expansions) {
           if (list.length + expansion.length > MAX_ITEMS) throw new TooLong(node);
-          this.tick(1 + expansion.length);
+          // (The copy is of the whole list, not only of what is added to it)
+          this.tick(1 + list.length + expansion.length);
           next.push(list.concat(expansion));
         }
       }
@@ -4322,6 +4456,7 @@ class StaticEvaluator {
         return this.giveUp(node, env);
       }
     }
+    this.read(...out);
     return out;
   }
 
@@ -4374,7 +4509,16 @@ class StaticEvaluator {
       if (replacement.length <= pattern.length && !replacement.includes('$')) {
         bounded = true; // no occurrence is replaced by something longer
       } else {
-        const occurrences = name === 'replace' ? 1 : text.length + 1;
+        // How often the pattern is found: `replace` replaces the first place, `replaceAll` every
+        // one (an empty pattern is found between all the characters)
+        let occurrences = 0;
+        if (pattern === '') occurrences = name === 'replace' ? 1 : text.length + 1;
+        else if (name === 'replace') occurrences = text.includes(pattern) ? 1 : 0;
+        else {
+          for (let at = text.indexOf(pattern); at !== -1; at = text.indexOf(pattern, at + pattern.length)) {
+            occurrences++;
+          }
+        }
         // `$&` and `` $` `` in a replacement stand for parts of the text
         const each = replacement.length + (replacement.includes('$') ? text.length * replacement.length : 0);
         if (text.length + occurrences * each > MAX_STATIC_KEY_LENGTH) throw new TooLong(node);
@@ -4470,8 +4614,12 @@ class StaticEvaluator {
     const items = array.items;
     this.tick(items.length);
     const givesArray = ARRAY_RETURNING_METHODS.has(name);
-    // (A method that changes a frozen list throws)
-    if (MUTATING_ARRAY_METHODS.has(name) && this.locked.has(array.items)) return this.giveUp(node, env, givesArray);
+    // (A method that changes a frozen list throws, and so does one that adds to a sealed list or
+    // takes from it. One that only writes the elements a sealed list has does not.)
+    const lock = MUTATING_ARRAY_METHODS.has(name) ? this.locked.get(array.items) : undefined;
+    if (lock === 'frozen' || (lock === 'sealed' && (!SHAPE_KEEPING_METHODS.has(name) || hasHole(items)))) {
+      return this.giveUp(node, env, givesArray);
+    }
     // These read one element or keep the slots as they are. Every other method walks the array
     // and treats an empty slot in a way of its own.
     if (hasHole(items) && !HOLE_NEUTRAL_METHODS.has(name)) return this.giveUp(node, env, givesArray);
@@ -4529,6 +4677,9 @@ class StaticEvaluator {
           if (!isResolved(arg)) return [through(arg)];
           if (arg.kind === 'array') {
             if (!this.fresh(arg)) return this.giveUp(node, env, true);
+            // (Measured and paid for before it is copied: each list may fit where all do not)
+            if (out.length + arg.items.length > MAX_ITEMS) throw new TooLong(node);
+            this.tick(arg.items.length);
             out.push(...arg.items);
           } else if (arg.kind === 'object')
             return this.giveUp(node, env, true); // may be spreadable
@@ -4788,6 +4939,7 @@ class StaticEvaluator {
             out.push(...(operand.kind === 'symbol' ? this.giveUp(node, env) : [plain(operand)]));
             continue;
           }
+          this.read(operand.value);
           if (path === 'BigInt') {
             const digits = typeof operand.value === 'string' ? operand.value.length : 0;
             if (digits > MAX_BIGINT_DIGITS) throw new TooLong(node);
@@ -5041,14 +5193,19 @@ class StaticEvaluator {
 
       case 'Object.freeze':
       case 'Object.seal':
-      case 'Object.preventExtensions':
+      case 'Object.preventExtensions': {
         if (first === undefined) return [UNDEFINED];
         // The same object, holding what it held. From here on a write to it throws (to a sealed
         // one, may throw), through whichever name it is reached: it is not computed as a write
         // that succeeds.
-        if (first.kind === 'array') this.locked.add(first.items);
-        else if (first.kind === 'object') this.locked.add(first.properties);
+        const content = first.kind === 'array' ? first.items : first.kind === 'object' ? first.properties : undefined;
+        if (content) {
+          // (Frozen stays frozen: sealing it afterwards does not make its elements writable)
+          const frozen = path === 'Object.freeze' || this.locked.get(content) === 'frozen';
+          this.locked.set(content, frozen ? 'frozen' : 'sealed');
+        }
         return [first];
+      }
 
       case 'Object.assign': {
         if (first === undefined) return this.giveUp(node, env);

@@ -103,6 +103,9 @@ describe('static evaluation of a property key', () => {
         ['alpha'],
       ],
       ['a member of a frozen object', `Object.freeze({ a: 'alpha' }).a`, ['alpha']],
+      // (A sealed list keeps its length; its elements can still be written)
+      ['a sealed list reversed in place', `Object.seal(['beta', 'alpha']).reverse()[0]`, ['alpha']],
+      ['a replacement where nothing matches', `'a'.repeat(100).replaceAll('z', 'xy'.repeat(30)).length`, ['100']],
       ['a copy of a frozen list', `Object.freeze(['pha', 'al']).slice().reverse().join('')`, ['alpha']],
       [
         'a frozen list read under its other name',
@@ -342,6 +345,26 @@ describe('static evaluation of a property key', () => {
       expect(cut.names).toEqual(expect.arrayContaining(['alpha', 'lpha', 'a']));
     });
 
+    it('a parameter the body declares again with var holds what the call gave it', () => {
+      const declared = lastKey(`const o = {}; function read(key) { var key; return o[key]; } read('alpha');`);
+      expect(resolveStaticKey(declared.ast, declared.key, { variables: true }).names).toContain('alpha');
+    });
+
+    it('a var in a catch block under the name of the catch parameter gives the parameter its value', () => {
+      const caught = lastKey(`const o = {}; try { run(); } catch (key) { var key = 'alpha'; o[key]; }`);
+      expect(resolveStaticKey(caught.ast, caught.key, { variables: true }).names).toContain('alpha');
+    });
+
+    it('inside with, a name is not read as the variable of that name', () => {
+      // (The object of `with` may have a property of that name)
+      const prelude = `const key = 'alpha'; with (table)`;
+
+      expect(keyOf('key', { prelude, variables: true }).unresolved).toBe(true);
+      expect(keyOf('key', { prelude: `const key = 'alpha'; with (table) {}`, variables: true }).names).toEqual([
+        'alpha',
+      ]);
+    });
+
     it('a parameter shadows a constant of the same name', () => {
       const prelude = `const key = 'alpha'; const f = (key) =>`;
 
@@ -538,6 +561,14 @@ describe('how the rules read a key', () => {
     const source = "const value = rows[new Map([['k', 'alpha']]).get('k')];";
 
     expect(await codesOf([new NoRegexMethodsRule()], source)).toEqual([]);
+
+    // A member whose name is written out, and is not a method of this rule, is not called through its key
+    const nested = `const rows = [{}]; const v = rows[0][new Map([['k', 'alpha']]).get('k')];`;
+    expect(await codesOf([new NoRegexMethodsRule()], nested)).toEqual([]);
+
+    // Nothing that is read from a host object is this rule's to read
+    const host = new NoRegexMethodsRule({ requireDirectCall: true, hostObjectNames: ['docs'] });
+    expect(await codesOf([host], `const v = docs[new Map([['k', 'title']]).get('k')];`)).toEqual([]);
   });
 
   it('a default value marks the variable it initializes, not another one of the same name', async () => {
@@ -586,6 +617,11 @@ describe('how the rules read a key', () => {
         'a timer taken out under its own name by a key a const holds',
         `const k = 'setTimeout'; const { [k]: setTimeout } = scheduler; setTimeout(() => 1, 10);`,
       ],
+      [
+        'a function returned by a method named like one that gives a list',
+        `setTimeout({ map: () => () => 1 }.map(), 10);`,
+      ],
+      ['a function that is spread, then a delay written as a string', `setTimeout(...[() => 1], '10');`],
     ])('accepts %s', async (_name, source) => {
       expect(await codesOf([new NoEvalRule()], source)).toEqual([]);
     });
