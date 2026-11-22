@@ -53,13 +53,13 @@ export interface PresetOptions {
  * Preset levels from highest to lowest security
  *
  * Security levels in order (high → low):
- * 1. STRICT - Maximum security for untrusted code (bank-grade)
+ * 1. STRICT - The most restrictive preset
  * 2. SECURE - High security with some flexibility
  * 3. STANDARD - Balanced security for most use cases
  * 4. PERMISSIVE - Low security, minimal restrictions
  */
 export enum PresetLevel {
-  /** Maximum security - blocks all dangerous patterns, enforces strict API usage (bank-grade) */
+  /** The most restrictive preset: the longest list of refused identifiers, no loops and no async by default */
   STRICT = 'strict',
 
   /** High security - blocks most dangerous patterns with some flexibility */

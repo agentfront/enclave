@@ -1,33 +1,21 @@
 # @enclave-vm/stream
 
+Building blocks of the EnclaveJS streaming protocol (NDJSON serialization and parsing, reconnection helpers, and encryption primitives) for code that reads or writes session event streams.
+
 [![npm version](https://img.shields.io/npm/v/@enclave-vm/stream.svg)](https://www.npmjs.com/package/@enclave-vm/stream)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/agentfront/enclave/blob/main/LICENSE)
 
-> Streaming protocol building blocks for EnclaveJS (NDJSON, reconnection helpers, encryption primitives)
+The package builds on [`@enclave-vm/types`](https://www.npmjs.com/package/@enclave-vm/types) and re-exports all of it. [`@enclave-vm/client`](https://www.npmjs.com/package/@enclave-vm/client) reads broker streams with its NDJSON parser and reconnection state machine, and [`@enclave-vm/runtime`](https://www.npmjs.com/package/@enclave-vm/runtime) serializes events with it. The stream helpers use the WHATWG `TransformStream` and `TextDecoder`; the encryption functions need the Web Crypto API (`globalThis.crypto.subtle`) and throw when it is missing.
 
-The @enclave-vm/stream package provides the building blocks of the EnclaveJS streaming protocol: NDJSON serialization and parsing, helpers for reconnection, and encryption primitives built on the Web Crypto API. It also re-exports everything from `@enclave-vm/types`.
+> **No EnclaveJS package uses the encryption primitives.** `@enclave-vm/client`, `@enclave-vm/react`, `@enclave-vm/broker` and `@enclave-vm/runtime` do not encrypt, perform no handshake and have no encryption option. A session between the client and the broker is plain JSON, protected only by the transport, so serve it over HTTPS. The encryption functions of this package are for an application that implements both ends of an encrypted channel itself. See [Encryption primitives](#encryption-primitives) for what such an application has to do.
 
-> **No EnclaveJS package uses the encryption primitives.** `@enclave-vm/client`, `@enclave-vm/react`, `@enclave-vm/broker` and `@enclave-vm/runtime` do not encrypt, perform no handshake and have no encryption option. A session between the client and the broker is plain JSON protected only by the transport, so serve it over HTTPS. The encryption functions of this package are for an application that implements both ends of an encrypted channel itself. See [Encryption Primitives](#encryption-primitives) for what such an application has to do.
-
-## Features
-
-- **NDJSON**: Serialize and parse stream events, one JSON object per line, with a limit on the line length
-- **Reconnection Helpers**: Backoff state machine, sequence tracker, event buffer and heartbeat monitor
-- **Encryption Primitives**: ECDH P-256 key exchange helpers, HKDF-SHA-256 key derivation, AES-256-GCM and the `enc` envelope
-- **Cross-Platform**: Works in Node.js and browsers
-
-## Installation
+## Install
 
 ```bash
 npm install @enclave-vm/stream
-# or
-yarn add @enclave-vm/stream
-# or
-pnpm add @enclave-vm/stream
 ```
 
-## Quick Start
+## Quick start
 
 ```typescript
 import { serializeEvent, NdjsonStreamParser } from '@enclave-vm/stream';
@@ -69,12 +57,16 @@ parser.flush();
 
 Lines are validated against the event schemas of `@enclave-vm/types`. `NdjsonStreamParser` reports a line that is not an event through `onError`; `createNdjsonParseStream` and `parseNdjsonStream` skip it.
 
-The incremental parsers take a `maxLineLength` option, in characters. The default is `DEFAULT_MAX_LINE_LENGTH` (8 MiB). When a line is longer:
+The incremental parsers take one option:
+
+| Option          | Type     | Default                           | Meaning                                                                          |
+| --------------- | -------- | --------------------------------- | -------------------------------------------------------------------------------- |
+| `maxLineLength` | `number` | `DEFAULT_MAX_LINE_LENGTH` (8 MiB) | Longest line accepted, in characters. A positive integer, otherwise `RangeError` |
+
+When a line is longer:
 
 - `NdjsonStreamParser` reports it once through `onError` and skips it.
 - `createNdjsonParseStream` and `parseNdjsonStream` end with an `NdjsonLineTooLongError`.
-
-A `maxLineLength` that is not a positive integer throws a `RangeError`.
 
 ```typescript
 import { parseNdjsonStream } from '@enclave-vm/stream';
@@ -87,7 +79,7 @@ for await (const event of parseNdjsonStream(response.body, { maxLineLength: 1024
 }
 ```
 
-## Reconnection Helpers
+## Reconnection helpers
 
 The package does not open connections. These classes keep the state of a connection that the application opens:
 
@@ -121,18 +113,31 @@ function track(event: { seq: number }): void {
 }
 ```
 
-| Export                        | Description                                                                         |
-| ----------------------------- | ----------------------------------------------------------------------------------- |
-| `ReconnectionStateMachine`    | Connection state and retries with exponential backoff and jitter                    |
-| `ConnectionState`             | `Disconnected`, `Connecting`, `Connected`, `Reconnecting`, `Failed`, `Closed`       |
-| `DEFAULT_RECONNECTION_CONFIG` | 5 retries, 1 s initial delay, 30 s maximum delay, multiplier 2, jitter factor 0.3   |
-| `SequenceTracker`             | Last sequence number received and the gaps before it                                |
-| `EventBuffer`                 | Bounded buffer of events (1000 by default); `add()` returns `false` when it is full |
-| `HeartbeatMonitor`            | Calls `onTimeout` when no heartbeat was reported for `timeoutMs`                    |
+| Export                     | Description                                                                         |
+| -------------------------- | ----------------------------------------------------------------------------------- |
+| `ReconnectionStateMachine` | Connection state and retries with exponential backoff and jitter                    |
+| `ConnectionState`          | `Disconnected`, `Connecting`, `Connected`, `Reconnecting`, `Failed`, `Closed`       |
+| `SequenceTracker`          | Last sequence number received and the gaps before it                                |
+| `EventBuffer`              | Bounded buffer of events (1000 by default); `add()` returns `false` when it is full |
+| `HeartbeatMonitor`         | Calls `onTimeout` when no heartbeat was reported for `timeoutMs`                    |
 
-## Encryption Primitives
+`ReconnectionStateMachine` takes a partial `ReconnectionConfig`; missing fields come from `DEFAULT_RECONNECTION_CONFIG`:
+
+| Field               | Type      | Default | Meaning                                               |
+| ------------------- | --------- | ------- | ----------------------------------------------------- |
+| `maxRetries`        | `number`  | `5`     | Retries before the state becomes `Failed`             |
+| `initialDelayMs`    | `number`  | `1000`  | Delay before the first retry                          |
+| `maxDelayMs`        | `number`  | `30000` | Upper bound of the delay                              |
+| `backoffMultiplier` | `number`  | `2`     | Factor applied to the delay after each retry          |
+| `jitter`            | `boolean` | `true`  | Randomize the delay                                   |
+| `jitterFactor`      | `number`  | `0.3`   | Share of the delay that is randomized (plus or minus) |
+
+## Encryption primitives
 
 The package exports ECDH P-256 key exchange helpers, HKDF-SHA-256 key derivation, AES-256-GCM encryption and the `enc` envelope of the protocol. Nothing in EnclaveJS calls them: an application that wants payload encryption has to write both ends, exchange the hello messages and envelopes over its own endpoints, and keep using TLS.
+
+<details>
+<summary>Example: key exchange and one envelope, both sides in one process</summary>
 
 ```typescript
 import {
@@ -172,7 +177,11 @@ const envelope = await serverSends.createEnvelope(sessionId, 1, { type: 'stdout'
 const event = await clientReceives.openEnvelope(envelope);
 ```
 
-What the primitives do, and what is left to the application:
+</details>
+
+## Security notes
+
+What the encryption primitives do, and what is left to the application:
 
 - **The key exchange is not authenticated.** `ServerHello.signatureB64` is neither created nor verified, and there is no key confirmation. The exchange protects against a party that can only read the connection. A party that can change messages can replace both public keys. An application that needs more has to authenticate the hello messages itself (for example by signing them with a key the client pins) or rely on TLS for the identity of the server.
 - **There are two keys, one per direction.** `deriveSessionKeys` and `deriveSessionCryptoKeys` return `clientToServerKey` and `serverToClientKey`. Use one `SessionEncryptionContext` per direction, never one context for both.
@@ -183,16 +192,25 @@ What the primitives do, and what is left to the application:
 - **Key material.** `generateKeyPair` returns a private key that cannot be exported. `deriveSessionKeys` returns raw key bytes, and so does `context.toKeyInfo()`: treat both as the key itself.
 - **Errors.** `processClientHello` and `processServerHello` throw `EcdhError` for a protocol version, curve, algorithm or key derivation that is not implemented. `fromBase64` throws `AesGcmError` on malformed input. `generateCounterNonce` throws for a counter outside 0 to 2^32 - 1.
 
-## Related Packages
+For the NDJSON parsers, `maxLineLength` bounds the memory one unfinished line can hold. Lower it when the other end is not trusted and its events are small.
 
-| Package                           | Description                                             |
-| --------------------------------- | ------------------------------------------------------- |
-| [@enclave-vm/types](../types)     | Type definitions and Zod schemas                        |
-| [@enclave-vm/broker](../broker)   | Tool broker and session management                      |
-| [@enclave-vm/client](../client)   | Browser/Node.js client SDK                              |
-| [@enclave-vm/react](../react)     | React hooks and components                              |
-| [@enclave-vm/runtime](../runtime) | Runtime worker building blocks (not a runnable service) |
+## Related packages
+
+| Package                                                                  | Role                                                   |
+| ------------------------------------------------------------------------ | ------------------------------------------------------ |
+| [@enclave-vm/types](https://www.npmjs.com/package/@enclave-vm/types)     | Protocol types and Zod schemas (re-exported here)      |
+| [@enclave-vm/broker](https://www.npmjs.com/package/@enclave-vm/broker)   | Tool broker, sessions and HTTP routes                  |
+| [@enclave-vm/client](https://www.npmjs.com/package/@enclave-vm/client)   | Browser and Node.js client for a broker                |
+| [@enclave-vm/react](https://www.npmjs.com/package/@enclave-vm/react)     | React provider and hooks on top of the client          |
+| [@enclave-vm/runtime](https://www.npmjs.com/package/@enclave-vm/runtime) | Runtime worker building blocks (does not execute code) |
+
+## Documentation
+
+- Documentation: https://agentfront.dev/docs/guides/enclave
+- Repository: https://github.com/agentfront/enclave
+- Architecture: https://github.com/agentfront/enclave/blob/main/README-ARCHITECTURE.md
+- Security policy: https://github.com/agentfront/enclave/blob/main/SECURITY.md
 
 ## License
 
-Apache-2.0
+Apache-2.0. See [LICENSE](https://github.com/agentfront/enclave/blob/main/LICENSE).
