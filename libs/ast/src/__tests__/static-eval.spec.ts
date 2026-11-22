@@ -145,6 +145,8 @@ describe('static evaluation of a property key', () => {
       // (A write to a frozen object throws: it is not computed as one that succeeds)
       ['a copy onto a frozen object', `Object.assign(Object.freeze({}), { a: 'alpha' }).a`],
       ['a frozen list changed in place', `Object.freeze(['a', 'b']).reverse()[0]`],
+      // (`reverse` gives the list it changed: still sealed, so `push` throws)
+      ['a sealed list reversed, then added to', `Object.seal(['a']).reverse().push('b')`],
       // (Frozen is what the object is, whichever name it is reached by)
       [
         'a frozen list changed in place under its other name',

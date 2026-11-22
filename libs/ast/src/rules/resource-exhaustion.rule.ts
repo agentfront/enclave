@@ -407,10 +407,12 @@ export class ResourceExhaustionRule implements ValidationRule {
       if (!variableOf.has(binding.node)) variableOf.set(binding.node, binding);
       for (const again of binding.redeclarations ?? []) variableOf.set(again.node, binding);
     }
+    // `catch (e) { var e = value; }` gives its value to the catch parameter: where such a
+    // declaration is initialized, the catch parameter is what is tainted. (The declaration stays
+    // the variable it is, which another `var` of the name may initialize.)
+    const initialized = new Map<unknown, ScopeBinding>();
     for (const binding of scopes.bindings) {
-      // `catch (e) { var e = value; }` gives the value to the catch parameter
-      const assigned = binding.initializes;
-      if (assigned) variableOf.set(binding.node, variableOf.get(assigned.node) ?? assigned);
+      if (binding.initializes) initialized.set(binding.node, binding.initializes);
     }
     for (const reference of scopes.references) {
       if (reference.binding)
@@ -425,7 +427,8 @@ export class ResourceExhaustionRule implements ValidationRule {
         ResourceExhaustionRule.DANGEROUS_KEYS.has(key),
       );
       if (resolved !== undefined) {
-        tainted.set(keyOf(identifier), resolved);
+        const target = initialized.get(identifier);
+        tainted.set(target ? keyOf(target.node) : keyOf(identifier), resolved);
       }
     };
 

@@ -3148,14 +3148,11 @@ class StaticEvaluator {
       if (left.length + right.length > MAX_STATIC_KEY_LENGTH) throw new TooLong(node);
       return [this.text(left + right, node)];
     }
-    // (Converting a text to a number reads all of it. Two texts that are compared, or values of
-    // one type that are equal or not, are not converted.)
-    const compared = operator === '<' || operator === '>' || operator === '<=' || operator === '>=';
+    // (Converting a text to a number reads all of it, and so can comparing two texts, as far as
+    // they are alike. Values of one type that are equal or not are compared at once.)
     const equality = operator === '===' || operator === '!==' || operator === '==' || operator === '!=';
-    const converted = equality
-      ? (operator === '==' || operator === '!=') && typeof x !== typeof y
-      : !(compared && typeof x === 'string' && typeof y === 'string');
-    if (converted) this.read(x, y);
+    const reads = !equality || ((operator === '==' || operator === '!=') && typeof x !== typeof y);
+    if (reads) this.read(x, y);
     if (typeof x === 'bigint' && typeof y === 'bigint') {
       // A BigInt has no size limit of its own: bound what an operation may build
       const limit = BigInt(MAX_BIGINT_BITS);
@@ -4639,7 +4636,10 @@ class StaticEvaluator {
     };
     const listOf = (values: readonly Value[]): Value[] => {
       changes();
-      return [this.arrayOf(values, node)];
+      const list = this.arrayOf(values, node);
+      // `reverse`, `sort`, `fill` give the list they changed, which is still sealed
+      if (lock && SHAPE_KEEPING_METHODS.has(name)) this.locked.set(list.items, lock);
+      return [list];
     };
     /** Not computed. With a run-time argument: one of the elements, or a list of some of them. */
     const failed = (): Value[] => {
