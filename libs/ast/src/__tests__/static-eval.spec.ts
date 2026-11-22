@@ -105,6 +105,8 @@ describe('static evaluation of a property key', () => {
       ['a member of a frozen object', `Object.freeze({ a: 'alpha' }).a`, ['alpha']],
       // (A sealed list keeps its length; its elements can still be written)
       ['a sealed list reversed in place', `Object.seal(['beta', 'alpha']).reverse()[0]`, ['alpha']],
+      // (A method every engine has does not stop an optional call)
+      ['a standard method called optionally', `'alpha'.toUpperCase?.() ?? 'beta'`, ['ALPHA']],
       ['a replacement where nothing matches', `'a'.repeat(100).replaceAll('z', 'xy'.repeat(30)).length`, ['100']],
       ['a copy of a frozen list', `Object.freeze(['pha', 'al']).slice().reverse().join('')`, ['alpha']],
       [
@@ -147,6 +149,8 @@ describe('static evaluation of a property key', () => {
       ['a frozen list changed in place', `Object.freeze(['a', 'b']).reverse()[0]`],
       // (`reverse` gives the list it changed: still sealed, so `push` throws)
       ['a sealed list reversed, then added to', `Object.seal(['a']).reverse().push('b')`],
+      // (The global ones convert their argument, and a BigInt throws)
+      ['isFinite of a BigInt', `isFinite(1n) ? 'a' : 'b'`],
       // (Frozen is what the object is, whichever name it is reached by)
       [
         'a frozen list changed in place under its other name',
@@ -367,6 +371,44 @@ describe('static evaluation of a property key', () => {
       ]);
     });
 
+    it('a var named like a parameter is a variable of its own where the parameters have expressions', () => {
+      // (The function written among the parameters reads the parameter, not the body's variable)
+      const closure = lastKey(
+        `const o = {}; function f(key = 'alpha', read = () => o[key]) { var key = 'beta'; return read; }`,
+      );
+      const names = resolveStaticKey(closure.ast, closure.key, { variables: true }).names;
+      expect(names).toContain('alpha');
+      expect(names).not.toContain('beta');
+
+      // The body's variable starts with the value of the parameter
+      const body = lastKey(`const o = {}; function f(key = 'x', other = 1) { var key; return o[key]; } f('alpha');`);
+      expect(resolveStaticKey(body.ast, body.key, { variables: true }).names).toContain('alpha');
+    });
+
+    it('a variable read again while it is computed keeps what it is known to hold', () => {
+      // (`k` is computed from `j`, which is computed from `k`)
+      const cycle = keyOf('k', { prelude: `let k = 'al'; let j = k; k = j + 'pha';`, variables: true });
+      expect(cycle.names).toContain('alpha');
+
+      const longer = keyOf('a', { prelude: `let a = 'al'; let b = a; let c = b; a = c + 'pha';`, variables: true });
+      expect(longer.names).toContain('alpha');
+    });
+
+    it('a variable read while it is built is not kept without what it is built to', async () => {
+      // `b` is read while `a` is built from it; the key `o[a + 'x']` is read first
+      const source = `const o = {}; let a = 'al'; let b = ''; a += b; a += 'pha'; b = a; o[a + 'x']; o[b];`;
+      const codes = await codesOf([new DisallowedIdentifierRule({ disallowed: ['alpha'] })], source);
+
+      expect(codes.length).toBeGreaterThan(0);
+    });
+
+    it('finds what a function given as the default of a parameter is called with', () => {
+      const { ast, key } = lastKey(
+        `const o = {}; function f(k = 'x', set = (v) => { k = v; }, read = () => o[k]) { set('alpha'); return read; }`,
+      );
+      expect(resolveStaticKey(ast, key, { variables: true }).names).toContain('alpha');
+    });
+
     it('a parameter shadows a constant of the same name', () => {
       const prelude = `const key = 'alpha'; const f = (key) =>`;
 
@@ -582,6 +624,16 @@ describe('how the rules read a key', () => {
     expect(await codesOf(rules(), other)).toEqual([]);
   });
 
+  it("NoEvalRule takes a var at the top of a module for the module's own", async () => {
+    const source = 'var Function = (x) => x; Function(1);';
+    const result = await new JSAstValidator([new NoEvalRule()]).validate(source, {
+      preScan: { enabled: false },
+      parseOptions: { sourceType: 'module' },
+    });
+
+    expect(result.issues.map((issue) => issue.code)).toEqual([]);
+  });
+
   describe('NoEvalRule and timers', () => {
     it.each([
       ['a string literal', `setTimeout('tick()', 10);`],
@@ -602,6 +654,12 @@ describe('how the rules read a key', () => {
       ['a timer taken out of an object under another name', `const { setTimeout: later } = timers;`],
       ['a timer named by a const, called through call', `const k = 'setTimeout'; timers[k].call(null, () => 1, 10);`],
       ['a timer named by a const, taken out by a pattern', `const k = 'setTimeout'; const { [k]: later } = timers;`],
+      [
+        'a string branch of a condition known only at run time',
+        `const later = (c) => setTimeout(c ? () => 1 : 'tick()', 10);`,
+      ],
+      ['a string after a spread that gives nothing', `setTimeout(...[...[]], 'tick()');`],
+      ['a string after a spread known only at run time', `const later = (list) => setTimeout(...list, 'tick()');`],
     ])('refuses %s', async (_name, source) => {
       expect(await codesOf([new NoEvalRule()], source)).toEqual(['NO_EVAL']);
     });
@@ -624,6 +682,16 @@ describe('how the rules read a key', () => {
         `setTimeout({ map: () => () => 1 }.map(), 10);`,
       ],
       ['a function that is spread, then a delay written as a string', `setTimeout(...[() => 1], '10');`],
+      ['a function a nested spread gives, then a delay written as a string', `setTimeout(...[...[() => 1]], '10');`],
+      ['a function after an empty spread inside the list', `setTimeout(...[...[], () => 1], '10');`],
+      ['a function of a condition whose other branch is never taken', `setTimeout(true ? () => 1 : '', 10);`],
+      ['a function that && chooses', `setTimeout([] && (() => 1), 10);`],
+      ['a function returned by a method, inside a sequence', `setTimeout((0, { map: () => () => 1 }.map()), 10);`],
+      ['a function of the script named Function', `function Function(x) { return x; } Function(1);`],
+      [
+        'a call through a computed key that cannot be read, with no string',
+        `const obj = {}; obj['r'.replace(/r/, 'r') + 'un']();`,
+      ],
     ])('accepts %s', async (_name, source) => {
       expect(await codesOf([new NoEvalRule()], source)).toEqual([]);
     });
