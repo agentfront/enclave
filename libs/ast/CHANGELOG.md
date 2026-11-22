@@ -184,7 +184,7 @@ A security release of the static layer. The invariants behind each item, and the
 ### Added
 
 - **Security Presets**: Pre-configured security levels for quick setup
-  - `STRICT`: Maximum security (bank-grade) - blocks all dangerous patterns, loops, and async
+  - `STRICT`: Maximum security - blocks all dangerous patterns, loops, and async
   - `SECURE`: High security - blocks most dangerous patterns with some flexibility
   - `STANDARD`: Medium security - sensible defaults for most use cases
   - `PERMISSIVE`: Low security - minimal restrictions, only blocks eval
@@ -204,7 +204,7 @@ A security release of the static layer. The invariants behind each item, and the
 
 ### Security
 
-- **Bank-Level Security Enhancements**: STRICT preset now blocks 90+ dangerous identifiers for maximum protection
+- **STRICT Preset Hardening**: STRICT preset now blocks 90+ dangerous identifiers
   - **Prototype Manipulation**: Blocks `Object`, `Array`, `String`, `Number`, `Boolean`, `Symbol`, `BigInt`, `constructor`, `__proto__`, `prototype`
   - **Error Stack Manipulation**: Blocks all Error types (`Error`, `TypeError`, `ReferenceError`, `SyntaxError`, etc.) to prevent stack trace exploitation
   - **Reflection & Metaprogramming**: Blocks `Proxy` and `Reflect` to prevent property interception and manipulation
@@ -236,4 +236,4 @@ A security release of the static layer. The invariants behind each item, and the
   - Worker-based isolation bypass
   - toString/valueOf manipulation
   - Getter/setter traps
-  - Comprehensive bank-level lockdown validation
+  - Comprehensive lockdown validation
