@@ -2220,7 +2220,12 @@ class StaticEvaluator {
    */
   private bindingValues(binding: ScopeBinding): Value[] {
     const cached = this.bindingMemo.get(binding);
-    if (cached) return cached;
+    if (cached) {
+      // (While it is computed, what is kept for it is what it holds so far, not all it holds: what
+      // is computed from it is not kept either)
+      if (this.computing.has(binding)) this.cuts.push(binding);
+      return cached;
+    }
     if (this.computing.has(binding)) {
       this.cuts.push(binding);
       return [...(this.seeded.get(binding) ?? []), ...(this.partial.get(binding) ?? []), DYNAMIC];

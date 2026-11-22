@@ -394,6 +394,14 @@ describe('static evaluation of a property key', () => {
       expect(longer.names).toContain('alpha');
     });
 
+    it('a variable read while it is built is not kept without what it is built to', async () => {
+      // `b` is read while `a` is built from it; the key `o[a + 'x']` is read first
+      const source = `const o = {}; let a = 'al'; let b = ''; a += b; a += 'pha'; b = a; o[a + 'x']; o[b];`;
+      const codes = await codesOf([new DisallowedIdentifierRule({ disallowed: ['alpha'] })], source);
+
+      expect(codes.length).toBeGreaterThan(0);
+    });
+
     it('finds what a function given as the default of a parameter is called with', () => {
       const { ast, key } = lastKey(
         `const o = {}; function f(k = 'x', set = (v) => { k = v; }, read = () => o[k]) { set('alpha'); return read; }`,
