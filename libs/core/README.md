@@ -12,11 +12,12 @@ It is the runtime of [Enclave](https://github.com/agentfront/enclave). The stati
 A script goes through these steps, in this order:
 
 1. **Pre-scanner** (`@enclave-vm/ast`): the source text, before anything parses it: size, lines, string literals, nesting, regex literals, bidirectional, invisible and look-alike characters.
-2. **AST validation** (`@enclave-vm/ast`): the AgentScript preset by default, an allowlist of syntax, globals and property keys.
-3. **Transformation**: the script is wrapped in `async function __ag_main()`, `callTool` becomes `__safe_callTool`, loops get iteration checks, the deadline is checked in every function and loop body, concatenation is counted, and every computed key that is not a literal is checked at run time (`guardComputedMemberKeys`). What a static rule cannot decide, such as a property name the script builds while it runs, is decided here.
-4. **Scoring gate** (optional, off by default): a heuristic risk score from the script's tool calls.
-5. **Runtime sandbox**: by default a double VM in this process: the script runs in an inner realm that holds only the allowed globals, inside a parent realm that checks every tool call. Optionally the whole sandbox runs in a worker thread with a heap limit and a hard stop.
-6. **Output**: the returned value is copied into plain data, errors become bounded text without a stack from the sandbox, and oversized values are refused.
+2. **AgentScript transform** (`transformAgentScript` of `@enclave-vm/ast`): the script is wrapped in `async function __ag_main()`, `callTool` becomes `__safe_callTool`, and loops get iteration checks. The validator receives the script as this step returns it.
+3. **AST validation** (`@enclave-vm/ast`): the AgentScript preset by default, an allowlist of syntax, globals and property keys.
+4. **Transformation after validation**: the deadline is checked in every function and loop body, concatenation is counted, and every computed key that is not a literal is checked at run time (`guardComputedMemberKeys`). What a static rule cannot decide, such as a property name the script builds while it runs, is decided here.
+5. **Scoring gate** (optional, off by default): a heuristic risk score from the script's tool calls.
+6. **Runtime sandbox**: by default a double VM in this process: the script runs in an inner realm that holds only the allowed globals, inside a parent realm that checks every tool call. Optionally the whole sandbox runs in a worker thread with a heap limit and a hard stop.
+7. **Output**: the returned value is copied into plain data, errors become bounded text without a stack from the sandbox, and oversized values are refused.
 
 ### What it does not do
 
@@ -125,7 +126,7 @@ interface CreateEnclaveOptions {
   // Tool execution
   toolHandler?: ToolHandler; // Function to execute tool calls
   toolNamespaces?: ToolNamespaces; // Expose tools as `ns.method(args)` (see "Tool Namespaces")
-  toolBridge?: { mode?: 'string' | 'direct'; maxPayloadBytes?: number }; // default: 'string', 5 MB
+  toolBridge?: { mode?: 'string' | 'direct'; maxPayloadBytes?: number; acknowledgeInsecureDirect?: boolean }; // default: 'string', 5 MB, false
 
   // Console
   consoleHandler?: ConsoleHandler; // Receive console calls as (level, message) instead of the host console (see "Console Handler")
@@ -258,7 +259,7 @@ The tables above are what the validator accepts. The realm the script runs in ag
 
 ### AST Presets
 
-The `preset` option selects the **AST validation** applied before the script is transformed. It is separate from `securityLevel`, which sets the runtime limits and, for the `agentscript` and `babel` presets, the allowed globals.
+The `preset` option selects the **AST validation**. With `transform` on (the default), it is applied to the script as `transformAgentScript` returns it (the `__ag_main` wrapper, `__safe_callTool`, the loop checks), and before the transforms that follow validation (see [How the Layers Fit Together](#how-the-layers-fit-together)). It is separate from `securityLevel`, which sets the runtime limits and, for the `agentscript` and `babel` presets, the allowed globals.
 
 | Preset        | Description                                                                    | Custom globals in validation |
 | ------------- | ------------------------------------------------------------------------------ | ---------------------------- |

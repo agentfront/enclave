@@ -193,10 +193,13 @@ const response = await fetch('https://your-server.com/sessions', {
   }),
 });
 
-// A refused request (an invalid body, an unidentified caller, a disposed broker) is answered with a JSON error, not a stream
+// A refused request (an invalid body, an unidentified caller, a disposed broker) is answered with a JSON error, not a stream.
+// Your authentication middleware or a proxy may answer with another body, so the status is kept when it is not JSON.
 if (!response.ok) {
-  const error = await response.json(); // { code, message }
-  throw new Error(`${response.status} ${error.code}: ${error.message}`);
+  const error = await response.json().catch(() => undefined); // { code, message } from the broker
+  throw new Error(
+    error ? `${response.status} ${error.code}: ${error.message}` : `${response.status} ${response.statusText}`,
+  );
 }
 
 // Parse the NDJSON stream (@enclave-vm/client does this for you, with reconnection)

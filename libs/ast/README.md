@@ -261,7 +261,7 @@ const rules = Presets.secure({
 | Regex literals                    | Analyzed | Analyzed | Allowed  | Allowed    |
 | Unreachable code                  | Warning  | Warning  | Warning  | Warning    |
 
-The loop and async rows are the defaults; `allowedLoops` and `allowAsync` change them. The validator parses the source as a script, so `await` outside a function is a parse error, and `await` is valid only inside an `async` function. SECURE allows `await` but refuses `async` functions by default, so under SECURE a script can use `await` only when `allowAsync.allowAsyncFunctions` is enabled.
+The loop and async rows are the defaults; `allowedLoops` and `allowAsync` change them. By default the validator parses the source as a script, so `await` outside a function is a parse error, and `await` is valid only inside an `async` function. SECURE allows `await` but refuses `async` functions by default, so under SECURE with the default parse options a script can use `await` only when `allowAsync.allowAsyncFunctions` is enabled. With `parseOptions: { sourceType: 'module' }` (or acorn's `allowAwaitOutsideFunction`), `await` at the top level parses, and SECURE accepts it.
 
 ### AgentScript Preset
 
@@ -350,7 +350,7 @@ The lists are exported as `AGENTSCRIPT_STRICT_GLOBALS`, `AGENTSCRIPT_SECURE_GLOB
 
 ## Built-in Rules
 
-Every rule has a `name`, which is the key used in the `rules` option of `validate()`, and reports with its default severity unless that option changes it.
+Every rule has a `name`, which is the key used in the `rules` option of `validate()`. An issue's severity is, in this order: the severity the rule reported the issue with, the severity set for the rule in that option, the rule's default severity. An issue a rule reports with a severity of its own keeps it: `NoRegexMethodsRule` reports `REGEX_METHOD_DYNAMIC` as a warning, and `{ severity: ValidationSeverity.ERROR }` for `no-regex-methods` does not make it an error.
 
 | Class                         | `name`                      | What it checks                                                                                      |
 | ----------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------- |
@@ -760,9 +760,10 @@ The transforms `@enclave-vm/core` applies after validation are exported as well:
 The validator is the static layer. It decides from the text of a script which scripts are accepted; it does not run them. In `@enclave-vm/core` it is one step of several:
 
 1. **Pre-scanner** (this package): the source text, before parsing.
-2. **AST validation** (this package): the AgentScript preset by default.
-3. **Transformation** (this package's transforms, applied by the runtime): the `__ag_main` wrapper, `__safe_callTool`, loop guards, concatenation tracking and the run-time check of computed keys (`guardComputedMemberKeys`).
-4. **Runtime** (`@enclave-vm/core`): a realm that holds only the allowed globals, a membrane around every value and call, limits on time, iterations, tool calls and memory, and optionally a worker thread with a heap limit and a hard stop. What a static rule cannot decide, such as a key that is only known at run time, is checked here.
+2. **AgentScript transform** (`transformAgentScript`, applied by the runtime): the `__ag_main` wrapper, `__safe_callTool` and loop guards. The validator receives the script as this step returns it.
+3. **AST validation** (this package): the AgentScript preset by default.
+4. **Transformation after validation** (this package's transforms, applied by the runtime): concatenation tracking and the run-time check of computed keys (`guardComputedMemberKeys`).
+5. **Runtime** (`@enclave-vm/core`): a realm that holds only the allowed globals, a membrane around every value and call, limits on time, iterations, tool calls and memory, and optionally a worker thread with a heap limit and a hard stop. What a static rule cannot decide, such as a key that is only known at run time, is checked here.
 
 [`@enclave-vm/browser`](https://www.npmjs.com/package/@enclave-vm/browser) uses the same pre-scanner and AgentScript preset in front of nested sandboxed iframes; there the validator is what keeps a script from the document it runs in (see its README).
 
