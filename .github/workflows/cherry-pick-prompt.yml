@@ -3,6 +3,17 @@ name: Cherry-pick to main
 on:
   pull_request:
     types: [closed]
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: "Stack number: cherry-pick its merged PRs to main as one PR"
+        required: true
+        type: string
+      pull_requests:
+        description: "Only these PRs of the stack, comma-separated (default: every merged PR)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -10,21 +21,48 @@ permissions:
   issues: write
 
 concurrency:
-  group: enclave-cherry-pick-${{ github.event.pull_request.number }}
+  group: enclave-cherry-pick-${{ github.event.pull_request.number || format('stack-{0}', inputs.stack) }}
   cancel-in-progress: false
 
 jobs:
-  cherry-pick:
+  detect:
     # Only run when:
     # - PR was merged (not just closed)
     # - PR is not from a fork (forked PRs have read-only GITHUB_TOKEN)
-    # - Target branch is a release branch (not main)
+    # - PR did not target main
+    # Whether the merge landed on a release branch is decided by the "Resolve target branches" step:
+    # a PR merged as part of a native stack keeps its stacked base (another PR's branch) in this event,
+    # although GitHub put its commit on the stack's base, so base.ref alone cannot tell.
     if: >
       github.event.pull_request.merged == true &&
       github.event.pull_request.head.repo.fork == false &&
-      github.event.pull_request.base.ref != github.event.repository.default_branch &&
-      (startsWith(github.event.pull_request.base.ref, 'release/') ||
-       startsWith(github.event.pull_request.base.ref, 'next/'))
+      github.event.pull_request.base.ref != github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      mode: ${{ steps.stack.outputs.mode }}
+      stack: ${{ steps.stack.outputs.stack }}
+      top: ${{ steps.stack.outputs.top }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Find the PR's stack
+        id: stack
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/cherry-pick-stack.mjs mode "$PR_NUMBER" | tee -a "$GITHUB_OUTPUT"
+
+  cherry-pick:
+    needs: detect
+    if: needs.detect.outputs.mode == 'single'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -38,13 +76,73 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Resolve target branches
+        id: target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          # The commits that hold the change: the merge commit, or, for a stacked PR whose change
+          # landed before an empty merge commit, the change's own commit (scripts/cherry-pick-commits.mjs).
+          COMMITS=$(node scripts/cherry-pick-commits.mjs "$MERGE_SHA" "$PR_NUMBER" | tr '\n' ' ' | sed 's/ *$//') || COMMITS=""
+          if [ -z "$COMMITS" ]; then
+            echo "::warning::Could not list the commits of #$PR_NUMBER; cherry-picking its merge commit."
+            COMMITS="$MERGE_SHA"
+          fi
+          echo "commits=$COMMITS" >> "$GITHUB_OUTPUT"
+          echo "Commits holding the change of #$PR_NUMBER: $COMMITS"
+
+          case "$BASE_REF" in
+            release/*|next/*)
+              echo "release_branch=$BASE_REF" >> "$GITHUB_OUTPUT"
+              echo "cherry_base=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          # Stacked PR: find the release line from where its commit landed. A stacked PR merged
+          # into its parent's branch has not landed anywhere yet; the parent's own merge carries it.
+          git fetch --quiet origin '+refs/heads/release/*:refs/remotes/origin/release/*' '+refs/heads/next/*:refs/remotes/origin/next/*'
+          LANDED=$(git branch -r --contains "$MERGE_SHA" --format='%(refname:lstrip=3)' | grep -E '^(release|next)/' || true)
+          if [ "$(printf '%s' "$LANDED" | grep -c .)" -ne 1 ]; then
+            echo "Merge commit $MERGE_SHA is on ${LANDED:-no} release/next branch(es); nothing to cherry-pick."
+            exit 0
+          fi
+          echo "release_branch=$LANDED" >> "$GITHUB_OUTPUT"
+
+          # Build on the parent's cherry-pick while it is open, so the cherry-picks stack on main as
+          # the PRs did. The parent's job starts with this one when a stack merges, so wait for it.
+          PARENT_CHERRY=$(echo "${BASE_REF}-cherry-pick-main" | sed 's/[^a-zA-Z0-9._/-]/-/g' | head -c 100)
+          CHERRY_BASE="$DEFAULT_BRANCH"
+          for attempt in $(seq 1 45); do
+            PARENT_STATE=$(gh pr list --head "$PARENT_CHERRY" --state all --json state --jq '.[0].state // ""')
+            if [ "$PARENT_STATE" = "OPEN" ]; then
+              CHERRY_BASE="$PARENT_CHERRY"
+              break
+            fi
+            if [ -n "$PARENT_STATE" ]; then
+              break
+            fi
+            sleep 20
+          done
+          echo "Cherry-picking $COMMITS from $LANDED onto $CHERRY_BASE"
+          echo "cherry_base=$CHERRY_BASE" >> "$GITHUB_OUTPUT"
+
       - name: Prepare cherry-pick branch
         id: prepare
+        if: steps.target.outputs.release_branch != ''
         shell: bash
         env:
           ORIGINAL_BRANCH: ${{ github.event.pull_request.head.ref }}
-          RELEASE_BRANCH: ${{ github.event.pull_request.base.ref }}
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          RELEASE_BRANCH: ${{ steps.target.outputs.release_branch }}
+          CHERRY_BASE: ${{ steps.target.outputs.cherry_base }}
+          COMMITS: ${{ steps.target.outputs.commits }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
@@ -64,13 +162,9 @@ jobs:
           echo "cherry_branch=$CHERRY_BRANCH" >> "$GITHUB_OUTPUT"
           echo "Cherry-pick branch: $CHERRY_BRANCH"
 
-          # Get default branch
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
-
-          # Checkout default branch (main)
-          git fetch origin "$DEFAULT_BRANCH"
-          git checkout "$DEFAULT_BRANCH"
-          git pull origin "$DEFAULT_BRANCH"
+          # Checkout the branch to cherry-pick onto: main, or the parent's open cherry-pick branch
+          git fetch origin "$CHERRY_BASE"
+          git checkout -B "$CHERRY_BASE" "origin/$CHERRY_BASE"
 
           # Create the cherry-pick branch (delete if already exists)
           if git show-ref --verify --quiet "refs/heads/$CHERRY_BRANCH"; then
@@ -84,10 +178,11 @@ jobs:
           git checkout -b "$CHERRY_BRANCH"
 
           # Attempt cherry-pick
-          echo "Attempting cherry-pick of $MERGE_SHA..."
+          echo "Attempting cherry-pick of $COMMITS..."
 
-          # Detect if merge commit (has multiple parents)
-          PARENT_COUNT=$(git rev-list --parents -n1 "$MERGE_SHA" | wc -w)
+          # Detect a merge commit (several parents); the script prints one alone
+          read -r FIRST_COMMIT _ <<< "$COMMITS"
+          PARENT_COUNT=$(git rev-list --parents -n1 "$FIRST_COMMIT" | wc -w)
           PARENT_COUNT=$((PARENT_COUNT - 1))  # Subtract the commit itself
 
           CHERRY_PICK_ARGS="--no-commit"
@@ -96,15 +191,23 @@ jobs:
             CHERRY_PICK_ARGS="-m 1 --no-commit"
           fi
 
-          if git cherry-pick $CHERRY_PICK_ARGS "$MERGE_SHA"; then
+          # shellcheck disable=SC2086 # COMMITS is a space-separated list of SHAs
+          if git cherry-pick $CHERRY_PICK_ARGS $COMMITS; then
             echo "conflict=false" >> "$GITHUB_OUTPUT"
+
+            # The target already has these changes (e.g. a stacked cherry-pick carried them): nothing to commit
+            if git diff --cached --quiet; then
+              echo "already_applied=true" >> "$GITHUB_OUTPUT"
+              echo "$CHERRY_BASE already has the changes of #$PR_NUMBER; no cherry-pick PR is needed."
+              exit 0
+            fi
 
             # Create commit with proper attribution
             git commit -m "$(cat <<EOF
           Cherry-pick: $PR_TITLE
 
           Cherry-picked from #$PR_NUMBER (merged to $RELEASE_BRANCH)
-          Original commit: $MERGE_SHA
+          Original commit: $COMMITS
 
           Co-Authored-By: ${{ github.event.pull_request.user.login }} <${{ github.event.pull_request.user.id }}+${{ github.event.pull_request.user.login }}@users.noreply.github.com>
           EOF
@@ -112,29 +215,21 @@ jobs:
             echo "Cherry-pick successful"
           else
             echo "conflict=true" >> "$GITHUB_OUTPUT"
-            # `cherry-pick --no-commit` records no sequencer state, so --abort
-            # fails with "no cherry-pick in progress" and leaves the conflicted
-            # index and working tree in place. Reset explicitly instead.
+            # `cherry-pick --no-commit` may record no sequencer state, so --abort can fail with
+            # "no cherry-pick in progress" and leave the conflicted index and working tree in
+            # place. Reset explicitly instead.
             git cherry-pick --quit 2>/dev/null || true
             git reset --hard HEAD
             echo "Cherry-pick failed due to conflicts"
           fi
 
-      - name: Ensure labels exist
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh label create "cherry-pick" --color "0E8A16" --description "Cherry-picked changes" 2>/dev/null || true
-          gh label create "auto-cherry-pick" --color "1D76DB" --description "Auto cherry-pick" 2>/dev/null || true
-          gh label create "conflict" --color "D93F0B" --description "Has conflicts" 2>/dev/null || true
-          gh label create "needs-attention" --color "FBCA04" --description "Needs attention" 2>/dev/null || true
-
       - name: Push branch and create PR
-        if: steps.prepare.outputs.conflict == 'false'
+        if: steps.prepare.outputs.conflict == 'false' && steps.prepare.outputs.already_applied != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CHERRY_BRANCH: ${{ steps.prepare.outputs.cherry_branch }}
-          RELEASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          CHERRY_BASE: ${{ steps.target.outputs.cherry_base }}
+          RELEASE_BRANCH: ${{ steps.target.outputs.release_branch }}
           ORIGINAL_PR: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -145,9 +240,14 @@ jobs:
           # Push the cherry-pick branch
           git push origin "$CHERRY_BRANCH"
 
+          STACK_NOTE=""
+          if [ "$CHERRY_BASE" != "$DEFAULT_BRANCH" ]; then
+            STACK_NOTE="It is based on \`$CHERRY_BASE\`, the open cherry-pick of the PR #$ORIGINAL_PR was stacked on: merge that one first."
+          fi
+
           # Create the PR
           PR_URL=$(gh pr create \
-            --base "$DEFAULT_BRANCH" \
+            --base "$CHERRY_BASE" \
             --head "$CHERRY_BRANCH" \
             --title "Cherry-pick: $PR_TITLE" \
             --label "cherry-pick" \
@@ -165,6 +265,7 @@ jobs:
 
           ### Action Required
           Please review this cherry-pick to ensure it applies correctly to \`$DEFAULT_BRANCH\`.
+          $STACK_NOTE
 
           If the changes are NOT needed in \`$DEFAULT_BRANCH\`, close this PR.
 
@@ -177,7 +278,7 @@ jobs:
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Comment on original PR (success)
-        if: steps.prepare.outputs.conflict == 'false'
+        if: steps.prepare.outputs.conflict == 'false' && steps.prepare.outputs.already_applied != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ORIGINAL_PR: ${{ github.event.pull_request.number }}
@@ -195,16 +296,31 @@ jobs:
           EOF
           )"
 
+      - name: Comment on original PR (already applied)
+        if: steps.prepare.outputs.already_applied == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORIGINAL_PR: ${{ github.event.pull_request.number }}
+          CHERRY_BASE: ${{ steps.target.outputs.cherry_base }}
+          COMMITS: ${{ steps.target.outputs.commits }}
+        run: |
+          gh pr comment "$ORIGINAL_PR" --body "$(cat <<EOF
+          ## No cherry-pick needed
+
+          \`$CHERRY_BASE\` already has the changes of this PR: cherry-picking $COMMITS onto it leaves nothing to commit. No cherry-pick PR or issue was created.
+          EOF
+          )"
+
       - name: Create issue for conflict
         id: create_issue
         if: steps.prepare.outputs.conflict == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          RELEASE_BRANCH: ${{ steps.target.outputs.release_branch }}
           ORIGINAL_PR: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          COMMITS: ${{ steps.target.outputs.commits }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
@@ -225,7 +341,7 @@ jobs:
           - **Title:** $PR_TITLE
           - **Author:** @$PR_AUTHOR
           - **Merged to:** \`$RELEASE_BRANCH\`
-          - **Commit:** \`$MERGE_SHA\`
+          - **Commits:** \`$COMMITS\`
 
           ### Manual Cherry-pick Instructions
 
@@ -237,10 +353,10 @@ jobs:
           # Create a new branch for the cherry-pick
           git checkout -b cherry-pick-pr-$ORIGINAL_PR
 
-          # Cherry-pick the commit (use -m 1 for merge commits)
-          git cherry-pick $MERGE_SHA
-          # OR for merge commits:
-          # git cherry-pick -m 1 $MERGE_SHA
+          # Cherry-pick the commits (use -m 1 for a merge commit)
+          git cherry-pick $COMMITS
+          # OR for a merge commit:
+          # git cherry-pick -m 1 $COMMITS
 
           # Resolve conflicts manually, then:
           git add .
@@ -248,7 +364,7 @@ jobs:
 
           # Push and create PR
           git push origin cherry-pick-pr-$ORIGINAL_PR
-          gh pr create --base $DEFAULT_BRANCH --title "Cherry-pick: $PR_TITLE"
+          gh pr create --base $DEFAULT_BRANCH --title "Cherry-pick: \$(gh pr view $ORIGINAL_PR --json title --jq .title)"
           \`\`\`
 
           ### Decision Required
@@ -290,3 +406,193 @@ jobs:
           An issue has been created with manual instructions. Please resolve if this change should also be in \`$DEFAULT_BRANCH\`.
           EOF
           )"
+
+  stack-member:
+    needs: detect
+    if: needs.detect.outputs.mode == 'stack-member'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment on the PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          STACK: ${{ needs.detect.outputs.stack }}
+          TOP_PR: ${{ needs.detect.outputs.top }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body-file - <<EOF
+          ## Cherry-picked with its stack
+
+          This PR is part of stack #$STACK. Its cherry-pick to \`$DEFAULT_BRANCH\` is made as one PR for the whole stack when the stack's top PR, #$TOP_PR, merges.
+
+          If #$TOP_PR does not merge, run the **Cherry-pick to main** workflow by hand with \`stack: $STACK\`.
+          EOF
+
+  cherry-pick-stack:
+    needs: detect
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.detect.outputs.mode == 'stack-top') }}
+    # One run per stack at a time, whether a top PR's merge or a manual run started it.
+    concurrency:
+      group: enclave-cherry-pick-stack-${{ needs.detect.outputs.stack || inputs.stack }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    env:
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      TOP_PR: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # A stack's PRs merge bottom first, seconds apart, so the top PR's run waits a bounded time for the rest.
+      - name: Plan the stack's cherry-pick
+        id: plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          STACK_INPUT: ${{ needs.detect.outputs.stack || inputs.stack }}
+          PULL_REQUESTS: ${{ inputs.pull_requests }}
+          WAIT_SECONDS: ${{ github.event_name == 'pull_request' && '180' || '0' }}
+        run: |
+          set -euo pipefail
+          PLAN="$RUNNER_TEMP/plan.json"
+          node scripts/cherry-pick-stack.mjs plan "$STACK_INPUT" --pull-requests "$PULL_REQUESTS" --wait "$WAIT_SECONDS" > "$PLAN"
+          jq -c '{stack, releaseBranch, open, closed, pullRequests: [.pullRequests[] | {number, commits}]}' "$PLAN"
+          STACK=$(jq -r .stack "$PLAN")
+          {
+            echo "stack=$STACK"
+            echo "release_branch=$(jq -r .releaseBranch "$PLAN")"
+            echo "cherry_branch=cherry-pick/stack-$STACK-$DEFAULT_BRANCH"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Cherry-pick the stack's PRs
+        id: apply
+        shell: bash
+        env:
+          CHERRY_BRANCH: ${{ steps.plan.outputs.cherry_branch }}
+        run: |
+          set -euo pipefail
+          RESULT="$RUNNER_TEMP/result.json"
+          git fetch --quiet origin "$DEFAULT_BRANCH"
+          git checkout -B "$CHERRY_BRANCH" "origin/$DEFAULT_BRANCH"
+          if git ls-remote --heads origin "$CHERRY_BRANCH" | grep -q .; then
+            echo "Branch $CHERRY_BRANCH already exists on remote, deleting..."
+            git push origin --delete "$CHERRY_BRANCH" || true
+          fi
+          node scripts/cherry-pick-stack.mjs apply "$RUNNER_TEMP/plan.json" > "$RESULT"
+          {
+            echo "picked=$(jq '.picked | length' "$RESULT")"
+            echo "already_applied=$(jq -r '[.alreadyApplied[] | "#\(.number)"] | join(", ")' "$RESULT")"
+            echo "conflict=$(jq -r '.conflict.number // ""' "$RESULT")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Push branch and create PR
+        id: pr
+        if: steps.apply.outputs.picked != '0' && steps.apply.outputs.conflict == ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHERRY_BRANCH: ${{ steps.plan.outputs.cherry_branch }}
+        run: |
+          set -euo pipefail
+          PULL_REQUEST="$RUNNER_TEMP/pull-request.json"
+          git push origin "$CHERRY_BRANCH"
+          node scripts/cherry-pick-stack.mjs render pull-request "$RUNNER_TEMP/result.json" "$DEFAULT_BRANCH" "$CHERRY_BRANCH" > "$PULL_REQUEST"
+          PR_URL=$(gh pr create \
+            --base "$DEFAULT_BRANCH" \
+            --head "$CHERRY_BRANCH" \
+            --title "$(jq -r .title "$PULL_REQUEST")" \
+            --body "$(jq -r .body "$PULL_REQUEST")" \
+            --label "cherry-pick" \
+            --label "auto-cherry-pick")
+          echo "Created cherry-pick PR: $PR_URL" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on the top PR (success)
+        if: github.event_name == 'pull_request' && steps.pr.outputs.pr_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STACK: ${{ steps.plan.outputs.stack }}
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+        run: |
+          gh pr comment "$TOP_PR" --body-file - <<EOF
+          ## Cherry-pick Created
+
+          One cherry-pick PR to \`$DEFAULT_BRANCH\` carries the merged PRs of stack #$STACK: $PR_URL
+
+          **Please review and merge if these changes should also be in \`$DEFAULT_BRANCH\`.**
+
+          If the cherry-pick is not needed, close the PR.
+          EOF
+
+      - name: Report a stack the target branch already has
+        if: steps.apply.outputs.picked == '0' && steps.apply.outputs.conflict == ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STACK: ${{ steps.plan.outputs.stack }}
+          ALREADY_APPLIED: ${{ steps.apply.outputs.already_applied }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          MESSAGE="$RUNNER_TEMP/message.md"
+          cat > "$MESSAGE" <<EOF
+          ## No cherry-pick needed
+
+          \`$DEFAULT_BRANCH\` already has the changes of $ALREADY_APPLIED (stack #$STACK): cherry-picking them leaves nothing to commit. No cherry-pick PR or issue was created.
+          EOF
+          cat "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            gh pr comment "$TOP_PR" --body-file "$MESSAGE"
+          fi
+
+      - name: Push what was picked and create an issue for the conflict
+        id: issue
+        if: steps.apply.outputs.conflict != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHERRY_BRANCH: ${{ steps.plan.outputs.cherry_branch }}
+          CONFLICT_PR: ${{ steps.apply.outputs.conflict }}
+        run: |
+          set -euo pipefail
+          ISSUE="$RUNNER_TEMP/issue.json"
+          git push origin "$CHERRY_BRANCH"
+          node scripts/cherry-pick-stack.mjs render issue "$RUNNER_TEMP/result.json" "$DEFAULT_BRANCH" "$CHERRY_BRANCH" > "$ISSUE"
+          ISSUE_URL=$(gh issue create \
+            --title "$(jq -r .title "$ISSUE")" \
+            --body "$(jq -r .body "$ISSUE")" \
+            --label "cherry-pick" \
+            --label "conflict" \
+            --label "needs-attention")
+          echo "Cherry-pick stopped at a conflict on #$CONFLICT_PR: $ISSUE_URL" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "issue_url=$ISSUE_URL" >> "$GITHUB_OUTPUT"
+          CONFLICT_AUTHOR=$(jq -r .conflict.author "$RUNNER_TEMP/result.json")
+          gh issue edit "$ISSUE_URL" --add-assignee "$CONFLICT_AUTHOR" || echo "Could not assign to $CONFLICT_AUTHOR, skipping assignment"
+
+      - name: Comment on the top PR (conflict)
+        if: github.event_name == 'pull_request' && steps.issue.outputs.issue_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STACK: ${{ steps.plan.outputs.stack }}
+          CONFLICT_PR: ${{ steps.apply.outputs.conflict }}
+          ISSUE_URL: ${{ steps.issue.outputs.issue_url }}
+        run: |
+          gh pr comment "$TOP_PR" --body-file - <<EOF
+          ## Cherry-pick Conflict
+
+          The cherry-pick of stack #$STACK to \`$DEFAULT_BRANCH\` stopped at a merge conflict on #$CONFLICT_PR.
+
+          $ISSUE_URL has the manual instructions. Please resolve if these changes should also be in \`$DEFAULT_BRANCH\`.
+          EOF
