@@ -17,3 +17,12 @@ export type { PortableEnclaveOptions, PortableRunOptions, AgentScriptRunnerOptio
 export { Interpreter, InterpreterError, StepLimitError } from './interpreter/interpreter';
 export type { InterpreterOptions } from './interpreter/interpreter';
 export type { ExecutionContext, ExecutionResult, ExecutionError, ExecutionStats, ToolHandler } from './types';
+export { analyzeScript, ScriptAnalysisError } from './analysis/script-analysis';
+export type {
+  ScriptAnalysis,
+  ScriptAnalysisOptions,
+  ScriptFlow,
+  ScriptLocation,
+  ScriptLoopBound,
+  ScriptToolCall,
+} from './analysis/script-analysis';

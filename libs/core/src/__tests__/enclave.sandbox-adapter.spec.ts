@@ -4,6 +4,7 @@
  */
 
 import * as fs from 'fs';
+import { builtinModules } from 'module';
 import * as path from 'path';
 
 import { Enclave } from '../enclave';
@@ -86,11 +87,12 @@ describe('sandboxAdapter', () => {
     // `@enclave-vm/core/worker` is for runtimes that have none (an edge worker, a browser
     // bundle). Needs the built package: `npx nx build core`.
     const dist = path.resolve(__dirname, '../../dist');
+    const builtinImport = new RegExp(`(?:require\\(|from\\s*)["'](?:node:)?(?:${builtinModules.join('|')})["']`);
     for (const file of ['worker.js', path.join('esm', 'worker.mjs')]) {
       const source = fs.readFileSync(path.join(dist, file), 'utf8');
 
       expect(source).not.toMatch(/from\s*["']node:/);
-      expect(source).not.toMatch(/require\(["'](?:node:)?(?:vm|fs|path|url|worker_threads|child_process)["']\)/);
+      expect(source).not.toMatch(builtinImport);
     }
   });
 

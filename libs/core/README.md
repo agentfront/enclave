@@ -724,6 +724,35 @@ const enclave = new Enclave({
 });
 ```
 
+## Script Analysis
+
+`analyzeScript(code, { toolNamespaces, callBudget })` gives the facts a reviewer of a script needs before it runs: which tools it calls, with which literal arguments, whether a call's result flows into a later call's arguments, and which calls loops repeat. It parses the script and runs nothing, so the answer is the same whichever adapter would run it. It is also exported from `@enclave-vm/core/worker`.
+
+```typescript
+import { analyzeScript } from '@enclave-vm/core';
+
+const analysis = analyzeScript(
+  `const invoices = await callTool('list_invoices', { status: 'overdue' });
+   for (const invoice of invoices.items) {
+     await callTool('send_email', { to: invoice.email });
+   }`,
+  { callBudget: 100 },
+);
+// analysis.toolCalls[0]: { toolName: 'list_invoices', args: { status: 'overdue' }, computedArgs: [], loopDepth: 0, ... }
+// analysis.toolCalls[1]: { toolName: 'send_email', args: {}, computedArgs: ['to'], loopDepth: 1, ... }
+// analysis.flows: [{ from: 0, to: 1, via: ['invoices', 'invoice'] }]
+// analysis.bounds: [{ over: [0], limit: null, calls: [1], maxCalls: null, withinBudget: false, ... }]
+```
+
+| Field       | What it holds                                                                                                                                                                                                                                                                               |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `toolCalls` | Every `callTool(...)` and tool-namespace call (`mail.send(args)` as the tool it stands for): `toolName` (`null` when computed), `args` (the properties written as literals; `null` when the arguments are not an object literal), `computedArgs`, `location`, `loopDepth`, `insideParallel` |
+| `flows`     | `{ from, to, via }`: the result of call `from` reaches the arguments of call `to`, through the variables `via`. `from: null` marks a value whose origin the analysis cannot follow (a function parameter, a caught error)                                                                   |
+| `bounds`    | Every loop over a tool result (`for...of`, an array callback, `parallel(items, fn)`): `limit`, the literal bound (`.slice(0, 20)`); `maxCalls`, the most calls it makes; `withinBudget`, whether that is within `callBudget`                                                                |
+| `complete`  | `false` when the script has more than 1,000 tool calls and the rest are not listed                                                                                                                                                                                                          |
+
+The analysis is a hint for review, best effort, not a boundary: a script can compute what the source does not show, and the checks of each call's real arguments at run time stay in charge. A script that does not parse throws `ScriptAnalysisError`.
+
 ## AI Scoring Gate
 
 The AI Scoring Gate gives a script a risk score from 0 to 100 before it runs and refuses the script when the score reaches a threshold. The score is a heuristic over features of the script's text: the tools it calls, their argument names and literal values, their order, and the loops they are in. It flags patterns that look like exfiltration, bulk access or access to sensitive fields; a low score is not evidence that a script is safe. The gate runs after AST validation and before execution, and is off unless configured.
@@ -969,7 +998,7 @@ function runAgentScript<T = unknown>(code: string, options?: CreateEnclaveOption
 | Import                    | Contents                                                                                                                                                          |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@enclave-vm/core`        | `Enclave`, `runAgentScript`, the adapters (`WorkerPoolAdapter`, `InterpreterAdapter`), scoring, sidecar, session, Babel and secure-proxy utilities, and the types |
-| `@enclave-vm/core/worker` | `AgentScriptRunner`, `PortableEnclave`, `InterpreterAdapter`, `Interpreter`: no Node `vm`, worker-thread or child-process modules                                 |
+| `@enclave-vm/core/worker` | `AgentScriptRunner`, `PortableEnclave`, `InterpreterAdapter`, `Interpreter`, `analyzeScript`: no Node built-in modules                                            |
 
 ## Related Packages
 

@@ -47,6 +47,17 @@ export type {
 // Security level configurations
 export { SECURITY_LEVEL_CONFIGS } from './types';
 
+// Static analysis of a script's tool calls, for hosts that review scripts
+export { analyzeScript, ScriptAnalysisError } from './analysis/script-analysis';
+export type {
+  ScriptAnalysis,
+  ScriptAnalysisOptions,
+  ScriptFlow,
+  ScriptLocation,
+  ScriptLoopBound,
+  ScriptToolCall,
+} from './analysis/script-analysis';
+
 // AI Scoring Gate
 export {
   // Main orchestrator

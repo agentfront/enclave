@@ -755,6 +755,8 @@ The transforms `@enclave-vm/core` applies after validation are exported as well:
 
 `transformAst`, `generateCode` and `transformCode` are the general-purpose transformer behind the `transform` option of `validate()`.
 
+`analyzeScopes(ast)` resolves every identifier of a parsed program to its declaration: `references` carry the `binding` they read or write (`resolved: false` for a global), `bindings` the declarations with their kind. The validator's rules and `analyzeScript` of `@enclave-vm/core` use it.
+
 ## How This Package Fits With the Runtime
 
 The validator is the static layer. It decides from the text of a script which scripts are accepted; it does not run them. In `@enclave-vm/core` it is one step of several:
