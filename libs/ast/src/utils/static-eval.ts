@@ -572,6 +572,74 @@ function isHolder(name: string): boolean {
   return HOST_OBJECTS.has(name) || GLOBAL_OBJECT_NAMES.has(name);
 }
 
+/**
+ * Methods of a text, a number or a list that every engine a script may run in has: those of
+ * ES2019 and before. A newer one (`at`, `replaceAll`, `toSorted`, ...) may be missing.
+ */
+const BASELINE_METHODS: ReadonlySet<string> = new Set([
+  // String.prototype
+  'charAt',
+  'charCodeAt',
+  'codePointAt',
+  'concat',
+  'endsWith',
+  'includes',
+  'indexOf',
+  'lastIndexOf',
+  'localeCompare',
+  'match',
+  'normalize',
+  'padEnd',
+  'padStart',
+  'repeat',
+  'replace',
+  'search',
+  'slice',
+  'split',
+  'startsWith',
+  'substr',
+  'substring',
+  'toLocaleLowerCase',
+  'toLocaleUpperCase',
+  'toLowerCase',
+  'toString',
+  'toUpperCase',
+  'trim',
+  'trimEnd',
+  'trimStart',
+  'valueOf',
+  // Number.prototype
+  'toExponential',
+  'toFixed',
+  'toLocaleString',
+  'toPrecision',
+  // Array.prototype
+  'copyWithin',
+  'entries',
+  'every',
+  'fill',
+  'filter',
+  'find',
+  'findIndex',
+  'flat',
+  'flatMap',
+  'forEach',
+  'join',
+  'keys',
+  'map',
+  'pop',
+  'push',
+  'reduce',
+  'reduceRight',
+  'reverse',
+  'shift',
+  'some',
+  'sort',
+  'splice',
+  'unshift',
+  'values',
+]);
+
 /** Methods of a string that take and return plain values and compile no pattern. */
 const STRING_METHODS: ReadonlySet<string> = new Set([
   'at',
@@ -1024,12 +1092,17 @@ class StaticEvaluator {
     }
 
     for (const binding of scopes.bindings) {
-      // `catch (e) { var e = value; }`: the declaration gives its value to the catch parameter
-      const assigned = binding.initializes;
-      if (!assigned) continue;
-      const list = this.writesTo.get(assigned);
-      if (list) list.push({ target: binding.node });
-      else this.writesTo.set(assigned, [{ target: binding.node }]);
+      // `catch (e) { var e = value; }`: the declaration gives its value to the catch parameter.
+      // `function f(k = 1) { var k; }`: the body's variable starts with the value of the parameter.
+      const [into, from] = binding.initializes
+        ? [binding.initializes, binding.node]
+        : binding.startsAs
+          ? [binding, binding.startsAs.node]
+          : [];
+      if (!into) continue;
+      const list = this.writesTo.get(into);
+      if (list) list.push({ target: from });
+      else this.writesTo.set(into, [{ target: from }]);
     }
 
     // The built-ins that are named: one that is assigned to is changed; one that holds the
@@ -1669,7 +1742,8 @@ class StaticEvaluator {
               : this.toPrimitive(value, 'string', node, undefined);
           // A key is converted with `toString` first. An object that also has a `valueOf` is
           // converted with that first wherever it is added to a string (`'' + object`), which
-          // is one edit away: the name it would give there is reported here as well.
+          // is one edit away: the name it would give there is reported here as well. (A refusal
+          // the engine would not need, on purpose: see rules.spec, "valueOf arrow".)
           if (value.kind === 'object' && value.properties.has('valueOf')) {
             conversions.push(...this.toPrimitive(value, 'number', node, undefined));
           }
@@ -3148,11 +3222,9 @@ class StaticEvaluator {
       if (left.length + right.length > MAX_STATIC_KEY_LENGTH) throw new TooLong(node);
       return [this.text(left + right, node)];
     }
-    // (Converting a text to a number reads all of it, and so can comparing two texts, as far as
-    // they are alike. Values of one type that are equal or not are compared at once.)
-    const equality = operator === '===' || operator === '!==' || operator === '==' || operator === '!=';
-    const reads = !equality || ((operator === '==' || operator === '!=') && typeof x !== typeof y);
-    if (reads) this.read(x, y);
+    // (Converting a text to a number reads all of it, and so can comparing two texts, for order
+    // or for equality, as far as they are alike)
+    this.read(x, y);
     if (typeof x === 'bigint' && typeof y === 'bigint') {
       // A BigInt has no size limit of its own: bound what an operation may build
       const limit = BigInt(MAX_BIGINT_BITS);
@@ -3963,8 +4035,11 @@ class StaticEvaluator {
           else if (node.optional === true && this.isMissing(receiver, key.name, callee, env)) {
             out.push(STOPPED); // `receiver.method?.()` where there is no such method
           } else {
-            // (A method of the engine may be missing where the script runs: then the call stops)
-            if (node.optional === true && receiver.kind !== 'object') out.push(STOPPED);
+            // (A method of the engine may be missing where the script runs: then the call stops.
+            // One every engine has, a method of a text or a list of ES2019 or before, does not.)
+            const standard =
+              (receiver.kind === 'primitive' || receiver.kind === 'array') && BASELINE_METHODS.has(key.name);
+            if (node.optional === true && receiver.kind !== 'object' && !standard) out.push(STOPPED);
             // The function is read before the arguments are evaluated, and reading it can run a
             // getter. (Arguments that were evaluated for another alternative, before this
             // getter changed something, are not the ones this call gets.)
@@ -4487,6 +4562,8 @@ class StaticEvaluator {
     }
     const implementation: unknown = Reflect.get(String.prototype, name);
     if (typeof implementation !== 'function') return this.giveUp(node, env, givesArray);
+    // (Reading a text costs its length, before anything here searches it)
+    this.tick(1 + (text.length >> 4));
 
     // What the method may build, before it builds it. A result that is made of the text itself
     // is as large as the text, which the script holds already.
@@ -4529,8 +4606,6 @@ class StaticEvaluator {
       return this.giveUp(node, env, true);
     }
     if (name === 'normalize' && text.length > MAX_STATIC_KEY_LENGTH) throw new TooLong(node);
-    // (Reading a text costs its length)
-    this.tick(1 + (text.length >> 4));
 
     let result: unknown;
     try {
@@ -5631,10 +5706,11 @@ function hostNumberFunction(path: string, args: StaticPrimitive[]): StaticPrimit
     case 'parseFloat':
     case 'Number.parseFloat':
       return parseFloat(String(first));
+    // (The global ones convert their argument as a number does, and throw for a BigInt)
     case 'isNaN':
-      return Number.isNaN(Number(first));
+      return isNaN(first as number);
     case 'isFinite':
-      return Number.isFinite(Number(first));
+      return isFinite(first as number);
     case 'Number.isInteger':
       return Number.isInteger(first);
     case 'Number.isFinite':

@@ -31,11 +31,18 @@ export interface ScopeBinding {
   /**
    * The other declarations of this name in the same scope (`var x; var x;`, two parameters or two
    * functions of one name, a parameter named like its function expression, a `var` in a function
-   * body named like a parameter). They are one variable, and which declaration gives it its value
-   * depends on the kind of each: a consumer that needs the value treats such a variable as one it
-   * cannot follow.
+   * body named like a parameter of a simple parameter list). They are one variable, and which
+   * declaration gives it its value depends on the kind of each: a consumer that needs the value
+   * treats such a variable as one it cannot follow.
    */
   redeclarations?: ScopeBinding[];
+  /**
+   * On a `var` of a function body named like a parameter, where the parameter list has an
+   * expression in it (a default value, a computed key): that parameter. The language then gives
+   * the body a variable of its own, which starts with the value of the parameter, and a function
+   * written in the parameter list still reads the parameter.
+   */
+  startsAs?: ScopeBinding;
   /**
    * On a `var` that is declared in a catch block under the name of the catch parameter
    * (`catch (e) { var e = 1; }`): that parameter. The `var` is a variable of the function, which
@@ -76,6 +83,8 @@ interface Scope {
   names: Map<string, ScopeBinding>;
   /** On the scope of a function body: the scope of the parameters of that function. */
   parameters?: Scope;
+  /** On such a scope: whether the parameter list has an expression in it. */
+  parameterExpressions?: boolean;
 }
 
 interface PendingReference {
@@ -92,6 +101,27 @@ function createScope(parent: Scope | null, isFunctionScope: boolean): Scope {
   const scope: Scope = { parent, functionScope: null as unknown as Scope, names: new Map() };
   scope.functionScope = isFunctionScope || !parent ? scope : parent.functionScope;
   return scope;
+}
+
+/** Whether a parameter has an expression in it: a default value, or a computed key of a pattern. */
+function hasExpression(param: AnyNode | null | undefined): boolean {
+  if (!param) return false;
+  switch (param.type) {
+    case 'AssignmentPattern':
+      return true;
+    case 'RestElement':
+      return hasExpression(param.argument);
+    case 'ArrayPattern':
+      return (param.elements ?? []).some(hasExpression);
+    case 'ObjectPattern':
+      return (param.properties ?? []).some((property: AnyNode) =>
+        property.type === 'RestElement'
+          ? hasExpression(property.argument)
+          : property.computed || hasExpression(property.value),
+      );
+    default:
+      return false;
+  }
 }
 
 function lookup(scope: Scope | null, name: string): ScopeBinding | undefined {
@@ -144,8 +174,13 @@ export function analyzeScopes(ast: unknown): ScopeAnalysis {
         break;
       }
       // `function f(k) { var k; }`: the `var` is the parameter, not a second variable. It holds
-      // what the call gave the parameter until the body assigns it.
-      if (target.parameters?.names.get(node.name)?.kind === 'param') target = target.parameters;
+      // what the call gave the parameter until the body assigns it. Where the parameter list has
+      // an expression in it, the body's `var` is a variable of its own that starts as the parameter.
+      const parameter = target.parameters?.names.get(node.name);
+      if (parameter?.kind === 'param') {
+        if (target.parameterExpressions) binding.startsAs = parameter;
+        else target = target.parameters as Scope;
+      }
     }
     // A name declared twice in one scope (`var x; var x;`) is one variable: references resolve to
     // its first declaration, which lists the others
@@ -215,6 +250,7 @@ export function analyzeScopes(ast: unknown): ScopeAnalysis {
     // is named like a parameter, which is that parameter (see `declare`).
     const bodyScope = createScope(paramScope, true);
     bodyScope.parameters = paramScope;
+    bodyScope.parameterExpressions = (node.params ?? []).some(hasExpression);
     if (node.body?.type === 'BlockStatement') {
       visitStatements(node.body.body, bodyScope, node.body);
     } else {

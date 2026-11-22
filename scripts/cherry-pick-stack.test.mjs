@@ -249,6 +249,29 @@ describe('apply', () => {
     assert.equal(git('rev-parse', 'HEAD~1'), start);
     assert.equal(git('status', '--porcelain'), '');
   });
+
+  test('refuses a working tree with changes, and leaves them as they are', async () => {
+    git('checkout', '-q', '-B', 'cherry-pick/stack-1084-main', shas.main);
+    const head = git('rev-parse', 'HEAD');
+    await fs.writeFile(path.join(repo, 'shared.txt'), 'an edit of the maintainer\n');
+
+    const planPath = path.join(scratch, 'plan.json');
+    const plan = {
+      stack: 1084,
+      releaseBranch: 'release/1.11.x',
+      open: [],
+      closed: [],
+      pullRequests: [pullRequest(13, shas.third)],
+    };
+    await fs.writeFile(planPath, JSON.stringify(plan));
+    const res = spawnSync(process.execPath, [scriptPath, 'apply', planPath], { cwd: repo, encoding: 'utf8' });
+
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /The working tree has changes/);
+    assert.equal(git('rev-parse', 'HEAD'), head);
+    assert.equal(await fs.readFile(path.join(repo, 'shared.txt'), 'utf8'), 'an edit of the maintainer\n');
+    git('checkout', '-q', '--', 'shared.txt');
+  });
 });
 
 describe('render', () => {
@@ -264,7 +287,7 @@ describe('render', () => {
 
     assert.equal(title, 'Cherry-pick: stack #1084 (#1072–#1074)');
     assert.match(body, /### Pull requests\n- #1073 fix\(sdk\): change 1073 \(@octocat\)\n- #1074 /);
-    assert.match(body, /### Already on `main`, skipped\n- #1072 /);
+    assert.match(body, /### Already applied, skipped\n- #1072 /);
     assert.match(body, /### Not merged when this ran, left out\n- #1075\n/);
   });
 

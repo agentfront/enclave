@@ -19,9 +19,9 @@
  * seconds for the stack's open PRs to merge. It only reads, so it is also the dry run.
  *
  * `apply` cherry-picks the plan onto HEAD, one commit per PR, and stops at the first conflict. It skips a PR HEAD
- * already has: a commit says "Cherry-picked from #<number>", or picking it changes nothing. It prints the result as
- * JSON and never pushes. `render` prints the title and body of the
- * cherry-pick PR, or of the issue for a conflict, as JSON.
+ * already has: a commit says "Cherry-picked from #<number>", or picking it changes nothing. It refuses to start on a
+ * working tree with changes, which a conflict would reset. It prints the result as JSON and never pushes. `render`
+ * prints the title and body of the cherry-pick PR, or of the issue for a conflict, as JSON.
  */
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -33,6 +33,8 @@ import { cherryPickCommits } from './cherry-pick-commits.mjs';
 
 const RELEASE_BRANCH = /^(release|next)\//;
 const POLL_INTERVAL_MS = 10_000;
+const LOOKUP_ATTEMPTS = 3;
+const LOOKUP_RETRY_MS = 5_000;
 const WORKFLOW_NAME = 'Cherry-pick to main';
 
 function run(command, args) {
@@ -92,6 +94,10 @@ function fetchStack(stackNumber) {
   return JSON.parse(run('gh', ['api', `repos/{owner}/{repo}/stacks/${stackNumber}`]));
 }
 
+function hasCommit(sha) {
+  return spawnSync('git', ['cat-file', '-e', `${sha}^{commit}`]).status === 0;
+}
+
 function mergeCommitOf(prNumber) {
   return run('gh', ['api', `repos/{owner}/{repo}/pulls/${prNumber}`, '--jq', '.merge_commit_sha']);
 }
@@ -106,21 +112,30 @@ async function planWithCommits(stackNumber, selected, waitSeconds) {
   }
   if (plan.pullRequests.length === 0) throw new Error(`Stack #${stackNumber} has no merged PR to cherry-pick`);
 
-  const pullRequests = plan.pullRequests.map((pullRequest) => ({
+  // A PR that merged during the wait has a merge commit the checkout does not have yet
+  const merges = plan.pullRequests.map((pullRequest) => mergeCommitOf(pullRequest.number));
+  if (merges.some((sha) => !hasCommit(sha))) run('git', ['fetch', '--quiet', 'origin', plan.releaseBranch]);
+  const pullRequests = plan.pullRequests.map((pullRequest, index) => ({
     ...pullRequest,
-    commits: cherryPickCommits(mergeCommitOf(pullRequest.number), pullRequest.number),
+    commits: cherryPickCommits(merges[index], pullRequest.number),
   }));
   return { ...plan, pullRequests };
 }
 
-function printMode(prNumber) {
-  let stacks = [];
-  try {
-    stacks = JSON.parse(run('gh', ['api', `repos/{owner}/{repo}/stacks?pull_request=${prNumber}`]));
-  } catch (err) {
-    console.error(
-      `::warning::Could not read the stack of #${prNumber}, so it gets its own cherry-pick: ${err.message}`,
-    );
+async function printMode(prNumber) {
+  // A failed lookup says nothing about the stack: taking it for "no stack" would cherry-pick a member on
+  // its own while the top cherry-picks the whole stack. It is retried, then the run fails.
+  let stacks;
+  for (let attempt = 1; stacks === undefined; attempt++) {
+    try {
+      stacks = JSON.parse(run('gh', ['api', `repos/{owner}/{repo}/stacks?pull_request=${prNumber}`]));
+    } catch (err) {
+      if (attempt >= LOOKUP_ATTEMPTS) {
+        throw new Error(`Could not read the stack of #${prNumber}; re-run the workflow: ${err.message}`);
+      }
+      console.error(`Could not read the stack of #${prNumber} (attempt ${attempt}), retrying: ${err.message}`);
+      await sleep(LOOKUP_RETRY_MS);
+    }
   }
   const { mode, stack = '', top = '' } = stackMode(stacks, prNumber);
   console.log(`mode=${mode}\nstack=${stack}\ntop=${top}`);
@@ -147,6 +162,11 @@ function hasCherryPickOf(prNumber) {
 }
 
 export function applyPlan(plan) {
+  // A conflict is undone with a hard reset, which would take a change of the working tree with it
+  const changes = run('git', ['status', '--porcelain', '--untracked-files=no', '--ignore-submodules=all']);
+  if (changes !== '') {
+    throw new Error(`The working tree has changes; commit or stash them before applying the plan:\n${changes}`);
+  }
   const picked = [];
   const alreadyApplied = [];
   for (const [index, pullRequest] of plan.pullRequests.entries()) {
@@ -206,7 +226,7 @@ export function renderPullRequest(result, defaultBranch) {
     ...listOf(result.picked),
   ];
   if (result.alreadyApplied.length > 0) {
-    body.push('', `### Already on \`${defaultBranch}\`, skipped`, ...listOf(result.alreadyApplied));
+    body.push('', '### Already applied, skipped', ...listOf(result.alreadyApplied));
   }
   if (notMerged.length > 0) {
     body.push(
@@ -245,7 +265,7 @@ export function renderIssue(result, defaultBranch, branch) {
   ];
   if (result.alreadyApplied.length > 0) {
     const skipped = result.alreadyApplied.map((pullRequest) => `#${pullRequest.number}`).join(', ');
-    body.push(`- **Already on \`${defaultBranch}\`, skipped:** ${skipped}`);
+    body.push(`- **Already applied, skipped:** ${skipped}`);
   }
   body.push(
     '',
@@ -267,7 +287,7 @@ export function renderIssue(result, defaultBranch, branch) {
     `gh pr create --base ${defaultBranch} --title "${pullRequestTitle(result)}"`,
     '```',
     '',
-    `Or fix the conflict on \`${defaultBranch}\`, then ${rerunHint(result.stack)}: it starts again from \`${defaultBranch}\` and skips the PRs \`${defaultBranch}\` already has.`,
+    `Or fix the conflict on \`${defaultBranch}\`, then ${rerunHint(result.stack)}: it continues from \`${branch}\`, keeping what was pushed there, and skips the PRs already applied.`,
     '',
     '### Decision Required',
     '- [ ] Cherry-pick is needed - resolve conflicts and apply',
@@ -295,7 +315,7 @@ async function main() {
   });
   const [command, ...args] = positionals;
   if (command === 'mode') {
-    printMode(parseNumber(args[0]));
+    await printMode(parseNumber(args[0]));
   } else if (command === 'plan') {
     const selected = parsePullRequestList(values['pull-requests']);
     print(await planWithCommits(parseNumber(args[0]), selected, parseNumber(values.wait)));
