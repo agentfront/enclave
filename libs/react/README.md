@@ -184,7 +184,7 @@ function ExecuteButton() {
 
 ### useEnclaveContext
 
-Returns the context value: `client`, and `config`, the configuration it was built from.
+Returns the context value: `client`, and `config`, the provider's `config` prop. Without a `client` prop, that is the configuration the client was built from. With a `client` prop, it is only the prop: the client keeps the options it was created with, so `config.baseUrl` may name another server than the one the client sends its requests to.
 
 ```tsx
 import { useEnclaveContext } from '@enclave-vm/react';

@@ -261,7 +261,7 @@ const rules = Presets.secure({
 | Regex literals                    | Analyzed | Analyzed | Allowed  | Allowed    |
 | Unreachable code                  | Warning  | Warning  | Warning  | Warning    |
 
-The loop and async rows are the defaults; `allowedLoops` and `allowAsync` change them. The validator parses the source as a script, so `await` outside a function is a parse error, and `await` is valid only inside an `async` function. SECURE allows `await` but refuses `async` functions by default, so under SECURE a script can use `await` only when `allowAsync.allowAsyncFunctions` is enabled.
+The loop and async rows are the defaults; `allowedLoops` and `allowAsync` change them. By default the validator parses the source as a script, so `await` outside a function is a parse error, and `await` is valid only inside an `async` function. SECURE allows `await` but refuses `async` functions by default, so under SECURE with the default parse options a script can use `await` only when `allowAsync.allowAsyncFunctions` is enabled. With `parseOptions: { sourceType: 'module' }` (or acorn's `allowAwaitOutsideFunction`), `await` at the top level parses, and SECURE accepts it.
 
 ### AgentScript Preset
 
@@ -350,7 +350,7 @@ The lists are exported as `AGENTSCRIPT_STRICT_GLOBALS`, `AGENTSCRIPT_SECURE_GLOB
 
 ## Built-in Rules
 
-Every rule has a `name`, which is the key used in the `rules` option of `validate()`, and reports with its default severity unless that option changes it.
+Every rule has a `name`, which is the key used in the `rules` option of `validate()`. An issue's severity is, in this order: the severity the rule reported the issue with, the severity set for the rule in that option, the rule's default severity. An issue a rule reports with a severity of its own keeps it: `NoRegexMethodsRule` reports `REGEX_METHOD_DYNAMIC` as a warning, and `{ severity: ValidationSeverity.ERROR }` for `no-regex-methods` does not make it an error.
 
 | Class                         | `name`                      | What it checks                                                                                      |
 | ----------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------- |
@@ -415,7 +415,7 @@ A computed key is not matched against a list of spellings: it is evaluated. A ke
 - A key that is made of constants and that the validator cannot compute is refused with `STATIC_KEY_UNRESOLVED`: it names one fixed property, and a name the validator cannot read is not accepted unread. Write the property name directly.
 - A key that the expression would build to more than 4096 characters (`'ab'.repeat(5000)`) is refused with `STATIC_KEY_TOO_LONG` without being built. A string literal, or a template literal without a substitution, is not built: it is read as it is written, however long it is.
 - A value the validator computes is the value the engine computes. Where the two could differ, the key is not computed, and so is refused: where something inside the key assigns and what follows may read it, or is not evaluated (`((k) => (k = 'b', k))('a')`; an assignment that nothing is evaluated after is the value it assigns, so `o[(name = 'alpha')]` is `o.alpha`), where the answer depends on the engine or the realm (`typeof Math`, whether a newer method exists), and, in a script that can change a built-in, for everything that goes through a built-in. A script can change a built-in when it assigns to one (`Math.max = f`), or when it hands one on (`const M = Math`) and also writes to an object that may be it (`M.max = f`); a script that only passes `Number` to `map`, or keeps `Object.keys` under another name, cannot. A limit that is reached (steps, depth, alternatives, size) is a key that is not computed, never a shorter list of names.
-- With `resolveVariableKeys`, a `const` that holds a constant is that constant. Any other variable, and a parameter, is a run-time value; the constants the script can be seen giving it (an initializer, an assignment, a pattern, a loop, a call that can be seen, a value stored into the list or the object it holds) are compared with the refused names all the same. A `var` named like a parameter is that parameter, and a rest parameter is the list of the arguments. This part is a search, not a proof: a name a script assembles at run time over several statements is a run-time value. A search that reaches its limit refuses the key (`STATIC_KEY_UNRESOLVED`); it never leaves it to run time.
+- With `resolveVariableKeys`, a `const` that holds a constant is that constant. Any other variable, and a parameter, is a run-time value; the constants the script can be seen giving it (an initializer, an assignment, a pattern, a loop, a call that can be seen, a value stored into the list or the object it holds) are compared with the refused names all the same. A `var` named like a parameter is that parameter (where the parameter list has an expression in it, a variable of its own that starts with the parameter's value), and a rest parameter is the list of the arguments. This part is a search, not a proof: a name a script assembles at run time over several statements is a run-time value. A search that reaches its limit refuses the key (`STATIC_KEY_UNRESOLVED`); it never leaves it to run time.
 - A key that depends on a run-time value (a function parameter, the result of a call into the host) is **not decided by the validator**. Check it where the script runs: `guardComputedMemberKeys` wraps every such key, and `@enclave-vm/core` applies it.
 
 `NoGlobalAccessRule` (the `constructor` property), `NoRegexMethodsRule` and `ReservedPrefixRule` read a computed key the same way. `NoEvalRule` reads the first argument of `setTimeout` / `setInterval` the same way (see [NoEvalRule](#noevalrule)).
@@ -760,9 +760,10 @@ The transforms `@enclave-vm/core` applies after validation are exported as well:
 The validator is the static layer. It decides from the text of a script which scripts are accepted; it does not run them. In `@enclave-vm/core` it is one step of several:
 
 1. **Pre-scanner** (this package): the source text, before parsing.
-2. **AST validation** (this package): the AgentScript preset by default.
-3. **Transformation** (this package's transforms, applied by the runtime): the `__ag_main` wrapper, `__safe_callTool`, loop guards, concatenation tracking and the run-time check of computed keys (`guardComputedMemberKeys`).
-4. **Runtime** (`@enclave-vm/core`): a realm that holds only the allowed globals, a membrane around every value and call, limits on time, iterations, tool calls and memory, and optionally a worker thread with a heap limit and a hard stop. What a static rule cannot decide, such as a key that is only known at run time, is checked here.
+2. **AgentScript transform** (`transformAgentScript`, applied by the runtime): the `__ag_main` wrapper, `__safe_callTool` and loop guards. The validator receives the script as this step returns it.
+3. **AST validation** (this package): the AgentScript preset by default.
+4. **Transformation after validation** (this package's transforms, applied by the runtime): concatenation tracking and the run-time check of computed keys (`guardComputedMemberKeys`).
+5. **Runtime** (`@enclave-vm/core`): a realm that holds only the allowed globals, a membrane around every value and call, limits on time, iterations, tool calls and memory, and optionally a worker thread with a heap limit and a hard stop. What a static rule cannot decide, such as a key that is only known at run time, is checked here.
 
 [`@enclave-vm/browser`](https://www.npmjs.com/package/@enclave-vm/browser) uses the same pre-scanner and AgentScript preset in front of nested sandboxed iframes; there the validator is what keeps a script from the document it runs in (see its README).
 

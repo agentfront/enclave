@@ -123,14 +123,14 @@ function track(event: { seq: number }): void {
 
 `ReconnectionStateMachine` takes a partial `ReconnectionConfig`; missing fields come from `DEFAULT_RECONNECTION_CONFIG`:
 
-| Field               | Type      | Default | Meaning                                               |
-| ------------------- | --------- | ------- | ----------------------------------------------------- |
-| `maxRetries`        | `number`  | `5`     | Retries before the state becomes `Failed`             |
-| `initialDelayMs`    | `number`  | `1000`  | Delay before the first retry                          |
-| `maxDelayMs`        | `number`  | `30000` | Upper bound of the delay                              |
-| `backoffMultiplier` | `number`  | `2`     | Factor applied to the delay after each retry          |
-| `jitter`            | `boolean` | `true`  | Randomize the delay                                   |
-| `jitterFactor`      | `number`  | `0.3`   | Share of the delay that is randomized (plus or minus) |
+| Field               | Type      | Default | Meaning                                                                                                   |
+| ------------------- | --------- | ------- | --------------------------------------------------------------------------------------------------------- |
+| `maxRetries`        | `number`  | `5`     | Retries before the state becomes `Failed`                                                                 |
+| `initialDelayMs`    | `number`  | `1000`  | Delay before the first retry                                                                              |
+| `maxDelayMs`        | `number`  | `30000` | Upper bound of the delay before jitter; with `jitter` a delay can reach `maxDelayMs * (1 + jitterFactor)` |
+| `backoffMultiplier` | `number`  | `2`     | Factor applied to the delay after each retry                                                              |
+| `jitter`            | `boolean` | `true`  | Randomize the delay                                                                                       |
+| `jitterFactor`      | `number`  | `0.3`   | Share of the delay that is randomized (plus or minus)                                                     |
 
 ## Encryption primitives
 

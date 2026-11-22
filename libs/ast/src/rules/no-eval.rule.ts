@@ -25,13 +25,134 @@ function firstElementOf(list: AnyNode): AnyNode {
   };
 }
 
-/** Whether a list that is spread is written out, with a first element: it gives an argument. */
+/**
+ * The first element a list that is spread gives, where the list is written out: its node, `'hole'`
+ * for an empty slot (`undefined`), `'none'` where it gives no element (`[]`, `[...[]]`), and
+ * `'unknown'` where what it gives is only known at run time.
+ */
+function writtenFirstElement(list: AnyNode): AnyNode | 'hole' | 'none' | 'unknown' {
+  const node = unparenthesized(list);
+  if (node?.type !== 'ArrayExpression') return 'unknown';
+  for (const element of node.elements ?? []) {
+    if (!element) return 'hole';
+    if (element.type !== 'SpreadElement') return element;
+    const inner = writtenFirstElement(element.argument);
+    if (inner !== 'none') return inner;
+  }
+  return 'none';
+}
+
+/** Whether a list that is spread is written out and gives at least one element: an argument. */
 function givesAnElement(list: AnyNode): boolean {
-  let node = list;
-  while (node?.type === 'ParenthesizedExpression') node = node.expression;
-  if (node?.type !== 'ArrayExpression' || !node.elements?.length) return false;
-  // (A hole is an element, `undefined`. A spread inside the list may give none.)
-  return node.elements[0]?.type !== 'SpreadElement';
+  const first = writtenFirstElement(list);
+  return first !== 'none' && first !== 'unknown';
+}
+
+/**
+ * The references that name a variable of the script, which shadows the global of its name. A `var` at
+ * the top of a script is not one: it is a property of the global object, and `var Function;` leaves
+ * the global what it was. (A function, a class, a `let` or `const`, a parameter, a `var` of a
+ * function, or a `var` at the top of a module is the script's.)
+ */
+function shadowingReferences(context: ValidationContext): Set<unknown> {
+  const topLevelVars = new Set<unknown>();
+  // (In a module a top-level `var` is the module's: it does shadow the global)
+  const module = (context.ast as { sourceType?: string } | undefined)?.sourceType === 'module';
+  walkAll(context.ast, (node, ancestors) => {
+    if (module) return;
+    if (node.type !== 'VariableDeclaration' || node.kind !== 'var') return;
+    const inFunction = ancestors.some(
+      (ancestor) =>
+        ancestor.type === 'FunctionDeclaration' ||
+        ancestor.type === 'FunctionExpression' ||
+        ancestor.type === 'ArrowFunctionExpression' ||
+        ancestor.type === 'StaticBlock' ||
+        ancestor.type === 'PropertyDefinition',
+    );
+    if (inFunction) return;
+    const pending: AnyNode[] = (node.declarations ?? []).map((declarator: AnyNode) => declarator.id);
+    while (pending.length > 0) {
+      const pattern = pending.pop();
+      if (!pattern) continue;
+      if (pattern.type === 'Identifier') topLevelVars.add(pattern);
+      else if (pattern.type === 'ObjectPattern') {
+        for (const property of pattern.properties ?? [])
+          pending.push(property.type === 'RestElement' ? property.argument : property.value);
+      } else if (pattern.type === 'ArrayPattern') pending.push(...(pattern.elements ?? []));
+      else if (pattern.type === 'AssignmentPattern') pending.push(pattern.left);
+      else if (pattern.type === 'RestElement') pending.push(pattern.argument);
+    }
+  });
+  const shadowing = new Set<unknown>();
+  for (const reference of sharedScopes(context.ast).references) {
+    const binding = reference.binding;
+    if (!binding) continue;
+    // A name a top-level `var` declares first is the global's, whatever else declares it again
+    if (binding.kind === 'var' && topLevelVars.has(binding.node)) continue;
+    shadowing.add(reference.node);
+  }
+  return shadowing;
+}
+
+/** Whether what an argument may be includes code: a string, an object, or a constant not computed. */
+function mayBeCode(values: ReturnType<typeof evaluateStatic>): boolean {
+  return values.some(
+    (value) =>
+      value.type === 'unresolved' ||
+      value.type === 'object' ||
+      (value.type === 'primitive' && typeof value.value === 'string'),
+  );
+}
+
+function unparenthesized(node: AnyNode): AnyNode {
+  let current = node;
+  while (current?.type === 'ParenthesizedExpression') current = current.expression;
+  return current;
+}
+
+/** Whether an expression is true or false in a condition, as it is written; `undefined` where not known. */
+function truthinessOf(node: AnyNode): boolean | undefined {
+  switch (node?.type) {
+    case 'Literal':
+      return node.regex !== undefined ? true : Boolean(node.value);
+    case 'ArrayExpression':
+    case 'ObjectExpression':
+    case 'FunctionExpression':
+    case 'ArrowFunctionExpression':
+    case 'ClassExpression':
+      return true;
+    case 'TemplateLiteral':
+      if ((node.quasis ?? []).some((quasi: AnyNode) => quasi.value?.cooked)) return true;
+      return (node.expressions ?? []).length === 0 ? false : undefined;
+    case 'ParenthesizedExpression':
+      return truthinessOf(node.expression);
+    case 'UnaryExpression': {
+      if (node.operator === 'void') return false;
+      if (node.operator !== '!') return undefined;
+      const argument = truthinessOf(node.argument);
+      return argument === undefined ? undefined : !argument;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** Whether an expression is `null` or `undefined`, as it is written; `undefined` where not known. */
+function nullishnessOf(node: AnyNode): boolean | undefined {
+  const value = unparenthesized(node);
+  if (value?.type === 'Literal') return value.value === null && value.regex === undefined;
+  if (value?.type === 'UnaryExpression' && value.operator === 'void') return true;
+  return truthinessOf(value) === true ? false : undefined;
+}
+
+/** Whether an object literal can be a thenable: it may have a `then`. */
+function mayHaveThen(object: AnyNode): boolean {
+  return (object.properties ?? []).some(
+    (property: AnyNode) =>
+      property.type !== 'Property' ||
+      property.computed ||
+      (property.key?.type === 'Identifier' ? property.key.name : property.key?.value) === 'then',
+  );
 }
 
 /** Methods and functions whose result is a text or a list, never a function. */
@@ -91,7 +212,8 @@ const TEXT_RESULTS: ReadonlySet<string> = new Set([
  * converts such an argument to a string and compiles it; that its text is only known at run time
  * does not make it a function.
  */
-function isNeverFunction(node: AnyNode): boolean {
+function isNeverFunction(node: AnyNode, context: ValidationContext): boolean {
+  const never = (child: AnyNode): boolean => isNeverFunction(child, context);
   switch (node?.type) {
     case 'Literal':
       return typeof node.value === 'string';
@@ -101,19 +223,44 @@ function isNeverFunction(node: AnyNode): boolean {
       return true;
     case 'ParenthesizedExpression':
     case 'ChainExpression':
-      return isNeverFunction(node.expression);
-    case 'AwaitExpression':
-      return isNeverFunction(node.argument);
+      return never(node.expression);
+    case 'AwaitExpression': {
+      // What it gives is what its operand resolves to: an object that may have a `then` can
+      // resolve to anything
+      const operand = unparenthesized(node.argument);
+      if (operand?.type === 'ObjectExpression' && mayHaveThen(operand)) return false;
+      return never(node.argument);
+    }
     case 'BinaryExpression':
-      return node.operator === '+' && (isNeverFunction(node.left) || isNeverFunction(node.right));
+      return node.operator === '+' && (never(node.left) || never(node.right));
     case 'AssignmentExpression':
-      return isNeverFunction(node.right);
+      return never(node.right);
     case 'SequenceExpression':
-      return isNeverFunction(node.expressions?.[node.expressions.length - 1]);
-    case 'ConditionalExpression':
-      return isNeverFunction(node.consequent) || isNeverFunction(node.alternate);
-    case 'LogicalExpression':
-      return isNeverFunction(node.left) || isNeverFunction(node.right);
+      return never(node.expressions?.[node.expressions.length - 1]);
+    case 'ConditionalExpression': {
+      // Only a branch that can be taken gives the argument
+      const test = truthinessOf(node.test);
+      if (test === true) return never(node.consequent);
+      if (test === false) return never(node.alternate);
+      return never(node.consequent) || never(node.alternate);
+    }
+    case 'LogicalExpression': {
+      // `a && b` gives `a` where it is false, `a || b` where it is true, `a ?? b` where it is not
+      // null or undefined, and `b` otherwise
+      const left =
+        node.operator === '??'
+          ? nullishnessOf(node.left) === undefined
+            ? undefined
+            : !nullishnessOf(node.left)
+          : node.operator === '&&'
+            ? truthinessOf(node.left) === undefined
+              ? undefined
+              : !truthinessOf(node.left)
+            : truthinessOf(node.left);
+      if (left === true) return never(node.left);
+      if (left === false) return never(node.right);
+      return never(node.left) || never(node.right);
+    }
     case 'NewExpression':
       return node.callee?.type === 'Identifier' && node.callee.name === 'String';
     case 'TaggedTemplateExpression': {
@@ -122,6 +269,10 @@ function isNeverFunction(node: AnyNode): boolean {
       return tag?.type === 'MemberExpression' && !tag.computed && tag.property?.name === 'raw';
     }
     case 'CallExpression': {
+      // A call that is computed, and gives a function: the name of what was called says nothing
+      // (`{ map: () => tick }.map()` is not a list)
+      const values = evaluateStatic(context.ast, node, { variables: true });
+      if (values.length > 0 && values.every((value) => value.type === 'function')) return false;
       let callee: AnyNode = node.callee;
       while (callee?.type === 'ChainExpression' || callee?.type === 'ParenthesizedExpression')
         callee = callee.expression;
@@ -168,31 +319,40 @@ export class NoEvalRule implements ValidationRule {
     // The timer references that are called where they stand: their first argument is checked
     const called = new Set<unknown>();
 
+    // Whether the first argument a timer would get may be code: `...list` may give none, so what
+    // follows it may be first. A list that is written out with an element in it gives the first.
+    const firstMayBeCode = (args: AnyNode[]): boolean => {
+      for (const argument of args) {
+        if (this.isCode(argument, context)) return true;
+        if (argument.type !== 'SpreadElement' || givesAnElement(argument.argument)) return false;
+      }
+      return false;
+    };
+
     const checkTimerCall = (callee: AnyNode, args: AnyNode[]): void => {
-      const reference = this.timerReference(callee, context);
+      const reference = this.timerReference(callee, context, () => firstMayBeCode(args));
       if (!reference) return;
       called.add(reference.node);
-      // The first argument the timer gets: `...list` may give none, so what follows it may be
-      // first. A list that is written out with an element in it gives the first argument.
-      for (const argument of args) {
-        if (this.isCode(argument, context)) {
-          context.report({
-            code: 'NO_EVAL',
-            message: `Use of ${reference.name} with string argument is not allowed (acts like eval)`,
-            location: locationOf(callee),
-          });
-          break;
-        }
-        if (argument.type !== 'SpreadElement' || givesAnElement(argument.argument)) break;
+      if (firstMayBeCode(args)) {
+        context.report({
+          code: 'NO_EVAL',
+          message: `Use of ${reference.name} with string argument is not allowed (acts like eval)`,
+          location: locationOf(callee),
+        });
       }
     };
+
+    // A callee that names a function of the script, not the global of that name
+    const shadowing = shadowingReferences(context);
+    const isGlobal = (callee: AnyNode, name: string): boolean =>
+      callee.type === 'Identifier' && callee.name === name && !shadowing.has(callee);
 
     walk.simple(context.ast as any, {
       CallExpression: (node: AnyNode) => {
         const callee = node.callee;
 
         // Check for eval()
-        if (callee.type === 'Identifier' && callee.name === 'eval') {
+        if (isGlobal(callee, 'eval')) {
           context.report({
             code: 'NO_EVAL',
             message: 'Use of eval() is not allowed',
@@ -201,7 +361,7 @@ export class NoEvalRule implements ValidationRule {
         }
 
         // `Function('code')` compiles like `new Function('code')`
-        if (callee.type === 'Identifier' && callee.name === 'Function') {
+        if (isGlobal(callee, 'Function')) {
           context.report({
             code: 'NO_EVAL',
             message: 'Use of Function constructor is not allowed (acts like eval)',
@@ -217,7 +377,7 @@ export class NoEvalRule implements ValidationRule {
         const callee = node.callee;
 
         // Check for new Function()
-        if (callee.type === 'Identifier' && callee.name === 'Function') {
+        if (isGlobal(callee, 'Function')) {
           context.report({
             code: 'NO_EVAL',
             message: 'Use of Function constructor is not allowed (acts like eval)',
@@ -230,7 +390,7 @@ export class NoEvalRule implements ValidationRule {
 
       TaggedTemplateExpression: (node: AnyNode) => {
         // A timer as a tag gets the pieces of the template, which it converts to a string
-        const reference = this.timerReference(node.tag, context);
+        const reference = this.timerReference(node.tag, context, () => true);
         if (!reference) return;
         called.add(reference.node);
         context.report({
@@ -267,6 +427,7 @@ export class NoEvalRule implements ValidationRule {
    * through `.call`, `.apply` or `.bind`, and what it is then called with is not seen here.
    */
   private checkTimerValues(context: ValidationContext, called: ReadonlySet<unknown>): void {
+    const shadowing = shadowingReferences(context);
     const report = (timer: string, node: AnyNode): void => {
       context.report({
         code: 'NO_EVAL',
@@ -286,7 +447,7 @@ export class NoEvalRule implements ValidationRule {
       if (STRING_TIMERS.has(reference.name)) {
         if (called.has(reference.node) || reference.binding?.kind === 'function') continue;
         report(reference.name, reference.node);
-      } else if (CODE_FUNCTIONS.has(reference.name) && !reference.resolved) {
+      } else if (CODE_FUNCTIONS.has(reference.name) && !shadowing.has(reference.node)) {
         // `eval` and `Function` under another name compile what they are given all the same.
         // (Called by name they are reported above; `x instanceof Function` uses neither.)
         const isCallee =
@@ -343,15 +504,27 @@ export class NoEvalRule implements ValidationRule {
   }
 
   /** The timer a callee names: `setTimeout`, `timers.setTimeout`, `timers['setTimeout']`. */
-  private timerReference(callee: AnyNode, context: ValidationContext): { name: string; node: AnyNode } | undefined {
+  private timerReference(
+    callee: AnyNode,
+    context: ValidationContext,
+    mayGetCode: () => boolean,
+  ): { name: string; node: AnyNode } | undefined {
     let target = callee;
     while (target?.type === 'ChainExpression' || target?.type === 'ParenthesizedExpression') target = target.expression;
     if (target?.type === 'Identifier') {
       return STRING_TIMERS.has(target.name) ? { name: target.name, node: target } : undefined;
     }
     if (target?.type === 'MemberExpression') {
-      const name = memberKeyNames(context, target, KEYS).find((key) => STRING_TIMERS.has(key));
-      return name === undefined ? undefined : { name, node: target };
+      const names = target.computed
+        ? peekKeyNames(context, target.property, KEYS)
+        : target.property?.type === 'Identifier'
+          ? [String(target.property.name)]
+          : [];
+      const name = names.find((key) => STRING_TIMERS.has(key));
+      if (name !== undefined) return { name, node: target };
+      // A key that cannot be read may be a timer. That is this rule's to refuse only where the
+      // call may get code: `obj[key]()` with no string is not (STATIC_KEY_UNRESOLVED otherwise).
+      if (target.computed && mayGetCode()) memberKeyNames(context, target, KEYS);
     }
     return undefined;
   }
@@ -364,25 +537,21 @@ export class NoEvalRule implements ValidationRule {
    * evaluated. A function and a value that is only known at run time are left alone.
    */
   private isCode(argument: AnyNode, context: ValidationContext): boolean {
+    if (argument.type === 'SpreadElement') {
+      // `timer(...list)`: a list that is written out gives its first element (or none, and then
+      // the next argument is the first); any other, the first element of what it holds
+      const first = writtenFirstElement(argument.argument);
+      if (first === 'none') return false;
+      // (An empty slot gives what the list's prototype has at that index: the evaluator says
+      // whether that is known)
+      if (first === 'hole') {
+        return mayBeCode(evaluateStatic(context.ast, firstElementOf(argument.argument), { variables: true }));
+      }
+      if (first !== 'unknown') return this.isCode(first, context);
+      return mayBeCode(evaluateStatic(context.ast, firstElementOf(argument.argument), { variables: true }));
+    }
     if (argument.type === 'Literal') return typeof argument.value === 'string';
-    // A call that is computed, and gives a function: the name of what was called says nothing
-    // (`{ map: () => tick }.map()` is not a list)
-    if (argument.type === 'CallExpression') {
-      const values = evaluateStatic(context.ast, argument, { variables: true });
-      if (values.length > 0 && values.every((value) => value.type === 'function')) return false;
-    }
-    if (isNeverFunction(argument)) return true;
-    // `timer(...list)`: a list that is written out gives its first element
-    if (argument.type === 'SpreadElement' && argument.argument?.type === 'ArrayExpression') {
-      const first: AnyNode = argument.argument.elements?.[0];
-      if (first && first.type !== 'SpreadElement' && isNeverFunction(first)) return true;
-    }
-    const expression = argument.type === 'SpreadElement' ? firstElementOf(argument.argument) : argument;
-    return evaluateStatic(context.ast, expression, { variables: true }).some(
-      (value) =>
-        value.type === 'unresolved' ||
-        value.type === 'object' ||
-        (value.type === 'primitive' && typeof value.value === 'string'),
-    );
+    if (isNeverFunction(argument, context)) return true;
+    return mayBeCode(evaluateStatic(context.ast, argument, { variables: true }));
   }
 }
