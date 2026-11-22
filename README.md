@@ -1,73 +1,44 @@
-<br/>
 <div align="center">
 
 <picture>
-  <!-- Source for dark mode -->
-  <source width="100" media="(prefers-color-scheme: dark)" srcset="https://github.com/agentfront/enclave/blob/main/assets/logo.dark.svg">
-  <!-- Fallback image for light mode and unsupported browsers -->
-  <img width="100" src="https://github.com/agentfront/enclave/blob/main/assets/logo.light.svg" alt="An image that changes based on the user's light or dark mode preference.">
+  <source width="100" media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/agentfront/enclave/main/assets/logo.dark.svg">
+  <img width="100" src="https://raw.githubusercontent.com/agentfront/enclave/main/assets/logo.light.svg" alt="Enclave logo">
 </picture>
 
 # Enclave
 
-**Secure sandbox runtime for AI agents**
+**A sandbox for JavaScript written by AI agents**
 
-[![npm ast-guard](https://img.shields.io/npm/v/@enclave-vm/ast.svg?label=@enclave-vm/ast&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/ast)
 [![npm @enclave-vm/core](https://img.shields.io/npm/v/@enclave-vm/core.svg?label=@enclave-vm/core&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/core)
-<br>
-[![npm @enclave-vm/broker](https://img.shields.io/npm/v/@enclave-vm/broker.svg?label=@enclave-vm/broker&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/broker)
-[![npm @enclave-vm/client](https://img.shields.io/npm/v/@enclave-vm/client.svg?label=@enclave-vm/client&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/client)
-[![npm @enclave-vm/react](https://img.shields.io/npm/v/@enclave-vm/react.svg?label=@enclave-vm/react&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/react)
-<br>
-[![Node](https://img.shields.io/badge/node-%3E%3D22-339933)](https://nodejs.org)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+[![npm @enclave-vm/ast](https://img.shields.io/npm/v/@enclave-vm/ast.svg?label=@enclave-vm/ast&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/ast)
+[![npm @enclave-vm/browser](https://img.shields.io/npm/v/@enclave-vm/browser.svg?label=@enclave-vm/browser&color=e8a045)](https://www.npmjs.com/package/@enclave-vm/browser)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/agentfront/enclave/blob/main/LICENSE)
 
-[Documentation](https://agentfront.dev/docs/guides/enclave) | [Live Demo](https://enclave.agentfront.dev) | [FrontMCP Framework](https://github.com/agentfront/enclave)
+[Documentation](https://agentfront.dev/docs/guides/enclave) | [Live demo](https://enclave.agentfront.dev)
 
 </div>
 
----
-
-## Why Enclave?
-
-- **Extensive security testing** - See [security audit](./libs/core/SECURITY-AUDIT.md) for details
-- **Defense in depth** - 6 security layers for LLM-generated code
-- **Streaming runtime** - Real-time event streaming with tool call support
-- **Zero-config** - Works out of the box with sensible defaults
-- **TypeScript-first** - Full type safety and excellent DX
-
-## Install
-
-### Core Packages
-
-```bash
-npm install @enclave-vm/core    # Secure JS sandbox
-npm install @enclave-vm/ast     # AST security validation
-```
-
-### Streaming Runtime
-
-```bash
-npm install @enclave-vm/broker   # Tool broker & session management
-npm install @enclave-vm/client   # Browser/Node client SDK
-npm install @enclave-vm/react    # React hooks & components
-```
+Enclave runs AgentScript, the subset of JavaScript that a language model writes to call your tools, under your control. A script is checked statically, rewritten so that the runtime can enforce limits, and executed in a sandbox where it reaches nothing but the globals and tools you give it. The packages cover the sandbox for Node.js and for the browser, and a streaming layer that runs scripts behind HTTP routes.
 
 ## Packages
 
-| Package                                 | Description                                                                                 |
-| --------------------------------------- | ------------------------------------------------------------------------------------------- |
-| [`@enclave-vm/core`](./libs/core)       | Secure JavaScript sandbox with 6 security layers                                            |
-| [`@enclave-vm/ast`](./libs/ast)         | AST-based security validator                                                                |
-| [`@enclave-vm/browser`](./libs/browser) | The sandbox for browsers, in nested iframes                                                 |
-| [`@enclave-vm/broker`](./libs/broker)   | Tool registry, secrets, sessions and their HTTP routes (bring your own authentication)      |
-| [`@enclave-vm/client`](./libs/client)   | Browser & Node.js client for streaming sessions (plain JSON over HTTP; use HTTPS)           |
-| [`@enclave-vm/react`](./libs/react)     | React hooks: `useEnclaveSession`, `EnclaveProvider`                                         |
-| [`@enclave-vm/types`](./libs/types)     | TypeScript types & Zod schemas                                                              |
-| [`@enclave-vm/stream`](./libs/stream)   | NDJSON streaming, reconnection helpers, encryption primitives the other packages do not use |
-| [`@enclave-vm/runtime`](./libs/runtime) | Building blocks of a runtime worker; it does not execute scripts yet                        |
+| Package                                                                               | What it is                                                                                            |
+| ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| [`@enclave-vm/core`](https://github.com/agentfront/enclave/tree/main/libs/core)       | The sandbox for Node.js: validation, transformation, a reduced realm, limits, an optional worker pool |
+| [`@enclave-vm/ast`](https://github.com/agentfront/enclave/tree/main/libs/ast)         | The static layer: validator, presets, pre-scanner and transforms                                      |
+| [`@enclave-vm/browser`](https://github.com/agentfront/enclave/tree/main/libs/browser) | The sandbox for browsers, in nested sandboxed iframes                                                 |
+| [`@enclave-vm/broker`](https://github.com/agentfront/enclave/tree/main/libs/broker)   | Tool registry, secrets, sessions and their HTTP routes (bring your own authentication)                |
+| [`@enclave-vm/client`](https://github.com/agentfront/enclave/tree/main/libs/client)   | Browser and Node.js client for broker sessions (plain JSON over HTTP; use HTTPS)                      |
+| [`@enclave-vm/react`](https://github.com/agentfront/enclave/tree/main/libs/react)     | React provider and hooks around the client: `EnclaveProvider`, `useEnclaveSession`                    |
+| [`@enclave-vm/types`](https://github.com/agentfront/enclave/tree/main/libs/types)     | TypeScript types and Zod schemas of the streaming protocol                                            |
+| [`@enclave-vm/stream`](https://github.com/agentfront/enclave/tree/main/libs/stream)   | NDJSON streaming, reconnection helpers, and encryption primitives the other packages do not use       |
+| [`@enclave-vm/runtime`](https://github.com/agentfront/enclave/tree/main/libs/runtime) | Building blocks of a separate runtime worker; it does not execute scripts yet                         |
 
 ## Quick Start
+
+```bash
+npm install @enclave-vm/core
+```
 
 ```typescript
 import { Enclave } from '@enclave-vm/core';
@@ -87,83 +58,53 @@ const result = await enclave.run(`
 
 if (result.success) {
   console.log(result.value); // { greeting: 'Hello, Alice' }
+} else {
+  console.error(result.error);
 }
 
 enclave.dispose();
 ```
 
-## React Integration
+To run scripts for clients over HTTP, register your tools with [`@enclave-vm/broker`](https://github.com/agentfront/enclave/tree/main/libs/broker) and connect with [`@enclave-vm/client`](https://github.com/agentfront/enclave/tree/main/libs/client) or [`@enclave-vm/react`](https://github.com/agentfront/enclave/tree/main/libs/react). To run scripts in the user's browser, use [`@enclave-vm/browser`](https://github.com/agentfront/enclave/tree/main/libs/browser).
 
-```tsx
-import { EnclaveProvider, useEnclaveSession } from '@enclave-vm/react';
+## How the Layers Fit Together
 
-function App() {
-  return (
-    <EnclaveProvider config={{ baseUrl: 'https://your-server.com' }}>
-      <CodeRunner />
-    </EnclaveProvider>
-  );
-}
+- **Static layer** (`@enclave-vm/ast`): the pre-scanner checks the source text, and the AgentScript preset accepts only an allowlist of syntax, globals and property keys. Its presets are filters on source text, not a boundary on their own.
+- **Node.js runtime** (`@enclave-vm/core`): runs a validated script in a realm that holds only the allowed globals, behind a membrane, with limits on time, iterations, tool calls and memory. It checks at run time what a static rule cannot decide, such as a property name built while the script runs. An optional worker pool adds a heap limit per worker and a hard stop. It is not process isolation: tenants that must not share a process need a process or container each.
+- **Browser runtime** (`@enclave-vm/browser`): runs a validated script in two nested iframes with `sandbox="allow-scripts"` and a strict Content Security Policy. Inside the frame, the validator is what keeps a script from the document it runs in.
+- **Streaming layer** (`@enclave-vm/broker`, `client`, `react`, `types`, `stream`): runs the Node.js sandbox in the broker's process and streams events to clients. It has no authentication, rate limiting or encryption of its own.
 
-function CodeRunner() {
-  const { execute, state, result, stdout } = useEnclaveSession();
-
-  const runCode = () =>
-    execute(`
-    const data = await callTool('fetchData', { id: 123 });
-    return data;
-  `);
-
-  return (
-    <div>
-      <button onClick={runCode} disabled={state === 'running'}>
-        {state === 'running' ? 'Running...' : 'Run Code'}
-      </button>
-      {stdout && <pre>{stdout}</pre>}
-      {result && <pre>{JSON.stringify(result, null, 2)}</pre>}
-    </div>
-  );
-}
-```
-
-## Architecture
-
-See [README-ARCHITECTURE.md](./README-ARCHITECTURE.md) for detailed architecture documentation covering:
-
-- Deployment scenarios (what is implemented today, and the design for a separate runtime)
-- Streaming protocol (NDJSON)
-- Tool broker pattern
-- Reference sidecar
-- Security: what the transport has to provide, and what the packages do not
+Each package's README states what its layer does and does not guarantee. [README-ARCHITECTURE.md](https://github.com/agentfront/enclave/blob/main/README-ARCHITECTURE.md) describes the streaming architecture, what is implemented and what is design. [SECURITY-TESTS.md](https://github.com/agentfront/enclave/blob/main/SECURITY-TESTS.md) lists the security invariants by layer and the ones that are still open.
 
 ## Demos
 
-### Enclave Demo (basic sandbox)
-
 ```bash
-npx nx serve enclave-demo
+npx nx serve enclave-demo     # CLI: arithmetic, loops, tool calls, refused operations
+npx nx demo streaming-demo    # Web UI with three servers: client (4100), broker (4101), runtime (4102)
 ```
 
-A CLI script that demonstrates core sandbox features: arithmetic, loops, tool calls, and security blocking of disallowed operations.
+The three servers of the streaming demo are written for the demo, on `@enclave-vm/core` and `@enclave-vm/types`. They are not the `@enclave-vm/broker` and `@enclave-vm/runtime` packages: the runtime package does not execute scripts yet.
 
-### Streaming Demo (full architecture)
+## Development
+
+The repository is an Nx monorepo and needs Node.js 22 or later (`.nvmrc` pins the version used in development) and Yarn 4.
 
 ```bash
-npx nx demo streaming-demo
+yarn install
+yarn build
+yarn test
+yarn lint
+yarn format:check
 ```
 
-Starts a 3-server architecture with a web UI, covering embedded, lambda, and direct execution modes:
+The security tests live in a private submodule (`security-tests/`); see [SECURITY-TESTS.md](https://github.com/agentfront/enclave/blob/main/SECURITY-TESTS.md).
 
-- **Client** (port 4100) — Web UI
-- **Broker** (port 4101) — Tool execution & session management
-- **Runtime** (port 4102) — Sandboxed code execution
+## Contributing and Security
 
-The three servers are written for the demo, on `@enclave-vm/core` and `@enclave-vm/types`. They are not the `@enclave-vm/broker` and `@enclave-vm/runtime` packages: the runtime package does not execute scripts yet.
+Issues and pull requests are welcome on [GitHub](https://github.com/agentfront/enclave). Participation is governed by the [Code of Conduct](https://github.com/agentfront/enclave/blob/main/CODE_OF_CONDUCT.md).
 
-**[Read the full documentation →](https://agentfront.dev/docs/guides/enclave)**
-
----
+Please do not report vulnerabilities in public issues. Use the private channels described in [SECURITY.md](https://github.com/agentfront/enclave/blob/main/SECURITY.md) (GitHub Security Advisories preferred).
 
 ## License
 
-[Apache-2.0](./LICENSE)
+Apache-2.0. See [LICENSE](https://github.com/agentfront/enclave/blob/main/LICENSE).
