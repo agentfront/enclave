@@ -535,6 +535,13 @@ jobs:
             git fetch --quiet origin "$CHERRY_BRANCH"
             git checkout -B "$CHERRY_BRANCH" "origin/$CHERRY_BRANCH"
             echo "Continuing from the published $CHERRY_BRANCH"
+            # What the default branch has gained since, a fix of the conflict on it included, is
+            # merged in: a merge, so that the published commits stay as they are
+            if ! git merge --no-edit --quiet "origin/$DEFAULT_BRANCH" -m "Merge $DEFAULT_BRANCH into $CHERRY_BRANCH"; then
+              git merge --abort || true
+              echo "::error::$CHERRY_BRANCH and $DEFAULT_BRANCH conflict. Merge $DEFAULT_BRANCH into $CHERRY_BRANCH by hand and run this again, or delete $CHERRY_BRANCH to start over from $DEFAULT_BRANCH."
+              exit 1
+            fi
           else
             git checkout -B "$CHERRY_BRANCH" "origin/$DEFAULT_BRANCH"
           fi

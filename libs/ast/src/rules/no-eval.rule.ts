@@ -48,6 +48,49 @@ function givesAnElement(list: AnyNode): boolean {
   return first !== 'none' && first !== 'unknown';
 }
 
+/**
+ * The references that name a variable of the script, which shadows the global of its name. A `var` at
+ * the top of a script is not one: it is a property of the global object, and `var Function;` leaves
+ * the global what it was. (A function, a class, a `let` or `const`, a parameter or a `var` of a
+ * function is the script's.)
+ */
+function shadowingReferences(context: ValidationContext): Set<unknown> {
+  const topLevelVars = new Set<unknown>();
+  walkAll(context.ast, (node, ancestors) => {
+    if (node.type !== 'VariableDeclaration' || node.kind !== 'var') return;
+    const inFunction = ancestors.some(
+      (ancestor) =>
+        ancestor.type === 'FunctionDeclaration' ||
+        ancestor.type === 'FunctionExpression' ||
+        ancestor.type === 'ArrowFunctionExpression' ||
+        ancestor.type === 'StaticBlock' ||
+        ancestor.type === 'PropertyDefinition',
+    );
+    if (inFunction) return;
+    const pending: AnyNode[] = (node.declarations ?? []).map((declarator: AnyNode) => declarator.id);
+    while (pending.length > 0) {
+      const pattern = pending.pop();
+      if (!pattern) continue;
+      if (pattern.type === 'Identifier') topLevelVars.add(pattern);
+      else if (pattern.type === 'ObjectPattern') {
+        for (const property of pattern.properties ?? [])
+          pending.push(property.type === 'RestElement' ? property.argument : property.value);
+      } else if (pattern.type === 'ArrayPattern') pending.push(...(pattern.elements ?? []));
+      else if (pattern.type === 'AssignmentPattern') pending.push(pattern.left);
+      else if (pattern.type === 'RestElement') pending.push(pattern.argument);
+    }
+  });
+  const shadowing = new Set<unknown>();
+  for (const reference of sharedScopes(context.ast).references) {
+    const binding = reference.binding;
+    if (!binding) continue;
+    // A name a top-level `var` declares first is the global's, whatever else declares it again
+    if (binding.kind === 'var' && topLevelVars.has(binding.node)) continue;
+    shadowing.add(reference.node);
+  }
+  return shadowing;
+}
+
 /** Whether what an argument may be includes code: a string, an object, or a constant not computed. */
 function mayBeCode(values: ReturnType<typeof evaluateStatic>): boolean {
   return values.some(
@@ -297,12 +340,9 @@ export class NoEvalRule implements ValidationRule {
     };
 
     // A callee that names a function of the script, not the global of that name
-    const local = new Set<unknown>();
-    for (const reference of sharedScopes(context.ast).references) {
-      if (reference.binding) local.add(reference.node);
-    }
+    const shadowing = shadowingReferences(context);
     const isGlobal = (callee: AnyNode, name: string): boolean =>
-      callee.type === 'Identifier' && callee.name === name && !local.has(callee);
+      callee.type === 'Identifier' && callee.name === name && !shadowing.has(callee);
 
     walk.simple(context.ast as any, {
       CallExpression: (node: AnyNode) => {
@@ -384,6 +424,7 @@ export class NoEvalRule implements ValidationRule {
    * through `.call`, `.apply` or `.bind`, and what it is then called with is not seen here.
    */
   private checkTimerValues(context: ValidationContext, called: ReadonlySet<unknown>): void {
+    const shadowing = shadowingReferences(context);
     const report = (timer: string, node: AnyNode): void => {
       context.report({
         code: 'NO_EVAL',
@@ -403,7 +444,7 @@ export class NoEvalRule implements ValidationRule {
       if (STRING_TIMERS.has(reference.name)) {
         if (called.has(reference.node) || reference.binding?.kind === 'function') continue;
         report(reference.name, reference.node);
-      } else if (CODE_FUNCTIONS.has(reference.name) && !reference.resolved) {
+      } else if (CODE_FUNCTIONS.has(reference.name) && !shadowing.has(reference.node)) {
         // `eval` and `Function` under another name compile what they are given all the same.
         // (Called by name they are reported above; `x instanceof Function` uses neither.)
         const isCallee =
@@ -497,7 +538,12 @@ export class NoEvalRule implements ValidationRule {
       // `timer(...list)`: a list that is written out gives its first element (or none, and then
       // the next argument is the first); any other, the first element of what it holds
       const first = writtenFirstElement(argument.argument);
-      if (first === 'none' || first === 'hole') return false;
+      if (first === 'none') return false;
+      // (An empty slot gives what the list's prototype has at that index: the evaluator says
+      // whether that is known)
+      if (first === 'hole') {
+        return mayBeCode(evaluateStatic(context.ast, firstElementOf(argument.argument), { variables: true }));
+      }
       if (first !== 'unknown') return this.isCode(first, context);
       return mayBeCode(evaluateStatic(context.ast, firstElementOf(argument.argument), { variables: true }));
     }

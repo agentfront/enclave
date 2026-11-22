@@ -145,11 +145,21 @@ function isMergeCommit(sha) {
   return run('git', ['rev-list', '--parents', '-n1', sha]).split(/\s+/).length > 2;
 }
 
+/** The line of a commit message that records a PR as cherry-picked (see `hasCherryPickOf`). */
+function markerOf(pullRequest, releaseBranch) {
+  return `Cherry-picked from #${pullRequest.number} (merged to ${releaseBranch})`;
+}
+
+/** A shell word that holds `text` as it is. */
+function shellQuote(text) {
+  return `'${String(text).replaceAll("'", "'\\''")}'`;
+}
+
 function commitMessage(pullRequest, releaseBranch) {
   return [
     `Cherry-pick: ${pullRequest.title}`,
     '',
-    `Cherry-picked from #${pullRequest.number} (merged to ${releaseBranch})`,
+    markerOf(pullRequest, releaseBranch),
     `Original commit: ${pullRequest.commits.join(' ')}`,
     '',
     `Co-Authored-By: ${pullRequest.author} <${pullRequest.authorId}+${pullRequest.author}@users.noreply.github.com>`,
@@ -276,11 +286,13 @@ export function renderIssue(result, defaultBranch, branch) {
     'git fetch origin',
     `git checkout -b ${branch} origin/${branch}`,
     '',
-    '# Cherry-pick the remaining PRs in order (use -m 1 for a merge commit)',
-    ...result.remaining.map(
-      (pullRequest) => `git cherry-pick ${pullRequest.commits.join(' ')}  # #${pullRequest.number}`,
-    ),
-    '# After resolving a conflict: git add . && git cherry-pick --continue',
+    '# Cherry-pick the remaining PRs in order, one commit per PR (use -m 1 for a merge commit).',
+    '# Resolve a conflict and `git add` the files before the commit: its message records the PR as',
+    '# cherry-picked, which a later run of the workflow reads to skip it.',
+    ...result.remaining.flatMap((pullRequest) => [
+      `git cherry-pick --no-commit ${pullRequest.commits.join(' ')}  # #${pullRequest.number}`,
+      `git commit -m ${shellQuote(`Cherry-pick: ${pullRequest.title}`)} -m ${shellQuote(markerOf(pullRequest, result.releaseBranch))}`,
+    ]),
     '',
     '# Push and create PR',
     `git push origin ${branch}`,

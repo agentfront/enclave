@@ -909,7 +909,11 @@ type PatternStep =
   | { type: 'default'; node: AnyNode };
 
 /** An assignment to a variable that is not its declaration. */
-type Write = { operator: string; right: AnyNode } | { target: AnyNode };
+type Write =
+  | { operator: string; right: AnyNode }
+  | { target: AnyNode }
+  /** The variable starts as another one, with every value that one may hold (`function f(k = 1) { var k; }`) */
+  | { copies: ScopeBinding };
 
 /** What a key is: a name, a symbol, or not known */
 type KeyName = { name: string } | { symbol: SymbolValue } | 'dynamic' | 'unresolved';
@@ -1091,18 +1095,17 @@ class StaticEvaluator {
       }
     }
 
-    for (const binding of scopes.bindings) {
-      // `catch (e) { var e = value; }`: the declaration gives its value to the catch parameter.
-      // `function f(k = 1) { var k; }`: the body's variable starts with the value of the parameter.
-      const [into, from] = binding.initializes
-        ? [binding.initializes, binding.node]
-        : binding.startsAs
-          ? [binding, binding.startsAs.node]
-          : [];
-      if (!into) continue;
+    const record = (into: ScopeBinding, write: Write): void => {
       const list = this.writesTo.get(into);
-      if (list) list.push({ target: from });
-      else this.writesTo.set(into, [{ target: from }]);
+      if (list) list.push(write);
+      else this.writesTo.set(into, [write]);
+    };
+    for (const binding of scopes.bindings) {
+      // `catch (e) { var e = value; }`: the declaration gives its value to the catch parameter
+      if (binding.initializes) record(binding.initializes, { target: binding.node });
+      // `function f(k = 1) { var k; }`: the body's variable starts as the parameter, with whatever
+      // the parameter holds by then (what the parameter list assigns to it included). Both can hold.
+      if (binding.startsAs) record(binding, { copies: binding.startsAs });
     }
 
     // The built-ins that are named: one that is assigned to is changed; one that holds the
@@ -2346,6 +2349,10 @@ class StaticEvaluator {
         take(this.attempt(() => this.sourceValues(this.sourceOf(write.target), undefined)));
         continue;
       }
+      if ('copies' in write) {
+        take(this.attempt(() => this.bindingValues(write.copies)));
+        continue;
+      }
       const { operator, right } = write;
       if (operator === '=' || LOGICAL_ASSIGNMENTS.has(operator)) {
         take(this.attempt(() => this.ev(right, undefined)));
@@ -2410,9 +2417,11 @@ class StaticEvaluator {
         const values =
           'target' in write
             ? this.attempt(() => this.sourceValues(this.sourceOf(write.target), undefined))
-            : write.operator === '=' || LOGICAL_ASSIGNMENTS.has(write.operator)
-              ? this.attempt(() => this.ev(write.right, undefined))
-              : [];
+            : 'copies' in write
+              ? this.attempt(() => this.bindingValues(write.copies))
+              : write.operator === '=' || LOGICAL_ASSIGNMENTS.has(write.operator)
+                ? this.attempt(() => this.ev(write.right, undefined))
+                : [];
         known.push(...values.filter(isResolved));
         if (values.some((value) => value.kind === 'unresolved' && !value.object)) missed = true;
       }
