@@ -184,6 +184,63 @@ With `@enclave-vm/ast` on its own, list the name in `allowedGlobals` of the pres
 
 **Solution:** Remove the blocked identifier or use an allowed alternative.
 
+A blocked name is refused as a property as well, however the key is spelled: `obj.process`, `obj['process']`, `obj['pro' + 'cess']`. To read a field of your data that has such a name, take the key from a run-time value (a parameter, a field of a tool result); with `@enclave-vm/ast` on its own under the STRICT or SECURE preset, a key held in a variable is read as its value too.
+
+### Property key that cannot be resolved
+
+**Message:** `Computed property key cannot be resolved. It is made of constants, so it names one fixed property, and the validator cannot tell which. Write the property name directly.` (code `STATIC_KEY_UNRESOLVED`)
+
+**Cause:** A computed key (`obj[...]`, or a computed key of a destructuring pattern) is built only from constants, and in a way the validator does not evaluate. Such a key has one fixed value. A validator that cannot read it cannot tell that it is not a blocked name, so it does not accept it. The usual cases:
+
+- The key goes through something the validator does not run: a `Map`, a class, a regular expression, a function called in place whose body has a loop or assigns to a variable.
+- Something inside the key assigns to a variable or to a property, or calls a function the validator does not follow. The key is then not computed at all, whatever it reads afterwards.
+- The key goes through a built-in (`Math.max(...)`, `'AB'.toLowerCase()`, `[...].join('')`) in a script that can change a built-in: one that assigns to a built-in (`Math.max = f`), or that hands one on (`const M = Math`) and also writes to an object the validator cannot tell apart from it (`M.max = f`). Passing `Number` to `map`, or keeping `Object.keys` under another name, does not count.
+- The key depends on the engine the script runs in (`typeof Math`, whether a newer method such as `Array.prototype.toSorted` exists), or costs more to compute than the validator spends on one key.
+- With a preset that follows variables (STRICT, SECURE, STANDARD), the key is read through a variable whose values cost more to follow than the validator spends: for example a key built in a loop over a large table the script holds, or a script with very many such keys. Following it is how the validator knows that no value is a blocked name, so a key it could not follow to its end is refused, not left to run time. Keep large data out of the script (pass it in through a tool or a global) or write the names directly.
+
+**Solution:** Write the name the key evaluates to:
+
+```ts
+// Refused: the key is fixed, and not evaluated
+const value = row[new Map([['k', 'total']]).get('k')];
+
+// Accepted
+const direct = row.total;
+const quoted = row['total'];
+const joined = row['to' + 'tal'];         // evaluated: 'total'
+const chosen = row[field];                // a run-time value: checked where the script runs
+```
+
+A key that the expression would build to more than 4096 characters (`row['ab'.repeat(5000)]`) is refused the same way, with `STATIC_KEY_TOO_LONG`, without being built. The limit is on what is built: a string literal, or a template literal without a substitution, is read as it is written, however long it is.
+
+### Timer used as a value
+
+**Message:** `Use of setTimeout as a value is not allowed (it can then be called with a string, which acts like eval)` (code `NO_EVAL`)
+
+**Cause:** `setTimeout` or `setInterval` is stored under another name, passed to a function, or called through `.call`, `.apply` or `.bind`. A timer compiles a string argument into code, and the validator can only check the argument where the timer is called by its name. The same holds for `eval` and `Function`. A first argument that can never be a function (a template, a list, an object, `value.toString()`) is refused where the timer is called, with the message `Use of setTimeout with string argument is not allowed`.
+
+**Solution:** Call the timer where it is named, with a function:
+
+```ts
+// Refused
+const later = setTimeout;
+const wait = promisify(setTimeout);
+
+// Accepted
+setTimeout(() => tick(), 100);
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+```
+
+### Source nested too deeply
+
+**Message:** `Source is nested too deeply to be validated` (code `SOURCE_TOO_DEEP`)
+
+**Cause:** An expression is nested (or chained, as in `a.b.c.d...`) several thousand levels deep, deeper than a rule can walk. The source is not validated, so it is refused. The pre-scanner refuses most such sources earlier (see [Nesting depth exceeded](#nesting-depth-exceeded)).
+
+This is reported for a source that nests deeply. If a custom rule runs out of stack on a source that does not, the rule ran out by itself, and `validate()` throws its `RangeError`.
+
+**Solution:** Split the expression into statements.
+
 ### Invalid loop type
 
 **Message:** `'while' loops are not allowed`

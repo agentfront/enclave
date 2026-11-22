@@ -1,7 +1,7 @@
 import type { ValidationRule, ValidationContext } from '../interfaces';
 import { ValidationSeverity } from '../interfaces';
 import * as walk from 'acorn-walk';
-import { tryGetStaticComputedKeys } from './coercion-utils';
+import { memberKeyNames, staticKeyNames } from './static-keys';
 import { walkAll, staticPropertyName, type AnyNode } from '../utils/ast-walk';
 import { analyzeScopes } from '../utils/scope-analysis';
 
@@ -48,14 +48,6 @@ const OBJECT_META_STATICS: ReadonlySet<string> = new Set([
   'defineProperties',
   'create', // Can create objects with arbitrary prototypes
 ]);
-
-/** Every name a member access may resolve to without running the script. */
-function memberNames(node: AnyNode): string[] {
-  if (!node.property) return [];
-  if (!node.computed) return node.property.type === 'Identifier' ? [node.property.name] : [];
-  const literal = staticPropertyName(node.property, true);
-  return literal !== undefined ? [literal] : tryGetStaticComputedKeys(node.property, { foldConstants: true });
-}
 
 /**
  * Rule that prevents access to global objects (window, globalThis, this)
@@ -165,7 +157,7 @@ export class NoGlobalAccessRule implements ValidationRule {
           node.property &&
           ((node.property.type === 'Identifier' && node.property.name === 'constructor') ||
             (node.property.type === 'Literal' && node.property.value === 'constructor') ||
-            (node.computed && tryGetStaticComputedKeys(node.property, { foldConstants: true }).includes('constructor')))
+            (node.computed && staticKeyNames(context, node.property).includes('constructor')))
         ) {
           report({
             code: 'NO_CONSTRUCTOR_ACCESS',
@@ -186,7 +178,7 @@ export class NoGlobalAccessRule implements ValidationRule {
         // kept in a variable, passed as a value. The name is matched in every spelling that can
         // be resolved without running the script.
         if (node.object?.type === 'Identifier' && node.object.name === 'Object') {
-          const methodName = memberNames(node).find((name) => OBJECT_META_STATICS.has(name));
+          const methodName = memberKeyNames(context, node).find((name) => OBJECT_META_STATICS.has(name));
           if (methodName !== undefined) {
             report({
               code: 'NO_META_PROGRAMMING',

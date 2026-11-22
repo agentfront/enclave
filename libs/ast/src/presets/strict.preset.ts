@@ -12,9 +12,11 @@ import {
   NoRegexMethodsRule,
 } from '../rules';
 import { PresetOptions } from './types';
+import { AGENTSCRIPT_DISALLOWED_PROPERTIES } from './agentscript.preset';
+import { STACK_FRAME_OBJECT_KEYS, STACK_FRAME_PROPERTIES } from './stack-frame-properties';
 
 /**
- * Creates a STRICT preset with maximum security restrictions (bank-grade)
+ * Creates a STRICT preset, the most restrictive of the presets
  *
  * Blocks:
  * - All eval-like constructs (eval, Function constructor)
@@ -22,7 +24,10 @@ import { PresetOptions } from './types';
  * - All async/await (configurable via options)
  * - Dangerous identifiers (eval, Function, process, require, etc.)
  * - Constructor chain access (.constructor property)
- * - Prototype manipulation (__proto__, Object.setPrototypeOf)
+ * - Prototype manipulation (__proto__, Object.setPrototypeOf), also as the key of a
+ *   destructuring pattern and as the `{ __proto__: x }` key of an object literal
+ * - The property names that reach a prototype or a property descriptor without naming one
+ *   (`__lookupGetter__`, `getPrototypeOf`, `defineProperty`, ...), on any object
  * - Global object access (window, globalThis, this, global)
  * - Reflection APIs (Reflect.*)
  * - Meta-programming APIs (Object.getOwnPropertyDescriptor, etc.)
@@ -44,7 +49,7 @@ import { PresetOptions } from './types';
  *
  * @example
  * ```typescript
- * // Maximum security (bank-grade)
+ * // The most restrictive preset
  * const rules = createStrictPreset();
  *
  * // Strict with required API calls
@@ -76,7 +81,7 @@ export function createStrictPreset(options: PresetOptions = {}): ValidationRule[
     }),
   );
 
-  // Block all dangerous identifiers for bank-level security
+  // Refuse the identifiers this preset treats as dangerous (the longest list of the presets)
   const disallowedIdentifiers = [
     // Code execution
     'eval',
@@ -203,7 +208,17 @@ export function createStrictPreset(options: PresetOptions = {}): ValidationRule[
 
     ...(options.additionalDisallowedIdentifiers || []),
   ];
-  rules.push(new DisallowedIdentifierRule({ disallowed: disallowedIdentifiers }));
+  rules.push(
+    new DisallowedIdentifierRule({
+      disallowed: disallowedIdentifiers,
+      // Reflection entry points, refused by property name on any object: the legacy accessors
+      // every object has, and the prototype and descriptor functions of `Object`
+      disallowedProperties: [...AGENTSCRIPT_DISALLOWED_PROPERTIES, ...STACK_FRAME_PROPERTIES],
+      disallowedObjectKeys: [...STACK_FRAME_OBJECT_KEYS],
+      // `{ __proto__: x }` sets a prototype; it is the one key that is not a plain property
+      blockProtoInObjectLiterals: true,
+    }),
+  );
 
   // Block all loops by default (can be overridden)
   rules.push(
