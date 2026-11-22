@@ -433,7 +433,7 @@ None identified. Core security is solid.
 
 ## Conclusion
 
-The enclave-vm package provides **bank-grade security** for AgentScript execution with:
+At the time of this audit, the enclave-vm package provided the following for AgentScript execution:
 
 - ✅ **Zero code injection vulnerabilities**
 - ✅ **Complete global access isolation**

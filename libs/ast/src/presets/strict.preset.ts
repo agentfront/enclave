@@ -16,7 +16,7 @@ import { AGENTSCRIPT_DISALLOWED_PROPERTIES } from './agentscript.preset';
 import { STACK_FRAME_OBJECT_KEYS, STACK_FRAME_PROPERTIES } from './stack-frame-properties';
 
 /**
- * Creates a STRICT preset with maximum security restrictions (bank-grade)
+ * Creates a STRICT preset, the most restrictive of the presets
  *
  * Blocks:
  * - All eval-like constructs (eval, Function constructor)
@@ -49,7 +49,7 @@ import { STACK_FRAME_OBJECT_KEYS, STACK_FRAME_PROPERTIES } from './stack-frame-p
  *
  * @example
  * ```typescript
- * // Maximum security (bank-grade)
+ * // The most restrictive preset
  * const rules = createStrictPreset();
  *
  * // Strict with required API calls
@@ -81,7 +81,7 @@ export function createStrictPreset(options: PresetOptions = {}): ValidationRule[
     }),
   );
 
-  // Block all dangerous identifiers for bank-level security
+  // Refuse the identifiers this preset treats as dangerous (the longest list of the presets)
   const disallowedIdentifiers = [
     // Code execution
     'eval',
