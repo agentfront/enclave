@@ -319,12 +319,13 @@ export class NoEvalRule implements ValidationRule {
       // Taken out of an object under another name: `const { setTimeout: later } = scheduler`
       if (node.type === 'Property' && ancestors[ancestors.length - 1]?.type === 'ObjectPattern') {
         const names = node.computed ? peekKeyNames(context, node.key, KEYS) : propertyKeyNames(context, node);
-        const timer = names.find((name) => STRING_TIMERS.has(name));
-        if (timer === undefined) return;
-        // Under its own name it is called by that name, and the call is checked
+        const timers = names.filter((name) => STRING_TIMERS.has(name));
+        if (timers.length === 0) return;
+        // Under its own name it is called by that name, and the call is checked. (A computed key
+        // may be one of several names: every timer among them has to be that name.)
         const target = node.value?.type === 'AssignmentPattern' ? node.value.left : node.value;
-        if (!node.computed && target?.type === 'Identifier' && target.name === timer) return;
-        report(timer, node.key);
+        if (target?.type === 'Identifier' && timers.every((name) => name === target.name)) return;
+        report(timers[0], node.key);
       }
     });
   }

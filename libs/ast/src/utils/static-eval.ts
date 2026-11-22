@@ -218,8 +218,6 @@ interface Stamp {
 interface ArrayValue extends Stamp {
   readonly kind: 'array';
   readonly items: readonly Value[];
-  /** Frozen, sealed or not extensible: a write to it throws, or may */
-  readonly locked?: true;
   /**
    * Not an array of the script: the values the script can be seen storing into what a variable
    * holds, in the order they are written. Any element of it may be read at any index.
@@ -229,8 +227,6 @@ interface ArrayValue extends Stamp {
 interface ObjectValue extends Stamp {
   readonly kind: 'object';
   readonly properties: Map<string, Slot>;
-  /** Frozen, sealed or not extensible: a write to it throws, or may */
-  readonly locked?: true;
   /** Properties whose key is a well-known symbol, by its name */
   readonly symbols: Map<string, Slot>;
   /** `undefined`: the default prototype. `null`: none. */
@@ -877,8 +873,20 @@ class StaticEvaluator {
     followed: new WeakMap<AnyNode, StaticAlternative[]>(),
     plain: new WeakMap<AnyNode, StaticAlternative[]>(),
   };
-  /** The expressions that are too large to build, with the node that says where */
-  private readonly tooLong = new WeakMap<AnyNode, AnyNode>();
+  /**
+   * The expressions that are too large to build, with the node that says where. One for each way
+   * of reading, like `described`: a variable that is followed can decide a branch, and with it
+   * whether the large one is built at all.
+   */
+  private readonly tooLong = {
+    followed: new WeakMap<AnyNode, AnyNode>(),
+    plain: new WeakMap<AnyNode, AnyNode>(),
+  };
+  /**
+   * The arrays and objects `Object.freeze`, `seal` or `preventExtensions` was called on, by what
+   * holds their content: every reference to the object shares it, a copy does not.
+   */
+  private readonly locked = new WeakSet<object>();
   /** Keys found unresolved, with the rank each was last reported at */
   private readonly reportedAt = new Map<AnyNode, number>();
   private pending = new Set<AnyNode>();
@@ -1466,7 +1474,8 @@ class StaticEvaluator {
     if (cached) return cached;
     // (Known to be too large to build: an error for a key, an unresolved value elsewhere,
     // whichever way it was asked about first)
-    const large = this.tooLong.get(node);
+    const sized = variables ? this.tooLong.followed : this.tooLong.plain;
+    const large = sized.get(node);
     if (large) {
       if (asKey) throw new StaticKeyExpansionError(large.loc ? large : node);
       return [{ type: 'unresolved' }];
@@ -1506,11 +1515,17 @@ class StaticEvaluator {
       if (variables) {
         // Following the variables is a search, and it ends where it costs too much: the
         // expression is then read as it is written, which is a limit of its own
-        result = this.describe(node, asKey, false);
-        if (this.tooLong.has(node)) return result;
+        try {
+          result = this.describe(node, asKey, false);
+        } finally {
+          // (Too large as it is written: it is that for this way of reading as well)
+          const written = this.tooLong.plain.get(node);
+          if (written) sized.set(node, written);
+        }
+        if (sized.has(node)) return result;
       } else if (signal instanceof TooLong) {
         const large: AnyNode = signal.node?.loc ? signal.node : node;
-        this.tooLong.set(node, large);
+        sized.set(node, large);
         if (asKey) throw new StaticKeyExpansionError(large);
         return [{ type: 'unresolved' }];
       } else {
@@ -1625,9 +1640,16 @@ class StaticEvaluator {
 
   // --- bookkeeping ----------------------------------------------------------------------------
 
+  /**
+   * Pay for `count` steps of work. Work that is paid for before it is done (a copy into many
+   * lists) and that goes past what one key may cost is not done: the script as a whole is
+   * charged for what the key could still spend, not for the work that did not happen, so that
+   * one costly key is refused without the keys after it being refused for it.
+   */
   private tick(count = 1): void {
+    const room = Math.max(0, this.limit - this.steps);
     this.steps += count;
-    this.total += count;
+    this.total += Math.min(count, room + 1);
     if (this.steps > this.limit || this.total > this.totalLimit) throw new OutOfBudget();
   }
 
@@ -3133,22 +3155,29 @@ class StaticEvaluator {
         expansions = this.ev(element, env).map((value) => [value]);
       }
 
+      // What a spread builds is bounded; what is written out is as long as the script. The size
+      // of every list is checked, and the copy is paid for, before anything is copied: one large
+      // spread is copied into each of the lists there are.
+      const fits = (list: Value[], added: Value[]): void => {
+        if (spread && list.length + added.length > MAX_ITEMS) throw new TooLong(node);
+      };
       if (expansions.length === 1) {
-        for (const list of lists) list.push(...expansions[0]);
-        this.tick(lists.length);
+        const added = expansions[0];
+        for (const list of lists) fits(list, added);
+        this.tick(lists.length * Math.max(1, added.length));
+        for (const list of lists) list.push(...added);
       } else {
         if (lists.length * expansions.length > MAX_ALTERNATIVES) throw new OutOfBudget();
         const next: Value[][] = [];
         for (const list of lists) {
           for (const expansion of expansions) {
-            this.tick(list.length + 1);
+            fits(list, expansion);
+            this.tick(list.length + expansion.length + 1);
             next.push(list.concat(expansion));
           }
         }
         lists = next;
       }
-      // What a spread builds is bounded; what is written out is as long as the script
-      if (spread && lists.some((list) => list.length > MAX_ITEMS)) throw new TooLong(node);
     }
     return lists.map((items) => this.rawArray(items));
   }
@@ -4437,7 +4466,7 @@ class StaticEvaluator {
     this.tick(items.length);
     const givesArray = ARRAY_RETURNING_METHODS.has(name);
     // (A method that changes a frozen list throws)
-    if (array.locked && MUTATING_ARRAY_METHODS.has(name)) return this.giveUp(node, env, givesArray);
+    if (MUTATING_ARRAY_METHODS.has(name) && this.locked.has(array.items)) return this.giveUp(node, env, givesArray);
     // These read one element or keep the slots as they are. Every other method walks the array
     // and treats an empty slot in a way of its own.
     if (hasHole(items) && !HOLE_NEUTRAL_METHODS.has(name)) return this.giveUp(node, env, givesArray);
@@ -5009,9 +5038,12 @@ class StaticEvaluator {
       case 'Object.seal':
       case 'Object.preventExtensions':
         if (first === undefined) return [UNDEFINED];
-        // The same object, holding what it held. A write to what the call returns throws (to a
-        // sealed one, may throw): it is not computed as a write that succeeds.
-        return first.kind === 'array' || first.kind === 'object' ? [{ ...first, locked: true }] : [first];
+        // The same object, holding what it held. From here on a write to it throws (to a sealed
+        // one, may throw), through whichever name it is reached: it is not computed as a write
+        // that succeeds.
+        if (first.kind === 'array') this.locked.add(first.items);
+        else if (first.kind === 'object') this.locked.add(first.properties);
+        return [first];
 
       case 'Object.assign': {
         if (first === undefined) return this.giveUp(node, env);
@@ -5019,7 +5051,9 @@ class StaticEvaluator {
           this.skipped();
           return [plain(first)];
         }
-        if (first.kind !== 'object' || !this.fresh(first) || first.locked) return this.giveUp(node, env, true);
+        if (first.kind !== 'object' || !this.fresh(first) || this.locked.has(first.properties)) {
+          return this.giveUp(node, env, true);
+        }
         // (What the target holds is copied: that costs what the target is large)
         this.tick(first.properties.size + first.symbols.size);
         const properties = new Map(first.properties);

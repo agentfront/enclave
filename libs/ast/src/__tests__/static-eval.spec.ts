@@ -104,6 +104,11 @@ describe('static evaluation of a property key', () => {
       ],
       ['a member of a frozen object', `Object.freeze({ a: 'alpha' }).a`, ['alpha']],
       ['a copy of a frozen list', `Object.freeze(['pha', 'al']).slice().reverse().join('')`, ['alpha']],
+      [
+        'a frozen list read under its other name',
+        `(() => { const list = ['alpha', 'beta']; const frozen = Object.freeze(list); return list[0]; })()`,
+        ['alpha'],
+      ],
       // (An object spread copies the code units of a string: two for this character)
       ['the code units of a string spread into an object', `Object.keys({ ...'a\u{1F600}' }).length`, ['3']],
       ['the characters of a string spread into a list', `[...'a\u{1F600}'].length`, ['2']],
@@ -137,6 +142,11 @@ describe('static evaluation of a property key', () => {
       // (A write to a frozen object throws: it is not computed as one that succeeds)
       ['a copy onto a frozen object', `Object.assign(Object.freeze({}), { a: 'alpha' }).a`],
       ['a frozen list changed in place', `Object.freeze(['a', 'b']).reverse()[0]`],
+      // (Frozen is what the object is, whichever name it is reached by)
+      [
+        'a frozen list changed in place under its other name',
+        `(() => { const list = ['a', 'b']; const frozen = Object.freeze(list); return list.reverse()[0]; })()`,
+      ],
     ])('%s', (_name, expression) => {
       // (What the search for names saw in it is listed next to that: it is not the value)
       expect(keyOf(expression).unresolved).toBe(true);
@@ -570,6 +580,11 @@ describe('how the rules read a key', () => {
       ['a test for the timer', `if (typeof setTimeout === 'function') setTimeout(() => 1, 10);`],
       ['a timer the script declares itself', `function setTimeout(fn) { return fn; } const later = setTimeout;`],
       ['a timer that is defined on an object', `scheduler.setTimeout = (fn) => fn;`],
+      ['a timer taken out under its own name', `const { setTimeout } = scheduler; setTimeout(() => 1, 10);`],
+      [
+        'a timer taken out under its own name by a key a const holds',
+        `const k = 'setTimeout'; const { [k]: setTimeout } = scheduler; setTimeout(() => 1, 10);`,
+      ],
     ])('accepts %s', async (_name, source) => {
       expect(await codesOf([new NoEvalRule()], source)).toEqual([]);
     });

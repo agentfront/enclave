@@ -370,7 +370,8 @@ export class NoRegexMethodsRule implements ValidationRule {
           PATTERN_COMPILING_STRING_METHODS.has(methodName) &&
           !(callee.object?.type === 'Identifier' && freeReferences.has(callee.object))
         ) {
-          this.analyzeStringPattern(node, callee, methodName, context);
+          // (A pattern that is refused is refused whichever method compiles it)
+          if (this.analyzeStringPattern(node, callee, methodName, context)) return true;
         }
         return false;
       }
@@ -520,14 +521,18 @@ export class NoRegexMethodsRule implements ValidationRule {
     return names.find((name) => PATTERN_COMPILING_STRING_METHODS.has(name) && this.blockedStringMethods.has(name));
   }
 
-  /** The string a pattern-compiling method gets, analyzed for ReDoS like a regex literal. */
-  private analyzeStringPattern(node: any, callee: any, methodName: string, context: ValidationContext): void {
+  /**
+   * The string a pattern-compiling method gets, analyzed for ReDoS like a regex literal.
+   *
+   * @returns Whether the pattern is refused
+   */
+  private analyzeStringPattern(node: any, callee: any, methodName: string, context: ValidationContext): boolean {
     const analysis = this.stringPatternAnalysis;
     const firstArg = node.arguments[0];
-    if (!analysis || !firstArg) return;
+    if (!analysis || !firstArg) return false;
     const pattern: unknown =
       firstArg.type === 'Literal' ? firstArg.value : (firstArg.quasis?.[0]?.value?.cooked ?? undefined);
-    if (typeof pattern !== 'string') return;
+    if (typeof pattern !== 'string') return false;
     if (pattern.length > MAX_SAFE_PATTERN_LENGTH) {
       context.report({
         code: 'REGEX_PATTERN_TOO_LONG',
@@ -535,7 +540,7 @@ export class NoRegexMethodsRule implements ValidationRule {
         location: this.getLocation(callee),
         data: { method: methodName, length: pattern.length, limit: MAX_SAFE_PATTERN_LENGTH },
       });
-      return;
+      return true;
     }
     const result = analyzeForReDoS(pattern, analysis.analysisLevel);
     if (result.score >= analysis.blockThreshold) {
@@ -547,7 +552,9 @@ export class NoRegexMethodsRule implements ValidationRule {
         location: this.getLocation(callee),
         data: { method: methodName, pattern, score: result.score, vulnerabilityType: result.vulnerabilityType },
       });
+      return true;
     }
+    return false;
   }
 
   private hasStringArgument(node: any): boolean {
