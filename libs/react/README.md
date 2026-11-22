@@ -79,7 +79,7 @@ function Root({ token, children }: { token: string; children: ReactNode }) {
 
 `config` takes exactly the options of `EnclaveClient`: `baseUrl`, `headers`, `timeout`, `autoReconnect`, `maxReconnectAttempts`, `reconnectDelay`, `maxEventLength` and `fetch` (see the [client's README](https://github.com/agentfront/enclave/tree/main/libs/client#configuration)). Any other option, such as `encryption`, `auth` or `serverUrl`, throws when the provider renders.
 
-The provider builds the client from `config`. When a render brings a configuration with other values, for example a renewed token in `headers`, the provider builds a new client from it. A render with an equal configuration, such as an inline object literal, keeps the client (`headers` are compared by their entries, every other option by identity). A session that was started before the change finishes on the client it was started with.
+The provider builds the client from `config`. When a render brings a configuration with other values, for example a renewed token in `headers`, the provider builds a new client from it. A render with an equal configuration, such as an inline object literal, keeps the client (`headers` are compared by their entries, every other option by identity). A session that was started before the change finishes on the client it was started with, but it no longer reaches the hook: its callbacks (`onStdout`, `onLog`, `onToolCall`, `onToolResultApplied`, `onError`, `onComplete`) are not called, and its output and result do not appear in `state`, `result`, `error`, `stdout` or `events`, which start from `'idle'` for the new client. The promise `execute` returned still resolves with the session's result; use it to get that result.
 
 ## Hooks
 
@@ -121,20 +121,22 @@ Options:
 
 Return value:
 
-| Value       | Description                                                                                                                             |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `execute`   | `(code) => Promise<SessionResult>`: starts a run and resolves with its result                                                           |
-| `cancel`    | `(reason?) => Promise<void>`: cancels the running session                                                                               |
-| `reset`     | Puts the hook back to `'idle'` and clears its values. Does not cancel a running session, and `cancel()` no longer reaches it afterwards |
-| `state`     | `'idle'`, `'running'`, `'completed'`, `'error'` or `'cancelled'`                                                                        |
-| `isRunning` | `true` while `state` is `'running'`                                                                                                     |
-| `sessionId` | Id of the latest session; `null` before the first run and after `reset()`                                                               |
-| `result`    | The `SessionResult` of the latest run, once it has ended                                                                                |
-| `error`     | `{ code?, message }` when the latest run failed                                                                                         |
-| `stdout`    | The stdout of the run so far                                                                                                            |
-| `events`    | The events of the run so far                                                                                                            |
+| Value       | Description                                                                                                                            |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `execute`   | `(code) => Promise<SessionResult>`: starts a run and resolves with its result                                                          |
+| `cancel`    | `(reason?) => Promise<void>`: cancels the running session                                                                              |
+| `reset`     | Puts the hook back to `'idle'` and clears its values. Does not cancel a running session, and `cancel()` no longer reaches it afterward |
+| `state`     | `'idle'`, `'running'`, `'completed'`, `'error'` or `'cancelled'`                                                                       |
+| `isRunning` | `true` while `state` is `'running'`                                                                                                    |
+| `sessionId` | Id of the latest session; `null` before the first run and after `reset()`                                                              |
+| `result`    | The `SessionResult` of the latest run, once it has ended                                                                               |
+| `error`     | `{ code?, message }` when the latest run failed                                                                                        |
+| `stdout`    | The stdout of the run so far                                                                                                           |
+| `events`    | The events of the run so far                                                                                                           |
 
 A run that fails does not throw. `execute` resolves with a result whose `success` is `false`, `state` becomes `'error'`, and `error` holds the code and the message. A cancelled run ends in the state `'cancelled'`.
+
+`reset()` does not stop a running session from writing to the hook. Until a new run starts, that session's later output and events, and then its result and final state, appear in the hook again, so the hook leaves `'idle'` without a new run.
 
 ```tsx
 import { useEnclaveSession } from '@enclave-vm/react';

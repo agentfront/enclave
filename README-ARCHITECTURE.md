@@ -193,6 +193,12 @@ const response = await fetch('https://your-server.com/sessions', {
   }),
 });
 
+// A refused request (an invalid body, an unidentified caller, a disposed broker) is answered with a JSON error, not a stream
+if (!response.ok) {
+  const error = await response.json(); // { code, message }
+  throw new Error(`${response.status} ${error.code}: ${error.message}`);
+}
+
 // Parse the NDJSON stream (@enclave-vm/client does this for you, with reconnection)
 const reader = response.body.getReader();
 const decoder = new TextDecoder();

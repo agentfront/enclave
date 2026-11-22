@@ -253,7 +253,7 @@ const rules = Presets.secure({
 | `for-in` loops                    | Refused  | Refused  | Allowed  | Allowed    |
 | `while` / `do-while` loops        | Refused  | Refused  | Refused  | Allowed    |
 | `async` functions                 | Refused  | Refused  | Allowed  | Allowed    |
-| `await`                           | Refused  | Allowed  | Allowed  | Allowed    |
+| `await`                           | Refused  | See note | Allowed  | Allowed    |
 | `process`, `require`              | Refused  | Refused  | Refused  | Allowed    |
 | `global`, `globalThis`            | Refused  | Refused  | Allowed  | Allowed    |
 | `constructor`, `prototype`        | Refused  | Refused  | Allowed  | Allowed    |
@@ -261,7 +261,7 @@ const rules = Presets.secure({
 | Regex literals                    | Analyzed | Analyzed | Allowed  | Allowed    |
 | Unreachable code                  | Warning  | Warning  | Warning  | Warning    |
 
-The loop and async rows are the defaults; `allowedLoops` and `allowAsync` change them.
+The loop and async rows are the defaults; `allowedLoops` and `allowAsync` change them. The validator parses the source as a script, so `await` outside a function is a parse error, and `await` is valid only inside an `async` function. SECURE allows `await` but refuses `async` functions by default, so under SECURE a script can use `await` only when `allowAsync.allowAsyncFunctions` is enabled.
 
 ### AgentScript Preset
 
@@ -457,7 +457,7 @@ const rule = new ForbiddenLoopRule({
 
 ### RequiredFunctionCallRule
 
-Ensures specific functions are called.
+Ensures specific functions are called. The rule counts the calls written in the source, not the calls that run: `if (false) callTool('x', {})` counts as one call to `callTool`, and a call inside a loop counts once. It does not prove that a script calls a tool when it runs.
 
 ```typescript
 import { RequiredFunctionCallRule } from '@enclave-vm/ast';
@@ -565,21 +565,30 @@ const validator = new JSAstValidator([new NoConsoleRule()]);
 ### Validation Options
 
 ```typescript
-import { ValidationSeverity } from '@enclave-vm/ast';
+import {
+  JSAstValidator,
+  DisallowedIdentifierRule,
+  NoEvalRule,
+  RequiredFunctionCallRule,
+  ValidationSeverity,
+} from '@enclave-vm/ast';
+
+// A rule takes its options in its constructor
+const validator = new JSAstValidator([
+  new DisallowedIdentifierRule({ disallowed: ['eval'] }),
+  new NoEvalRule(),
+  new RequiredFunctionCallRule({ required: ['callTool'] }),
+]);
 
 const result = await validator.validate(code, {
   // Parse options (passed to acorn)
   parseOptions: { ecmaVersion: 'latest', sourceType: 'script' },
 
-  // Per-rule configuration, by rule name
+  // Per-rule switches, by rule name: enable, disable or set the severity of a registered rule
   rules: {
-    'disallowed-identifier': true, // Enable with default options
-    'no-eval': false, // Disable rule
-    'required-function-call': {
-      enabled: true,
-      severity: ValidationSeverity.ERROR,
-      options: { required: ['callTool'] },
-    },
+    'disallowed-identifier': true, // Enable
+    'no-eval': false, // Disable for this validation
+    'required-function-call': { enabled: true, severity: ValidationSeverity.WARNING },
   },
 
   stopOnFirstError: false,
@@ -595,11 +604,13 @@ const result = await validator.validate(code, {
 | Option             | Type                                    | Default           | Meaning                                                              |
 | ------------------ | --------------------------------------- | ----------------- | -------------------------------------------------------------------- |
 | `parseOptions`     | `acorn.Options`                         | -                 | Passed to the parser                                                 |
-| `rules`            | `Record<string, RuleConfig \| boolean>` | -                 | Enable, disable or configure a registered rule by name               |
+| `rules`            | `Record<string, RuleConfig \| boolean>` | -                 | Enable, disable or set the severity of a registered rule by name     |
 | `stopOnFirstError` | `boolean`                               | `false`           | Stop at the first error                                              |
 | `maxIssues`        | `number`                                | `100`             | Cap on collected issues; `0` collects every issue                    |
 | `transform`        | `TransformConfig`                       | -                 | Rewrite identifiers with a prefix and return `transformedCode`       |
 | `preScan`          | `{ enabled?, preset?, config? }`        | `standard` preset | The pre-scanner run before parsing (see [Pre-Scanner](#pre-scanner)) |
+
+A rule's configuration in `rules` is read for `enabled` and `severity` only. Its `options` field is not passed to the rule: a rule takes its options in its constructor, and a rule name that is not registered has no effect.
 
 `maxIssues` bounds what one validation builds from a source the host did not write. It defaults to `DEFAULT_MAX_ISSUES` (100); pass `0` to collect every issue. At the cap the validation stops as soon as an error is on the list. While only warnings were found the remaining rules still run, because one of them may refuse the source, and further warnings are not collected. A result that was cut short has `incomplete: true`, and `valid` is `true` only when every rule ran and none reported an error. An `UNKNOWN_GLOBAL` issue states the list of allowed globals once per validation, in the first such issue; the following ones name the identifier only.
 
