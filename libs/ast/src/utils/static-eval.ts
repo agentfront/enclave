@@ -951,6 +951,15 @@ class StaticEvaluator {
   private readonly inWith = new WeakSet<AnyNode>();
   private readonly bindingMemo = new Map<ScopeBinding, Value[]>();
   private readonly computing = new Set<ScopeBinding>();
+  /**
+   * Of a variable being computed: what it is known to hold so far, and what an earlier pass found.
+   * A variable read again while it is computed (`let k = 'a'; let j = k; k = j + 'b'`) is that,
+   * or anything else: not only "anything else", which would lose the names it already has.
+   */
+  private readonly partial = new Map<ScopeBinding, Value[]>();
+  private readonly seeded = new Map<ScopeBinding, Value[]>();
+  /** The variables read again while they were computed, in order (see `computeBinding`) */
+  private readonly cuts: ScopeBinding[] = [];
   private readonly dependencies = new Map<ScopeBinding, ScopeBinding[]>();
   /** Answers that do not depend on a function being applied, for each of the two ways to read a variable */
   private readonly closedMemo = { followed: new WeakMap<AnyNode, boolean>(), plain: new WeakMap<AnyNode, boolean>() };
@@ -2212,13 +2221,19 @@ class StaticEvaluator {
   private bindingValues(binding: ScopeBinding): Value[] {
     const cached = this.bindingMemo.get(binding);
     if (cached) return cached;
-    if (this.computing.has(binding)) return [DYNAMIC];
+    if (this.computing.has(binding)) {
+      this.cuts.push(binding);
+      return [...(this.seeded.get(binding) ?? []), ...(this.partial.get(binding) ?? []), DYNAMIC];
+    }
 
     // A chain of constants (`const b = a + ''; const c = b + ''; ...`) is computed from its start,
     // one constant at a time, so that its length is not the depth of this evaluation.
     if (this.isSimpleConst(binding)) {
       const pending: ScopeBinding[] = [binding];
       const expanded = new Set<ScopeBinding>();
+      // (What was computed for it, also where it is not kept because it rests on a variable that
+      // was still being computed)
+      let computed: Value[] | undefined;
       while (pending.length > 0) {
         const current = pending[pending.length - 1];
         if (this.bindingMemo.has(current) || this.computing.has(current)) {
@@ -2236,9 +2251,10 @@ class StaticEvaluator {
           }
         }
         pending.pop();
-        this.computeBinding(current);
+        const values = this.computeBinding(current);
+        if (current === binding) computed = values;
       }
-      return this.bindingMemo.get(binding) ?? [DYNAMIC];
+      return this.bindingMemo.get(binding) ?? computed ?? [DYNAMIC];
     }
 
     return this.computeBinding(binding);
@@ -2269,8 +2285,25 @@ class StaticEvaluator {
     this.epoch = ++this.epochs;
     this.lenient = false;
     try {
-      const values = this.readBinding(binding);
-      this.bindingMemo.set(binding, values);
+      const mark = this.cuts.length;
+      let values = this.readBinding(binding);
+      // Read again while it was computed: what it was found to hold feeds the next pass, until
+      // that finds nothing more (a few times at most, as for `k += 'x'`)
+      for (let pass = 1; pass < MAX_PASSES && this.cuts.slice(mark).includes(binding); pass++) {
+        this.seeded.set(
+          binding,
+          values.filter((value) => value.kind !== 'dynamic'),
+        );
+        this.cuts.length = mark;
+        const next = this.readBinding(binding);
+        const grew = next.length > values.length;
+        values = next;
+        if (!grew) break;
+      }
+      // What was read of another variable still being computed is not all it holds: what is
+      // computed from it is not kept, and is computed again when it is asked for again
+      const incomplete = this.cuts.slice(mark).some((cut) => cut !== binding && this.computing.has(cut));
+      if (!incomplete) this.bindingMemo.set(binding, values);
       return values;
     } finally {
       this.steps = saved.steps;
@@ -2284,6 +2317,10 @@ class StaticEvaluator {
       this.epoch = saved.epoch;
       this.lenient = saved.lenient;
       this.computing.delete(binding);
+      this.partial.delete(binding);
+      this.seeded.delete(binding);
+      // (Once no variable is being computed, what was read again is settled)
+      if (this.computing.size === 0) this.cuts.length = 0;
     }
   }
 
@@ -2309,6 +2346,7 @@ class StaticEvaluator {
     // The constants the variable can be seen holding, and "or anything else"
     this.lenient = true;
     const known: Value[] = [];
+    this.partial.set(binding, known);
     const seen = new Set<string>();
     let unresolved = false;
     const take = (values: Value[]): boolean => {
@@ -2739,13 +2777,16 @@ class StaticEvaluator {
       }
     }
 
-    // By name: `const f = (k) => ...; f('a')`, `function f(k) { ... } f('a')`
+    // By name: `const f = (k) => ...; f('a')`, `function f(k) { ... } f('a')`, and the default of a
+    // parameter, `function g(f = (k) => ...) { f('a'); }`
     const declarator =
       fn.type === 'FunctionDeclaration'
         ? fn.id
         : parent?.type === 'VariableDeclarator' && parent.init === node && parent.id?.type === 'Identifier'
           ? parent.id
-          : undefined;
+          : parent?.type === 'AssignmentPattern' && parent.right === node && parent.left?.type === 'Identifier'
+            ? parent.left
+            : undefined;
     const binding = declarator ? this.declared.get(declarator) : undefined;
     for (const read of binding ? (this.readsOf.get(binding) ?? []) : []) {
       this.tick();

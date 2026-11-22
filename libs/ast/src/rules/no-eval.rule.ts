@@ -51,12 +51,15 @@ function givesAnElement(list: AnyNode): boolean {
 /**
  * The references that name a variable of the script, which shadows the global of its name. A `var` at
  * the top of a script is not one: it is a property of the global object, and `var Function;` leaves
- * the global what it was. (A function, a class, a `let` or `const`, a parameter or a `var` of a
- * function is the script's.)
+ * the global what it was. (A function, a class, a `let` or `const`, a parameter, a `var` of a
+ * function, or a `var` at the top of a module is the script's.)
  */
 function shadowingReferences(context: ValidationContext): Set<unknown> {
   const topLevelVars = new Set<unknown>();
+  // (In a module a top-level `var` is the module's: it does shadow the global)
+  const module = (context.ast as { sourceType?: string } | undefined)?.sourceType === 'module';
   walkAll(context.ast, (node, ancestors) => {
+    if (module) return;
     if (node.type !== 'VariableDeclaration' || node.kind !== 'var') return;
     const inFunction = ancestors.some(
       (ancestor) =>

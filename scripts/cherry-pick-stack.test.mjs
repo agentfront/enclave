@@ -306,7 +306,7 @@ describe('render', () => {
     assert.match(body, /\*\*Picked so far:\*\* #1072, on the branch `cherry-pick\/stack-1084-main`/);
     assert.match(
       body,
-      /git cherry-pick --no-commit sha1073 {2}# #1073\ngit commit -m 'Cherry-pick: fix\(sdk\): change 1073' -m 'Cherry-picked from #1073 \(merged to release\/1\.11\.x\)'\ngit cherry-pick --no-commit sha1074 {2}# #1074\n/,
+      /START=\$\(git rev-parse HEAD\)\ngit cherry-pick sha1073 {2}# #1073\ngit reset --soft "\$START" && git commit -m 'Cherry-pick: fix\(sdk\): change 1073' -m 'Cherry-picked from #1073 \(merged to release\/1\.11\.x\)'\nSTART=\$\(git rev-parse HEAD\)\ngit cherry-pick sha1074 {2}# #1074\n/,
     );
     assert.match(body, /# Push and create PR\ngit push origin cherry-pick\/stack-1084-main\n/);
     assert.match(body, /`stack: 1084`/);

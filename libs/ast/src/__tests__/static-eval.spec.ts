@@ -385,6 +385,22 @@ describe('static evaluation of a property key', () => {
       expect(resolveStaticKey(body.ast, body.key, { variables: true }).names).toContain('alpha');
     });
 
+    it('a variable read again while it is computed keeps what it is known to hold', () => {
+      // (`k` is computed from `j`, which is computed from `k`)
+      const cycle = keyOf('k', { prelude: `let k = 'al'; let j = k; k = j + 'pha';`, variables: true });
+      expect(cycle.names).toContain('alpha');
+
+      const longer = keyOf('a', { prelude: `let a = 'al'; let b = a; let c = b; a = c + 'pha';`, variables: true });
+      expect(longer.names).toContain('alpha');
+    });
+
+    it('finds what a function given as the default of a parameter is called with', () => {
+      const { ast, key } = lastKey(
+        `const o = {}; function f(k = 'x', set = (v) => { k = v; }, read = () => o[k]) { set('alpha'); return read; }`,
+      );
+      expect(resolveStaticKey(ast, key, { variables: true }).names).toContain('alpha');
+    });
+
     it('a parameter shadows a constant of the same name', () => {
       const prelude = `const key = 'alpha'; const f = (key) =>`;
 
@@ -598,6 +614,16 @@ describe('how the rules read a key', () => {
 
     expect(await codesOf(rules(), refused)).toEqual(['CONSTRUCTOR_ACCESS']);
     expect(await codesOf(rules(), other)).toEqual([]);
+  });
+
+  it("NoEvalRule takes a var at the top of a module for the module's own", async () => {
+    const source = 'var Function = (x) => x; Function(1);';
+    const result = await new JSAstValidator([new NoEvalRule()]).validate(source, {
+      preScan: { enabled: false },
+      parseOptions: { sourceType: 'module' },
+    });
+
+    expect(result.issues.map((issue) => issue.code)).toEqual([]);
   });
 
   describe('NoEvalRule and timers', () => {
