@@ -166,7 +166,9 @@ const rules = Presets.strict({
 - All eval-like constructs (`eval`, `Function`, `setTimeout` with strings)
 - All loops (for, while, do-while, for-in, for-of)
 - All async/await
-- Dangerous identifiers: `process`, `require`, `global`, `__dirname`, `constructor`, `__proto__`, etc.
+- Dangerous identifiers: `process`, `require`, `global`, `__dirname`, `constructor`, `__proto__`, etc., as a variable, as a member, as the key of a destructuring pattern, and in every spelling of a key that is made of constants (see [How a property key is read](#how-a-property-key-is-read))
+- The property names that reach a prototype or a property descriptor without naming one (`__lookupGetter__`, `getPrototypeOf`, `defineProperty`, ...), on any object, and the `{ __proto__: x }` key of an object literal
+- The structured stack trace API of the engine (`prepareStackTrace`, `getThis`, `getFunction`) and `caller`, which hand a script live objects of frames that are not its own
 
 #### SECURE Preset
 
@@ -184,7 +186,9 @@ const rules = Presets.secure({
 **Blocks:**
 
 - All eval-like constructs
-- Dangerous identifiers: `process`, `require`, `global`, `__dirname`
+- Dangerous identifiers: `process`, `require`, `global`, `__dirname`, `constructor`, `__proto__`, `prototype`, as a variable, as a member, as the key of a destructuring pattern, and in every spelling of a key that is made of constants (see [How a property key is read](#how-a-property-key-is-read))
+- The property names that reach a prototype or a property descriptor (`__lookupGetter__`, `getPrototypeOf`, `getOwnPropertyDescriptor`, `defineProperty`, ...), on any object, and the `{ __proto__: x }` key of an object literal. The other functions of `Object` (`keys`, `entries`, `assign`, ...) stay usable.
+- The structured stack trace API of the engine (`prepareStackTrace`, `getThis`, `getFunction`) and `caller`. `error.stack` and `error.message` stay usable.
 - Infinite loops (while, do-while)
 - Async function declarations
 
@@ -506,7 +510,7 @@ The AgentScript preset is used internally by `@enclave-vm/core` for secure code 
 
 ### DisallowedIdentifierRule
 
-Prevents usage of specific identifiers (e.g., `eval`, `Function`, `process`).
+Prevents usage of specific identifiers (e.g., `eval`, `Function`, `process`), as a variable and as a property.
 
 ```typescript
 import { DisallowedIdentifierRule } from '@enclave-vm/ast';
@@ -516,6 +520,37 @@ const rule = new DisallowedIdentifierRule({
   messageTemplate: 'Access to "{identifier}" is forbidden',
 });
 ```
+
+A listed name is refused wherever a property is read or written, not only as `obj.name`:
+
+| Written as                                      | Example                                                                       |
+| ----------------------------------------------- | ----------------------------------------------------------------------------- |
+| A member, an optional member, a string key      | `obj.name`, `obj?.name`, `obj['name']`                                        |
+| A key in any spelling that is made of constants | `obj['na' + 'me']`, `obj[['na', 'me'].join('')]`, `obj['NAME'.toLowerCase()]` |
+| A key held in a variable                        | `const k = 'name'; obj[k]`                                                    |
+| The key of a destructuring pattern              | `const { name: x } = obj`, `({ name }) => ...`                                |
+
+| Option                       | Default | What it does                                                                                                                                                                                                                    |
+| ---------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `disallowedProperties`       | `[]`    | Names refused as a property only, in the same spellings and positions. They stay usable as variable names. For reflection entry points such as `__lookupGetter__` or `getOwnPropertyDescriptor`.                                |
+| `blockProtoInObjectLiterals` | `false` | Refuses `{ __proto__: x }`, which sets the prototype of the new object, and a computed `__proto__` key (`{ ['__proto__']: x }`), which sets the prototype of whatever the object is copied onto.                                |
+| `disallowedObjectKeys`       | `[]`    | Names refused as a key of an object literal as well, in every spelling: for a property that must not be installed by copying an object onto another (`Object.assign(target, { name: value })`).                                 |
+| `resolveVariableKeys`        | `true`  | Reads a key through the variables of the script. Turn it off where the key of a computed member is checked at run time (`guardComputedMemberKeys`) and that check should answer for a variable, as the AgentScript preset does. |
+| `checkDestructuringKeys`     | `true`  | Refuses a listed name as the key of a destructuring pattern. Turn it off where another rule decides which keys a pattern may read (`NoComputedDestructuringRule`), as the AgentScript preset does.                              |
+
+#### How a property key is read
+
+A computed key is not matched against a list of spellings: it is evaluated. A key that is made of constants (literals, operators, the built-in functions of the language applied to constants, a function written in place and called there) has one fixed value, and that value is compared with the refused names.
+
+- A key that is made of constants and that the validator cannot compute is refused with `STATIC_KEY_UNRESOLVED`: it names one fixed property, and a name the validator cannot read is not accepted unread. Write the property name directly.
+- A key that the expression would build to more than 4096 characters (`'ab'.repeat(5000)`) is refused with `STATIC_KEY_TOO_LONG` without being built. A string literal, or a template literal without a substitution, is not built: it is read as it is written, however long it is.
+- A value the validator computes is the value the engine computes. Where the two could differ, the key is not computed, and so is refused: where something inside the key assigns and what follows may read it, or is not evaluated (`((k) => (k = 'b', k))('a')`; an assignment that nothing is evaluated after is the value it assigns, so `o[(name = 'alpha')]` is `o.alpha`), where the answer depends on the engine or the realm (`typeof Math`, whether a newer method exists), and, in a script that can change a built-in, for everything that goes through a built-in. A script can change a built-in when it assigns to one (`Math.max = f`), or when it hands one on (`const M = Math`) and also writes to an object that may be it (`M.max = f`); a script that only passes `Number` to `map`, or keeps `Object.keys` under another name, cannot. A limit that is reached (steps, depth, alternatives, size) is a key that is not computed, never a shorter list of names.
+- With `resolveVariableKeys`, a `const` that holds a constant is that constant. Any other variable, and a parameter, is a run-time value; the constants the script can be seen giving it (an initializer, an assignment, a pattern, a loop, a call that can be seen, a value stored into the list or the object it holds) are compared with the refused names all the same. A `var` named like a parameter is that parameter, and a rest parameter is the list of the arguments. This part is a search, not a proof: a name a script assembles at run time over several statements is a run-time value. A search that reaches its limit refuses the key (`STATIC_KEY_UNRESOLVED`); it never leaves it to run time.
+- A key that depends on a run-time value (a function parameter, the result of a call into the host) is **not decided by the validator**. Check it where the script runs: `guardComputedMemberKeys` wraps every such key, and `@enclave-vm/core` applies it.
+
+`NoGlobalAccessRule` (the `constructor` property), `NoRegexMethodsRule` and `ReservedPrefixRule` read a computed key the same way. `NoEvalRule` reads the first argument of `setTimeout` / `setInterval` the same way: a string in any spelling that is made of constants is refused, and so is a timer that is used as a value (stored under another name, passed to a function, called through `.call`, `.apply` or `.bind`), because what it is then called with is out of the rule's sight.
+
+A rule that reads a key reports one it cannot read with the severity of the rule. Where several rules read the same key, it is reported once, at the highest of their severities: turning one rule down to a warning does not turn the refusal of another into a warning.
 
 ### ForbiddenLoopRule
 
@@ -632,7 +667,7 @@ const rule = new NoAsyncRule({
 
 ## Custom Rules
 
-Create your own validation rules by implementing the `ValidationRule` interface:
+Create your own validation rules by implementing the `ValidationRule` interface. A rule reads `context.ast` and does not change it: every rule of a validation is given the same tree, and what is worked out about it (its scopes, the value of a computed key) is shared between them.
 
 ```typescript
 import { ValidationRule, ValidationContext, ValidationSeverity } from '@enclave-vm/ast';
@@ -985,12 +1020,16 @@ Layer 4: Runtime Sandbox (@enclave-vm/core)
 
 These are inherent to **any** static analyzer (not vulnerabilities):
 
-| Limitation                   | Example              | Mitigation                        |
-| ---------------------------- | -------------------- | --------------------------------- |
-| Computed property access     | `obj['constructor']` | `Object.freeze(Object.prototype)` |
-| Runtime string construction  | `'con' + 'structor'` | VM isolation                      |
-| Destructuring property names | `{ constructor: c }` | Freeze prototypes                 |
-| A global under another name  | `const w = window`   | Remove the global from the realm  |
+| Limitation                                    | Example                                                                           | Mitigation                                           |
+| --------------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| A property key that is only known at run time | `(key) => obj[key]`, `obj[await callTool('k', {})]`, a name assembled at run time | `guardComputedMemberKeys`, a realm behind a membrane |
+| A value reached without naming it             | a function a host object returns                                                  | A realm that holds nothing but the allowed globals   |
+| A global under another name                   | `const w = window`                                                                | Remove the global from the realm                     |
+| A property read by a function, not by a key   | a host function that takes a property name                                        | Do not give such a function to a script              |
+
+What is **not** a limitation, because a parser can see it: a refused name spelled in pieces or built from constants (`obj['con' + 'structor']`, `obj[['con', 'structor'].join('')]`), held in a `const`, or written as the key of a destructuring pattern (`const { constructor: c } = obj`). The STRICT and SECURE presets refuse these (see [How a property key is read](#how-a-property-key-is-read)).
+
+STRICT and SECURE are filters on the text of a script: nothing checks a key after them. For a key that reaches the script through a variable or a parameter they look for the name and find the ways it is usually written; they cannot prove that a script never computes one at run time (a name assembled over several statements, a long constant cut at a run-time position). Code that is not trusted belongs in a runtime that checks the key where it is used (`@enclave-vm/core`).
 
 They are why a preset is a filter and not a boundary: what a script does with a value at run time is decided where it runs.
 

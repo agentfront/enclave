@@ -42,7 +42,15 @@ export interface ValidationIssue {
  * Context provided to validation rules
  */
 export interface ValidationContext {
-  /** The parsed AST */
+  /**
+   * The parsed AST.
+   *
+   * A rule reads the tree and does not change it. Every rule of one validation is given the same
+   * tree, and what the validator and the rules work out about it (its scopes, the value of a
+   * computed key) is worked out once and shared between them: a rule that rewrote the tree would
+   * leave the rules after it with answers about the tree as it was. (The transformation that
+   * `ValidationConfig.transform` enables runs after the rules, on a copy of the tree.)
+   */
   ast: acorn.Node;
   /** Original source code */
   source: string;

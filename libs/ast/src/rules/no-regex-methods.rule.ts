@@ -1,8 +1,8 @@
 import * as walk from 'acorn-walk';
 import { ValidationRule, ValidationContext, ValidationSeverity } from '../interfaces';
 import { analyzeScopes } from '../utils/scope-analysis';
-import { staticPropertyName, walkAll, type AnyNode } from '../utils/ast-walk';
-import { tryGetStaticComputedKeys } from './coercion-utils';
+import { walkAll, type AnyNode } from '../utils/ast-walk';
+import { memberKeyNames, propertyKeyNames } from './static-keys';
 import { analyzeForReDoS, MAX_SAFE_PATTERN_LENGTH, REDOS_THRESHOLDS } from '../pre-scanner/checks/regex-check';
 
 /**
@@ -97,6 +97,14 @@ const CONVERSION_KEYS = new Set(['toString', 'valueOf']);
 
 /** Function members that call a function with a receiver and arguments of the caller's choice */
 const INVOKERS = new Set(['call', 'apply', 'bind']);
+
+/** The name of a member where it is written in the source: `o.name`, `o['name']`, `o[0]`. */
+function writtenName(member: AnyNode): string | undefined {
+  const property = member.property;
+  if (!member.computed) return property?.type === 'Identifier' ? String(property.name) : undefined;
+  if (property?.type !== 'Literal' || property.regex || property.bigint !== undefined) return undefined;
+  return typeof property.value === 'string' || typeof property.value === 'number' ? String(property.value) : undefined;
+}
 
 /** The expression inside the wrappers that do not change what it evaluates to: `(a?.b)`, `(a)`. */
 function unwrap(node: AnyNode): AnyNode {
@@ -205,7 +213,7 @@ export class NoRegexMethodsRule implements ValidationRule {
       TaggedTemplateExpression: (node: any) => {
         const tag = unwrap(node.tag);
         if (tag?.type !== 'MemberExpression') return;
-        const methodName = this.blockedMethodName(tag);
+        const methodName = this.blockedMethodName(tag, context);
         if (methodName) {
           context.report({
             code: 'NO_REGEX_METHOD',
@@ -235,13 +243,20 @@ export class NoRegexMethodsRule implements ValidationRule {
    * nothing needs to call a method of these names this way.
    */
   private checkIndirectCall(node: AnyNode, context: ValidationContext, freeReferences: ReadonlySet<unknown>): void {
-    if (!this.memberNames(node).some((name) => INVOKERS.has(name))) return;
-
+    // Only a member of a member can be `receiver.method.call`: the key of any other member is
+    // not this rule's to read (an ordinary `rows[key]` is not asked whether it is `call`)
     const method = unwrap(node.object);
     if (method?.type !== 'MemberExpression') return;
     if (method.object?.type === 'Identifier' && freeReferences.has(method.object)) return;
+    // A member whose name is written out and is not a blocked method (`rows[0][key]`,
+    // `data.items[key]`) is not called through its key, whatever that key is
+    const written = writtenName(method);
+    if (written !== undefined && !this.blockedStringMethods.has(written) && !this.blockedRegexMethods.has(written)) {
+      return;
+    }
+    if (!memberKeyNames(context, node).some((name) => INVOKERS.has(name))) return;
 
-    const methodName = this.blockedMethodName(method);
+    const methodName = this.blockedMethodName(method, context);
     if (!methodName) return;
 
     context.report({
@@ -265,9 +280,10 @@ export class NoRegexMethodsRule implements ValidationRule {
     context: ValidationContext,
     freeReferences: ReadonlySet<unknown>,
   ): void {
-    const methodName = this.patternCompilingName(this.memberNames(node));
-    if (!methodName) return;
+    // (A host object is exempt whatever is read from it: its key is not read for this)
     if (node.object?.type === 'Identifier' && freeReferences.has(node.object)) return;
+    const methodName = this.patternCompilingName(memberKeyNames(context, node));
+    if (!methodName) return;
 
     // The node that decides what happens to the value, past the wrappers that change nothing
     let child = node;
@@ -289,7 +305,7 @@ export class NoRegexMethodsRule implements ValidationRule {
       if (
         parent.type === 'MemberExpression' &&
         parent.object === child &&
-        this.memberNames(parent).some((name) => INVOKERS.has(name))
+        memberKeyNames(context, parent).some((name) => INVOKERS.has(name))
       ) {
         return;
       }
@@ -310,14 +326,7 @@ export class NoRegexMethodsRule implements ValidationRule {
     for (const property of pattern.properties ?? []) {
       if (property.type !== 'Property') continue;
 
-      const literal = staticPropertyName(property.key, property.computed === true);
-      const names =
-        literal !== undefined
-          ? [literal]
-          : property.computed
-            ? tryGetStaticComputedKeys(property.key, { foldConstants: true })
-            : [];
-      const methodName = this.patternCompilingName(names);
+      const methodName = this.patternCompilingName(propertyKeyNames(context, property));
       if (!methodName) continue;
 
       context.report({
@@ -340,16 +349,31 @@ export class NoRegexMethodsRule implements ValidationRule {
       return;
     }
 
-    // Get method name
-    const names = this.calledMethodNames(callee);
-    const methodName =
-      this.patternCompilingName(names) ??
-      names.find((name) => this.blockedStringMethods.has(name)) ??
-      names.find((name) => this.blockedRegexMethods.has(name));
-    if (!methodName) {
-      return;
+    // Every blocked method the call may be: a computed key that may be one of two names is
+    // checked as each of them (the ones that compile their argument first)
+    const names = this.calledMethodNames(callee, context);
+    const first = this.patternCompilingName(names);
+    const blocked = names.filter(
+      (name) => name !== first && (this.blockedStringMethods.has(name) || this.blockedRegexMethods.has(name)),
+    );
+    for (const methodName of new Set(first === undefined ? blocked : [first, ...blocked])) {
+      // (A call that is refused as one method is not reported again as another)
+      if (this.checkNamedMethodCall(node, callee, methodName, context, freeReferences)) return;
     }
+  }
 
+  /**
+   * The checks of a call for one method it may be a call of.
+   *
+   * @returns Whether the call is refused as a call of that method
+   */
+  private checkNamedMethodCall(
+    node: any,
+    callee: AnyNode,
+    methodName: string,
+    context: ValidationContext,
+    freeReferences: ReadonlySet<unknown>,
+  ): boolean {
     // Check string methods (e.g., str.match, str.replace)
     if (this.blockedStringMethods.has(methodName)) {
       // If allowing string arguments, check the first argument
@@ -361,15 +385,16 @@ export class NoRegexMethodsRule implements ValidationRule {
           PATTERN_COMPILING_STRING_METHODS.has(methodName) &&
           !(callee.object?.type === 'Identifier' && freeReferences.has(callee.object))
         ) {
-          this.analyzeStringPattern(node, callee, methodName, context);
+          // (A pattern that is refused is refused whichever method compiles it)
+          if (this.analyzeStringPattern(node, callee, methodName, context)) return true;
         }
-        return;
+        return false;
       }
 
       // Check if argument is a regex literal or RegExp constructor
       if (this.hasRegexArgument(node)) {
         this.report(callee, methodName, context);
-        return;
+        return true;
       }
 
       // match / matchAll / search turn a string argument into a regex, so when string arguments
@@ -387,7 +412,7 @@ export class NoRegexMethodsRule implements ValidationRule {
           location: this.getLocation(callee),
           data: { method: methodName, form: 'string-pattern' },
         });
-        return;
+        return true;
       }
 
       // The same three methods with anything else. What is accepted is what can be seen not to be
@@ -412,7 +437,7 @@ export class NoRegexMethodsRule implements ValidationRule {
           location: this.getLocation(callee),
           data: { method: methodName, form: withoutArgument ? 'no-pattern' : 'dynamic-pattern' },
         });
-        return;
+        return true;
       }
 
       // For dynamic arguments, we need to be cautious
@@ -433,7 +458,7 @@ export class NoRegexMethodsRule implements ValidationRule {
       // Check if caller is a regex literal
       if (this.isRegexLiteral(callee.object)) {
         this.report(callee, methodName, context);
-        return;
+        return true;
       }
 
       // Check if caller might be a regex (we can't always tell statically)
@@ -448,6 +473,7 @@ export class NoRegexMethodsRule implements ValidationRule {
         });
       }
     }
+    return false;
   }
 
   /**
@@ -485,33 +511,22 @@ export class NoRegexMethodsRule implements ValidationRule {
   }
 
   /**
-   * Every name a member access may have, as far as it can be known without running the script:
-   * `obj.method`, `obj['method']`, `` obj[`method`] ``, and a computed key that resolves to known
-   * strings (`obj[['method']]`, `obj[c ? 'a' : 'b']`, `obj['met' + 'hod']`).
+   * The names of the method a call is made on: every name the member may have, as far as it can
+   * be known without running the script (`obj.method`, `obj['method']`, `obj['met' + 'hod']`,
+   * `obj[c ? 'a' : 'b']`), and for `obj[method](...)` the name of the variable: a variable that
+   * carries the name of a method is taken for it.
    */
-  private memberNames(member: AnyNode): string[] {
-    const property = member.property;
-    if (!property) return [];
-    if (!member.computed) return property.type === 'Identifier' ? [property.name] : [];
-
-    const literal = staticPropertyName(property, true);
-    if (literal !== undefined) return [literal];
-
-    return tryGetStaticComputedKeys(property, { foldConstants: true });
-  }
-
-  /**
-   * The names of the method a call is made on. As {@link memberNames}, and for `obj[method](...)`
-   * the name of the variable: a variable that carries the name of a method is taken for it.
-   */
-  private calledMethodNames(member: AnyNode): string[] {
-    if (member.computed && member.property?.type === 'Identifier') return [member.property.name];
-    return this.memberNames(member);
+  private calledMethodNames(member: AnyNode, context: ValidationContext): string[] {
+    const names = memberKeyNames(context, member);
+    if (member.computed && member.property?.type === 'Identifier' && !names.includes(member.property.name)) {
+      names.push(member.property.name);
+    }
+    return names;
   }
 
   /** The blocked method a call is made on, if any. */
-  private blockedMethodName(member: AnyNode): string | undefined {
-    return this.calledMethodNames(member).find(
+  private blockedMethodName(member: AnyNode, context: ValidationContext): string | undefined {
+    return this.calledMethodNames(member, context).find(
       (name) => this.blockedStringMethods.has(name) || this.blockedRegexMethods.has(name),
     );
   }
@@ -521,14 +536,18 @@ export class NoRegexMethodsRule implements ValidationRule {
     return names.find((name) => PATTERN_COMPILING_STRING_METHODS.has(name) && this.blockedStringMethods.has(name));
   }
 
-  /** The string a pattern-compiling method gets, analyzed for ReDoS like a regex literal. */
-  private analyzeStringPattern(node: any, callee: any, methodName: string, context: ValidationContext): void {
+  /**
+   * The string a pattern-compiling method gets, analyzed for ReDoS like a regex literal.
+   *
+   * @returns Whether the pattern is refused
+   */
+  private analyzeStringPattern(node: any, callee: any, methodName: string, context: ValidationContext): boolean {
     const analysis = this.stringPatternAnalysis;
     const firstArg = node.arguments[0];
-    if (!analysis || !firstArg) return;
+    if (!analysis || !firstArg) return false;
     const pattern: unknown =
       firstArg.type === 'Literal' ? firstArg.value : (firstArg.quasis?.[0]?.value?.cooked ?? undefined);
-    if (typeof pattern !== 'string') return;
+    if (typeof pattern !== 'string') return false;
     if (pattern.length > MAX_SAFE_PATTERN_LENGTH) {
       context.report({
         code: 'REGEX_PATTERN_TOO_LONG',
@@ -536,7 +555,7 @@ export class NoRegexMethodsRule implements ValidationRule {
         location: this.getLocation(callee),
         data: { method: methodName, length: pattern.length, limit: MAX_SAFE_PATTERN_LENGTH },
       });
-      return;
+      return true;
     }
     const result = analyzeForReDoS(pattern, analysis.analysisLevel);
     if (result.score >= analysis.blockThreshold) {
@@ -548,7 +567,9 @@ export class NoRegexMethodsRule implements ValidationRule {
         location: this.getLocation(callee),
         data: { method: methodName, pattern, score: result.score, vulnerabilityType: result.vulnerabilityType },
       });
+      return true;
     }
+    return false;
   }
 
   private hasStringArgument(node: any): boolean {

@@ -2,7 +2,7 @@ import { JSAstValidator, DEFAULT_MAX_ISSUES } from '../validator';
 import { DisallowedIdentifierRule } from '../rules/disallowed-identifier.rule';
 import { UnreachableCodeRule } from '../rules/unreachable-code.rule';
 import { UnknownGlobalRule } from '../rules/unknown-global.rule';
-import { ValidationSeverity } from '../interfaces';
+import { ValidationSeverity, type ValidationRule } from '../interfaces';
 
 describe('JSAstValidator', () => {
   describe('constructor', () => {
@@ -237,6 +237,34 @@ describe('JSAstValidator', () => {
         // Once per validation, not once per validator
         const again = await validator.validate('fourth;');
         expect(again.issues[0].message).toContain('Allowed globals: Math, callTool');
+      });
+    });
+
+    describe('a rule that fails', () => {
+      const failing = (validate: ValidationRule['validate']): ValidationRule => ({
+        name: 'failing',
+        description: 'A rule of the host that fails',
+        defaultSeverity: ValidationSeverity.ERROR,
+        enabledByDefault: true,
+        validate,
+      });
+
+      it('throws the stack error of a rule that ran out of stack by itself', async () => {
+        // (Its own helper never ends: the source has nothing to do with it)
+        const endless = (count: number): number => endless(count + 1) + 1;
+        const validator = new JSAstValidator([failing(() => void endless(0))]);
+
+        await expect(validator.validate('42;')).rejects.toThrow(RangeError);
+      });
+
+      it('throws any other error of a rule', async () => {
+        const validator = new JSAstValidator([
+          failing(() => {
+            throw new TypeError('not a rule error');
+          }),
+        ]);
+
+        await expect(validator.validate('42;')).rejects.toThrow(TypeError);
       });
     });
   });

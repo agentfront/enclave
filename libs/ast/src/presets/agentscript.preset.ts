@@ -609,6 +609,15 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
       disallowedProperties: [...AGENTSCRIPT_DISALLOWED_PROPERTIES],
       // `{ __proto__: x }` sets a prototype; it is the one key that is not a plain property
       blockProtoInObjectLiterals: true,
+      // A key held in a variable is the key guard's to answer (`guardComputedMemberKeys`, which
+      // the runtime applies to a validated script): it refuses the names that reach a prototype
+      // or a descriptor, the way the security level says (a refusal, or `undefined`), and lets a
+      // field of plain data through whatever it is called. Rule 15 below still refuses
+      // `constructor` and `prototype` assigned to a variable.
+      resolveVariableKeys: false,
+      // The keys a pattern may read are decided by rule 14 below: the names that are dangerous
+      // on any object are refused, a field of a custom global is the host's to provide.
+      checkDestructuringKeys: false,
     }),
   );
 

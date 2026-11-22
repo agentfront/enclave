@@ -133,15 +133,40 @@ new NoRegexLiteralRule({
 
 ## DisallowedIdentifierRule
 
-Blocks specific identifier names.
+Blocks specific names, as a variable and as a property.
 
 ```ts
 import { DisallowedIdentifierRule } from '@enclave-vm/ast';
 
 const rule = new DisallowedIdentifierRule({
   disallowed: ['eval', 'Function', 'process', 'require'],
+  disallowedProperties: ['__lookupGetter__'],  // refused as a property only
+  blockProtoInObjectLiterals: true,            // { __proto__: x }, { ['__proto__']: x }
+  disallowedObjectKeys: ['hook'],              // refused as a key of an object literal too
+  resolveVariableKeys: true,                   // const k = 'eval'; obj[k]   (default: true)
+  checkDestructuringKeys: true,                // const { eval: e } = obj    (default: true)
 });
 ```
+
+A listed name is refused wherever a property is read or written: `obj.name`, `obj?.name`, `obj['name']`, an assignment target, and the key of a destructuring pattern (`const { name: x } = obj`, `({ name }) => ...`).
+
+A computed key is evaluated, not matched against a list of spellings. A key that is made of constants (literals, operators, the built-in functions of the language applied to constants, a function written in place and called there) has one fixed value, which is compared with the refused names: `obj['na' + 'me']`, `obj[['na', 'me'].join('')]` and `obj['NAME'.toLowerCase()]` are all `obj.name`.
+
+| Key | Answer |
+|-----|--------|
+| Made of constants, and a refused name | `DISALLOWED_IDENTIFIER` |
+| Made of constants, and not computed by the validator | `STATIC_KEY_UNRESOLVED`: a name the validator cannot read is not accepted unread |
+| Made of constants, and built to more than 4096 characters (`'ab'.repeat(5000)`) | `STATIC_KEY_TOO_LONG`, without building it. A literal that long (a string, or a template without a substitution) is not built: it is read as it is written |
+| Held in a variable (`resolveVariableKeys`) | A `const` that holds a constant is that constant. For any other variable, and for a parameter, the constants the script can be seen giving it are compared with the refused names: an assignment, a pattern, a loop, a call that can be seen, a value stored into the list or the object it holds. A `var` named like a parameter is that parameter, and a rest parameter is the list of the arguments from where it stands. This is a search, not a proof: a name a script assembles at run time over several statements is a run-time value. A search that reaches its limit does not make the key a run-time value: the key is refused |
+| Depends on a run-time value (a parameter, the result of a call into the host) | Not decided by the validator. `guardComputedMemberKeys` checks it where the script runs |
+
+`resolveVariableKeys: false` and `checkDestructuringKeys: false` are for a validator that is followed by such a check: the AgentScript preset sets both, because `@enclave-vm/core` applies the key guard after it (which answers for a variable the way the security level says) and because `NoComputedDestructuringRule` decides the keys a pattern may read. The STRICT and SECURE presets, which nothing follows, leave both on.
+
+A value the validator computes is the value the engine computes. Where the two could differ, the key is not computed, and so is refused: where something inside the key assigns and what follows may read it, or is not evaluated (`((k) => (k = 'b', k))('a')`; an assignment that nothing is evaluated after is the value it assigns, so `o[(name = 'alpha')]` is `o.alpha`), where the answer depends on the engine or the realm (`typeof Math`, whether a newer method exists), and, in a script that can change a built-in, for everything that goes through a built-in. A script can change a built-in when it assigns to one (`Math.max = f`), or when it hands one on (`const M = Math`) and also writes to an object that may be it (`M.max = f`); a script that only passes `Number` to `map`, or keeps `Object.keys` under another name, cannot. A limit that is reached (steps, depth, alternatives, size) is a key that is not computed, never a shorter list of names and never a key left to run time. Inside a `with` statement a name may be a property of its object, so a key that names a variable there is not computed (and `NoEvalRule` refuses `with` in every preset).
+
+`NoGlobalAccessRule` (the `constructor` property), `NoRegexMethodsRule` and `ReservedPrefixRule` read a computed key the same way.
+
+A rule that reads a key reports one it cannot read with the severity of the rule. Where several rules read the same key, it is reported once, at the highest of their severities: turning one rule down to a warning does not turn the refusal of another into a warning.
 
 ## ForbiddenLoopRule
 
@@ -204,7 +229,9 @@ const rule = new NoEvalRule();
 **Blocks:**
 - `eval('code')`
 - `new Function('return 1')`
-- `setTimeout('code', 100)` - String form
+- `setTimeout('code', 100)` and `setInterval('code', 100)`: a string as the first argument, in every spelling that is made of constants (a literal, a template literal, pieces that are joined, a `const`, a list that is spread) or that can never be a function whatever it holds (a template, a list, an object, `String(value)`, `value.toString()`), with the timer called by name, as a member (`window.setTimeout(...)`), with `new` or as a template tag. A first argument that is a function, or that may be one, is not refused.
+- `setTimeout` / `setInterval` used as a value: stored under another name, passed to a function, called through `.call`, `.apply` or `.bind`. What such a timer is then called with is out of the rule's sight. `typeof setTimeout` is allowed.
+- `eval` and `Function` used as a value (`const F = Function`, `(0, eval)(code)`), and `Function(code)` called without `new`. `x instanceof Function` is allowed.
 
 ## NoAsyncRule
 

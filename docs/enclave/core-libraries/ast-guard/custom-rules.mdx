@@ -101,6 +101,8 @@ interface ValidationContext {
 }
 ```
 
+A rule reads `context.ast` and does not change it. Every rule of a validation is given the same tree, and what is worked out about it (its scopes, the value of a computed key) is worked out once and shared: a rule that rewrote the tree would leave the rules after it with answers about the tree as it was. To rewrite a script, use the [transformer](/core-libraries/ast-guard/code-transform), which runs after the rules on a copy.
+
 A rule passed to the `JSAstValidator` constructor runs in every validation that does not switch it off by name (`rules: { 'rule-name': false }`). The validator collects at most `maxIssues` issues (100 by default), so a rule that reports once per node cannot make the result grow with the source.
 
 ### Example: Custom Rule
