@@ -355,6 +355,7 @@ describe('static evaluation of a property key', () => {
       const long = 'x'.repeat(5000);
 
       expect(keyOf(`'${long}'`).names).toEqual([long]);
+      expect(keyOf(`\`${long}\``).names).toEqual([long]);
       expect(keyOf(`[].join('${long}')`).names).toEqual(['']);
     });
 

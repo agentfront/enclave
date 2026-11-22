@@ -210,7 +210,7 @@ const joined = row['to' + 'tal'];         // evaluated: 'total'
 const chosen = row[field];                // a run-time value: checked where the script runs
 ```
 
-A key that the expression would build to more than 4096 characters (`row['ab'.repeat(5000)]`) is refused the same way, with `STATIC_KEY_TOO_LONG`, without being built. The limit is on what is built: a string literal is read as it is written, however long it is.
+A key that the expression would build to more than 4096 characters (`row['ab'.repeat(5000)]`) is refused the same way, with `STATIC_KEY_TOO_LONG`, without being built. The limit is on what is built: a string literal, or a template literal without a substitution, is read as it is written, however long it is.
 
 ### Timer used as a value
 
@@ -235,6 +235,8 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 **Message:** `Source is nested too deeply to be validated` (code `SOURCE_TOO_DEEP`)
 
 **Cause:** An expression is nested (or chained, as in `a.b.c.d...`) several thousand levels deep, deeper than a rule can walk. The source is not validated, so it is refused. The pre-scanner refuses most such sources earlier (see [Nesting depth exceeded](#nesting-depth-exceeded)).
+
+This is reported for a source that nests deeply. If a custom rule runs out of stack on a source that does not, the rule ran out by itself, and `validate()` throws its `RangeError`.
 
 **Solution:** Split the expression into statements.
 

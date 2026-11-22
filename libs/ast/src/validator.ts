@@ -24,6 +24,32 @@ import { unresolvedKeyIssue, unresolvedKeysOf } from './rules/static-keys';
 export const DEFAULT_MAX_ISSUES = 100;
 
 /**
+ * Levels of nesting from which a rule that ran out of stack is taken to have run out on the
+ * source. The rules of this library walk a tree several times as deep, and source that people
+ * write stays far below it: a stack error on a shallower tree is the rule's own.
+ */
+const DEEP_SOURCE_LEVELS = 256;
+
+/** Whether a tree nests deeper than `levels`. Walked without recursion: it may be very deep. */
+function nestsDeeperThan(ast: unknown, levels: number): boolean {
+  const seen = new Set<unknown>();
+  const pending: Array<[value: unknown, depth: number]> = [[ast, 1]];
+  for (let entry = pending.pop(); entry; entry = pending.pop()) {
+    const [value, depth] = entry;
+    if (!value || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    if (depth > levels) return true;
+    // A list of nodes is at the level of the node that holds it: its nodes are one level down
+    const children = Array.isArray(value) ? value : Object.values(value);
+    for (const child of children) {
+      if (Array.isArray(child)) pending.push([child, depth]);
+      else if (child && typeof (child as { type?: unknown }).type === 'string') pending.push([child, depth + 1]);
+    }
+  }
+  return false;
+}
+
+/**
  * The cap of one validation. `0` (or `Infinity`) is the documented way to ask for every issue;
  * a value that is not a count (negative, `NaN`, below one) is not taken for "no cap".
  */
@@ -294,9 +320,14 @@ export class JSAstValidator {
           message: err.message,
           location: err.location,
         });
-      } else if (err instanceof RangeError && /call stack/i.test(err.message)) {
+      } else if (
+        err instanceof RangeError &&
+        /call stack/i.test(err.message) &&
+        nestsDeeperThan(ast, DEEP_SOURCE_LEVELS)
+      ) {
         // A rule ran out of stack on a source that nests deeper than it can be walked: the source
-        // is not validated, which is an answer, not an exception for the host to catch
+        // is not validated, which is an answer, not an exception for the host to catch. (On a
+        // source that does not nest deeply the rule ran out by itself, and that is thrown.)
         collect({
           code: 'SOURCE_TOO_DEEP',
           severity: ValidationSeverity.ERROR,
