@@ -1461,4 +1461,60 @@ describe('AgentScript Preset', () => {
       expect(result.valid).toBe(true);
     });
   });
+
+  describe('Set, Map and the errors by security level', () => {
+    const SCRIPT = `
+      const ids = new Set(['a', 'b']);
+      const byId = new Map([['a', 1]]);
+      if (!ids.has('c')) {
+        throw new RangeError(new TypeError('missing').message + new Error(String(byId.size)).message);
+      }
+      return ids.size;
+    `;
+
+    async function validate(code: string, securityLevel: string) {
+      const validator = new JSAstValidator(createAgentScriptPreset({ securityLevel }));
+      return validator.validate(transformAgentScript(code, { wrapInMain: true }));
+    }
+
+    it.each(['SECURE', 'STANDARD', 'PERMISSIVE'])('allows them under %s', async (securityLevel) => {
+      const result = await validate(SCRIPT, securityLevel);
+
+      expect(result.issues).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it('refuses them under STRICT', async () => {
+      const result = await validate(SCRIPT, 'STRICT');
+      const unknown = result.issues.filter((issue) => issue.code === 'UNKNOWN_GLOBAL').map((issue) => issue.data);
+
+      expect(result.valid).toBe(false);
+      expect(unknown).toEqual(
+        expect.arrayContaining(
+          ['__safe_Set', '__safe_Map', '__safe_RangeError', '__safe_TypeError', '__safe_Error'].map((identifier) =>
+            expect.objectContaining({ identifier }),
+          ),
+        ),
+      );
+    });
+
+    it.each(['WeakMap', 'WeakSet', 'WeakRef'])('refuses %s at every level', async (name) => {
+      for (const securityLevel of ['STRICT', 'SECURE', 'STANDARD', 'PERMISSIVE']) {
+        const result = await validate(`return new ${name}({});`, securityLevel);
+
+        expect(result.valid).toBe(false);
+      }
+    });
+
+    it('refuses the stack trace hook as a property and as an object key', async () => {
+      for (const code of [
+        `Error.prepareStackTrace = (error, frames) => frames;`,
+        `return Object.assign({}, { prepareStackTrace: 1 });`,
+      ]) {
+        const result = await validate(code, 'STANDARD');
+
+        expect(result.issues.map((issue) => issue.code)).toContain('DISALLOWED_IDENTIFIER');
+      }
+    });
+  });
 });

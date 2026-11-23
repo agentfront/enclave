@@ -12,7 +12,7 @@ export const AGENTSCRIPT_DESCRIPTION_SHORT = `AgentScript: Safe JS subset for to
 
 API: \`await callTool(name, args)\` - returns tool result
 
-Allowed: for/for-of loops, arrow functions, array methods (map/filter/reduce), Math, JSON, if/else
+Allowed: for/for-of loops, arrow functions, array methods (map/filter/reduce), Math, JSON, Set, Map, Error, if/else
 
 Blocked: while loops, function declarations, eval, require, fetch, setTimeout
 
@@ -39,6 +39,8 @@ await callTool(toolName: string, args: object, options?: { throwOnError?: boolea
 - Array methods: \`map\`, \`filter\`, \`reduce\`, \`find\`, \`some\`, \`every\`, \`sort\`
 - Math: \`Math.max()\`, \`Math.min()\`, \`Math.round()\`, \`Math.floor()\`
 - JSON: \`JSON.parse()\`, \`JSON.stringify()\`
+- Collections: \`new Set()\`, \`new Map()\`; a Set reaches a tool or the result as an array, a Map as \`[key, value]\` pairs
+- Errors: \`throw new Error('message')\` (also \`TypeError\`, \`RangeError\`); a catch reads \`error.message\`
 - Control flow: \`if/else\`, ternary \`? :\`
 - Syntax: destructuring, spread \`...\`, template literals
 
@@ -88,6 +90,8 @@ await callTool(toolName: string, args: object, options?: { throwOnError?: boolea
 | Array methods | \`map\`, \`filter\`, \`reduce\`, \`find\`, \`sort\` |
 | Math methods | \`Math.max()\`, \`Math.round()\` |
 | JSON methods | \`JSON.parse()\`, \`JSON.stringify()\` |
+| Set, Map | \`new Set(ids)\`, \`new Map()\`; a Set reaches a tool or the result as an array, a Map as \`[key, value]\` pairs |
+| Errors | \`throw new Error('message')\`, \`TypeError\`, \`RangeError\`; a catch reads \`error.message\` |
 | Control flow | \`if/else\`, ternary \`? :\` |
 | Destructuring | \`const { id, name } = user\` |
 | Spread | \`[...items, newItem]\` |
