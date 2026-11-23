@@ -23,7 +23,14 @@ import { generate } from 'astring';
 
 import { InterpreterAdapter, type InterpreterAdapterOptions } from './adapters/interpreter-adapter';
 import { DEFAULT_DOUBLE_VM_CONFIG, SECURITY_LEVEL_CONFIGS } from './types';
-import type { CreateEnclaveOptions, ExecutionContext, ExecutionResult, ExecutionStats, ToolHandler } from './types';
+import type {
+  CreateEnclaveOptions,
+  ExecutionContext,
+  ExecutionResult,
+  ExecutionStats,
+  StatementEvent,
+  ToolHandler,
+} from './types';
 import { normalizeEnclaveOptions } from './enclave-options';
 import { copyPortableGlobals } from './portable-globals';
 import { createSafeGlobals } from './interpreter/safe-globals';
@@ -34,6 +41,7 @@ import { refuseDynamicImport } from './dynamic-import';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
 import { boundedStatementHook, type StatementEventOptions } from './statement-events';
+import { assertKeptReferenceOptions, withKeptReferences, type KeptReferenceOptions } from './kept-references';
 import {
   assertReviewContext,
   normalizeReviewOptions,
@@ -55,7 +63,7 @@ export interface PortableEnclaveOptions extends CreateEnclaveOptions {
   interpreter?: InterpreterAdapterOptions;
 }
 
-export interface PortableRunOptions extends StatementEventOptions {
+export interface PortableRunOptions extends StatementEventOptions, KeptReferenceOptions {
   maxToolResultBytes?: number;
   onToolBridgeFailure?: () => void;
   /** Passed to the review hooks of this run */
@@ -322,6 +330,20 @@ export class PortableEnclave {
     boundedInteger('maxToolResultBytes', runOptions.maxToolResultBytes, MAX_PORTABLE_ALLOCATION_BYTES);
     assertReviewContext(runOptions.reviewContext);
     const onStatement = boundedStatementHook(runOptions, this.adapter.reportsStatements);
+    assertKeptReferenceOptions(runOptions, this.references !== undefined);
+    const sidecar = this.references ? new ReferenceSidecar(this.references) : undefined;
+    return withKeptReferences(sidecar, runOptions, () =>
+      this.execute<T>(code, toolHandler, runOptions, onStatement, sidecar),
+    );
+  }
+
+  private async execute<T>(
+    code: string,
+    toolHandler: ToolHandler | undefined,
+    runOptions: PortableRunOptions,
+    onStatement: ((event: StatementEvent) => void) | undefined,
+    sidecar: ReferenceSidecar | undefined,
+  ): Promise<ExecutionResult<T>> {
     const startTime = Date.now();
     const stats: ExecutionStats = { duration: 0, startTime, endTime: startTime, toolCallCount: 0, iterationCount: 0 };
     const failure = (name: string, message: string, code: string, issues?: ValidationIssue[]): ExecutionResult<T> => ({
@@ -384,7 +406,6 @@ export class PortableEnclave {
       return review.finish<T>(REVIEW_HALTED, stats);
     }
 
-    const sidecar = this.references ? new ReferenceSidecar(this.references) : undefined;
     try {
       if (sidecar && this.references) {
         const ast = acorn.parse(transformed, { ecmaVersion: 'latest', sourceType: 'script' }) as acorn.Node;
@@ -451,8 +472,6 @@ export class PortableEnclave {
         'EXECUTION_ERROR',
       );
       return review ? review.finish(failed, stats) : failed;
-    } finally {
-      sidecar?.dispose();
     }
   }
 
@@ -488,6 +507,7 @@ export class AgentScriptRunner extends PortableEnclave {
     'review',
     'replay',
     'statement-events',
+    'kept-references',
   ]);
 
   constructor(options: AgentScriptRunnerOptions) {

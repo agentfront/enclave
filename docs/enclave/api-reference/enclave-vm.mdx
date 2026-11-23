@@ -37,7 +37,7 @@ try {
 
 `AgentScriptRunnerOptions` extends the supported `PortableEnclaveOptions` and adds `hostFunctions`, required `maxHostFunctionCalls`, optional `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `rapidEnumeration` thresholds and per-operation overrides. Host callbacks receive copied plain-data arguments; their results are copied and bounded before the script sees them. The runner refuses unsupported VM-only options and pre-scan overrides at construction.
 
-`PortableEnclaveOptions` extends `CreateEnclaveOptions` with an `interpreter` object for `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `maxAllocationBytes`. `PortableEnclave.run(code, toolHandler?, runOptions?)` accepts `PortableRunOptions.maxToolResultBytes`, `onToolBridgeFailure`, `reviewContext`, and `onStatement` / `maxStatementEvents` (see [Statement events](#statement-events)); the `review` option works there as with `Enclave`, and the worker entry exports `analyzeScript`, `providerReviewer` and `functionReviewer`. The interpreter charges copied host-function results and tool responses against its cumulative allocation budget. `maxSteps` bounds interpreted CPU work, including built-in operations. `timeout` is checked between steps and at I/O boundaries; on deployed Cloudflare Workers it is not a hard wall-time cutoff during CPU-only work, and synchronous host callbacks cannot be preempted.
+`PortableEnclaveOptions` extends `CreateEnclaveOptions` with an `interpreter` object for `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `maxAllocationBytes`. `PortableEnclave.run(code, toolHandler?, runOptions?)` accepts `PortableRunOptions.maxToolResultBytes`, `onToolBridgeFailure`, `reviewContext`, `preloadReferences` / `exportReferences`, and `onStatement` / `maxStatementEvents` (see [Statement events](#statement-events)); the `review` option works there as with `Enclave`, and the worker entry exports `analyzeScript`, `providerReviewer` and `functionReviewer`. The interpreter charges copied host-function results and tool responses against its cumulative allocation budget. `maxSteps` bounds interpreted CPU work, including built-in operations. `timeout` is checked between steps and at I/O boundaries; on deployed Cloudflare Workers it is not a hard wall-time cutoff during CPU-only work, and synchronous host callbacks cannot be preempted.
 
 ## Enclave Class
 
@@ -112,6 +112,8 @@ interface EnclaveRunOptions {
   reviewContext?: Record<string, unknown>;
   onStatement?: (event: StatementEvent) => void; // interpreter only
   maxStatementEvents?: number; // default 10,000
+  preloadReferences?: readonly ReferenceEntry[]; // with the sidecar
+  exportReferences?: (value: unknown) => Iterable<string>; // with the sidecar
 }
 ```
 
@@ -121,6 +123,7 @@ interface EnclaveRunOptions {
 - `options.onToolBridgeFailure` - Optional observer called when a successful tool result is refused by the bridge before it reaches the script. An error thrown by the observer does not change the bridge result.
 - `options.maxToolResultBytes` - Optional limit on the JSON bytes of a sanitized tool result before sidecar storage. A larger result fails its tool call.
 - `options.reviewContext` - Optional object passed to every review hook of this run as `input.context` (with the `review` option)
+- `options.preloadReferences`, `options.exportReferences` - Carry sidecar entries from one run to a later one: `result.references` lists the entries behind the tokens `exportReferences` returns (see [Keeping References Between Runs](/core-libraries/enclave-vm/reference-sidecar#keeping-references-between-runs))
 - `options.onStatement`, `options.maxStatementEvents` - Report each statement the script runs (see [Statement events](#statement-events)); only with an adapter that reports statements, such as `InterpreterAdapter`, otherwise a `TypeError`
 
 **Returns:** `ExecutionResult`. `run()` does not reject for a failing script: the failure is in the result.
@@ -133,6 +136,7 @@ interface ExecutionResult<T = unknown> {
   stats: ExecutionStats;
   scoringResult?: ScoringGateResult;
   review?: { decisions: ReviewRecord[] }; // once review has started: every answer of the hooks (absent when validation or the scoring gate refused the script first)
+  references?: ReferenceEntry[]; // with exportReferences: { id, data, source, mimeType?, origin? }
 }
 ```
 

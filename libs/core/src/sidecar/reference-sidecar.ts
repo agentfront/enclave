@@ -51,6 +51,15 @@ export interface ReferenceMetadata {
   origin?: string;
 }
 
+/** A stored value as a host keeps it between runs: `exportEntries` gives it, `preload` takes it back */
+export interface ReferenceEntry {
+  id: string;
+  data: string;
+  source: ReferenceSource;
+  mimeType?: string;
+  origin?: string;
+}
+
 /**
  * Error thrown when sidecar limits are exceeded
  */
@@ -123,13 +132,68 @@ export class ReferenceSidecar {
    * @throws SidecarLimitError if limits are exceeded
    */
   store(data: string | Buffer, source: ReferenceSource, options?: { mimeType?: string; origin?: string }): string {
+    // Convert string to Buffer
+    const buffer = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;
+    this.checkLimits(buffer.length);
+
+    // Generate cryptographically secure reference ID
+    const randomUUID = globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
+    if (!randomUUID) throw new Error('Secure random UUID generation is unavailable');
+    const refId = `${REF_ID_PREFIX}${randomUUID()}${REF_ID_SUFFIX}`;
+    this.add(refId, buffer, { source, mimeType: options?.mimeType, origin: options?.origin });
+    return refId;
+  }
+
+  /**
+   * Start with entries an earlier run exported: they resolve like fresh ones and count toward the limits
+   *
+   * @throws TypeError for an entry that is not `{ id, data, source, mimeType?, origin? }` with a new reference id
+   * @throws SidecarLimitError if the entries go over a limit
+   */
+  preload(entries: readonly ReferenceEntry[]): void {
+    if (!Array.isArray(entries)) throw new TypeError('preloadReferences must be an array of reference entries');
+    for (const entry of entries) {
+      const { id, data, source, mimeType, origin } = (entry ?? {}) as Partial<ReferenceEntry>;
+      if (
+        !isReferenceId(id) ||
+        this.storage.has(id) ||
+        typeof data !== 'string' ||
+        (source !== 'extraction' && source !== 'tool-result') ||
+        (mimeType !== undefined && typeof mimeType !== 'string') ||
+        (origin !== undefined && typeof origin !== 'string')
+      ) {
+        throw new TypeError(
+          'A preloaded reference is { id, data, source, mimeType?, origin? } with a new reference id',
+        );
+      }
+      const buffer = Buffer.from(data, 'utf-8');
+      this.checkLimits(buffer.length);
+      this.add(id, buffer, { source, mimeType, origin });
+    }
+  }
+
+  /** The entries behind the given ids, for the host to keep; an id this sidecar does not hold is left out */
+  exportEntries(ids: Iterable<string>): ReferenceEntry[] {
+    const entries: ReferenceEntry[] = [];
+    for (const id of new Set(typeof ids === 'string' ? [ids] : ids)) {
+      const data = this.storage.get(id);
+      const metadata = this.metadata.get(id);
+      if (!data || !metadata) continue;
+      entries.push({
+        id,
+        data: data.toString('utf-8'),
+        source: metadata.source,
+        ...(metadata.mimeType !== undefined ? { mimeType: metadata.mimeType } : {}),
+        ...(metadata.origin !== undefined ? { origin: metadata.origin } : {}),
+      });
+    }
+    return entries;
+  }
+
+  private checkLimits(size: number): void {
     if (this.disposed) {
       throw new Error('Cannot store: sidecar has been disposed');
     }
-
-    // Convert string to Buffer
-    const buffer = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;
-    const size = buffer.length;
 
     // Check reference count limit
     if (this.storage.size >= this.config.maxReferenceCount) {
@@ -160,26 +224,17 @@ export class ReferenceSidecar {
         this.totalSize + size,
       );
     }
+  }
 
-    // Generate cryptographically secure reference ID
-    const randomUUID = globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
-    if (!randomUUID) throw new Error('Secure random UUID generation is unavailable');
-    const refId = `${REF_ID_PREFIX}${randomUUID()}${REF_ID_SUFFIX}`;
-
+  private add(
+    refId: string,
+    buffer: Buffer,
+    metadata: Pick<ReferenceMetadata, 'source' | 'mimeType' | 'origin'>,
+  ): void {
     // Store with defensive copy (prevent external mutations)
     this.storage.set(refId, Buffer.from(buffer));
-    this.totalSize += size;
-
-    // Store metadata
-    this.metadata.set(refId, {
-      createdAt: Date.now(),
-      size,
-      source,
-      mimeType: options?.mimeType,
-      origin: options?.origin,
-    });
-
-    return refId;
+    this.totalSize += buffer.length;
+    this.metadata.set(refId, { createdAt: Date.now(), size: buffer.length, ...metadata });
   }
 
   /**

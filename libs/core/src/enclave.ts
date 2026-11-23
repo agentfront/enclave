@@ -83,6 +83,7 @@ import { ARRAY_ELEMENT_BYTES } from './realm-memory';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
 import { boundedStatementHook, type StatementEventOptions } from './statement-events';
+import { assertKeptReferenceOptions, withKeptReferences, type KeptReferenceOptions } from './kept-references';
 import {
   assertReviewContext,
   normalizeReviewOptions,
@@ -93,7 +94,7 @@ import {
 import type { ReviewContext } from './review/types';
 
 /** The options of one `run()` */
-export interface EnclaveRunOptions extends StatementEventOptions {
+export interface EnclaveRunOptions extends StatementEventOptions, KeptReferenceOptions {
   /** Called when a successful tool result is refused before it reaches the script */
   onToolBridgeFailure?: () => void;
   /** A limit on the JSON bytes of one sanitized tool result */
@@ -578,7 +579,11 @@ export class Enclave {
     if (onStatement && !this.transformCode) {
       throw new TypeError("onStatement needs the transform: its markers carry each statement's place in the script");
     }
-    const result = await this.execute<T>(code, toolHandler, { ...options, onStatement });
+    assertKeptReferenceOptions(options, this.referenceConfig !== undefined);
+    const sidecar = this.referenceConfig ? new ReferenceSidecar(this.referenceConfig) : undefined;
+    const result = await withKeptReferences(sidecar, options, () =>
+      this.execute<T>(code, toolHandler, { ...options, onStatement }, sidecar),
+    );
     return this.applyStackTracePolicy(result);
   }
 
@@ -605,8 +610,9 @@ export class Enclave {
    */
   private async execute<T>(
     code: string,
-    toolHandler?: ToolHandler,
-    options: EnclaveRunOptions = {},
+    toolHandler: ToolHandler | undefined,
+    options: EnclaveRunOptions,
+    sidecar: ReferenceSidecar | undefined,
   ): Promise<ExecutionResult<T>> {
     const startTime = Date.now();
 
@@ -618,9 +624,6 @@ export class Enclave {
       startTime,
       endTime: 0,
     };
-
-    // Create sidecar for this execution if enabled
-    const sidecar = this.referenceConfig ? new ReferenceSidecar(this.referenceConfig) : undefined;
 
     // Set once the execution context exists: ends what the script can still do through the host
     let endExecution: (() => void) | undefined;
@@ -1030,10 +1033,6 @@ export class Enclave {
     } finally {
       // Whatever the script left behind can no longer reach the host (see `returned` above)
       endExecution?.();
-      // Always dispose the sidecar to prevent memory leaks
-      if (sidecar) {
-        sidecar.dispose();
-      }
     }
   }
 
