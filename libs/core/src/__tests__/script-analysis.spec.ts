@@ -211,6 +211,9 @@ describe('analyzeScript', () => {
     expect(loopOver('limited.forEach((...args) => args);')).toBeNull();
     expect(loopOver('const tag = (user) => user; limited.map(tag);')).toBeNull();
     expect(loopOver('limited.reduce((total, user) => total + user.id, 0);')).toBe(5);
+    expect(loopOver('limited.map(function (user) { return user; });')).toBeNull();
+    expect(loopOver('limited.map(({ id }) => id);')).toBeNull();
+    expect(loopOver('limited.map((user = limited) => user);')).toBeNull();
   });
 
   it('marks a value read from a name the script does not declare as unknown, but not a built-in or a literal', () => {

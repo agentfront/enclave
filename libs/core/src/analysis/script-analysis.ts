@@ -160,23 +160,11 @@ function forEachChild(node: AnyNode, visit: (child: AnyNode, key: string) => voi
   }
 }
 
-/** Whether code mentions `arguments`, outside the non-arrow functions nested in it */
-function mentionsArguments(node: AnyNode): boolean {
-  if (node.type === 'Identifier') return node.name === 'arguments';
-  if (node.type === 'FunctionExpression' || node.type === 'FunctionDeclaration') return false;
-  let found = false;
-  forEachChild(node, (child) => {
-    found = found || mentionsArguments(child);
-  });
-  return found;
-}
-
-/** Whether a callback can get the array it is called for: as the parameter at `arrayParam`, a rest parameter or `arguments` */
+/** Only an inline arrow with plain parameters short of `arrayParam` provably never gets the array it is called for */
 function mayReceiveArray(callback: AnyNode, arrayParam: number): boolean {
-  if (!FUNCTION_TYPES.has(callback?.type)) return true;
+  if (callback?.type !== 'ArrowFunctionExpression') return true;
   if (callback.params.length > arrayParam) return true;
-  if (callback.params.some((param: AnyNode) => param.type === 'RestElement')) return true;
-  return callback.type !== 'ArrowFunctionExpression' && mentionsArguments(callback.body);
+  return callback.params.some((param: AnyNode) => param.type !== 'Identifier');
 }
 
 function walkWithPath(root: AnyNode, visit: (node: AnyNode, path: readonly PathStep[]) => void): void {
