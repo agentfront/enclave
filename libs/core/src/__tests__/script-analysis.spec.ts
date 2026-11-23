@@ -114,6 +114,16 @@ describe('analyzeScript', () => {
     expect(analysis.bounds).toEqual([expect.objectContaining({ over: [0], limit: 10, calls: [1], maxCalls: 10 })]);
   });
 
+  it('keeps the bound of an array that parallel() goes over', () => {
+    const analysis = analyzeScript(`
+      const ids = await callTool('ids.list', {});
+      const first = ids.slice(0, 3);
+      await parallel(first, async (id) => callTool('ids.read', { id }));
+    `);
+
+    expect(analysis.bounds).toEqual([expect.objectContaining({ limit: 3, maxCalls: 3 })]);
+  });
+
   it('follows results through array callbacks, pushes and assignments', () => {
     const analysis = analyzeScript(`
       const orders = await callTool('orders.list', {});
@@ -162,7 +172,7 @@ describe('analyzeScript', () => {
     ]);
   });
 
-  it('drops a bound when the array is changed, also through an alias, and keeps it otherwise', () => {
+  it('keeps a bound only while the cut array is only read', () => {
     const loopOver = (setup: string) =>
       analyzeScript(`
         const users = await callTool('users.list', {});
@@ -172,11 +182,20 @@ describe('analyzeScript', () => {
       `).bounds[0].limit;
 
     expect(loopOver('')).toBe(5);
-    expect(loopOver('const alias = limited;')).toBe(5);
+    expect(
+      loopOver(
+        'const count = limited.length; const names = limited.map((user) => user.name); const first = limited[0];',
+      ),
+    ).toBe(5);
     expect(loopOver('limited.length++;')).toBeNull();
     expect(loopOver('limited.length = 100;')).toBeNull();
+    expect(loopOver('limited.sort();')).toBeNull();
+    expect(loopOver('const alias = limited;')).toBeNull();
     expect(loopOver('const alias = limited; alias.push(...users);')).toBeNull();
     expect(loopOver('let alias = limited; alias[50] = users[0];')).toBeNull();
+    expect(loopOver('const alias = limited || []; alias.push(2);')).toBeNull();
+    expect(loopOver('const grow = (list) => list.push(1); grow(limited);')).toBeNull();
+    expect(loopOver('const holder = { list: limited };')).toBeNull();
   });
 
   it('marks a value read from a name the script does not declare as unknown, but not a built-in or a literal', () => {

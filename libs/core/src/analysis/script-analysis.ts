@@ -104,6 +104,7 @@ const ITERATION_METHODS = new Set([
 ]);
 const ITEM_KEEPING_METHODS = new Set(['map', 'filter', 'reverse', 'toReversed', 'sort', 'toSorted']);
 const MUTATING_METHODS = new Set(['push', 'unshift', 'splice', 'fill', 'set', 'add']);
+const ARRAY_CHANGING_METHODS = new Set([...MUTATING_METHODS, 'pop', 'shift', 'sort', 'reverse', 'copyWithin']);
 const PARALLEL_NAMES = new Set(['parallel', '__safe_parallel']);
 const BUILT_IN_NAMES = new Set([...AGENTSCRIPT_PERMISSIVE_GLOBALS, ...PARALLEL_NAMES]);
 const RUNTIME_PREFIXES = ['__safe_', '__ag_'];
@@ -297,7 +298,6 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
     declarationOf.get(identifier) ?? referenceOf.get(identifier)?.binding;
 
   const sourcesOf = new Map<ScopeBinding, AnyNode[]>();
-  const mutatedBindings = new Set<ScopeBinding>();
   const unknownBindings = new Set<ScopeBinding>(
     scopes.bindings.filter((binding) => binding.redeclarations?.length || binding.startsAs || binding.initializes),
   );
@@ -308,7 +308,6 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
       case 'ChainExpression': {
         const binding = bindingOf(pattern.type === 'Identifier' ? pattern : rootIdentifier(pattern));
         if (!binding) return;
-        if (pattern.type !== 'Identifier') mutatedBindings.add(binding);
         if (source === null) unknownBindings.add(binding);
         else appendTo(sourcesOf, binding, source);
         return;
@@ -360,7 +359,9 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
     return entry;
   };
 
+  const parentOf = new Map<AnyNode, PathStep>();
   walkWithPath(ast, (node, path) => {
+    parentOf.set(node, { node: path[path.length - 2]?.node, key: path[path.length - 1].key });
     if (REPEATED_LOOP_PARTS[node.type]) {
       const iterable = node.type === 'ForOfStatement' || node.type === 'ForInStatement' ? node.right : null;
       statementLoops.set(node, addLoop(node, iterable, path));
@@ -371,8 +372,6 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
       bindPattern(node.id, node.init);
     } else if (node.type === 'AssignmentExpression') {
       bindPattern(node.left, node.right);
-    } else if (node.type === 'UpdateExpression') {
-      bindPattern(node.argument, node);
     } else if (node.type === 'CatchClause' && node.param) {
       bindPattern(node.param, null);
     } else if (FUNCTION_TYPES.has(node.type)) {
@@ -382,8 +381,6 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
     } else if (node.type === 'CallExpression') {
       const method = staticMethodName(node.callee);
       if (method !== undefined && MUTATING_METHODS.has(method)) {
-        const receiver = bindingOf(rootIdentifier(node.callee.object));
-        if (receiver) mutatedBindings.add(receiver);
         for (const argument of node.arguments) bindPattern(node.callee.object, argument);
       }
       const [first, second] = node.arguments;
@@ -518,17 +515,43 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
     }
   });
 
-  const aliasesOf = new Map<ScopeBinding, ScopeBinding[]>();
-  for (const [binding, sources] of sourcesOf) {
-    for (const source of sources) {
-      const aliased = source.type === 'Identifier' ? referenceOf.get(source)?.binding : undefined;
-      if (aliased) appendTo(aliasesOf, aliased, binding);
-    }
+  const referencesOf = new Map<ScopeBinding, AnyNode[]>();
+  for (const reference of scopes.references) {
+    if (reference.binding) appendTo(referencesOf, reference.binding, reference.node);
   }
-  const isModified = (binding: ScopeBinding, seen = new Set<ScopeBinding>()): boolean => {
-    if (mutatedBindings.has(binding)) return true;
-    seen.add(binding);
-    return (aliasesOf.get(binding) ?? []).some((alias) => !seen.has(alias) && isModified(alias, seen));
+  const isWriteTarget = (member: AnyNode): boolean => {
+    const { node: holder, key } = parentOf.get(member) ?? { node: undefined, key: '' };
+    switch (holder?.type) {
+      case 'AssignmentExpression':
+      case 'AssignmentPattern':
+      case 'ForOfStatement':
+      case 'ForInStatement':
+        return key === 'left';
+      case 'UpdateExpression':
+      case 'ArrayPattern':
+      case 'RestElement':
+        return true;
+      case 'UnaryExpression':
+        return holder.operator === 'delete';
+      case 'Property':
+        return parentOf.get(holder)?.node?.type === 'ObjectPattern';
+      default:
+        return false;
+    }
+  };
+  // A read that leaves the array as it is and keeps it under its name: anything else drops its bound
+  const isPlainRead = (identifier: AnyNode): boolean => {
+    const { node: holder, key } = parentOf.get(identifier) ?? { node: undefined, key: '' };
+    if (holder?.type === 'ForOfStatement' || holder?.type === 'ForInStatement') return key === 'right';
+    if (holder?.type === 'CallExpression' && key === 'arguments') {
+      const parallelCall = holder.callee.type === 'Identifier' && PARALLEL_NAMES.has(holder.callee.name);
+      return parallelCall && holder.arguments[0] === identifier;
+    }
+    if (holder?.type !== 'MemberExpression' || key !== 'object' || isWriteTarget(holder)) return false;
+    const call = parentOf.get(holder);
+    if (call?.node?.type !== 'CallExpression' || call.key !== 'callee') return true;
+    const method = staticMethodName(holder);
+    return method !== undefined && !ARRAY_CHANGING_METHODS.has(method);
   };
   const limitOf = (node: AnyNode, depth = 0): number | null => {
     if (!isNode(node) || depth > MAX_LIMIT_DEPTH) return null;
@@ -540,8 +563,8 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
     if (node.type === 'ChainExpression') return limitOf(node.expression, depth + 1);
     if (node.type === 'Identifier') {
       const binding = referenceOf.get(node)?.binding;
-      const followable = binding && !unknownBindings.has(binding) && !isModified(binding);
-      const sources = followable ? sourcesOf.get(binding) : undefined;
+      const onlyRead = binding && !unknownBindings.has(binding) && (referencesOf.get(binding) ?? []).every(isPlainRead);
+      const sources = onlyRead ? sourcesOf.get(binding) : undefined;
       return sources?.length === 1 ? limitOf(sources[0], depth + 1) : null;
     }
     const method = node.type === 'CallExpression' ? staticMethodName(node.callee) : undefined;
