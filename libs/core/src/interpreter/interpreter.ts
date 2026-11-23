@@ -673,6 +673,16 @@ class Scope {
     return new Scope(this, depth);
   }
 
+  /** A scope beside this one with a copy of its variables: the next pass of a `for (let …)` loop. */
+  copy(): Scope {
+    const scope = new Scope(this.parent);
+    scope.accumulator = this.accumulator;
+    for (const [name, slot] of this.vars) {
+      scope.vars.set(name, { ...slot });
+    }
+    return scope;
+  }
+
   declare(name: string, value: unknown, mutable: boolean): void {
     this.vars.set(name, { value, mutable, owed: 0 });
   }
@@ -1193,15 +1203,19 @@ export class Interpreter {
   }
 
   private async execFor(node: ESTree.ForStatement, scope: Scope): Promise<void> {
-    const inner = scope.child();
+    let pass = scope.child();
     if (node.init) {
-      if (node.init.type === 'VariableDeclaration') await this.execStatement(node.init, inner);
-      else await this.evalExpr(node.init, inner);
+      if (node.init.type === 'VariableDeclaration') await this.execStatement(node.init, pass);
+      else await this.evalExpr(node.init, pass);
     }
-    while (node.test ? await this.evalTest(node.test, inner) : true) {
+    // Each pass of a `for (let …)` loop has its own variables, copied before the update
+    const bindsPerPass = node.init?.type === 'VariableDeclaration' && node.init.kind === 'let';
+    if (bindsPerPass) pass = pass.copy();
+    while (node.test ? await this.evalTest(node.test, pass) : true) {
       this.tick();
-      if (!(await this.runLoopBody(node.body, inner.child()))) break;
-      if (node.update) await this.evalExpr(node.update, inner);
+      if (!(await this.runLoopBody(node.body, pass.child()))) break;
+      if (bindsPerPass) pass = pass.copy();
+      if (node.update) await this.evalExpr(node.update, pass);
     }
   }
 
