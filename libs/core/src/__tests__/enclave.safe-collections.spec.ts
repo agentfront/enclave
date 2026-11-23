@@ -5,6 +5,7 @@
 import { InterpreterAdapter } from '../adapters/interpreter-adapter';
 import { Enclave } from '../enclave';
 import { PortableEnclave } from '../portable-enclave';
+import type { PostReviewInput, ReviewOptions } from '../review/types';
 import type { CreateEnclaveOptions, ExecutionResult, ToolHandler } from '../types';
 
 interface ScriptRunner {
@@ -158,6 +159,48 @@ describe.each(PATHS.slice(0, 2))('memory usage of Set and Map entries on the %s'
       expect(result.stats.memoryUsage).toBe(16);
     } finally {
       runner.dispose();
+      warn.mockRestore();
+    }
+  });
+});
+
+describe.each(PATHS)('the review hooks on the %s', (_path, createRunner) => {
+  it('see a Set and a Map as they leave the script, and an error without a stack', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const seen: PostReviewInput[] = [];
+    const callArgs: unknown[] = [];
+    const review: ReviewOptions = {
+      pre: (input) => {
+        if (input.phase === 'call') callArgs.push(input.args);
+        return { decision: 'allow' };
+      },
+      post: (input) => {
+        seen.push(input);
+        return { action: 'pass' };
+      },
+    };
+    const toolHandler: ToolHandler = async () => 'ok';
+    const returning = createRunner({ securityLevel: 'SECURE', review, toolHandler });
+    const throwing = createRunner({ securityLevel: 'SECURE', review });
+    try {
+      const returned = await returning.run(
+        `await callTool('record', { ids: new Set([1]), byId: new Map([[1, 'a']]) });
+         return { ids: new Set([1, 2]), byId: new Map([[2, 'b']]) };`,
+      );
+      const failed = await throwing.run(`throw new RangeError('out of range');`);
+
+      expect(returned.value).toEqual({ ids: [1, 2], byId: [[2, 'b']] });
+      expect(callArgs).toEqual([{ ids: [1], byId: [[1, 'a']] }]);
+      expect(seen.find((input) => input.phase === 'return')).toMatchObject({
+        value: { ids: [1, 2], byId: [[2, 'b']] },
+      });
+      expect(failed.error).toMatchObject({ name: 'RangeError', message: 'out of range' });
+      const error = seen.find((input) => input.phase === 'error');
+      expect(error).toMatchObject({ error: { name: 'RangeError', message: 'out of range' } });
+      expect(JSON.stringify(error)).not.toContain('stack');
+    } finally {
+      returning.dispose();
+      throwing.dispose();
       warn.mockRestore();
     }
   });
