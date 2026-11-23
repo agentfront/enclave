@@ -125,7 +125,7 @@ Return value:
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `execute`   | `(code) => Promise<SessionResult>`: starts a run and resolves with its result                                                                                                                                                                     |
 | `cancel`    | `(reason?) => Promise<void>`: cancels the running session. It resolves, and the run ends as `'cancelled'`, also when the broker does not confirm the stop: `onError` then gets `CANCEL_FAILED`, and the script may still be running on the broker |
-| `reset`     | Puts the hook back to `'idle'` and clears its values. Does not cancel a running session, and `cancel()` no longer reaches it afterward                                                                                                            |
+| `reset`     | Puts the hook back to `'idle'` and clears its values. A running session is detached from the hook, not cancelled (see below)                                                                                                                      |
 | `state`     | `'idle'`, `'running'`, `'completed'`, `'error'` or `'cancelled'`                                                                                                                                                                                  |
 | `isRunning` | `true` while `state` is `'running'`                                                                                                                                                                                                               |
 | `sessionId` | Id of the latest session; `null` before the first run and after `reset()`                                                                                                                                                                         |
@@ -136,7 +136,7 @@ Return value:
 
 A run that fails does not throw. `execute` resolves with a result whose `success` is `false`, `state` becomes `'error'`, and `error` holds the code and the message. A cancelled run ends in the state `'cancelled'`.
 
-`reset()` does not stop a running session from writing to the hook. Until a new run starts, that session's later output and events, and then its result and final state, appear in the hook again, so the hook leaves `'idle'` without a new run.
+`reset()` detaches a running session from the hook, as a change of client does: its later output, events, result and final state do not appear in the hook, which stays `'idle'` until the next run, and its callbacks are not called. It does not cancel the session. The session runs on, `cancel()` no longer reaches it, and the promise `execute` returned still resolves with its result. To end the session as well, call `cancel()` before `reset()`.
 
 ```tsx
 import { useEnclaveSession } from '@enclave-vm/react';

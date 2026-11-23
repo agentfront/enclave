@@ -277,7 +277,7 @@ session.reset();         // Reset to idle state
 
 `execute` resolves with the `SessionResult` of the execution, also when it fails or is cancelled. `result` holds the same object: the returned value is `result.value`, and the client's stats are `result.stats`.
 
-`stdout`, `events`, `result` and `error` are cleared when the next execution starts. `reset()` clears them too, but it does not cancel a running session.
+`stdout`, `events`, `result` and `error` are cleared when the next execution starts. `reset()` clears them too and detaches a running session: its later output, result and callbacks no longer reach the hook, which stays `'idle'` until the next execution, and `cancel()` no longer reaches it. The session is not cancelled, and the promise `execute` returned still resolves with its result; call `cancel()` before `reset()` to end it.
 
 ## useEnclaveClient Hook
 

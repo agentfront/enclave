@@ -123,7 +123,7 @@ export interface UseEnclaveSessionReturn<T = unknown> {
   events: StreamEvent[];
 
   /**
-   * Reset the hook state
+   * Reset the hook state and detach the running session from it, without cancelling it
    */
   reset: () => void;
 }

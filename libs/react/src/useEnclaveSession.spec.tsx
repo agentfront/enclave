@@ -443,6 +443,87 @@ describe('useEnclaveSession', () => {
       expect(screen.getByTestId('state')).toHaveTextContent('idle');
       expect(screen.getByTestId('result')).toHaveTextContent('null');
     });
+
+    it('should detach a session that is running when it is reset', async () => {
+      let finishRun: (result: SessionResult) => void = () => undefined;
+      const runningHandle: SessionHandle = {
+        ...createMockHandle(createMockResult(1)),
+        wait: jest.fn(
+          () =>
+            new Promise<SessionResult>((resolve) => {
+              finishRun = resolve;
+            }),
+        ),
+      };
+      let streamOptions: { onStdout?: (chunk: string) => void } = {};
+      mockExecuteStream.mockImplementationOnce((_code, options) => {
+        streamOptions = options;
+        return runningHandle;
+      });
+      mockExecuteStream.mockReturnValueOnce(createMockHandle(createMockResult(2)));
+
+      const onStdout = jest.fn();
+      const onComplete = jest.fn();
+      let detachedResult: Promise<SessionResult> | null = null;
+      let cancelSession: (reason?: string) => Promise<void> = async () => undefined;
+
+      function TestComponent() {
+        const { execute, cancel, reset, state, stdout, result } = useEnclaveSession({ onStdout, onComplete });
+        cancelSession = cancel;
+
+        return (
+          <div>
+            <button onClick={() => (detachedResult = execute('return 1'))}>Run first</button>
+            <button onClick={() => execute('return 2')}>Run second</button>
+            <button onClick={reset}>Reset</button>
+            <span data-testid="state">{state}</span>
+            <span data-testid="stdout">{stdout || 'empty'}</span>
+            <span data-testid="result">{String(result?.value ?? 'null')}</span>
+          </div>
+        );
+      }
+
+      render(
+        <TestWrapper>
+          <TestComponent />
+        </TestWrapper>,
+      );
+
+      await act(async () => {
+        await userEvent.click(screen.getByText('Run first'));
+      });
+      expect(screen.getByTestId('state')).toHaveTextContent('running');
+
+      await act(async () => {
+        await userEvent.click(screen.getByText('Reset'));
+      });
+      await act(async () => {
+        await cancelSession();
+      });
+      expect(runningHandle.cancel).not.toHaveBeenCalled();
+
+      await act(async () => {
+        streamOptions.onStdout?.('late output');
+        finishRun(createMockResult(1));
+        await detachedResult;
+      });
+
+      expect(screen.getByTestId('state')).toHaveTextContent('idle');
+      expect(screen.getByTestId('stdout')).toHaveTextContent('empty');
+      expect(screen.getByTestId('result')).toHaveTextContent('null');
+      expect(onStdout).not.toHaveBeenCalled();
+      expect(onComplete).not.toHaveBeenCalled();
+      await expect(detachedResult).resolves.toEqual(createMockResult(1));
+
+      await act(async () => {
+        await userEvent.click(screen.getByText('Run second'));
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('state')).toHaveTextContent('completed');
+      });
+      expect(screen.getByTestId('result')).toHaveTextContent('2');
+      expect(onComplete).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('events', () => {
