@@ -2682,22 +2682,31 @@ export class Interpreter {
       }
       case 'sort':
       case 'toSorted': {
-        // Async-comparator insertion sort (agent arrays are small). `sort` mutates and returns
-        // the array, matching Array.prototype.sort; `toSorted` sorts a copy.
-        const target = method === 'sort' ? arr : [...arr];
-        if (method === 'sort') this.assertChangeable(arr);
-        else this.charge(target.length * 8);
-        const cmp = cb as unknown as (a: unknown, b: unknown) => Promise<number>;
-        for (let i = 1; i < target.length; i++) {
-          let j = i;
-          while (j > 0) {
-            this.tick();
-            if ((await cmp(target[j - 1], target[j])) <= 0) break;
-            [target[j - 1], target[j]] = [target[j], target[j - 1]];
-            j--;
-          }
+        // As the engine: holes skipped, `undefined` last and never compared, the array written after the sort
+        const sortsInPlace = method === 'sort';
+        if (sortsInPlace) this.assertChangeable(arr);
+        const length = arr.length;
+        const items: unknown[] = [];
+        for (let i = 0; i < length; i++) {
+          if (!sortsInPlace || i in arr) items.push(arr[i]);
         }
-        return target;
+        if (!sortsInPlace) this.charge(items.length * 8);
+        const compare = cb as unknown as (left: unknown, right: unknown) => Promise<unknown>;
+        const sorted = await mergeSorted(items, async (left, right) => {
+          this.tick();
+          if (left === undefined) return right !== undefined;
+          if (right === undefined) return false;
+          return this.binary('>', await compare(left, right), 0) === true;
+        });
+        if (!sortsInPlace) return sorted;
+        this.assertChangeable(arr);
+        for (let i = 0; i < sorted.length; i++) {
+          arr[i] = sorted[i];
+        }
+        for (let i = sorted.length; i < length; i++) {
+          delete arr[i];
+        }
+        return arr;
       }
       default:
         throw new InterpreterError(`Unsupported array method: ${method}`);
@@ -2905,6 +2914,40 @@ export class Interpreter {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────--
+/** The items in order, stable, in O(n log n) comparisons: a bottom-up merge sort. */
+async function mergeSorted(
+  items: unknown[],
+  comesAfter: (left: unknown, right: unknown) => Promise<boolean>,
+): Promise<unknown[]> {
+  let sorted = items;
+  for (let width = 1; width < sorted.length; width *= 2) {
+    const merged: unknown[] = [];
+    for (let start = 0; start < sorted.length; start += 2 * width) {
+      const middle = Math.min(start + width, sorted.length);
+      const end = Math.min(start + 2 * width, sorted.length);
+      let left = start;
+      let right = middle;
+      while (left < middle && right < end) {
+        if (await comesAfter(sorted[left], sorted[right])) {
+          merged.push(sorted[right]);
+          right++;
+        } else {
+          merged.push(sorted[left]);
+          left++;
+        }
+      }
+      for (; left < middle; left++) {
+        merged.push(sorted[left]);
+      }
+      for (; right < end; right++) {
+        merged.push(sorted[right]);
+      }
+    }
+    sorted = merged;
+  }
+  return sorted;
+}
+
 function truthy(v: unknown): boolean {
   return Boolean(v);
 }

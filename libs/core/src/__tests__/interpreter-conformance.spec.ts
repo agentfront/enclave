@@ -122,6 +122,10 @@ const CORPUS: Array<[string, string]> = [
     `const xs = [3, 1, 2]; const m = xs.map((x) => x * 2); const f = m.filter((x) => x > 2); const r = xs.reduce((acc, x) => acc + x, 0); const sorted = [...xs].sort((p, q) => p - q); return [m, f, r, sorted, xs.includes(2), xs.indexOf(1), xs.slice(1), xs.join('-'), xs.find((x) => x > 1), xs.some((x) => x > 2), xs.every((x) => x > 0)];`,
   ],
   [
+    'sort with a comparator: stable, undefined last, holes dropped, the result converted to a number',
+    `const rows = [{ k: 2, i: 0 }, { k: 1, i: 1 }, undefined, { k: 2, i: 2 }, { k: 1, i: 3 }, { k: 0, i: 4 }]; const byKey = rows.toSorted((a, b) => a.k - b.k).map((row) => (row ? row.i : 'u')); const asText = [3, 1, 2].sort((a, b) => String(a - b)); const kept = [3, 1, 2].sort(() => 0); const gaps = [5]; gaps[3] = 1; gaps[5] = 3; gaps.sort((a, b) => a - b); return [byKey, rows.length, asText, kept, gaps, gaps.length, 3 in gaps, 5 in gaps];`,
+  ],
+  [
     'array mutation',
     `const xs = [1]; xs.push(2, 3); const p = xs.pop(); xs.unshift(0); const sh = xs.shift(); xs.reverse(); return [xs, p, sh, xs.length];`,
   ],
