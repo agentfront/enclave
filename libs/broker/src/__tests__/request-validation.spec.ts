@@ -1,6 +1,6 @@
 import { CreateSessionRequestSchema } from '@enclave-vm/types';
 import type { CreateSessionRequest } from '@enclave-vm/types';
-import { parseCreateSessionRequest } from './request-validation';
+import { parseCreateSessionRequest } from '../http/request-validation';
 
 describe('parseCreateSessionRequest', () => {
   const documentedBodies: CreateSessionRequest[] = [
@@ -27,6 +27,12 @@ describe('parseCreateSessionRequest', () => {
 
     expect(schemaResult.success).toBe(true);
     expect(parseCreateSessionRequest(body)).toMatchObject({ ok: true, value: schemaResult.data });
+  });
+
+  it('refuses a body that requires encryption after the shared schema has parsed it', () => {
+    const forwarded = CreateSessionRequestSchema.parse({ code: 'return 1;', encryption: { mode: 'required' } });
+
+    expect(parseCreateSessionRequest(forwarded)).toMatchObject({ ok: false, code: 'ENCRYPTION_NOT_SUPPORTED' });
   });
 
   it('refuses a body without code, as the shared schema does', () => {

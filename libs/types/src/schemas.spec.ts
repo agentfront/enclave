@@ -2,6 +2,7 @@ import {
   parseStreamEvent,
   parseEncryptedEnvelope,
   parseCreateSessionRequest,
+  CreateSessionRequestSchema,
   SessionIdSchema,
   CallIdSchema,
   RefIdSchema,
@@ -178,6 +179,34 @@ describe('Schemas', () => {
 
     it('should parse minimal session creation request', () => {
       expect(parseCreateSessionRequest({ code: 'return 42;' }).success).toBe(true);
+    });
+
+    it('should give back a CreateSessionRequest', () => {
+      const request: CreateSessionRequest = CreateSessionRequestSchema.parse({
+        code: 'return 42;',
+        sessionId: 's_abc123',
+        encryption: { mode: 'disabled' },
+      });
+      expect(request.sessionId).toBe('s_abc123');
+    });
+
+    it('should keep the encryption a request asks for', () => {
+      const result = parseCreateSessionRequest({ code: 'return 42;', encryption: { mode: 'required' } });
+      expect(result.success).toBe(true);
+      expect(result.data?.encryption).toEqual({ mode: 'required' });
+    });
+
+    it('should refuse the earlier shape instead of dropping its limits', () => {
+      const result = parseCreateSessionRequest({
+        protocolVersion: PROTOCOL_VERSION,
+        code: 'return 42;',
+        limits: { sessionTtlMs: 30000, maxToolCalls: 10 },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues.map((issue) => issue.message)).toEqual([
+        expect.stringContaining('send the limits as config'),
+        expect.stringContaining('send the limits as config'),
+      ]);
     });
 
     it('should reject invalid session creation requests', () => {

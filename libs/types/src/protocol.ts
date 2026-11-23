@@ -4,6 +4,7 @@
  * Core protocol constants and base types for the EnclaveJS streaming runtime.
  */
 
+import type { EncryptionRequest } from './encryption.js';
 import type { EventFilterConfig } from './filter.js';
 
 /**
@@ -217,6 +218,11 @@ export interface CreateSessionRequest {
    * Which events the broker streams.
    */
   filter?: EventFilterConfig;
+
+  /**
+   * Encryption the caller asks for. The broker does not encrypt: it refuses `mode: 'required'`.
+   */
+  encryption?: EncryptionRequest;
 }
 
 /**

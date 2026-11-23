@@ -14,6 +14,7 @@ import {
   SessionState,
   LogLevel,
 } from './protocol.js';
+import type { SessionId } from './protocol.js';
 import { EventType, RuntimeChannelMessageType } from './events.js';
 import { SupportedCurve, EncryptionAlgorithm, KeyDerivation, EncryptionMode } from './encryption.js';
 import { FilterMode, PatternType } from './filter.js';
@@ -566,14 +567,19 @@ export const CreateSessionConfigSchema = z.object({
   heartbeatIntervalMs: z.number().int().positive().optional(),
 });
 
-/**
- * Session creation request schema: the body of `POST /sessions`.
- */
+const LEGACY_CREATE_SESSION_SHAPE =
+  'The body of POST /sessions has no protocolVersion and no limits: send the limits as config ' +
+  '({ maxExecutionMs, maxToolCalls, heartbeatIntervalMs })';
+
+/** Session creation request schema: the body of `POST /sessions`; the shape before 2.21 is refused. */
 export const CreateSessionRequestSchema = z.object({
   code: z.string(),
-  sessionId: SessionIdSchema.optional(),
+  sessionId: SessionIdSchema.transform((id) => id as SessionId).optional(),
   config: CreateSessionConfigSchema.optional(),
   filter: EventFilterConfigSchema.optional(),
+  encryption: EncryptionRequestSchema.optional(),
+  protocolVersion: z.never({ error: LEGACY_CREATE_SESSION_SHAPE }).optional(),
+  limits: z.never({ error: LEGACY_CREATE_SESSION_SHAPE }).optional(),
 });
 
 // ============================================================================
