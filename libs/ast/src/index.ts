@@ -133,6 +133,10 @@ export type {
   NormalizeToolNamespacesOptions,
 } from './tool-namespaces';
 
+// Lexical scopes of a parsed program (which declaration each identifier refers to)
+export { analyzeScopes } from './utils/scope-analysis';
+export type { ScopeAnalysis, ScopeBinding, ScopeReference, BindingKind } from './utils/scope-analysis';
+
 // AgentScript tool descriptions for AI agents
 export {
   AGENTSCRIPT_DESCRIPTION,

@@ -4,6 +4,7 @@
  */
 
 import * as fs from 'fs';
+import { builtinModules } from 'module';
 import * as path from 'path';
 
 import { Enclave } from '../enclave';
@@ -24,6 +25,27 @@ class RecordingAdapter implements SandboxAdapter {
   dispose(): void {
     this.disposed = true;
   }
+}
+
+const BUILTIN_IMPORT_FORMS = builtinModules
+  .flatMap((name) => [name, `node:${name}`])
+  .flatMap((specifier) =>
+    ['"', "'"].flatMap((quote) => {
+      const quoted = `${quote}${specifier}${quote}`;
+      return [
+        `require(${quoted})`,
+        `from ${quoted}`,
+        `from${quoted}`,
+        `import ${quoted}`,
+        `import${quoted}`,
+        `import(${quoted})`,
+      ];
+    }),
+  );
+
+/** Every import of a Node.js built-in in `source`: required, imported, imported for its side effects or dynamically */
+function builtinImportsIn(source: string): string[] {
+  return BUILTIN_IMPORT_FORMS.filter((form) => source.includes(form));
 }
 
 describe('sandboxAdapter', () => {
@@ -82,6 +104,20 @@ describe('sandboxAdapter', () => {
     enclave.dispose();
   });
 
+  it.each([
+    "const fs = require('fs');",
+    'import { readFileSync } from "node:fs";',
+    "import 'crypto';",
+    'await import("node:path");',
+    "export * from 'os';",
+  ])('recognizes the built-in import in %s', (source) => {
+    expect(builtinImportsIn(source)).not.toEqual([]);
+  });
+
+  it('does not take a package import for a built-in one', () => {
+    expect(builtinImportsIn("import { z } from 'zod'; const acorn = require('acorn');")).toEqual([]);
+  });
+
   it('ships the worker-safe entry point without Node.js built-ins, in both builds', () => {
     // `@enclave-vm/core/worker` is for runtimes that have none (an edge worker, a browser
     // bundle). Needs the built package: `npx nx build core`.
@@ -89,8 +125,7 @@ describe('sandboxAdapter', () => {
     for (const file of ['worker.js', path.join('esm', 'worker.mjs')]) {
       const source = fs.readFileSync(path.join(dist, file), 'utf8');
 
-      expect(source).not.toMatch(/from\s*["']node:/);
-      expect(source).not.toMatch(/require\(["'](?:node:)?(?:vm|fs|path|url|worker_threads|child_process)["']\)/);
+      expect(builtinImportsIn(source)).toEqual([]);
     }
   });
 

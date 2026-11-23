@@ -11,6 +11,15 @@ import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
 import { createHash } from 'crypto';
 import type { NormalizedToolNamespace } from '@enclave-vm/ast';
+import {
+  DYNAMIC_TOOL_NAME,
+  indexToolNamespaces,
+  toolArgumentsOf,
+  toolReferenceOfCallee,
+  toolReferenceOfMember,
+  type ToolNamespaceIndex,
+  type ToolReference,
+} from '../analysis/tool-references';
 import type {
   ExtractedFeatures,
   ExtractedToolCall,
@@ -53,11 +62,6 @@ const FETCH_PATTERNS = /list|get|query|search|find|fetch|read|select/i;
 const LIMIT_FIELD_NAMES = ['limit', 'pagesize', 'count', 'max', 'top', 'size', 'take'];
 
 /**
- * Tool name of a call whose tool is only known when the script runs
- */
-const DYNAMIC_TOOL_NAME = '<dynamic>';
-
-/**
  * Options of the feature extractor
  */
 export interface FeatureExtractorOptions {
@@ -80,16 +84,6 @@ export class FeatureExtractionError extends Error {
   }
 }
 
-/**
- * How a node refers to a tool
- */
-interface ToolReference {
-  /** The tool's name, or `<dynamic>` */
-  toolName: string;
-  /** Whether the name is known from the source */
-  isStaticName: boolean;
-}
-
 /** An ESTree node, as far as this file reads it */
 interface AstNode {
   type?: string;
@@ -101,8 +95,6 @@ interface AstNode {
   callee?: AstNode;
   argument?: AstNode;
   arguments?: AstNode[];
-  expressions?: AstNode[];
-  quasis?: Array<{ value?: { cooked?: string | null } }>;
   loc?: { start?: { line: number; column: number } };
 }
 
@@ -110,23 +102,10 @@ interface AstNode {
  * Feature Extractor - extracts security-relevant features from code
  */
 export class FeatureExtractor {
-  /** Namespace name -> method name -> tool name */
-  private readonly toolNamespaces: Map<string, Map<string, string>>;
+  private readonly toolNamespaces: ToolNamespaceIndex;
 
   constructor(options: FeatureExtractorOptions = {}) {
-    this.toolNamespaces = new Map();
-    for (const namespace of options.toolNamespaces ?? []) {
-      if (typeof namespace?.name !== 'string' || !Array.isArray(namespace.methods)) {
-        continue;
-      }
-      const methods = new Map<string, string>();
-      for (const method of namespace.methods) {
-        if (typeof method?.name === 'string' && typeof method.toolName === 'string') {
-          methods.set(method.name, method.toolName);
-        }
-      }
-      this.toolNamespaces.set(namespace.name, methods);
-    }
+    this.toolNamespaces = indexToolNamespaces(options.toolNamespaces);
   }
 
   /**
@@ -240,7 +219,10 @@ export class FeatureExtractor {
           if (awaitArg?.type === 'ChainExpression') {
             awaitArg = (awaitArg as unknown as { expression?: AstNode }).expression;
           }
-          if (awaitArg?.type === 'CallExpression' && this.toolReferenceOfCallee(awaitArg.callee, awaitArg.arguments)) {
+          if (
+            awaitArg?.type === 'CallExpression' &&
+            toolReferenceOfCallee(this.toolNamespaces, awaitArg.callee, awaitArg.arguments)
+          ) {
             if (varNode.id.name) {
               toolResultVars.add(varNode.id.name);
             }
@@ -263,7 +245,7 @@ export class FeatureExtractor {
       MemberExpression: (node: acorn.Node, _state: unknown, ancestors: acorn.Node[]) => {
         // A method of a tool namespace that is not called where it stands: `const send =
         // mail.send`, `items.map(mail.send)`
-        const reference = this.toolReferenceOfMember(node as unknown as AstNode);
+        const reference = toolReferenceOfMember(this.toolNamespaces, node as unknown as AstNode);
         if (reference) {
           const parent = ancestors[ancestors.length - 2] as unknown as AstNode | undefined;
           if (!(parent?.type === 'CallExpression' && parent.callee === (node as unknown as AstNode))) {
@@ -358,63 +340,6 @@ export class FeatureExtractor {
   }
 
   /**
-   * The string a node spells out in the source: a string literal, or a template literal without
-   * substitutions. `undefined` for anything else.
-   */
-  private staticString(node: AstNode | undefined): string | undefined {
-    if (node?.type === 'Literal' && typeof node.value === 'string') {
-      return node.value;
-    }
-    if (node?.type === 'TemplateLiteral' && node.expressions?.length === 0 && node.quasis?.length === 1) {
-      const cooked = node.quasis[0].value?.cooked;
-      return typeof cooked === 'string' ? cooked : undefined;
-    }
-    return undefined;
-  }
-
-  /**
-   * The tool a member expression on a tool namespace refers to: `mail.send`, `mail['send']`
-   * (static), `mail[name]` (dynamic). `undefined` when the object is not a tool namespace, or
-   * the member is not one of its methods (nothing is called then).
-   */
-  private toolReferenceOfMember(member: AstNode | undefined): ToolReference | undefined {
-    if (member?.type !== 'MemberExpression' || member.object?.type !== 'Identifier') {
-      return undefined;
-    }
-    const methods = this.toolNamespaces.get(member.object.name ?? '');
-    if (!methods) {
-      return undefined;
-    }
-    const methodName = member.computed
-      ? this.staticString(member.property)
-      : member.property?.type === 'Identifier'
-        ? member.property.name
-        : undefined;
-    if (methodName === undefined) {
-      return member.computed ? { toolName: DYNAMIC_TOOL_NAME, isStaticName: false } : undefined;
-    }
-    const toolName = methods.get(methodName);
-    return toolName === undefined ? undefined : { toolName, isStaticName: true };
-  }
-
-  /**
-   * The tool a call expression calls, by its callee: `callTool(name, args)`,
-   * `__safe_callTool(name, args)`, or a method of a tool namespace. `undefined` for any other call.
-   */
-  private toolReferenceOfCallee(callee: AstNode | undefined, args: AstNode[] | undefined): ToolReference | undefined {
-    if (callee?.type === 'Identifier') {
-      if (callee.name !== 'callTool' && callee.name !== '__safe_callTool') {
-        return undefined;
-      }
-      const toolName = this.staticString(args?.[0]);
-      return toolName === undefined
-        ? { toolName: DYNAMIC_TOOL_NAME, isStaticName: false }
-        : { toolName, isStaticName: true };
-    }
-    return this.toolReferenceOfMember(callee);
-  }
-
-  /**
    * Extract tool call information
    */
   private extractToolCall(
@@ -430,15 +355,12 @@ export class FeatureExtractor {
     const callNode = node as unknown as AstNode;
 
     // Check if this is a tool call: callTool, __safe_callTool or a tool namespace method
-    const reference = this.toolReferenceOfCallee(callNode.callee, callNode.arguments);
+    const reference = toolReferenceOfCallee(this.toolNamespaces, callNode.callee, callNode.arguments);
     if (!reference) {
       return;
     }
 
-    // callTool(name, args): the arguments are the second argument. A namespace method takes
-    // them first: mail.send(args)
-    const args = callNode.arguments ?? [];
-    const toolArgsArg = callNode.callee?.type === 'Identifier' ? args[1] : args[0];
+    const toolArgsArg = toolArgumentsOf(callNode);
 
     this.recordToolCall(reference, toolArgsArg, node, loopDepth, {
       toolCalls,
