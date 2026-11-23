@@ -136,7 +136,7 @@ Return value:
 
 A run that fails does not throw. `execute` resolves with a result whose `success` is `false`, `state` becomes `'error'`, and `error` holds the code and the message. A cancelled run ends in the state `'cancelled'`.
 
-`reset()` detaches a running session from the hook, as a change of client does: its later output, events, result and final state do not appear in the hook, which stays `'idle'` until the next run, and its callbacks are not called. It does not cancel the session. The session runs on, `cancel()` no longer reaches it, and the promise `execute` returned still resolves with its result. To end the session as well, call `cancel()` before `reset()`.
+`reset()` detaches a running session from the hook, as a change of client does: its later output, events, result and final state do not appear in the hook, which stays `'idle'` until the next run, and its callbacks are not called. It does not cancel the session. The session runs on, `cancel()` no longer reaches it, and the promise `execute` returned still resolves with its result. To end the session as well, call `cancel()` before `reset()`. The same holds for a `reset()` that a callback of the run makes, in `onStart` or `onError` for example: no later callback of that run is called.
 
 ```tsx
 import { useEnclaveSession } from '@enclave-vm/react';

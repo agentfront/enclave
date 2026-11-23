@@ -524,6 +524,79 @@ describe('useEnclaveSession', () => {
       expect(screen.getByTestId('result')).toHaveTextContent('2');
       expect(onComplete).toHaveBeenCalledTimes(1);
     });
+
+    it('should not let cancel() reach a run that onStart reset', async () => {
+      const mockHandle: SessionHandle = {
+        ...createMockHandle(createMockResult(1)),
+        wait: jest.fn(() => new Promise<SessionResult>(() => undefined)),
+      };
+      mockExecuteStream.mockReturnValue(mockHandle);
+      const session: { reset?: () => void; cancel?: (reason?: string) => Promise<void> } = {};
+
+      function TestComponent() {
+        const { execute, cancel, reset, state } = useEnclaveSession({ onStart: () => session.reset?.() });
+        session.reset = reset;
+        session.cancel = cancel;
+
+        return (
+          <div>
+            <button onClick={() => execute('return 1')}>Execute</button>
+            <span data-testid="state">{state}</span>
+          </div>
+        );
+      }
+
+      render(
+        <TestWrapper>
+          <TestComponent />
+        </TestWrapper>,
+      );
+
+      await act(async () => {
+        await userEvent.click(screen.getByText('Execute'));
+        await session.cancel?.();
+      });
+
+      expect(mockHandle.cancel).not.toHaveBeenCalled();
+      expect(screen.getByTestId('state')).toHaveTextContent('idle');
+    });
+
+    it.each([
+      ['the run fails', (handle: SessionHandle) => handle],
+      [
+        'waiting for the run fails',
+        (handle: SessionHandle) => ({ ...handle, wait: jest.fn().mockRejectedValue(new Error('connection lost')) }),
+      ],
+    ])('should not call onComplete after onError reset the hook when %s', async (_name, shape) => {
+      mockExecuteStream.mockReturnValue(shape(createMockHandle(createMockResult(null, false))));
+      const onComplete = jest.fn();
+      const session: { reset?: () => void } = {};
+
+      function TestComponent() {
+        const { execute, reset, state } = useEnclaveSession({ onError: () => session.reset?.(), onComplete });
+        session.reset = reset;
+
+        return (
+          <div>
+            <button onClick={() => execute('fail()')}>Execute</button>
+            <span data-testid="state">{state}</span>
+          </div>
+        );
+      }
+
+      render(
+        <TestWrapper>
+          <TestComponent />
+        </TestWrapper>,
+      );
+
+      await act(async () => {
+        await userEvent.click(screen.getByText('Execute'));
+      });
+
+      expect(onComplete).not.toHaveBeenCalled();
+      expect(screen.getByTestId('state')).toHaveTextContent('idle');
+    });
   });
 
   describe('events', () => {

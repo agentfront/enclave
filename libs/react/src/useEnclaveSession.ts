@@ -165,7 +165,8 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
         },
       });
 
-      owner.handle = handle;
+      // A reset or a newer run in onStart leaves cancel() to the run that is shown
+      if (isAttached() && owner.run === run) owner.handle = handle;
       update(() => ({ sessionId: handle.sessionId }));
 
       try {
@@ -184,13 +185,11 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
             error: sessionResult.error ?? { message: 'Unknown error' },
           }));
         }
-        if (callbacksApply()) {
-          if (!sessionResult.success && sessionResult.error?.code !== 'CANCELLED') {
-            options.onError?.(sessionResult.error ?? { message: 'Unknown error' });
-          }
-          // Call onComplete callback
-          options.onComplete?.(sessionResult);
+        if (callbacksApply() && !sessionResult.success && sessionResult.error?.code !== 'CANCELLED') {
+          options.onError?.(sessionResult.error ?? { message: 'Unknown error' });
         }
+        // onError may have reset the hook
+        if (callbacksApply()) options.onComplete?.(sessionResult);
 
         return sessionResult;
       } catch (err) {
@@ -209,10 +208,8 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
         };
 
         update(() => ({ state: 'error', error: errorInfo, result: errorResult }));
-        if (callbacksApply()) {
-          options.onError?.(errorInfo);
-          options.onComplete?.(errorResult);
-        }
+        if (callbacksApply()) options.onError?.(errorInfo);
+        if (callbacksApply()) options.onComplete?.(errorResult);
 
         return errorResult;
       } finally {
