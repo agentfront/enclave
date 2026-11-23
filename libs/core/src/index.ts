@@ -61,6 +61,9 @@ export type {
 // Review hooks: types, error codes, and the scoring gate as a reviewer
 export { scoringReviewer } from './review/scoring-reviewer';
 export { REVIEW_ERROR_CODES } from './review/types';
+export { functionReviewer, providerReviewer } from './review/reviewers';
+export type { ProviderReviewerOptions, ReviewerOptions, ReviewerRequest, ReviewerTool } from './review/reviewers';
+export { ReviewerError } from './review/review-session';
 export type {
   PostReviewAction,
   PostReviewInput,

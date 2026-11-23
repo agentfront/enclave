@@ -439,26 +439,23 @@ export interface CustomAnalyzer {
  */
 export interface LocalLlmConfig {
   /**
-   * Model identifier from HuggingFace
-   * @example 'Xenova/codebert-base', 'Xenova/all-MiniLM-L6-v2'
+   * Model name of the VectoriaDB index in similarity mode (unless `vectoriaConfig.modelName` is set)
+   * @example 'Xenova/all-MiniLM-L6-v2'
    */
   modelId: 'Xenova/codebert-base' | 'Xenova/all-MiniLM-L6-v2' | string;
 
   /**
    * Scoring mode
-   * - classification: the score is the `customAnalyzer`'s, or the built-in keyword heuristic
-   *   over the extracted features. No classification model is run.
-   * - similarity: additionally searches a VectoriaDB index for similar patterns. The index is
-   *   created empty and this configuration has no way to add patterns to it, so the search
-   *   finds nothing and the score is the same as in classification mode.
+   * - classification: the score is the `customAnalyzer`'s; without one, the rule-based scorer
+   *   (`fallbackToRules`, the default) or the keyword heuristic (`fallbackToRules: false`).
+   * - similarity: additionally searches a VectoriaDB index, which is created empty, so the score
+   *   is the `customAnalyzer`'s or, without one, always the keyword heuristic's. Without an
+   *   analyzer the two modes can therefore score the same script differently.
    * @default 'classification'
    */
   mode?: 'classification' | 'similarity';
 
-  /**
-   * Model cache directory
-   * @default '~/.enclave/models'
-   */
+  /** @deprecated No effect: the scorer loads no model */
   cacheDir?: string;
 
   /**
@@ -473,14 +470,14 @@ export interface LocalLlmConfig {
   vectoriaConfig?: VectoriaConfigForScoring;
 
   /**
-   * Whether to fall back to rule-based scorer on model errors
+   * Without a custom analyzer: in classification mode only, score with the rule-based scorer
+   * instead of the keyword heuristic (similarity mode keeps the heuristic). With one: the answer
+   * when it fails.
    * @default true
    */
   fallbackToRules?: boolean;
 
-  /**
-   * @deprecated Use cacheDir instead
-   */
+  /** @deprecated No effect: the scorer loads no model */
   modelDir?: string;
 
   /**
@@ -497,8 +494,7 @@ export interface LocalLlmConfig {
    * Custom analyzer for external LLM or static code analysis
    *
    * If provided, this analyzer will be used instead of the built-in
-   * heuristic-based analysis. The HuggingFace pipeline is still loaded
-   * when the optional dependency is installed; its output is not used.
+   * heuristic-based analysis.
    *
    * @example
    * ```typescript

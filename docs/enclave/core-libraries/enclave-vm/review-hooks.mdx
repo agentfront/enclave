@@ -141,6 +141,54 @@ The script's `timeout` does not run during `pre` on the script or `post` on the 
 - **`post` does not see everything.** An error a tool handler throws reaches the script without `post`, and console output goes to `consoleHandler` without it. Redact those in the handler and the console handler.
 - **A call already allowed may still start.** When calls run in parallel, a call whose `pre` has answered `allow` can start its handler in the moment before a concurrent `needs_approval` stops the run. No call starts after the stop, including one whose review was still pending.
 
+## Reviewers
+
+Two reviewers plug into `pre`. Both review the script (`phase: 'script'`) and allow every call, get the same input, time out (`timeoutMs`, default 20 s; a late answer is refused), and keep a decision by the SHA-256 digest of the script and of the analysis it came with (the analysis depends on the enclave's tool namespaces and call budget) (`cache: { maxEntries, ttlMs }`, default 1,000 for 5 minutes; `false` for none). A failure is not kept. Both are also exported from `@enclave-vm/core/worker`.
+
+```ts
+import { Enclave, functionReviewer, providerReviewer } from '@enclave-vm/core';
+
+const policy = 'Scripts may read invoices. Sending email needs a person.';
+const tools = [{ name: 'send_email', description: 'Sends an email' }];
+
+// A model by API key: plain fetch to the Chat Completions API, with a JSON-schema answer
+const byModel = providerReviewer({ provider: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4.1-mini', policy, tools });
+
+// Your own function: a local model, an HTTP service, plain code
+const byFunction = functionReviewer(async ({ code, analysis }) => ({ decision: 'allow' }), { policy, tools });
+
+const enclave = new Enclave({ toolHandler, review: { pre: byModel } });
+```
+
+```ts
+interface ReviewerRequest {
+  code: string;
+  analysis: ScriptAnalysis;
+  policy: string;
+  tools: Array<{ name: string; description: string }>;
+}
+
+interface ReviewerOptions {
+  policy?: string;
+  tools?: ReadonlyArray<{ name: string; description: string }>;
+  timeoutMs?: number;
+  cache?: false | { maxEntries?: number; ttlMs?: number };
+}
+
+interface ProviderReviewerOptions extends ReviewerOptions {
+  provider: 'openai';
+  apiKey: string;
+  model: string; // required
+  policy: string;
+  baseUrl?: string; // an OpenAI-compatible endpoint, default https://api.openai.com/v1; https, or http on a loopback host only
+}
+```
+
+- **The same input.** A function reviewer receives the `ReviewerRequest` the provider reviewer sends.
+- **Untrusted data.** The policy is in the system message. The script, with its strings and comments, its analysis and the tool descriptions go in the user message as one JSON document that the prompt marks as untrusted data, never as instructions.
+- **Exact answers.** The model answers in a strict JSON schema (`decision`, `reason`, `findings`). An answer that is not JSON, does not match the schema (an unknown key included) or holds the API key fails the review with `REVIEW_FAILED`, and the reason is in the message (`Review failed: The model answer is not JSON`).
+- **The key.** It goes only into the `authorization` header, and only over https: `baseUrl` must be https, or http on a loopback host (`localhost`, `127.0.0.0/8`, `::1`) for local development; anything else is a `TypeError` at construction. No error, result or log holds it; the reviewers log nothing.
+
 ## The Scoring Gate as a Reviewer
 
 `scoringReviewer(scoringGateConfig)` is the [scoring gate](/core-libraries/enclave-vm/ai-scoring) as a `pre` hook. It scores the script with the gate's scorers (rule-based unless configured) and answers `allow` below `warnThreshold`, `needs_approval` from it and `denied` from `blockThreshold`, with the signals as findings. `scorer: 'disabled'` allows every script. A scorer that cannot answer fails the review. It allows every call. The `scoringGate` option works as before.
