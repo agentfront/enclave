@@ -814,7 +814,7 @@ Limits to plan for:
 
 A finding is `{ rule, message, location?: { line, column }, suggestion?, toolName? }`. The hooks run the same way with the double VM, the worker pool (`adapter: 'worker_threads'`), a `sandboxAdapter` such as `InterpreterAdapter`, and `PortableEnclave` / `AgentScriptRunner` (`run(code, toolHandler, { reviewContext })`; `AgentScriptRunner.capabilities` includes `'review'`).
 
-`scoringReviewer(scoringGateConfig)` is the scoring gate as a `pre` hook: it scores the script with the gate's scorers (rule-based unless configured) and answers `allow` below `warnThreshold`, `needs_approval` from it and `denied` from `blockThreshold`, with the signals as findings. A scorer that cannot answer fails the review. It allows every call. The `scoringGate` option works as before.
+`scoringReviewer(scoringGateConfig)` is the scoring gate as a `pre` hook: it scores the script with the gate's scorers (rule-based unless configured) and answers `allow` below `warnThreshold`, `needs_approval` from it and `denied` from `blockThreshold`, with the signals as findings. `scorer: 'disabled'` allows every script. A scorer that cannot answer fails the review. It allows every call. The `scoringGate` option works as before.
 
 ## AI Scoring Gate
 

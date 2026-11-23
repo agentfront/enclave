@@ -286,6 +286,8 @@ export class ReviewSession {
         timer = setTimeout(() => reject(TIMED_OUT), this.options.timeoutMs);
       });
       const answer = await Promise.race([Promise.resolve().then(invoke), timeout]);
+      // A hook that blocks the thread answers before the timer can fire
+      if (Date.now() - started > this.options.timeoutMs) throw TIMED_OUT;
       const parsed = schema.safeParse(answer);
       if (parsed.success) {
         this.record(target, parsed.data as HookAnswer, Date.now() - started);

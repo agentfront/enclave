@@ -225,6 +225,28 @@ describe.each(PATHS)('review hooks on the %s', (_path, create) => {
     );
   });
 
+  it('does not accept the late answer of a hook that blocks past timeoutMs', async () => {
+    const handler = recordingHandler();
+    const pre = (input: PreReviewInput): ReviewDecision => {
+      if (input.phase === 'call') {
+        const until = Date.now() + 80;
+        while (Date.now() < until) {
+          // the hook holds the thread
+        }
+      }
+      return allow();
+    };
+
+    const result = await runner({ review: { pre, timeoutMs: 30 } }).run(
+      "await callTool('slow', {}); return 1;",
+      handler,
+    );
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(result.error?.code).toBe('REVIEW_FAILED');
+    expect(result.error?.message).toBe('Review failed: The review hook did not answer within 30 ms');
+  });
+
   it('ends the run before its first statement when pre fails on the script', async () => {
     const handler = recordingHandler();
     const pre = (): ReviewDecision => {
@@ -421,6 +443,12 @@ describe('scoringReviewer', () => {
       }),
     );
     expect(blocked).toEqual(expect.objectContaining({ decision: 'denied' }));
+  });
+
+  it('allows every script with the scorer disabled', async () => {
+    await expect(scoringReviewer({ scorer: 'disabled' })(scriptInput(LIST_THEN_SEND))).resolves.toEqual({
+      decision: 'allow',
+    });
   });
 
   it('allows every call: it scores the script only', async () => {
