@@ -127,4 +127,59 @@ describe.each(PATHS)('Set, Map and errors on the %s', (_path, createRunner) => {
       expect(result.error?.code).toBe('VALIDATION_ERROR');
     }
   });
+
+  it('lets a catch receive what a forEach callback threw', async () => {
+    const result = await run(`
+      const caught = [];
+      try { new Set([1]).forEach(() => { throw 'stop'; }); } catch (e) { caught.push(e); }
+      try { new Map([[1, 2]]).forEach(() => { throw { code: 7 }; }); } catch (e) { caught.push(e.code); }
+      return caught;
+    `);
+
+    expect(result.value).toEqual(['stop', 7]);
+  });
+
+  it('counts the pair of a returned Map entry and its two slots against maxSanitizeProperties', async () => {
+    const refused = await run(`return new Map([[1, 2]]);`, { maxSanitizeProperties: 2 });
+    const accepted = await run(`return new Map([[1, 2]]);`, { maxSanitizeProperties: 3 });
+
+    expect(refused.error?.message).toMatch(/maximum properties/);
+    expect(accepted.value).toEqual([[1, 2]]);
+  });
+});
+
+describe.each(PATHS.slice(0, 2))('memory usage of Set and Map entries on the %s', (_path, createRunner) => {
+  it('reports every entry it charged', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const runner = createRunner({ securityLevel: 'SECURE' });
+    try {
+      const result = await runner.run(`const seen = new Set(); seen.add('a'); seen.add('a'); return seen.size;`);
+
+      expect(result.stats.memoryUsage).toBe(16);
+    } finally {
+      runner.dispose();
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('a custom global named Set or Map', () => {
+  const globals = { Set: { label: 'catalog' }, Map: { label: 'atlas' } };
+
+  it.each(PATHS.slice(0, 3))('replaces the built-in one on the %s', async (_path, createRunner) => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const runner = createRunner({ securityLevel: 'SECURE', globals });
+    try {
+      const result = await runner.run(`return [Set.label, Map.label];`);
+
+      expect(result.value).toEqual(['catalog', 'atlas']);
+    } finally {
+      runner.dispose();
+      warn.mockRestore();
+    }
+  });
+
+  it('is refused by the portable runner, which never replaces a standard global', () => {
+    expect(() => new PortableEnclave({ globals })).toThrow(/cannot replace standard global/);
+  });
 });

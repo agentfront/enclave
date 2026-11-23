@@ -106,4 +106,41 @@ test.describe('Set, Map and errors', () => {
       expect(result.error?.name).toBe('ValidationError');
     }
   });
+
+  test('a custom global named Set or Map replaces the built-in one', async ({ page }) => {
+    const result = await runInEnclave(page, `return [Set.label, Map.label];`, {
+      securityLevel: 'SECURE',
+      globals: { Set: { label: 'catalog' }, Map: { label: 'atlas' } },
+    });
+
+    expect(result.value).toEqual(['catalog', 'atlas']);
+  });
+
+  test('copies an object that is both the key and the value of a Map entry', async ({ page }) => {
+    const result = await runInEnclave(page, `const item = { id: 1 }; return new Map([[item, item]]);`, {
+      securityLevel: 'SECURE',
+    });
+
+    expect(result.value).toEqual([[{ id: 1 }, { id: 1 }]]);
+  });
+
+  test('counts the pair of a returned Map entry and its two slots against maxSanitizeProperties', async ({ page }) => {
+    const refused = await runInEnclave(page, `return new Map([[1, 2]]);`, { maxSanitizeProperties: 2 });
+    const accepted = await runInEnclave(page, `return new Map([[1, 2]]);`, { maxSanitizeProperties: 3 });
+
+    expect(refused.error?.message).toMatch(/maximum properties/);
+    expect(accepted.value).toEqual([[1, 2]]);
+  });
+
+  test('lets a catch receive what a forEach callback threw', async ({ page }) => {
+    const result = await runInEnclave(
+      page,
+      `const caught = [];
+       try { new Set([1]).forEach(() => { throw 'stop'; }); } catch (e) { caught.push(e); }
+       return caught;`,
+      { securityLevel: 'SECURE' },
+    );
+
+    expect(result.value).toEqual(['stop']);
+  });
 });

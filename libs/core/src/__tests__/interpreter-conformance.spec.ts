@@ -158,6 +158,10 @@ const CORPUS: Array<[string, string]> = [
     `const e = new TypeError('bad'); let caught; try { throw new RangeError('out'); } catch (x) { caught = [x.name, x.message, x instanceof RangeError, x instanceof Error]; } return [String(e), e.stack === undefined, e instanceof Error, String(new Error()), caught, JSON.stringify(new Error('j')), new Error('r')];`,
   ],
   ['an uncaught error', `throw new Error('no overdue invoices');`],
+  [
+    'what a forEach callback throws',
+    `const caught = []; try { new Set([1]).forEach(() => { throw 'stop'; }); } catch (e) { caught.push(e); } try { new Map([[1, 2]]).forEach(() => { throw { code: 7 }; }); } catch (e) { caught.push(e.code); } return caught;`,
+  ],
   ['returning a function', `return { label: 'x', run: () => 1 };`],
   ['returning nothing', `const x = 1;`],
 ];

@@ -26,19 +26,14 @@ export function realmSafeGlobalsSource(memoryLimit: number): string {
   var mapEntries = RealmMap.prototype.entries;
   var setIteratorNext = getPrototypeOf(apply(setValues, new RealmSet(), [])).next;
   var mapIteratorNext = getPrototypeOf(apply(mapEntries, new RealmMap(), [])).next;
+  var weakMapGet = WeakMap.prototype.get;
+  var weakMapSet = WeakMap.prototype.set;
+  var jsonForms = new WeakMap();
   var limited = memoryLimit > 0 && typeof track === 'function';
-  var BATCH_BYTES = 4096;
-  var pendingBytes = 0;
 
   function chargeEntry() {
-    if (!limited) {
-      return;
-    }
-    pendingBytes += ${COLLECTION_ENTRY_BYTES};
-    if (pendingBytes >= BATCH_BYTES) {
-      var bytes = pendingBytes;
-      pendingBytes = 0;
-      track(bytes);
+    if (limited) {
+      track(${COLLECTION_ENTRY_BYTES});
     }
   }
 
@@ -46,9 +41,15 @@ export function realmSafeGlobalsSource(memoryLimit: number): string {
     defineProperty(target, key, { value: value, writable: true, enumerable: false, configurable: true });
   }
 
+  // One array per collection, so that JSON.stringify sees a collection that contains itself as a cycle
   function itemsOf(collection, iterate, next) {
-    var items = [];
     var iterator = apply(iterate, collection, []);
+    var items = apply(weakMapGet, jsonForms, [collection]);
+    if (items === undefined) {
+      items = [];
+      apply(weakMapSet, jsonForms, [collection, items]);
+    }
+    items.length = 0;
     for (var step = apply(next, iterator, []); !step.done; step = apply(next, iterator, [])) {
       items[items.length] = step.value;
     }

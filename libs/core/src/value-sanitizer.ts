@@ -361,7 +361,8 @@ function sanitizeObjectValue(
     if (options.mapsAsEntries) {
       const pairs: unknown[] = [];
       for (const [key, val] of entries) {
-        context.propCount.count++;
+        // The pair's slot in the copy and the two slots of the pair
+        context.propCount.count += 3;
         if (context.propCount.count > maxProperties) {
           throw new Error(`Tool handler return value exceeds maximum properties (${maxProperties}).`);
         }

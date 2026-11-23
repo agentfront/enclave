@@ -860,14 +860,7 @@ export class Interpreter {
    */
   async call(fn: unknown, args: unknown[]): Promise<unknown> {
     try {
-      // A helper that is still going when the run has been ended starts nothing more for the script
-      if (this.fatal !== undefined) throw this.fatal;
-      if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
-      // The call continues the chain of the helper that makes it, one call deeper, when the helper
-      // makes it while its own call is starting (`parallel` starts every task that way). A call a
-      // helper makes later, after an `await`, starts a chain of its own.
-      if (this.interpretedFunctions.has(fn)) return await (fn as (...a: unknown[]) => unknown)(...args);
-      return await this.callFunction(fn, undefined, args, this.callerDepth);
+      return await this.callCallback(fn, args);
     } catch (thrown) {
       // This is the boundary where a script callback returns to a host helper. Expose values the
       // script threw, while keeping arbitrary host rejection objects out of helper diagnostics.
@@ -875,6 +868,21 @@ export class Interpreter {
       if (!(thrown instanceof Error)) throw new InterpreterError('Host operation failed');
       throw thrown;
     }
+  }
+
+  /**
+   * {@link call} for a method of a value the script holds (`forEach` of its Set or Map): what the
+   * callback throws reaches the script's `catch` as it was thrown.
+   */
+  async callCallback(fn: unknown, args: unknown[]): Promise<unknown> {
+    // A helper that is still going when the run has been ended starts nothing more for the script
+    if (this.fatal !== undefined) throw this.fatal;
+    if (typeof fn !== 'function') throw new InterpreterError('Attempted to call a non-function');
+    // The call continues the chain of the helper that makes it, one call deeper, when the helper
+    // makes it while its own call is starting (`parallel` starts every task that way). A call a
+    // helper makes later, after an `await`, starts a chain of its own.
+    if (this.interpretedFunctions.has(fn)) return await (fn as (...a: unknown[]) => unknown)(...args);
+    return await this.callFunction(fn, undefined, args, this.callerDepth);
   }
 
   /** Number of AST nodes evaluated so far (for execution stats). */

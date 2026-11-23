@@ -42,17 +42,19 @@ const MAX_JSON_INDENT = 10;
  */
 function indentationSize(value: unknown, indent: number, limit: number, depth: number, path: Set<object>): number {
   if (value === null || typeof value !== 'object' || path.has(value)) return 0;
-  const isArray = Array.isArray(value);
-  const keys = isArray ? undefined : Object.keys(value);
-  const count = isArray ? (value as unknown[]).length : (keys as string[]).length;
+  // A Set or Map is written as what its toJSON gives: an array, of [key, value] pairs for a Map
+  const written: unknown = isCollection(value) ? (value as { toJSON(): unknown[] }).toJSON() : value;
+  const isArray = Array.isArray(written);
+  const keys = isArray ? undefined : Object.keys(written as object);
+  const count = isArray ? (written as unknown[]).length : (keys as string[]).length;
   if (count === 0) return 0;
 
   let size = count * (1 + indent * (depth + 1) + (isArray ? 0 : 1)) + 1 + indent * depth;
   path.add(value);
   for (let index = 0; index < count && size <= limit; index++) {
     const item: unknown = isArray
-      ? (value as unknown[])[index]
-      : (value as Record<string, unknown>)[(keys as string[])[index]];
+      ? (written as unknown[])[index]
+      : (written as Record<string, unknown>)[(keys as string[])[index]];
     size += indentationSize(item, indent, limit - size, depth + 1, path);
   }
   path.delete(value);
@@ -421,6 +423,29 @@ interface CollectionType {
   isInstance: (value: unknown) => boolean;
 }
 
+const COLLECTION_PROTOTYPES = new WeakSet<object>();
+const JSON_FORMS = new WeakMap<object, unknown[]>();
+
+/** Whether a value is a Set or Map of a script. */
+function isCollection(value: object): boolean {
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return typeof prototype === 'object' && prototype !== null && COLLECTION_PROTOTYPES.has(prototype);
+}
+
+/** One array per collection, so that JSON.stringify sees a collection that contains itself as a cycle. */
+function jsonFormOf(collection: object, items: Iterable<unknown>): unknown[] {
+  let form = JSON_FORMS.get(collection);
+  if (form === undefined) {
+    form = [];
+    JSON_FORMS.set(collection, form);
+  }
+  form.length = 0;
+  for (const item of items) {
+    form.push(item);
+  }
+  return form;
+}
+
 const SET_READERS = ['has', 'delete', 'clear', 'values', 'keys', 'entries'];
 const MAP_READERS = ['get', 'has', 'delete', 'clear', 'keys', 'values', 'entries'];
 const SetHas = Set.prototype.has;
@@ -450,7 +475,7 @@ function collectionType(
   const methods: Record<string, unknown> = {
     [grow.name]: libraryMethod(takesArraysAsData(grow)),
     toJSON: libraryMethod(function toJSON(this: Collection): unknown[] {
-      return Array.from(Reflect.apply(iterate, this, []));
+      return jsonFormOf(this, Reflect.apply(iterate, this, []));
     }),
     forEach: libraryMethod(async function forEach(this: Collection, callback: unknown): Promise<undefined> {
       if (typeof callback !== 'function') {
@@ -477,6 +502,7 @@ function collectionType(
   };
   Object.defineProperty(facade, 'name', { value: name });
   facade.prototype = Object.freeze(prototype);
+  COLLECTION_PROTOTYPES.add(prototype);
   return {
     facade: takesArraysAsData(Object.freeze(facade)),
     make: (args) => Reflect.construct(BuiltIn, args[0] === undefined || args[0] === null ? [] : [args[0]], facade),

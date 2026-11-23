@@ -110,6 +110,9 @@ export interface InterpreterAdapterOptions {
   maxAllocationBytes?: number;
 }
 
+/** Standard globals that a custom global of the same name replaces. */
+const HOST_REPLACEABLE_GLOBALS: ReadonlySet<string> = new Set(['Set', 'Map']);
+
 /** A failure the enclave reports to the script (or to the caller) with a name and a code. */
 function sandboxError(message: string, name = 'Error', code?: string): Error {
   const error = new Error(message);
@@ -219,6 +222,9 @@ export class InterpreterAdapter implements SandboxAdapter {
     let chargeForHelper = (_bytes: number): void => {
       throw sandboxError('The interpreter is not running');
     };
+    let callForCollection = (_fn: unknown, _args: unknown[]): unknown => {
+      throw sandboxError('The interpreter is not running');
+    };
 
     // The interpreter reads the clock itself while a script computes: a timer cannot fire then.
     const timeout = context.config.timeout;
@@ -235,13 +241,15 @@ export class InterpreterAdapter implements SandboxAdapter {
     try {
       const safe = createSafeGlobals({
         charge: (bytes) => chargeForHelper(bytes),
-        call: (fn, args) => callbacks.call(fn, args),
+        call: (fn, args) => callForCollection(fn, args),
       });
       // The helpers, namespaces and custom globals of this execution; none of them replaces a
-      // standard global.
+      // standard global, except a custom global named Set or Map, as in the VM adapters.
       const runtime = this.runtimeGlobals(context, (bytes) => chargeForHelper(bytes), callbacks);
       for (const name of Object.keys(runtime)) {
-        if (!Object.prototype.hasOwnProperty.call(safe.globals, name)) safe.globals[name] = runtime[name];
+        if (!Object.prototype.hasOwnProperty.call(safe.globals, name) || HOST_REPLACEABLE_GLOBALS.has(name)) {
+          safe.globals[name] = runtime[name];
+        }
       }
       interpreter = new Interpreter({
         globals: safe.globals,
@@ -258,6 +266,7 @@ export class InterpreterAdapter implements SandboxAdapter {
       callbacks.call = (fn, args) => running.call(fn, args);
       callbacks.countBigInt = (value) => running.countBigInt(value);
       chargeForHelper = (bytes) => running.chargeAllocation(bytes);
+      callForCollection = (fn, args) => running.callCallback(fn, args);
     } catch (error) {
       return this.fail<T>(error, startTime, stats.toolCallCount, 0, sanitizeStacks);
     }

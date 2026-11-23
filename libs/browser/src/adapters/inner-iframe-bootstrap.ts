@@ -215,6 +215,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   var _WeakSet = WeakSet;
   var _weakSetHas = WeakSet.prototype.has;
   var _weakSetAdd = WeakSet.prototype.add;
+  var _weakSetDelete = WeakSet.prototype.delete;
   var _dateGetTime = Date.prototype.getTime;
   var _regExpSourceGetter = _getOwnPropertyDescriptor(RegExp.prototype, 'source').get;
   // [flag, getter] in the order RegExp.prototype.flags lists them; each getter reads the internal slot.
@@ -290,7 +291,15 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 
     if (_ReflectApply(_weakSetHas, context.visited, [value])) return '[Circular]';
     _ReflectApply(_weakSetAdd, context.visited, [value]);
+    try {
+      return copyResultObject(value, type, depth, context);
+    } finally {
+      // Only an object that contains itself is a cycle: a second reference elsewhere is copied again
+      _ReflectApply(_weakSetDelete, context.visited, [value]);
+    }
+  }
 
+  function copyResultObject(value, type, depth, context) {
     if (_isArray(value)) {
       var rawLength = _ReflectGet(value, 'length');
       var length = typeof rawLength === 'number' && _numberIsFinite(rawLength) && rawLength >= 0 ? _mathFloor(rawLength) : 0;
@@ -1083,6 +1092,9 @@ const SAFE_TYPES_SOURCE = `
     var mapEntries = Map.prototype.entries;
     var setIteratorNext = getPrototypeOf(apply(setValues, new Set(), [])).next;
     var mapIteratorNext = getPrototypeOf(apply(mapEntries, new Map(), [])).next;
+    var weakMapGet = WeakMap.prototype.get;
+    var weakMapSet = WeakMap.prototype.set;
+    var jsonForms = new WeakMap();
 
     function chargeEntry() {
       if (trackMemory !== null) {
@@ -1094,9 +1106,15 @@ const SAFE_TYPES_SOURCE = `
       _defineProperty(target, key, { value: value, writable: true, enumerable: false, configurable: true });
     }
 
+    // One array per collection, so that JSON.stringify sees a collection that contains itself as a cycle
     function itemsOf(collection, iterate, next) {
-      var items = [];
       var iterator = apply(iterate, collection, []);
+      var items = apply(weakMapGet, jsonForms, [collection]);
+      if (items === undefined) {
+        items = [];
+        apply(weakMapSet, jsonForms, [collection, items]);
+      }
+      items.length = 0;
       for (var step = apply(next, iterator, []); !step.done; step = apply(next, iterator, [])) {
         items[items.length] = step.value;
       }

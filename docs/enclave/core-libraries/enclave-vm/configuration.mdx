@@ -42,7 +42,7 @@ const enclave = new Enclave({
 | `maxIterations` | number | 10000 | Maximum loop iterations (prevents infinite loops) |
 | `toolHandler` | function | - | Async function that handles `callTool()` invocations |
 | `toolNamespaces` | object | - | Expose tools as `ns.method(args)`: `{ mail: ['list', 'send'] }` or `{ users: { get: 'users:get' } }`. Each call is a `callTool()` call (see [Tool System](/enclave/core-libraries/enclave-vm/tool-system#tool-namespaces)) |
-| `globals` | object | - | Additional globals available in script context |
+| `globals` | object | - | Additional globals available in script context. A global named `Set` or `Map` replaces the built-in one, on every adapter; `PortableEnclave` refuses one at construction |
 | `allowFunctionsInGlobals` | boolean | varies | Allow functions in `globals`. Calls into them are gated: abort check, `maxGlobalFunctionCalls`, the double VM rate limit, and a sanitized copy of the result |
 | `maxGlobalFunctionCalls` | number | 10 × `maxToolCalls` | Maximum calls into functions from `globals` per execution |
 | `validate` | boolean | true | Validate code with ast-guard before execution. With `false`, a script that contains `import()` or `import.meta` still fails with `SECURITY_VIOLATION` before it runs |
@@ -123,6 +123,7 @@ console.log('Peak memory:', result.stats.memoryUsage);
 `memoryLimit` is the enclave's own accounting, not a limit of the engine's heap. It counts the operations that make text and arrays grow:
 
 - **Text**: concatenation (`a + b`, and `x += y`, which is charged like `x + y`) and the methods that multiply their input (`repeat`, `padStart`, `padEnd`, `join`).
+- **Sets and Maps**: every new entry of a `Set` or `Map` is charged 16 bytes before it is added. Adding a value a Set already holds, or setting a key a Map already has, costs nothing.
 - **Arrays**: no array has more slots than the limit holds, at 8 bytes per slot, and the slots an operation adds are charged: `push`, `unshift`, `splice`, a write to an element beyond the end, an assignment to `length`, `Array(n)`, the elements `concat`, `flat`, `flatMap` and a spread literal add, and what `Array.from` makes out of something that is not an array.
 
 The slots count whether they hold anything or not, because that is what a built-in works through. An array used as a sparse map is therefore charged for its whole length, and refused above the limit:
@@ -131,13 +132,13 @@ The slots count whether they hold anything or not, because that is what a built-
 const seen = [];
 seen[5000000] = true; // MEMORY_LIMIT_EXCEEDED with the default limit: 5,000,001 slots
 
-const seenById = {}; // an object, or a Map, takes any key
-seenById[5000000] = true;
+const seenById = new Map(); // an object, or a Map, takes any key
+seenById.set(5000000, true); // 16 bytes
 ```
 
 For the same reason an array method does not work on a receiver that is longer than an array may be: `[].indexOf.call({ length: 1e15 }, x)` fails with `MEMORY_LIMIT_EXCEEDED` instead of walking that length. One call into a built-in is not interrupted at the deadline, so its length is what bounds it. Of an object that is not an array the length is read once.
 
-It does not count a copy (a script can hold many arrays that are each within the limit), and it does not count object literals, Maps and Sets. A script that goes over the limit fails with `MEMORY_LIMIT_EXCEEDED`. With a limit set, the VM adapters also measure the returned value: one whose serialized size is estimated above `memoryLimit`, or above 50 MB where the limit is larger, fails with `SERIALIZATION_LIMIT_EXCEEDED`.
+It does not count a copy (a script can hold many arrays that are each within the limit), and it does not count object literals. A script that goes over the limit fails with `MEMORY_LIMIT_EXCEEDED`. With a limit set, the VM adapters also measure the returned value: one whose serialized size is estimated above `memoryLimit`, or above 50 MB where the limit is larger, fails with `SERIALIZATION_LIMIT_EXCEEDED`.
 
 Treat the limit as an estimate. The [worker pool](/core-libraries/enclave-vm/worker-pool) adds a heap limit of the engine per worker; a worker thread shares the host's process, so that limit is a backstop and not a guarantee that the host survives. Where the host must survive whatever a script allocates, run the enclave in a child process or a container with a memory limit of the operating system.
 
