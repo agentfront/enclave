@@ -10,7 +10,6 @@ module.exports = {
   preset: '../../jest.preset.js',
   testEnvironment: 'node',
   roots: ['<rootDir>/src', ...(hasSecuritySpecs ? [securitySpecs] : [])],
-  setupFiles: ['<rootDir>/jest.setup.ts'],
   transform: {
     '^.+\\.[tj]s$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.spec.json' }],
   },

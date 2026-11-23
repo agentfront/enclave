@@ -27,6 +27,9 @@ export type {
   ScriptToolCall,
 } from './analysis/script-analysis';
 export { REVIEW_ERROR_CODES } from './review/types';
+export { functionReviewer, providerReviewer } from './review/reviewers';
+export type { ProviderReviewerOptions, ReviewerOptions, ReviewerRequest, ReviewerTool } from './review/reviewers';
+export { ReviewerError } from './review/review-session';
 export type {
   PostReviewAction,
   PostReviewInput,

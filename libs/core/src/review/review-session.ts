@@ -67,6 +67,20 @@ interface ReviewTarget {
   callIndex?: number;
 }
 
+/** An error of a reviewer whose message is safe to show in the result (no answer, no key) */
+export class ReviewerError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReviewerError';
+  }
+}
+
+/** The decision as a plain copy, or undefined when it is out of shape */
+export function parseReviewDecision(value: unknown): ReviewDecision | undefined {
+  const parsed = decisionSchema.safeParse(value);
+  return parsed.success ? (parsed.data as ReviewDecision) : undefined;
+}
+
 export interface NormalizedReviewOptions {
   readonly pre?: ReviewOptions['pre'];
   readonly post?: ReviewOptions['post'];
@@ -296,10 +310,9 @@ export class ReviewSession {
       }
       failure = 'The review hook gave an answer of the wrong shape';
     } catch (error) {
-      failure =
-        error === TIMED_OUT
-          ? `The review hook did not answer within ${this.options.timeoutMs} ms`
-          : 'The review hook threw';
+      if (error === TIMED_OUT) failure = `The review hook did not answer within ${this.options.timeoutMs} ms`;
+      else if (error instanceof ReviewerError) failure = error.message.slice(0, MAX_TEXT_LENGTH);
+      else failure = 'The review hook threw';
     } finally {
       clearTimeout(timer);
     }

@@ -1,28 +1,13 @@
 /**
- * Local LLM Scorer
- *
- * Scores the extracted features with one of:
- * - Built-in heuristics: Keyword-based risk detection (default)
- * - Custom analyzer: Plug in external LLM or static code analyzer
- *
- * At initialization the scorer loads a Hugging Face transformers.js pipeline when the optional
- * dependency is installed (the model is downloaded on first use, into `cacheDir`). No score is
- * computed from that model: the pipeline is not called. Whether it loaded decides which of two
- * scorings applies when there is no custom analyzer: the keyword heuristics when it did, the
- * rule-based fallback when it did not (and `fallbackToRules` is on). Set
- * `ENCLAVE_DISABLE_LOCAL_LLM_MODEL=1` to skip the load.
+ * Local LLM Scorer: the host's custom analyzer; without one the rule-based scorer
+ * (`fallbackToRules`, the default) or the keyword heuristics. It loads no model.
  *
  * @packageDocumentation
  */
 
 import { BaseScorer } from '../scorer.interface';
 import { RuleBasedScorer } from './rule-based.scorer';
-import type { ExtractedFeatures, ScoringResult, RiskSignal, LocalLlmConfig, RiskLevel } from '../types';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-
-// Pipeline type from @huggingface/transformers
-type Pipeline = (input: string, options?: Record<string, unknown>) => Promise<{ data: number[] }>;
+import type { ExtractedFeatures, ScoringResult, RiskSignal, LocalLlmConfig } from '../types';
 
 // VectoriaDB types (optional dependency)
 interface VectoriaSearchResult {
@@ -37,27 +22,7 @@ interface VectoriaDBInstance {
 }
 
 /**
- * Default model cache directory
- */
-const LEGACY_DEFAULT_CACHE_DIR = './.cache/transformers';
-
-function getDefaultCacheDir(): string {
-  try {
-    const home = homedir();
-    if (typeof home === 'string' && home.trim().length > 0) {
-      return join(home, '.enclave', 'models');
-    }
-  } catch {
-    // fall back below
-  }
-
-  return LEGACY_DEFAULT_CACHE_DIR;
-}
-
-export const DISABLE_MODEL_LOAD_ENV = 'ENCLAVE_DISABLE_LOCAL_LLM_MODEL';
-
-/**
- * Default model for classification
+ * Default model name for the VectoriaDB index of similarity mode
  */
 const DEFAULT_MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 
@@ -72,8 +37,7 @@ const RISK_KEYWORDS = {
 };
 
 /**
- * Local LLM Scorer - keyword heuristics or a host-supplied analyzer (see the file header for
- * what the loaded model is and is not used for)
+ * Local LLM Scorer - a host-supplied analyzer, the rule-based fallback or keyword heuristics
  *
  * @example Basic usage with built-in heuristics
  * ```typescript
@@ -101,7 +65,6 @@ export class LocalLlmScorer extends BaseScorer {
   readonly type = 'local-llm' as const;
   readonly name = 'LocalLlmScorer';
 
-  private pipeline: Pipeline | null = null;
   private initPromise: Promise<void> | null = null;
   private readonly fallbackScorer: RuleBasedScorer | null;
   private readonly config: LocalLlmConfig;
@@ -113,7 +76,6 @@ export class LocalLlmScorer extends BaseScorer {
       ...config,
       modelId: config.modelId || DEFAULT_MODEL_ID,
       mode: config.mode ?? 'classification',
-      cacheDir: config.cacheDir ?? config.modelDir ?? getDefaultCacheDir(),
       fallbackToRules: config.fallbackToRules ?? true,
     };
 
@@ -142,60 +104,14 @@ export class LocalLlmScorer extends BaseScorer {
    */
   private async _initialize(): Promise<void> {
     try {
-      if (process.env[DISABLE_MODEL_LOAD_ENV] === '1') {
-        throw new Error(`Model loading disabled via ${DISABLE_MODEL_LOAD_ENV}=1`);
-      }
-
-      // Dynamic import using Function to avoid TypeScript checking for the optional dependency
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const transformers = await (Function('return import("@huggingface/transformers")')() as Promise<any>);
-      const { pipeline } = transformers;
-
-      // Use feature-extraction pipeline for both modes
-      // (classification mode uses embeddings + heuristics, similarity mode uses embeddings + VectoriaDB)
-      const pipelineFn = await pipeline('feature-extraction', this.config.modelId, {
-        cache_dir: this.config.cacheDir,
-      });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Pipeline type is complex
-      this.pipeline = pipelineFn as any as Pipeline;
-
-      // Initialize custom analyzer if provided
-      if (this.config.customAnalyzer?.initialize) {
-        await this.config.customAnalyzer.initialize();
-      }
-
-      // Initialize VectoriaDB for similarity mode
+      await this.config.customAnalyzer?.initialize?.();
       if (this.config.mode === 'similarity') {
         await this.initializeVectoriaDB();
       }
-
       this.ready = true;
     } catch (error) {
       this.initPromise = null;
-
-      if (this.fallbackScorer) {
-        console.warn(
-          `[LocalLlmScorer] Model load failed, using rule-based fallback: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-
-        // Initialize custom analyzer even when model fails (it may not need the model)
-        if (this.config.customAnalyzer?.initialize) {
-          await this.config.customAnalyzer.initialize();
-        }
-
-        // Try to initialize VectoriaDB for similarity mode even if model fails
-        if (this.config.mode === 'similarity') {
-          await this.initializeVectoriaDB();
-        }
-
-        this.ready = true; // Ready with fallback
-      } else {
-        throw new LocalLlmScorerError(
-          `Failed to initialize model: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+      throw error;
     }
   }
 
@@ -257,9 +173,8 @@ export class LocalLlmScorer extends BaseScorer {
       }
     }
 
-    // If model failed to load and we have fallback (no custom analyzer)
-    // Skip fallback for similarity mode - it can work without the pipeline using VectoriaDB/heuristics
-    if (!this.pipeline && this.fallbackScorer && this.config.mode !== 'similarity') {
+    // Without a custom analyzer the rule-based fallback scores, except in similarity mode
+    if (this.fallbackScorer && this.config.mode !== 'similarity') {
       const result = await this.fallbackScorer.score(features);
       return {
         ...result,
@@ -545,7 +460,7 @@ export class LocalLlmScorer extends BaseScorer {
    * Check if using fallback scorer
    */
   isUsingFallback(): boolean {
-    return this.pipeline === null && this.fallbackScorer !== null && this.ready;
+    return this.fallbackScorer !== null && this.ready;
   }
 
   /**
@@ -559,7 +474,6 @@ export class LocalLlmScorer extends BaseScorer {
    * Dispose of resources
    */
   override dispose(): void {
-    this.pipeline = null;
     this.initPromise = null;
     this.vectoriaDB = null;
     this.fallbackScorer?.dispose?.();

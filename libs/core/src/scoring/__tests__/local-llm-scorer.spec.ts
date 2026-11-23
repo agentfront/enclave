@@ -212,35 +212,10 @@ describe('LocalLlmScorer', () => {
       expect(storedConfig.mode).toBe('similarity');
       expect(storedConfig.vectoriaConfig?.threshold).toBe(0.9);
     });
-
-    it('should use cacheDir over deprecated modelDir', () => {
-      const config: LocalLlmConfig = {
-        modelId: 'Xenova/test-model',
-        cacheDir: '/custom/cache',
-        modelDir: '/deprecated/path',
-      };
-
-      const scorer = new LocalLlmScorer(config);
-      const storedConfig = scorer.getConfig();
-
-      expect(storedConfig.cacheDir).toBe('/custom/cache');
-    });
-
-    it('should fall back to modelDir if cacheDir not provided', () => {
-      const config: LocalLlmConfig = {
-        modelId: 'Xenova/test-model',
-        modelDir: '/deprecated/path',
-      };
-
-      const scorer = new LocalLlmScorer(config);
-      const storedConfig = scorer.getConfig();
-
-      expect(storedConfig.cacheDir).toBe('/deprecated/path');
-    });
   });
 
   describe('initialize() with fallback', () => {
-    it('should fall back to rule-based on model load failure', async () => {
+    it('scores with the rule-based fallback and loads no model', async () => {
       const config: LocalLlmConfig = {
         modelId: 'invalid-model-that-does-not-exist',
         fallbackToRules: true,
@@ -661,7 +636,7 @@ describe('LocalLlmScorer', () => {
       scorer.dispose();
     });
 
-    it('should initialize custom analyzer even when model fails to load', async () => {
+    it('should initialize the custom analyzer', async () => {
       const initializeFn = jest.fn().mockResolvedValue(undefined);
       const customAnalyzer: CustomAnalyzer = {
         analyze: jest.fn().mockResolvedValue({ score: 0, signals: [] }),
@@ -677,8 +652,6 @@ describe('LocalLlmScorer', () => {
       const scorer = new LocalLlmScorer(config);
       await scorer.initialize();
 
-      // Custom analyzer should be initialized regardless of model load success
-      // (model fails since @huggingface/transformers is not installed in tests)
       expect(initializeFn).toHaveBeenCalledTimes(1);
       expect(scorer.isReady()).toBe(true);
 

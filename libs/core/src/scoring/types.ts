@@ -439,8 +439,8 @@ export interface CustomAnalyzer {
  */
 export interface LocalLlmConfig {
   /**
-   * Model identifier from HuggingFace
-   * @example 'Xenova/codebert-base', 'Xenova/all-MiniLM-L6-v2'
+   * Model name of the VectoriaDB index in similarity mode (unless `vectoriaConfig.modelName` is set)
+   * @example 'Xenova/all-MiniLM-L6-v2'
    */
   modelId: 'Xenova/codebert-base' | 'Xenova/all-MiniLM-L6-v2' | string;
 
@@ -455,10 +455,7 @@ export interface LocalLlmConfig {
    */
   mode?: 'classification' | 'similarity';
 
-  /**
-   * Model cache directory
-   * @default '~/.enclave/models'
-   */
+  /** @deprecated No effect: the scorer loads no model */
   cacheDir?: string;
 
   /**
@@ -473,14 +470,13 @@ export interface LocalLlmConfig {
   vectoriaConfig?: VectoriaConfigForScoring;
 
   /**
-   * Whether to fall back to rule-based scorer on model errors
+   * Without a custom analyzer, score with the rule-based scorer instead of the keyword heuristics;
+   * with one, the answer when it fails
    * @default true
    */
   fallbackToRules?: boolean;
 
-  /**
-   * @deprecated Use cacheDir instead
-   */
+  /** @deprecated No effect: the scorer loads no model */
   modelDir?: string;
 
   /**
@@ -497,8 +493,7 @@ export interface LocalLlmConfig {
    * Custom analyzer for external LLM or static code analysis
    *
    * If provided, this analyzer will be used instead of the built-in
-   * heuristic-based analysis. The HuggingFace pipeline is still loaded
-   * when the optional dependency is installed; its output is not used.
+   * heuristic-based analysis.
    *
    * @example
    * ```typescript
