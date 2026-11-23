@@ -99,6 +99,12 @@ const upper = str.toUpperCase();
 const num = parseInt('42');
 const fixed = num.toFixed(2);
 
+// ✓ Set, Map and errors (not at STRICT): new entries count against memoryLimit, errors have no stack
+const ids = new Set(users.map((u) => u.id));
+const byId = new Map(users.map((u) => [u.id, u]));
+if (ids.size === 0) throw new Error('no users');
+// A Set reaches a tool or the result as an array, a Map as [key, value] pairs
+
 // ✓ Console (rate-limited; PERMISSIVE only, or any level when the host sets consoleHandler)
 console.log('debug message');
 console.warn('warning');

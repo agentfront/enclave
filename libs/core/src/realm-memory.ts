@@ -54,10 +54,10 @@
  *    its length is a number it holds.
  *
  * What it does not cover: a copy is free, so a script can still hold many arrays that are each
- * within the limit; object literals, Maps and Sets are not counted. With no limit (0) none of
- * the rules applies, the fourth included. The limit is an estimate,
- * not the engine's: where the host must survive whatever a script allocates, the script belongs
- * in a worker or a process of its own.
+ * within the limit; object literals are not counted (the entries of a Set or Map are, see
+ * ./realm-safe-globals). With no limit (0) none of the rules applies, the fourth included.
+ * The limit is an estimate, not the engine's: where the host must survive whatever a script
+ * allocates, the script belongs in a worker or a process of its own.
  *
  * @packageDocumentation
  */

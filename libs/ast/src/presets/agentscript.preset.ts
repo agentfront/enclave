@@ -20,6 +20,7 @@ import {
   AllowedSyntaxRule,
   AGENTSCRIPT_ALLOWED_NODE_TYPES,
 } from '../rules';
+import { STACK_FRAME_OBJECT_KEYS } from './stack-frame-properties';
 
 // =============================================================================
 // Security-Level-Aware Allowed Globals
@@ -62,7 +63,7 @@ export const AGENTSCRIPT_STRICT_GLOBALS = [
 
 /**
  * Globals for SECURE security level
- * Adds safe utility functions (pure functions with no side effects)
+ * Adds safe utility functions (pure functions with no side effects), Set, Map and errors of the runtime
  */
 export const AGENTSCRIPT_SECURE_GLOBALS = [
   ...AGENTSCRIPT_STRICT_GLOBALS,
@@ -78,6 +79,20 @@ export const AGENTSCRIPT_SECURE_GLOBALS = [
   'decodeURI',
   'encodeURIComponent',
   'decodeURIComponent',
+
+  // The runtime's Set and Map, each new entry charged against the memory limit
+  'Set',
+  '__safe_Set',
+  'Map',
+  '__safe_Map',
+
+  // The runtime's errors: a name and a message, no stack
+  'Error',
+  '__safe_Error',
+  'TypeError',
+  '__safe_TypeError',
+  'RangeError',
+  '__safe_RangeError',
 ] as const;
 
 /**
@@ -111,7 +126,7 @@ export type SecurityLevel = 'STRICT' | 'SECURE' | 'STANDARD' | 'PERMISSIVE';
  *
  * Security levels (from most to least restrictive):
  * - STRICT: Absolute minimum (core types + callTool only)
- * - SECURE: Adds safe utility functions (parseInt, encodeURI, etc.)
+ * - SECURE: Adds safe utility functions (parseInt, encodeURI, etc.), Set, Map, Error, TypeError and RangeError
  * - STANDARD: Same as SECURE (room for future expansion)
  * - PERMISSIVE: Adds console for debugging
  *
@@ -174,7 +189,7 @@ export const AGENTSCRIPT_DISALLOWED_IDENTIFIERS: readonly string[] = Object.free
   'Proxy',
   'Reflect',
 
-  // Error manipulation (stack traces can leak)
+  // Error constructors (stack traces can leak); SECURE and up allow the runtime's stackless ones
   'Error',
   'TypeError',
   'ReferenceError',
@@ -226,7 +241,7 @@ export const AGENTSCRIPT_DISALLOWED_IDENTIFIERS: readonly string[] = Object.free
   'WeakRef',
   'FinalizationRegistry',
 
-  // Memory Hazards
+  // Memory Hazards; SECURE and up allow the runtime's Set and Map, which charge every entry
   'Map',
   'Set',
 
@@ -287,7 +302,7 @@ export interface AgentScriptOptions {
    * If allowedGlobals is also provided, it takes precedence.
    *
    * - STRICT: Base globals only (core types + callTool)
-   * - SECURE, STANDARD: Add utility functions (parseInt, encodeURI, etc.)
+   * - SECURE, STANDARD: Add utility functions (parseInt, encodeURI, etc.), Set, Map and the errors
    * - PERMISSIVE: Adds console for debugging
    *
    * Default: 'STANDARD'
@@ -606,7 +621,9 @@ export function createAgentScriptPreset(options: AgentScriptOptions = {}): Valid
     new DisallowedIdentifierRule({
       disallowed: filteredDangerousIdentifiers,
       // Reflection entry points, refused by property name on any object (alias-proof)
-      disallowedProperties: [...AGENTSCRIPT_DISALLOWED_PROPERTIES],
+      disallowedProperties: [...AGENTSCRIPT_DISALLOWED_PROPERTIES, ...STACK_FRAME_OBJECT_KEYS],
+      // The stack trace hook, refused as in the other presets that allow `Error`
+      disallowedObjectKeys: [...STACK_FRAME_OBJECT_KEYS],
       // `{ __proto__: x }` sets a prototype; it is the one key that is not a plain property
       blockProtoInObjectLiterals: true,
       // A key held in a variable is the key guard's to answer (`guardComputedMemberKeys`, which

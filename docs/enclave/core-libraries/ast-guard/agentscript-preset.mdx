@@ -81,6 +81,7 @@ const validator = new JSAstValidator(createAgentScriptPreset({
 | **Storage**         | `localStorage`, `sessionStorage`, `indexedDB`                       | Prevents data persistence                     |
 | **Native code**     | `WebAssembly`, `Worker`, `SharedWorker`                             | Prevents native execution                     |
 | **Weak references** | `WeakMap`, `WeakSet`, `WeakRef`                                     | Prevents reference manipulation               |
+| **STRICT only**     | `Set`, `Map`, `Error`, `TypeError`, `RangeError`                    | Allowed from `SECURE` up (see below)          |
 | **User functions**  | `function foo() {}`, `const f = function() {}`                      | Prevents recursion (arrow functions allowed)  |
 | **Unbounded loops** | `while`, `do-while`, `for-in`                                       | Prevents infinite loops and prototype walking |
 
@@ -187,6 +188,7 @@ The AgentScript preset allows these globals by default (`securityLevel: 'STANDAR
 - `Date` - Date operations
 - `undefined`, `NaN`, `Infinity` - Constants
 - `parseInt`, `parseFloat`, `isNaN`, `isFinite`, `encodeURI`, `decodeURI`, `encodeURIComponent`, `decodeURIComponent` - Not at `STRICT`
+- `Set`, `Map`, `Error`, `TypeError`, `RangeError` - Not at `STRICT`. In `@enclave-vm/core` and `@enclave-vm/browser` they are the runtime's own: every new entry of a Set or Map counts against `memoryLimit`, and an error has `name` and `message` but no `stack`. The preset also refuses `prepareStackTrace` as a property name and as an object key
 - `console` - Only at `PERMISSIVE`
 
 `getAgentScriptGlobals(securityLevel)` returns the list for a level.

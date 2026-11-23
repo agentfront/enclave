@@ -164,7 +164,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
         // Use memory limit as serialization limit (or a reasonable cap)
         // This prevents the serialization size from exceeding what we'd allow in memory
         const maxSerializedBytes = Math.min(config.memoryLimit, 50 * 1024 * 1024); // Cap at 50MB
-        const sizeCheck = checkSerializedSize(value, maxSerializedBytes);
+        const sizeCheck = checkSerializedSize(value, maxSerializedBytes, { mapsAsEntries: true });
 
         if (!sizeCheck.ok) {
           return {
@@ -186,6 +186,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
         maxProperties: config.maxSanitizeProperties,
         allowDates: true,
         allowErrors: true,
+        mapsAsEntries: true,
       });
 
       return {

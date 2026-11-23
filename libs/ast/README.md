@@ -338,11 +338,13 @@ The AgentScript preset takes its allowed globals from the security level; `@encl
 | `isNaN`, `isFinite`                        | No     | Yes    | Yes      | Yes        |
 | `encodeURI`, `decodeURI`                   | No     | Yes    | Yes      | Yes        |
 | `encodeURIComponent`, `decodeURIComponent` | No     | Yes    | Yes      | Yes        |
+| `Set`, `Map`                               | No     | Yes    | Yes      | Yes        |
+| `Error`, `TypeError`, `RangeError`         | No     | Yes    | Yes      | Yes        |
 | `console`                                  | No     | No     | No       | Yes        |
 
-The lists are exported as `AGENTSCRIPT_STRICT_GLOBALS`, `AGENTSCRIPT_SECURE_GLOBALS`, `AGENTSCRIPT_STANDARD_GLOBALS` and `AGENTSCRIPT_PERMISSIVE_GLOBALS`, and `getAgentScriptGlobals(level)` returns the one for a level.
+The lists are exported as `AGENTSCRIPT_STRICT_GLOBALS`, `AGENTSCRIPT_SECURE_GLOBALS`, `AGENTSCRIPT_STANDARD_GLOBALS` and `AGENTSCRIPT_PERMISSIVE_GLOBALS`, and `getAgentScriptGlobals(level)` returns the one for a level. `Set`, `Map` and the three error types are the runtime's own in `@enclave-vm/core`: a new entry is charged against the memory limit, and an error has no `stack`.
 
-**Refused at every level.** A global that is not on the list is refused as an unknown global (`UNKNOWN_GLOBAL`). On top of that, `AGENTSCRIPT_DISALLOWED_IDENTIFIERS` (exported, frozen) is refused by name, as a variable and as a property: `eval`, `Function`, `process`, `require`, `constructor`, `__proto__`, `prototype`, `Proxy`, `Reflect`, `Promise`, `Symbol`, `RegExp`, `setTimeout`, `fetch`, `WebSocket`, `Map`, `Set`, the error constructors and about 40 more. `NoGlobalAccessRule` refuses `window`, `globalThis`, `self`, `global` and `this`, and `AGENTSCRIPT_DISALLOWED_PROPERTIES` lists the reflection names refused as a property on any object.
+**Refused at every level.** A global that is not on the list is refused as an unknown global (`UNKNOWN_GLOBAL`). On top of that, `AGENTSCRIPT_DISALLOWED_IDENTIFIERS` (exported, frozen) is refused by name, as a variable and as a property: `eval`, `Function`, `process`, `require`, `constructor`, `__proto__`, `prototype`, `Proxy`, `Reflect`, `Promise`, `Symbol`, `RegExp`, `setTimeout`, `fetch`, `WebSocket`, `WeakMap`, `WeakSet`, `WeakRef`, the error constructors and about 40 more (`Map`, `Set`, `Error`, `TypeError` and `RangeError` only where the level does not allow them). `NoGlobalAccessRule` refuses `window`, `globalThis`, `self`, `global` and `this`, and `AGENTSCRIPT_DISALLOWED_PROPERTIES` lists the reflection names refused as a property on any object.
 
 #### Tool Namespaces
 

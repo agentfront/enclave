@@ -29,6 +29,9 @@ export const DOCUMENT_REFUSED_MESSAGE = 'The document of this sandbox frame is n
 /** Error code of a run whose sandbox could not be set up; the script was not started. */
 export const SANDBOX_SETUP_FAILED_CODE = 'SANDBOX_SETUP_FAILED';
 
+/** Bytes a new entry of a script's Set or Map is charged, as in @enclave-vm/core. */
+const COLLECTION_ENTRY_BYTES = 16;
+
 export interface InnerIframeBootstrapOptions {
   userCode: string;
   config: SerializedIframeConfig;
@@ -212,6 +215,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
   var _WeakSet = WeakSet;
   var _weakSetHas = WeakSet.prototype.has;
   var _weakSetAdd = WeakSet.prototype.add;
+  var _weakSetDelete = WeakSet.prototype.delete;
   var _dateGetTime = Date.prototype.getTime;
   var _regExpSourceGetter = _getOwnPropertyDescriptor(RegExp.prototype, 'source').get;
   // [flag, getter] in the order RegExp.prototype.flags lists them; each getter reads the internal slot.
@@ -287,7 +291,15 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 
     if (_ReflectApply(_weakSetHas, context.visited, [value])) return '[Circular]';
     _ReflectApply(_weakSetAdd, context.visited, [value]);
+    try {
+      return copyResultObject(value, type, depth, context);
+    } finally {
+      // Only an object that contains itself is a cycle: a second reference elsewhere is copied again
+      _ReflectApply(_weakSetDelete, context.visited, [value]);
+    }
+  }
 
+  function copyResultObject(value, type, depth, context) {
     if (_isArray(value)) {
       var rawLength = _ReflectGet(value, 'length');
       var length = typeof rawLength === 'number' && _numberIsFinite(rawLength) && rawLength >= 0 ? _mathFloor(rawLength) : 0;
@@ -324,16 +336,15 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
 
     if (!isPlain && hasBrand(_regExpSourceGetter, value)) return regExpToString(value);
 
+    // A Map as its [key, value] pairs, every key kept, as in @enclave-vm/core
     if (!isPlain && hasBrand(_mapSizeGetter, value)) {
-      var mapCopy = _objectCreate(null);
+      var pairs = [];
       var entries = _ReflectApply(_mapEntries, value, []);
       for (var step = _ReflectApply(_mapIteratorNext, entries, []); !step.done; step = _ReflectApply(_mapIteratorNext, entries, [])) {
-        var entry = step.value;
-        if (typeof entry[0] !== 'string' || isDangerousResultKey(entry[0])) continue;
         context.propertyCount++;
-        mapCopy[entry[0]] = sanitizeResultValue(entry[1], depth + 1, context);
+        pairs.push(sanitizeResultValue(step.value, depth + 1, context));
       }
-      return mapCopy;
+      return pairs;
     }
 
     if (!isPlain && hasBrand(_setSizeGetter, value)) {
@@ -691,6 +702,9 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
     }
   })();
 
+  // Charges the memory accounting below; null without a memory limit
+  var trackMemory = null;
+
   // Memory-safe prototype patches (must run BEFORE freeze)
   (function() {
     var ml = ${memoryLimit};
@@ -706,6 +720,7 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
       totalTracked += saneSize(bytes);
       if (totalTracked > ml) throw new RangeError('Memory limit exceeded');
     }
+    trackMemory = track;
 
     // Charge what was really built when it is more than the estimate (a receiver or an argument
     // that reports one size and then produces another).
@@ -778,6 +793,8 @@ function generateInnerIframeScript(userCode: string, config: SerializedIframeCon
       failSetup('memory accounting could not be installed');
     }
   })();
+
+${SAFE_TYPES_SOURCE}
 
   // Freeze all prototypes
   (function() {
@@ -891,6 +908,11 @@ ${CONNECTION_BACKSTOP_SOURCE}
     Error: createSecureProxy(Error),
     TypeError: createSecureProxy(TypeError),
     RangeError: createSecureProxy(RangeError),
+    __safe_Set: safeTypes.Set,
+    __safe_Map: safeTypes.Map,
+    __safe_Error: safeTypes.Error,
+    __safe_TypeError: safeTypes.TypeError,
+    __safe_RangeError: safeTypes.RangeError,
     Promise: createSecureProxy(Promise),
     undefined: undefined,
     NaN: NaN,
@@ -1050,6 +1072,121 @@ ${DOCUMENT_BACKSTOP_SOURCE}
 })();
 `.trim();
 }
+
+/**
+ * Statements of the inner iframe script that define `safeTypes`: the script's `Set`, `Map`,
+ * `Error`, `TypeError` and `RangeError`, as `realm-safe-globals` defines them in @enclave-vm/core.
+ */
+const SAFE_TYPES_SOURCE = `
+  var safeTypes = (function() {
+    var apply = Reflect.apply;
+    var construct = Reflect.construct;
+    var getPrototypeOf = Object.getPrototypeOf;
+    var RealmString = String;
+    var RealmTypeError = TypeError;
+    var setHas = Set.prototype.has;
+    var setAdd = Set.prototype.add;
+    var setValues = Set.prototype.values;
+    var mapHas = Map.prototype.has;
+    var mapSet = Map.prototype.set;
+    var mapEntries = Map.prototype.entries;
+    var setIteratorNext = getPrototypeOf(apply(setValues, new Set(), [])).next;
+    var mapIteratorNext = getPrototypeOf(apply(mapEntries, new Map(), [])).next;
+    var weakMapGet = WeakMap.prototype.get;
+    var weakMapSet = WeakMap.prototype.set;
+    var jsonForms = new WeakMap();
+
+    function chargeEntry() {
+      if (trackMemory !== null) {
+        trackMemory(${COLLECTION_ENTRY_BYTES});
+      }
+    }
+
+    function defineMethod(target, key, value) {
+      _defineProperty(target, key, { value: value, writable: true, enumerable: false, configurable: true });
+    }
+
+    // One array per collection, so that JSON.stringify sees a collection that contains itself as a cycle
+    function itemsOf(collection, iterate, next) {
+      var iterator = apply(iterate, collection, []);
+      var items = apply(weakMapGet, jsonForms, [collection]);
+      if (items === undefined) {
+        items = [];
+        apply(weakMapSet, jsonForms, [collection, items]);
+      }
+      items.length = 0;
+      for (var step = apply(next, iterator, []); !step.done; step = apply(next, iterator, [])) {
+        items[items.length] = step.value;
+      }
+      return items;
+    }
+
+    function makeCollection(BuiltIn, name, readerNames, grow, toJSON) {
+      var builtInPrototype = BuiltIn.prototype;
+      var prototype = {};
+      var Collection = function(entries) {
+        if (new.target === undefined) {
+          throw new RealmTypeError('Constructor ' + name + " requires 'new'");
+        }
+        return construct(BuiltIn, entries === undefined || entries === null ? [] : [entries], Collection);
+      };
+      for (var i = 0; i < readerNames.length; i++) {
+        defineMethod(prototype, readerNames[i], builtInPrototype[readerNames[i]]);
+      }
+      defineMethod(prototype, grow.name, grow);
+      defineMethod(prototype, 'toJSON', toJSON);
+      defineMethod(prototype, 'constructor', Collection);
+      defineMethod(prototype, Symbol.iterator, builtInPrototype[Symbol.iterator]);
+      var sizeGetter = _getOwnPropertyDescriptor(builtInPrototype, 'size').get;
+      _defineProperty(prototype, 'size', { get: sizeGetter, configurable: true });
+      _defineProperty(prototype, Symbol.toStringTag, { value: name, configurable: true });
+      _defineProperty(Collection, 'name', { value: name, configurable: true });
+      Collection.prototype = _freeze(prototype);
+      return _freeze(Collection);
+    }
+
+    function makeErrorType(BuiltIn, name) {
+      var ErrorType = function(message) {
+        var error = construct(BuiltIn, []);
+        _defineProperty(error, 'name', { value: name, enumerable: true });
+        _defineProperty(error, 'message', { value: message === undefined ? '' : RealmString(message), enumerable: true });
+        _defineProperty(error, 'stack', { value: undefined });
+        return _freeze(error);
+      };
+      _defineProperty(ErrorType, 'name', { value: name, configurable: true });
+      ErrorType.prototype = BuiltIn.prototype;
+      return _freeze(ErrorType);
+    }
+
+    var add = function add(value) {
+      if (!apply(setHas, this, [value])) {
+        chargeEntry();
+      }
+      return apply(setAdd, this, [value]);
+    };
+    var set = function set(key, value) {
+      if (!apply(mapHas, this, [key])) {
+        chargeEntry();
+      }
+      return apply(mapSet, this, [key, value]);
+    };
+    var setToJSON = function toJSON() {
+      return itemsOf(this, setValues, setIteratorNext);
+    };
+    var mapToJSON = function toJSON() {
+      return itemsOf(this, mapEntries, mapIteratorNext);
+    };
+    var setReaders = ['has', 'delete', 'clear', 'forEach', 'values', 'keys', 'entries'];
+    var mapReaders = ['get', 'has', 'delete', 'clear', 'forEach', 'keys', 'values', 'entries'];
+    return {
+      Set: makeCollection(Set, 'Set', setReaders, add, setToJSON),
+      Map: makeCollection(Map, 'Map', mapReaders, set, mapToJSON),
+      Error: makeErrorType(Error, 'Error'),
+      TypeError: makeErrorType(TypeError, 'TypeError'),
+      RangeError: makeErrorType(RangeError, 'RangeError')
+    };
+  })();
+`;
 
 /**
  * Statements of the inner iframe script that make regular expressions unusable in its realm.

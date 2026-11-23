@@ -37,9 +37,9 @@ const customEnclave = new Enclave({
 | sanitizeStackTraces   | YES    | YES    | NO       | NO         |
 | allowFunctionsInGlobals | NO   | NO     | NO       | YES        |
 
-The level also selects the globals a script may use (`STRICT` has no `parseInt`, `parseFloat`, `isNaN`, `isFinite` and URI functions; `console` without a `consoleHandler` exists only at `PERMISSIVE`), what the runtime refuses on every value (`secureProxyConfig`), and the defaults of the [worker pool](/core-libraries/enclave-vm/worker-pool), the [reference sidecar](/core-libraries/enclave-vm/reference-sidecar) and the [Babel transform](/core-libraries/enclave-vm/babel-transform). `memoryLimit` is 1 MB at every level.
+The level also selects the globals a script may use (`STRICT` has no `parseInt`, `parseFloat`, `isNaN`, `isFinite`, URI functions, `Set`, `Map`, `Error`, `TypeError` and `RangeError`; `console` without a `consoleHandler` exists only at `PERMISSIVE`), what the runtime refuses on every value (`secureProxyConfig`), and the defaults of the [worker pool](/core-libraries/enclave-vm/worker-pool), the [reference sidecar](/core-libraries/enclave-vm/reference-sidecar) and the [Babel transform](/core-libraries/enclave-vm/babel-transform). `memoryLimit` is 1 MB at every level.
 
-`sanitizeStackTraces` concerns errors made outside the sandbox: an error made inside it has no `stack` at any level (see [Configuration](/core-libraries/enclave-vm/configuration#security-options)).
+`sanitizeStackTraces` concerns errors made outside the sandbox: an error made inside it has no `stack` at any level, and that includes `new Error('x')` in a script (see [Configuration](/core-libraries/enclave-vm/configuration#security-options)).
 
 <Note>
 The exported `SECURITY_LEVEL_CONFIGS` table also has the fields `blockTimingAPIs`, `allowUnboundedLoops` and `unicodeSecurityCheck`. The enclave does not act on them: `Date` is available at every level, the `agentscript` preset refuses `while` and `do...while` loops at every level, and the Unicode checks are those of the validator's pre-scanner, which do not depend on the level.

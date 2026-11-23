@@ -51,7 +51,10 @@ test.describe('script results', () => {
     );
     expect(result.error).toBeUndefined();
     expect(result.value).toEqual({
-      map: { a: 1 },
+      map: [
+        ['a', 1],
+        [2, 'skipped'],
+      ],
       set: [1, 2],
       pattern: '/ab+c/gi',
       error: { name: 'TypeError', message: 'boom' },
@@ -69,7 +72,7 @@ test.describe('script results', () => {
       { validate: false, transform: false },
     );
     expect(result.error).toBeUndefined();
-    expect(result.value).toEqual({ nested: { ok: 1 }, map: { a: 1 } });
+    expect(result.value).toEqual({ nested: { ok: 1 }, map: [['a', 1]] });
   });
 
   test('a function in the result fails the run', async ({ page }) => {

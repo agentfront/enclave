@@ -57,6 +57,9 @@ export class MemoryLimitError extends Error {
   }
 }
 
+/** Bytes a new entry of a script's Set or Map is charged: a key and a value or a link. */
+export const COLLECTION_ENTRY_BYTES = 16;
+
 /**
  * Estimate the memory size of a string in V8
  *

@@ -30,6 +30,7 @@ import { createRealmAirlock, type RealmMembrane } from '../realm-airlock';
 import { numericLiteral } from '../enclave-options';
 import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
 import { realmArrayAccountingSource } from '../realm-memory';
+import { realmSafeGlobalsSource } from '../realm-safe-globals';
 import { describeThrown, isMemoryLimitPayload, THROWN_WITHOUT_MESSAGE } from '../thrown-value';
 import {
   INNER_REALM_GUARD_SOURCE,
@@ -1132,6 +1133,11 @@ export class VmAdapter implements SandboxAdapter {
         { filename: 'array-accounting.js' },
       ).runInContext(baseSandbox);
 
+      compileSandboxScript(
+        realmSafeGlobalsSource(memoryTracker && config.memoryLimit && config.memoryLimit > 0 ? config.memoryLimit : 0),
+        { filename: 'safe-globals.js' },
+      ).runInContext(baseSandbox);
+
       // __safe_concat and __safe_template, defined inside the realm by the same code as in the
       // double VM (they read __host_memory_track__, which is why it is still there).
       const shouldHardenStacks = config.sanitizeStackTraces ?? true;
@@ -1735,7 +1741,7 @@ export class VmAdapter implements SandboxAdapter {
         // Use memory limit as serialization limit (or a reasonable cap)
         // This prevents the serialization size from exceeding what we'd allow in memory
         const maxSerializedBytes = Math.min(config.memoryLimit, 50 * 1024 * 1024); // Cap at 50MB
-        const sizeCheck = checkSerializedSize(value, maxSerializedBytes);
+        const sizeCheck = checkSerializedSize(value, maxSerializedBytes, { mapsAsEntries: true });
 
         if (!sizeCheck.ok) {
           return {
@@ -1766,6 +1772,7 @@ export class VmAdapter implements SandboxAdapter {
         allowErrors: true,
         // A value of the host that the script returns is read through its target.
         unwrap: unwrapHostValue,
+        mapsAsEntries: true,
       });
 
       return {
