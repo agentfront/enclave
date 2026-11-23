@@ -213,7 +213,7 @@ const enclave = new Enclave({
 | `scoringGate.failOpen` | boolean | true | Whether a script runs when the scorer cannot give its answer |
 | `scoringGate.customRules` | object | - | Base scores of the rule-based scorer by rule id, 0 to 100; `0` turns a rule off |
 | `scoringGate.toolNamespaces` | object | the enclave's `toolNamespaces` | The namespaces whose method calls are scored as tool calls |
-| `scoringGate.localLlm` | object | - | Configuration of the `local-llm` scorer (`modelId`, `mode`, `cacheDir`, `customAnalyzer`, `fallbackToRules`, `vectoriaConfig`) |
+| `scoringGate.localLlm` | object | - | Configuration of the `local-llm` scorer (`modelId`, `mode`, `customAnalyzer`, `fallbackToRules`, `vectoriaConfig`) |
 | `scoringGate.externalApi.endpoint` | string | - | External API endpoint |
 | `scoringGate.externalApi.apiKey` | string | - | API key for external service, sent as a Bearer token |
 | `scoringGate.externalApi.timeoutMs` | number | 5000 | API timeout |

@@ -238,11 +238,41 @@ describe('reviewers', () => {
     }
   });
 
+  it('trims the trailing slashes of baseUrl in linear time, also for a long run of slashes', async () => {
+    fetchSpy.mockImplementation(async () => modelReply({ decision: 'allow', reason: '', findings: [] }));
+    const slashes = '/'.repeat(200_000);
+
+    const started = Date.now();
+    openAi({ baseUrl: `https://api.example.com${slashes}x` });
+    openAi({ baseUrl: `https://api.example.com${slashes}` });
+    expect(Date.now() - started).toBeLessThan(1000);
+
+    await openAi({ baseUrl: 'https://api.example.com/v1///' })(scriptInput());
+    expect(fetchSpy.mock.calls[0][0]).toBe('https://api.example.com/v1/chat/completions');
+  });
+
+  it('does not accept the late answer of a function reviewer that blocks past its timeout', async () => {
+    const blocking = functionReviewer(
+      () => {
+        const until = Date.now() + 60;
+        while (Date.now() < until) {
+          // the reviewer holds the thread
+        }
+        return { decision: 'allow' };
+      },
+      { timeoutMs: 20, cache: false },
+    );
+
+    await expect(blocking(scriptInput())).rejects.toThrow('The reviewer did not answer within 20 ms');
+  });
+
   it('refuses options it cannot use', () => {
     expect(() => openAi({ model: '' })).toThrow('model is required');
     expect(() => openAi({ apiKey: undefined as unknown as string })).toThrow('apiKey is required');
     expect(() => openAi({ provider: 'other' as 'openai' })).toThrow("provider must be 'openai'");
     expect(() => openAi({ baseUrl: 'file:///etc' })).toThrow('baseUrl must be an http(s) URL');
+    expect(() => openAi({ baseUrl: 'https://api.example.com/v 1' })).toThrow('baseUrl must be an http(s) URL');
+    expect(() => openAi({ baseUrl: 'not a url' })).toThrow('baseUrl must be an http(s) URL');
     expect(() => functionReviewer('allow' as never)).toThrow(TypeError);
     expect(() => functionReviewer(() => ({ decision: 'allow' }), { cache: { maxEntries: 0 } })).toThrow(TypeError);
   });

@@ -99,14 +99,13 @@ const enclave = new Enclave({
 
 | Option | Default | Description |
 | ------ | ------- | ----------- |
-| `modelId` | `'Xenova/all-MiniLM-L6-v2'` | Hugging Face model to load (see below) |
+| `modelId` | `'Xenova/all-MiniLM-L6-v2'` | Model name of the VectoriaDB index in similarity mode (unless `vectoriaConfig.modelName` is set) |
 | `mode` | `'classification'` | `'classification'` or `'similarity'` (see [Similarity Mode](#similarity-mode)) |
-| `cacheDir` | `~/.enclave/models` | Where a downloaded model is kept |
-| `fallbackToRules` | `true` | Use the rule-based scorer when the model cannot be loaded (in classification mode) or the analyzer fails |
+| `fallbackToRules` | `true` | Without a `customAnalyzer`, score with the rule-based scorer instead of the keyword heuristic (in classification mode); with one, the answer when it fails |
 | `customAnalyzer` | - | Your own analyzer; replaces the keyword heuristic |
 | `vectoriaConfig` | - | `threshold`, `topK`, `modelName` for similarity mode |
 
-At initialization the scorer loads a Hugging Face `feature-extraction` pipeline for `modelId` when the optional dependency `@huggingface/transformers` is installed; the model is downloaded on first use. The pipeline is never called and no score is computed from it. Whether it loaded only decides which scoring applies in classification mode when there is no `customAnalyzer`: the keyword heuristic when it did, the rule-based scorer when it did not (with `fallbackToRules: false` the initialization fails instead). Set the environment variable `ENCLAVE_DISABLE_LOCAL_LLM_MODEL=1` to skip the load.
+The scorer loads no model. Without a `customAnalyzer` it scores with the rule-based scorer (`fallbackToRules`, the default) or with the keyword heuristic (`fallbackToRules: false`). Up to 2.20 it loaded a Hugging Face model when `@huggingface/transformers` was installed and never called it; `cacheDir` and `modelDir` are deprecated and have no effect.
 
 With `scorer: 'local-llm'` and no `localLlm` configuration, the gate uses the rule-based scorer.
 

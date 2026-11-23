@@ -37,7 +37,7 @@ try {
 
 `AgentScriptRunnerOptions` extends the supported `PortableEnclaveOptions` and adds `hostFunctions`, required `maxHostFunctionCalls`, optional `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `rapidEnumeration` thresholds and per-operation overrides. Host callbacks receive copied plain-data arguments; their results are copied and bounded before the script sees them. The runner refuses unsupported VM-only options and pre-scan overrides at construction.
 
-`PortableEnclaveOptions` extends `CreateEnclaveOptions` with an `interpreter` object for `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `maxAllocationBytes`. `PortableEnclave.run(code, toolHandler?, runOptions?)` accepts `PortableRunOptions.maxToolResultBytes`, `onToolBridgeFailure` and `reviewContext`; the `review` option works there as with `Enclave`. The interpreter charges copied host-function results and tool responses against its cumulative allocation budget. `maxSteps` bounds interpreted CPU work, including built-in operations. `timeout` is checked between steps and at I/O boundaries; on deployed Cloudflare Workers it is not a hard wall-time cutoff during CPU-only work, and synchronous host callbacks cannot be preempted.
+`PortableEnclaveOptions` extends `CreateEnclaveOptions` with an `interpreter` object for `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `maxAllocationBytes`. `PortableEnclave.run(code, toolHandler?, runOptions?)` accepts `PortableRunOptions.maxToolResultBytes`, `onToolBridgeFailure` and `reviewContext`; the `review` option works there as with `Enclave`, and the worker entry exports `analyzeScript`, `providerReviewer` and `functionReviewer`. The interpreter charges copied host-function results and tool responses against its cumulative allocation budget. `maxSteps` bounds interpreted CPU work, including built-in operations. `timeout` is checked between steps and at I/O boundaries; on deployed Cloudflare Workers it is not a hard wall-time cutoff during CPU-only work, and synchronous host callbacks cannot be preempted.
 
 ## Enclave Class
 
@@ -135,7 +135,7 @@ console.log(result.value); // 3
 
 #### initialize()
 
-Initialize the scoring gate, for a scorer that needs it (the `local-llm` scorer loads its model here). `run()` initializes the gate on first use when this was not called.
+Initialize the scoring gate, for a scorer that needs it (the `local-llm` scorer initializes its `customAnalyzer` and, in similarity mode, its VectoriaDB index here). `run()` initializes the gate on first use when this was not called.
 
 ```ts
 initialize(): Promise<void>

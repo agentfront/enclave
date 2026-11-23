@@ -818,7 +818,7 @@ A finding is `{ rule, message, location?: { line, column }, suggestion?, toolNam
 
 ### Reviewers
 
-Two reviewers plug into `pre`. Both review the script (`phase: 'script'`) and allow every call, get the same input, time out (`timeoutMs`, default 20 s), and keep a decision by the SHA-256 digest of the script (`cache: { maxEntries, ttlMs }`, default 1,000 for 5 minutes; `false` for none). A failure is not kept.
+Two reviewers plug into `pre`. Both review the script (`phase: 'script'`) and allow every call, get the same input, time out (`timeoutMs`, default 20 s; a late answer is refused), and keep a decision by the SHA-256 digest of the script (`cache: { maxEntries, ttlMs }`, default 1,000 for 5 minutes; `false` for none). A failure is not kept.
 
 ```typescript
 import { Enclave, functionReviewer, providerReviewer } from '@enclave-vm/core';

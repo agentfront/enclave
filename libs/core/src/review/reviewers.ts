@@ -132,6 +132,7 @@ function decisionCache(
 }
 
 async function withTimeout<T>(timeoutMs: number, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const started = Date.now();
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
@@ -141,10 +142,29 @@ async function withTimeout<T>(timeoutMs: number, work: (signal: AbortSignal) => 
     }, timeoutMs);
   });
   try {
-    return await Promise.race([work(controller.signal), timeout]);
+    const answer = await Promise.race([work(controller.signal), timeout]);
+    // A reviewer that blocks the thread answers before the timer can fire
+    if (Date.now() - started > timeoutMs) throw new ReviewerError(`The reviewer did not answer within ${timeoutMs} ms`);
+    return answer;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** The base URL of an http(s) endpoint without its trailing slashes */
+function endpointBase(baseUrl: unknown): string {
+  const invalid = new TypeError('baseUrl must be an http(s) URL');
+  if (typeof baseUrl !== 'string' || /\s/.test(baseUrl)) throw invalid;
+  let protocol: string;
+  try {
+    protocol = new URL(baseUrl).protocol;
+  } catch {
+    throw invalid;
+  }
+  if (protocol !== 'https:' && protocol !== 'http:') throw invalid;
+  let end = baseUrl.length;
+  while (end > 0 && baseUrl[end - 1] === '/') end--;
+  return baseUrl.slice(0, end);
 }
 
 function createReviewer(options: ReviewerOptions, answer: Answer): PreReviewer {
@@ -245,9 +265,6 @@ export function providerReviewer(options: ProviderReviewerOptions): PreReviewer 
   if (typeof options.apiKey !== 'string' || options.apiKey.length === 0) throw new TypeError('apiKey is required');
   if (typeof options.model !== 'string' || options.model.length === 0) throw new TypeError('model is required');
   if (typeof options.policy !== 'string') throw new TypeError('policy is required');
-  const baseUrl = options.baseUrl ?? DEFAULT_OPENAI_BASE_URL;
-  if (typeof baseUrl !== 'string' || !/^https?:\/\/[^\s]+$/.test(baseUrl)) {
-    throw new TypeError('baseUrl must be an http(s) URL');
-  }
-  return createReviewer(options, openAiAnswer(options.apiKey, options.model, baseUrl.replace(/\/+$/, '')));
+  const baseUrl = endpointBase(options.baseUrl ?? DEFAULT_OPENAI_BASE_URL);
+  return createReviewer(options, openAiAnswer(options.apiKey, options.model, baseUrl));
 }
