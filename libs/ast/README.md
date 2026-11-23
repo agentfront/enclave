@@ -172,6 +172,10 @@ const rules = Presets.standard({
 - Async functions and `await`
 - Constructor and prototype access
 
+As in STRICT and SECURE, a computed key held in a variable is followed to the values the script gives it (`resolveVariableKeys`), and the preset does not count on a check after it. A key the validator cannot follow to its end within its budget is therefore refused with `STATIC_KEY_UNRESOLVED`, not accepted unread. This refuses some large scripts with heavy computed-key work: a key built in nested loops over a large table the script holds, or hundreds of keys read through one variable with hundreds of values. Pass large data in (through a tool or a global) instead of writing it into the script, or write the names directly.
+
+A host that checks keys where the script runs (`guardComputedMemberKeys`) can leave a key held in a variable to that check instead: replace the preset's `DisallowedIdentifierRule` with one that has `resolveVariableKeys: false`, as the AgentScript preset does. Without such a check, that accepts keys the validator has not read.
+
 ### PERMISSIVE Preset
 
 Minimal restrictions for internal or trusted scripts.
