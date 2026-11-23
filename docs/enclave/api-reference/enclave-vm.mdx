@@ -244,7 +244,7 @@ interface ScriptLoopBound {
 ```
 
 - **Unknown origins.** `from: null` marks a value the analysis cannot follow: a function parameter, a caught error, `this`, or a name the script does not declare and AgentScript does not provide (a custom global such as `context`; `via` names it). The standard globals AgentScript allows (`undefined`, `NaN`, `Math`, `JSON`, ...), `callTool`, `parallel` and `console` are no origin. Literal arguments make no flow.
-- **Bounds.** A loop keeps the bound of a cut array only while the script only reads that array: a member read, a method that does not change it (`map`, `filter`, `slice`, ...), the iterable of `for...of` or of `parallel`. Anything else drops the bound: a change (`push`, `sort`, an assignment to an element or to `length`), or the array given to another variable, passed to a function, returned, spread or stored.
+- **Bounds.** A loop keeps the bound of a cut array only while the script only reads that array: a member read, a method that does not change it (`map`, `filter`, `slice`, ...), the iterable of `for...of` or of `parallel`. Anything else drops the bound: a change (`push`, `sort`, an assignment to an element or to `length`), the array given to another variable, passed to a function, returned, spread or stored, or a callback of its methods or of `parallel` that can get the array itself (a third parameter, the fourth of `reduce`, a rest parameter, `arguments`, or a function that is not written inline).
 - A script that does not parse throws `ScriptAnalysisError`; a `callBudget` that is not a non-negative integer throws a `TypeError`.
 
 ## Types

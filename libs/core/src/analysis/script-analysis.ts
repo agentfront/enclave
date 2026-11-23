@@ -160,6 +160,25 @@ function forEachChild(node: AnyNode, visit: (child: AnyNode, key: string) => voi
   }
 }
 
+/** Whether code mentions `arguments`, outside the non-arrow functions nested in it */
+function mentionsArguments(node: AnyNode): boolean {
+  if (node.type === 'Identifier') return node.name === 'arguments';
+  if (node.type === 'FunctionExpression' || node.type === 'FunctionDeclaration') return false;
+  let found = false;
+  forEachChild(node, (child) => {
+    found = found || mentionsArguments(child);
+  });
+  return found;
+}
+
+/** Whether a callback can get the array it is called for: as the parameter at `arrayParam`, a rest parameter or `arguments` */
+function mayReceiveArray(callback: AnyNode, arrayParam: number): boolean {
+  if (!FUNCTION_TYPES.has(callback?.type)) return true;
+  if (callback.params.length > arrayParam) return true;
+  if (callback.params.some((param: AnyNode) => param.type === 'RestElement')) return true;
+  return callback.type !== 'ArrowFunctionExpression' && mentionsArguments(callback.body);
+}
+
 function walkWithPath(root: AnyNode, visit: (node: AnyNode, path: readonly PathStep[]) => void): void {
   const path: PathStep[] = [];
   const descend = (node: AnyNode, key: string): void => {
@@ -545,13 +564,15 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
     if (holder?.type === 'ForOfStatement' || holder?.type === 'ForInStatement') return key === 'right';
     if (holder?.type === 'CallExpression' && key === 'arguments') {
       const parallelCall = holder.callee.type === 'Identifier' && PARALLEL_NAMES.has(holder.callee.name);
-      return parallelCall && holder.arguments[0] === identifier;
+      return parallelCall && holder.arguments[0] === identifier && !mayReceiveArray(holder.arguments[1], 2);
     }
     if (holder?.type !== 'MemberExpression' || key !== 'object' || isWriteTarget(holder)) return false;
     const call = parentOf.get(holder);
     if (call?.node?.type !== 'CallExpression' || call.key !== 'callee') return true;
     const method = staticMethodName(holder);
-    return method !== undefined && !ARRAY_CHANGING_METHODS.has(method);
+    if (method === undefined || ARRAY_CHANGING_METHODS.has(method)) return false;
+    const arrayParam = method === 'reduce' || method === 'reduceRight' ? 3 : 2;
+    return !ITERATION_METHODS.has(method) || !mayReceiveArray(call.node.arguments[0], arrayParam);
   };
   const limitOf = (node: AnyNode, depth = 0): number | null => {
     if (!isNode(node) || depth > MAX_LIMIT_DEPTH) return null;

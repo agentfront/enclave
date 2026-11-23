@@ -124,6 +124,16 @@ describe('analyzeScript', () => {
     expect(analysis.bounds).toEqual([expect.objectContaining({ limit: 3, maxCalls: 3 })]);
   });
 
+  it('drops the bound of an array whose parallel() task can get the array itself', () => {
+    const analysis = analyzeScript(`
+      const ids = await callTool('ids.list', {});
+      const first = ids.slice(0, 3);
+      await parallel(first, async (id, index, all) => callTool('ids.read', { id, count: all.length }));
+    `);
+
+    expect(analysis.bounds).toEqual([expect.objectContaining({ limit: null, maxCalls: null })]);
+  });
+
   it('follows results through array callbacks, pushes and assignments', () => {
     const analysis = analyzeScript(`
       const orders = await callTool('orders.list', {});
@@ -196,6 +206,11 @@ describe('analyzeScript', () => {
     expect(loopOver('const alias = limited || []; alias.push(2);')).toBeNull();
     expect(loopOver('const grow = (list) => list.push(1); grow(limited);')).toBeNull();
     expect(loopOver('const holder = { list: limited };')).toBeNull();
+    expect(loopOver('limited.map((user, index, all) => all.push(user));')).toBeNull();
+    expect(loopOver('limited.reduce((total, user, index, all) => total, 0);')).toBeNull();
+    expect(loopOver('limited.forEach((...args) => args);')).toBeNull();
+    expect(loopOver('const tag = (user) => user; limited.map(tag);')).toBeNull();
+    expect(loopOver('limited.reduce((total, user) => total + user.id, 0);')).toBe(5);
   });
 
   it('marks a value read from a name the script does not declare as unknown, but not a built-in or a literal', () => {
