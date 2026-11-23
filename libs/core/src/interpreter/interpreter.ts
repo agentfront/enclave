@@ -798,6 +798,17 @@ export interface InterpreterOptions {
    * cannot be caught by the script.
    */
   charge?: (bytes: number) => void;
+  /** Called as each statement starts, with the steps taken so far including its own; a throw ends the run */
+  onStatement?: (statement: ESTree.Statement, step: number) => void;
+}
+
+/** Thrown when the `onStatement` hook throws: the run ends with it */
+export class StatementHookError extends Error {
+  readonly code = 'STATEMENT_HOOK_FAILED';
+  constructor() {
+    super('The onStatement hook threw');
+    this.name = 'StatementHookError';
+  }
 }
 
 /** What a member expression resolves to. */
@@ -981,6 +992,14 @@ export class Interpreter {
     if (this.steps >= this.nextClockCheck) this.checkClock();
   }
 
+  private reportStatement(node: ESTree.Statement): void {
+    try {
+      this.options.onStatement?.(node, this.steps);
+    } catch {
+      this.end(new StatementHookError());
+    }
+  }
+
   /** End the run when its deadline has passed. */
   private checkClock(): void {
     this.nextClockCheck = this.steps + CLOCK_CHECK_STEPS;
@@ -1095,6 +1114,7 @@ export class Interpreter {
   // ── Statements ─────────────────────────────────────────────────────────────
   private async execStatement(node: ESTree.Statement, scope: Scope): Promise<unknown> {
     this.tick();
+    if (this.options.onStatement) this.reportStatement(node);
     switch (node.type) {
       case 'VariableDeclaration': {
         const mode: PatternMode = node.kind === 'const' ? 'const' : 'let';

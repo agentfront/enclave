@@ -10,6 +10,7 @@
 import * as walk from 'acorn-walk';
 import type * as acorn from 'acorn';
 import { utf8ByteLength } from '../utils/utf8-byte-length';
+import { readStatementMarker } from '../statement-markers';
 
 /**
  * Configuration for string extraction
@@ -127,6 +128,8 @@ export function extractLargeStrings(ast: acorn.Node, config: StringExtractionCon
 
       // 2. Do not extract Import/Export paths (import x from "path")
       if (isModuleSource(node, parent)) return;
+
+      if (readStatementMarker(parent)) return;
 
       // 3. Do not extract "use strict" directives (usually handled by size threshold, but good to be safe)
       // (Skipping explicit check here as 'use strict' is tiny and won't pass threshold)

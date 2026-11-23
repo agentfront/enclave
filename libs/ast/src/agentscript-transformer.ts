@@ -12,6 +12,7 @@
 import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
 import { generate } from 'astring';
+import { markStatements } from './statement-markers';
 import { transformAst } from './transformer';
 import type { TransformConfig } from './interfaces';
 import { walkAll } from './utils/ast-walk';
@@ -28,6 +29,9 @@ export interface AgentScriptTransformConfig {
    * Default: true
    */
   wrapInMain?: boolean;
+
+  /** Put a marker with its location in the script before every statement (see `readStatementMarker`); default false */
+  statementMarkers?: boolean;
 
   /**
    * Whether to transform callTool → __safe_callTool
@@ -101,6 +105,7 @@ export interface AgentScriptTransformConfig {
 export function transformAgentScript(code: string, config: AgentScriptTransformConfig = {}): string {
   const {
     wrapInMain = true,
+    statementMarkers = false,
     transformCallTool = true,
     transformLoops = true,
     prefix = '__safe_',
@@ -156,6 +161,8 @@ export function transformAgentScript(code: string, config: AgentScriptTransformC
       }
     }
   }
+
+  if (statementMarkers) markStatements(ast as never, needsUnwrapping ? 1 : 0);
 
   // Step 1: Transform identifiers using WHITELIST mode
   // In AgentScript, we whitelist safe globals and transform everything else

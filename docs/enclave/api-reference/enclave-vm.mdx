@@ -37,7 +37,7 @@ try {
 
 `AgentScriptRunnerOptions` extends the supported `PortableEnclaveOptions` and adds `hostFunctions`, required `maxHostFunctionCalls`, optional `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `rapidEnumeration` thresholds and per-operation overrides. Host callbacks receive copied plain-data arguments; their results are copied and bounded before the script sees them. The runner refuses unsupported VM-only options and pre-scan overrides at construction.
 
-`PortableEnclaveOptions` extends `CreateEnclaveOptions` with an `interpreter` object for `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `maxAllocationBytes`. `PortableEnclave.run(code, toolHandler?, runOptions?)` accepts `PortableRunOptions.maxToolResultBytes`, `onToolBridgeFailure` and `reviewContext`; the `review` option works there as with `Enclave`, and the worker entry exports `analyzeScript`, `providerReviewer` and `functionReviewer`. The interpreter charges copied host-function results and tool responses against its cumulative allocation budget. `maxSteps` bounds interpreted CPU work, including built-in operations. `timeout` is checked between steps and at I/O boundaries; on deployed Cloudflare Workers it is not a hard wall-time cutoff during CPU-only work, and synchronous host callbacks cannot be preempted.
+`PortableEnclaveOptions` extends `CreateEnclaveOptions` with an `interpreter` object for `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `maxAllocationBytes`. `PortableEnclave.run(code, toolHandler?, runOptions?)` accepts `PortableRunOptions.maxToolResultBytes`, `onToolBridgeFailure`, `reviewContext`, and `onStatement` / `maxStatementEvents` (see [Statement events](#statement-events)); the `review` option works there as with `Enclave`, and the worker entry exports `analyzeScript`, `providerReviewer` and `functionReviewer`. The interpreter charges copied host-function results and tool responses against its cumulative allocation budget. `maxSteps` bounds interpreted CPU work, including built-in operations. `timeout` is checked between steps and at I/O boundaries; on deployed Cloudflare Workers it is not a hard wall-time cutoff during CPU-only work, and synchronous host callbacks cannot be preempted.
 
 ## Enclave Class
 
@@ -103,8 +103,16 @@ Execute code in the sandbox.
 async run<T = unknown>(
   code: string,
   toolHandler?: ToolHandler,
-  options?: { onToolBridgeFailure?: () => void; maxToolResultBytes?: number; reviewContext?: Record<string, unknown> },
+  options?: EnclaveRunOptions,
 ): Promise<ExecutionResult<T>>
+
+interface EnclaveRunOptions {
+  onToolBridgeFailure?: () => void;
+  maxToolResultBytes?: number;
+  reviewContext?: Record<string, unknown>;
+  onStatement?: (event: StatementEvent) => void; // interpreter only
+  maxStatementEvents?: number; // default 10,000
+}
 ```
 
 **Parameters:**
@@ -113,6 +121,7 @@ async run<T = unknown>(
 - `options.onToolBridgeFailure` - Optional observer called when a successful tool result is refused by the bridge before it reaches the script. An error thrown by the observer does not change the bridge result.
 - `options.maxToolResultBytes` - Optional limit on the JSON bytes of a sanitized tool result before sidecar storage. A larger result fails its tool call.
 - `options.reviewContext` - Optional object passed to every review hook of this run as `input.context` (with the `review` option)
+- `options.onStatement`, `options.maxStatementEvents` - Report each statement the script runs (see [Statement events](#statement-events)); only with an adapter that reports statements, such as `InterpreterAdapter`, otherwise a `TypeError`
 
 **Returns:** `ExecutionResult`. `run()` does not reject for a failing script: the failure is in the result.
 
@@ -416,8 +425,24 @@ The interpreter behind the adapter is exported as well, for a host that drives i
 | `InterpreterError` | `InterpreterError` | The script used something the interpreter does not allow: a blocked key, an unknown identifier, a call it refuses |
 | `StepLimitError` | `StepLimitError` | The step budget (`maxSteps`) is used up |
 | `DeadlineError` | `TimeoutError` | The `deadline` option (a time as `Date.now()` gives it) has passed while the script was computing. The interpreter reads the clock every few hundred steps and before each built-in or host function it calls |
+| `StatementHookError` | `StatementHookError` | The `onStatement` hook threw (`code: 'STATEMENT_HOOK_FAILED'`) |
 
 A script cannot catch `StepLimitError` or `DeadlineError`. Through an `Enclave` they arrive as `result.error.code` `STEP_LIMIT_EXCEEDED` and `EXECUTION_TIMEOUT`.
+
+#### Statement events
+
+`run(code, toolHandler, { onStatement, maxStatementEvents })` on `PortableEnclave`, `AgentScriptRunner`, or an `Enclave` with an `InterpreterAdapter` reports each statement the script runs:
+
+```ts
+interface StatementEvent {
+  line: number;   // where the statement starts in the script as written, from 1
+  column: number; // from 0
+  type: string;   // its ESTree type: 'VariableDeclaration', 'IfStatement', ...
+  step: number;   // interpreter steps taken so far
+}
+```
+
+The hook is called synchronously as each statement starts, for at most `maxStatementEvents` statements per run (default 10,000); the run then goes on without reporting. An event carries no value of the script. A hook that throws ends the run with a `StatementHookError`. Off by default, and then it costs one check per statement. Other adapters throw a `TypeError` for `onStatement`: the double VM cannot see statements without instrumenting the code.
 
 ## Scoring Classes
 

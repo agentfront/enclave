@@ -33,6 +33,7 @@ import type { OperationHistory, ParentValidationConfig } from './double-vm/types
 import { refuseDynamicImport } from './dynamic-import';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
+import { boundedStatementHook, type StatementEventOptions } from './statement-events';
 import {
   assertReviewContext,
   normalizeReviewOptions,
@@ -54,7 +55,7 @@ export interface PortableEnclaveOptions extends CreateEnclaveOptions {
   interpreter?: InterpreterAdapterOptions;
 }
 
-export interface PortableRunOptions {
+export interface PortableRunOptions extends StatementEventOptions {
   maxToolResultBytes?: number;
   onToolBridgeFailure?: () => void;
   /** Passed to the review hooks of this run */
@@ -320,6 +321,7 @@ export class PortableEnclave {
     if (this.disposed) throw new Error('PortableEnclave has been disposed');
     boundedInteger('maxToolResultBytes', runOptions.maxToolResultBytes, MAX_PORTABLE_ALLOCATION_BYTES);
     assertReviewContext(runOptions.reviewContext);
+    const onStatement = boundedStatementHook(runOptions, this.adapter.reportsStatements);
     const startTime = Date.now();
     const stats: ExecutionStats = { duration: 0, startTime, endTime: startTime, toolCallCount: 0, iterationCount: 0 };
     const failure = (name: string, message: string, code: string, issues?: ValidationIssue[]): ExecutionResult<T> => ({
@@ -353,6 +355,7 @@ export class PortableEnclave {
     try {
       transformed = transformAgentScript(code, {
         wrapInMain: !isWrappedInMain(code),
+        statementMarkers: onStatement !== undefined,
         transformCallTool: true,
         transformLoops: true,
         maxIterations: this.config.maxIterations,
@@ -413,6 +416,7 @@ export class PortableEnclave {
           : undefined,
         toolResultOrder: this.options.toolResultOrder,
         ...hostClockReaders(this.options, { isOver: () => context.aborted }),
+        onStatement,
         toolNamespaces: this.namespaces,
         beforeToolCall: (name, args) => {
           policy.toolCall(name, args);
@@ -483,6 +487,7 @@ export class AgentScriptRunner extends PortableEnclave {
     'rapid-enumeration',
     'review',
     'replay',
+    'statement-events',
   ]);
 
   constructor(options: AgentScriptRunnerOptions) {

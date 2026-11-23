@@ -772,6 +772,9 @@ export interface ExecutionContext {
   /** The host's `random`, checked: a number from 0 up to 1, or `undefined` when it failed */
   random?: () => number | undefined;
 
+  /** Receives each statement the script runs, up to the run's `maxStatementEvents` (see `run()` options) */
+  onStatement?: (event: StatementEvent) => void;
+
   /** Synchronous policy: return true to allow the copied request, or throw/return false to refuse. */
   beforeToolCall?: (name: string, args: Record<string, unknown>) => boolean;
 
@@ -842,6 +845,17 @@ export interface SandboxAdapter {
 
   /** `false` when the adapter cannot call the host's `clock` and `random`: the enclave refuses them then */
   readonly supportsHostClock?: boolean;
+
+  /** Whether the adapter reports statements to `context.onStatement`, reading the markers the enclave puts in the code */
+  readonly reportsStatements?: boolean;
+}
+
+/** A statement the interpreter is about to run: where it is in the script, its kind, and the steps taken so far */
+export interface StatementEvent {
+  line: number;
+  column: number;
+  type: string;
+  step: number;
 }
 
 /**

@@ -304,6 +304,8 @@ It differs from the VM adapters in what isolates a script. There is one realm: t
 | `maxPendingCalls` | `4096` | Calls of the whole execution that have not returned yet (running or waiting), over all its chains |
 | `maxAllocationBytes` | `67108864` | What a script may allocate, as the interpreter estimates it; the execution's `memoryLimit` applies when it is lower |
 
+The interpreter can also report each statement a script runs, which the VM adapters cannot without instrumenting the code: pass `onStatement` (and `maxStatementEvents`, default 10,000) to `run()`. Each event is `{ line, column, type, step }`, the statement's place in the script as written, its ESTree type and the steps taken so far, with no value of the script. A hook that throws ends the run with `STATEMENT_HOOK_FAILED`. See [Statement events](/api-reference/enclave-vm#statement-events).
+
 ## Security Options
 
 | Option | Type | Default | Description |
