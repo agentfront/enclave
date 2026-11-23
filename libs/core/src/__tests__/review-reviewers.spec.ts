@@ -1,3 +1,5 @@
+import * as path from 'path';
+
 import { Enclave } from '../enclave';
 import { InterpreterAdapter } from '../adapters/interpreter-adapter';
 import { AgentScriptRunner } from '../portable-enclave';
@@ -264,6 +266,28 @@ describe('reviewers', () => {
     );
 
     await expect(blocking(scriptInput())).rejects.toThrow('The reviewer did not answer within 20 ms');
+  });
+
+  it('keeps the reviewer message when the reviewer and the enclave come from different entries', async () => {
+    // Needs the built package: `npx nx build core`; each entry bundles its own copy of the classes
+    const dist = path.resolve(__dirname, '../../dist');
+    const main = (await import(path.join(dist, 'index.js'))) as typeof import('../index');
+    const worker = (await import(path.join(dist, 'worker.js'))) as typeof import('../worker');
+    const never = () => new Promise<never>(() => undefined);
+    const enclave = new main.Enclave({ review: { pre: worker.functionReviewer(never, { timeoutMs: 20 }) } });
+    const runner = new worker.AgentScriptRunner({
+      review: { pre: main.functionReviewer(never, { timeoutMs: 20 }) },
+      hostFunctions: {},
+      maxHostFunctionCalls: 1,
+    });
+    try {
+      for (const result of [await enclave.run('return 1;'), await runner.run('return 1;')]) {
+        expect(result.error?.message).toBe('Review failed: The reviewer did not answer within 20 ms');
+      }
+    } finally {
+      enclave.dispose();
+      runner.dispose();
+    }
   });
 
   it('refuses options it cannot use', () => {

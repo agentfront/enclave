@@ -67,12 +67,22 @@ interface ReviewTarget {
   callIndex?: number;
 }
 
+/** Shared by every copy of this module, so the `index` and `worker` builds recognize each other's errors */
+const REVIEWER_ERROR_BRAND = Symbol.for('@enclave-vm/core/ReviewerError');
+
 /** An error of a reviewer whose message is safe to show in the result (no answer, no key) */
 export class ReviewerError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ReviewerError';
+    Object.defineProperty(this, REVIEWER_ERROR_BRAND, { value: true });
   }
+}
+
+function isReviewerError(error: unknown): error is ReviewerError {
+  return (
+    typeof error === 'object' && error !== null && (error as Record<symbol, unknown>)[REVIEWER_ERROR_BRAND] === true
+  );
 }
 
 /** The decision as a plain copy, or undefined when it is out of shape */
@@ -311,7 +321,7 @@ export class ReviewSession {
       failure = 'The review hook gave an answer of the wrong shape';
     } catch (error) {
       if (error === TIMED_OUT) failure = `The review hook did not answer within ${this.options.timeoutMs} ms`;
-      else if (error instanceof ReviewerError) failure = error.message.slice(0, MAX_TEXT_LENGTH);
+      else if (isReviewerError(error)) failure = String(error.message).slice(0, MAX_TEXT_LENGTH);
       else failure = 'The review hook threw';
     } finally {
       clearTimeout(timer);
