@@ -100,7 +100,7 @@ await portableEnclave.run(code, toolHandler, { reviewContext: { userId, sessionI
 
 ## Result
 
-With the option, every result has `review.decisions`, one record per answer:
+Once review has started, the result has `review.decisions`, one record per answer. A run refused before that (the size check, the pre-scanner, the transform, validation, a dynamic import, the scoring gate) returns without a `review` field: read it as `result.review?.decisions`.
 
 ```ts
 interface ExecutionResult<T> {

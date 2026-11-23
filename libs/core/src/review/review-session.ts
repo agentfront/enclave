@@ -235,11 +235,12 @@ export class ReviewSession {
     const post = this.options.post;
     if (result && post) result = await this.reviewOutput(result, post);
     if (!result || this.stopError) {
+      const measured = outcome === REVIEW_HALTED ? stats : outcome.stats;
       const endTime = Date.now();
       result = {
         success: false,
         error: this.stopError,
-        stats: { ...stats, duration: endTime - stats.startTime, endTime },
+        stats: { ...measured, duration: endTime - measured.startTime, endTime },
       };
     }
     return { ...result, review: { decisions: [...this.decisions] } };

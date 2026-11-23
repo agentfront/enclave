@@ -120,7 +120,7 @@ interface ExecutionResult<T = unknown> {
   error?: ExecutionError;
   stats: ExecutionStats;
   scoringResult?: ScoringGateResult;
-  review?: { decisions: ReviewRecord[] }; // with the review option: every answer of the hooks
+  review?: { decisions: ReviewRecord[] }; // once review has started: every answer of the hooks (absent when validation or the scoring gate refused the script first)
 }
 ```
 

@@ -302,6 +302,22 @@ describe.each(PATHS)('review hooks on the %s', (_path, create) => {
     );
   });
 
+  it('keeps the statistics the run measured when post stops it at the end', async () => {
+    const code =
+      "let total = 0; for (const n of [1, 2, 3, 4]) { total += n; } await callTool('read', {}); return total;";
+    const pass = (_input: PostReviewInput) => ({ action: 'pass' as const });
+    const stop = (input: PostReviewInput) =>
+      input.phase === 'return' ? { action: 'stop' as const, reason: 'Not this value' } : { action: 'pass' as const };
+
+    const passed = await runner({ review: { post: pass } }).run(code, recordingHandler());
+    const stopped = await runner({ review: { post: stop } }).run(code, recordingHandler());
+
+    expect(stopped.error?.code).toBe('REVIEW_DENIED');
+    expect(passed.stats.iterationCount).toBeGreaterThan(0);
+    expect(stopped.stats.iterationCount).toBe(passed.stats.iterationCount);
+    expect(stopped.stats.toolCallCount).toBe(1);
+  });
+
   it('lets post review an error the script throws', async () => {
     const post = (input: PostReviewInput) =>
       input.phase === 'error'

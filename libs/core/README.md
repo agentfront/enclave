@@ -441,7 +441,7 @@ interface ExecutionResult<T> {
     endTime: number;
   };
   scoringResult?: ScoringGateResult; // When a scoring gate evaluated the script
-  review?: { decisions: ReviewRecord[] }; // With the review option: every decision of the hooks
+  review?: { decisions: ReviewRecord[] }; // Once review has started: every decision of the hooks
 }
 ```
 
@@ -802,7 +802,7 @@ const result = await enclave.run(code, undefined, { reviewContext: { userId: 'u-
 - **Fail closed.** A hook that throws, does not answer within `timeoutMs`, or answers out of shape (an unknown decision, `needs_changes` without findings, a missing `reason`) ends the run with `REVIEW_FAILED`, and no handler is called after it. There is no `failOpen` for review.
 - **Only narrower.** A hook sees a script only after validation, and a call only after the tool policy and the limits (`maxToolCalls`, the double VM's operation checks) let it through: it cannot allow what they refuse.
 - **Per run.** `reviewContext`, the third argument of `run()`, reaches every hook of that run as `input.context`, so one enclave can serve many callers.
-- **Audit.** `result.review.decisions` lists every answer: `phase`, `toolName`, `callIndex`, `decision` (or the `post` action, or `review_failed`), `findings`, `reason`, `durationMs`.
+- **Audit.** `result.review.decisions` lists every answer: `phase`, `toolName`, `callIndex`, `decision` (or the `post` action, or `review_failed`), `findings`, `reason`, `durationMs`. It is there once review has started: a run refused before that (size check, pre-scanner, transform, validation, dynamic import, scoring gate) has no `review` field, so read `result.review?.decisions`.
 - **Time.** The script's `timeout` does not run during `pre` on the script or `post` on the result; the hooks at a call run inside it, like the tool call they belong to.
 
 Limits to plan for:
