@@ -96,6 +96,7 @@
                   "enclave/core-libraries/enclave-vm/worker-pool",
                   "enclave/core-libraries/enclave-vm/double-vm",
                   "enclave/core-libraries/enclave-vm/ai-scoring",
+                  "enclave/core-libraries/enclave-vm/review-hooks",
                   "enclave/core-libraries/enclave-vm/reference-sidecar",
                   "enclave/core-libraries/enclave-vm/configuration"
                 ]

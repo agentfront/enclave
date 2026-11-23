@@ -79,6 +79,14 @@ import { describeThrown, normalizeErrorText } from './thrown-value';
 import { refuseDynamicImport } from './dynamic-import';
 import { separateAsyncContexts } from './async-context';
 import { ARRAY_ELEMENT_BYTES } from './realm-memory';
+import {
+  assertReviewContext,
+  normalizeReviewOptions,
+  REVIEW_HALTED,
+  ReviewSession,
+  type NormalizedReviewOptions,
+} from './review/review-session';
+import type { ReviewContext } from './review/types';
 
 /**
  * Parse code for one of the transforms that run after validation.
@@ -245,6 +253,7 @@ export class Enclave {
   private readonly guardsReflectionKeys: boolean;
   private readonly referenceConfig?: ReferenceConfig;
   private readonly scoringGate?: ScoringGate;
+  private readonly review?: NormalizedReviewOptions;
   private readonly doubleVmConfig: DoubleVmConfig;
   private readonly customGlobalNames: string[];
   private readonly toolNamespaces: readonly NormalizedToolNamespace[];
@@ -468,6 +477,8 @@ export class Enclave {
       });
     }
 
+    this.review = normalizeReviewOptions(options.review);
+
     // Build double VM config (default enabled for all adapters)
     this.doubleVmConfig = this.buildDoubleVmConfig(options.doubleVm);
 
@@ -519,12 +530,13 @@ export class Enclave {
    *
    * @param code AgentScript code to execute
    * @param toolHandler Optional tool handler (overrides constructor config)
+   * @param options `reviewContext` is passed to the review hooks of this run
    * @returns Execution result
    */
   async run<T = unknown>(
     code: string,
     toolHandler?: ToolHandler,
-    options: { onToolBridgeFailure?: () => void; maxToolResultBytes?: number } = {},
+    options: { onToolBridgeFailure?: () => void; maxToolResultBytes?: number; reviewContext?: ReviewContext } = {},
   ): Promise<ExecutionResult<T>> {
     if (
       options.maxToolResultBytes !== undefined &&
@@ -534,6 +546,7 @@ export class Enclave {
     ) {
       throw new TypeError('maxToolResultBytes must be a positive finite number');
     }
+    assertReviewContext(options.reviewContext);
     const result = await this.execute<T>(code, toolHandler, options);
     return this.applyStackTracePolicy(result);
   }
@@ -562,7 +575,7 @@ export class Enclave {
   private async execute<T>(
     code: string,
     toolHandler?: ToolHandler,
-    options: { onToolBridgeFailure?: () => void; maxToolResultBytes?: number } = {},
+    options: { onToolBridgeFailure?: () => void; maxToolResultBytes?: number; reviewContext?: ReviewContext } = {},
   ): Promise<ExecutionResult<T>> {
     const startTime = Date.now();
 
@@ -785,6 +798,19 @@ export class Enclave {
         }
       }
 
+      // Step 2.6: the review hooks see the script as written, after validation and scoring
+      const review = this.review ? new ReviewSession(this.review, options.reviewContext) : undefined;
+      if (review) {
+        const refusal = await review.reviewScript(code, {
+          toolNamespaces: this.toolNamespaces,
+          callBudget: this.config.maxToolCalls,
+        });
+        if (refusal) {
+          const refused = await review.finish<T>(REVIEW_HALTED, stats);
+          return scoringResult ? { ...refused, scoringResult } : refused;
+        }
+      }
+
       // Step 3: Create execution context
       //
       // `aborted` is what every abort check reads (tool calls, guarded loops, calls into host
@@ -823,7 +849,9 @@ export class Enclave {
         set aborted(value: boolean) {
           abortRequested = value;
         },
-        toolHandler: hostToolHandler ? trackToolCalls(hostToolHandler, hostActivity) : undefined,
+        toolHandler: hostToolHandler
+          ? trackToolCalls(review?.wrapToolHandler(hostToolHandler) ?? hostToolHandler, hostActivity)
+          : undefined,
         maxToolResultBytes: options.maxToolResultBytes,
         onToolBridgeFailure: options.onToolBridgeFailure
           ? () => {
@@ -874,16 +902,18 @@ export class Enclave {
         // same as one that keeps its worker busy, and the pool ends both itself, five seconds
         // after the deadline, by terminating the worker.
         const execution = asyncContexts.inScriptContext(() => adapter.execute<T>(transformedCode, context));
-        const outcome =
-          this.config.adapter === 'worker_threads'
-            ? await execution
-            : await Promise.race([execution, hostActivity.over.then(() => ONLY_WAITING)]);
+        const waits: Array<Promise<unknown>> = [execution];
+        if (this.config.adapter !== 'worker_threads') waits.push(hostActivity.over.then(() => ONLY_WAITING));
+        if (review) waits.push(review.halted);
+        const outcome = await Promise.race(waits);
 
         // Clear timeout
         clearTimeout(timeoutId);
         // Tool calls and host functions that had not settled when the execution was ended
         const pendingHostCalls = hostActivity.inFlight;
         hostActivity.close();
+        // Nothing the script left behind runs while `post` reviews what it returned
+        if (review) endExecution?.();
 
         if (outcome === ONLY_WAITING) {
           // Past the deadline, and the script is waiting: for something that is not the host's to
@@ -892,7 +922,7 @@ export class Enclave {
           // (every abort check refuses from the deadline on). When host calls were abandoned the
           // error says how many: they are still running, and the host may want to know before it
           // lets anybody repeat them.
-          return {
+          const timedOut: ExecutionResult<T> = {
             success: false,
             error: {
               name: 'VMExecutionError',
@@ -907,8 +937,11 @@ export class Enclave {
             },
             ...(scoringResult ? { scoringResult } : {}),
           };
+          return review ? await review.finish(timedOut, stats) : timedOut;
         }
-        const result = outcome as ExecutionResult<T>;
+        const result = review
+          ? await review.finish(outcome as ExecutionResult<T> | typeof REVIEW_HALTED, stats)
+          : (outcome as ExecutionResult<T>);
 
         // Include scoring result in successful execution
         if (scoringResult) {
@@ -920,9 +953,10 @@ export class Enclave {
         // Clear timeout
         clearTimeout(timeoutId);
         hostActivity.close();
+        if (review) endExecution?.();
 
         const thrown = describeThrown(error);
-        return {
+        const failed: ExecutionResult<T> = {
           success: false,
           error: {
             name: thrown.name || 'ExecutionError',
@@ -936,6 +970,7 @@ export class Enclave {
             endTime: Date.now(),
           },
         };
+        return review ? await review.finish(failed, stats) : failed;
       }
     } catch (error: unknown) {
       const thrown = describeThrown(error);

@@ -37,7 +37,7 @@ try {
 
 `AgentScriptRunnerOptions` extends the supported `PortableEnclaveOptions` and adds `hostFunctions`, required `maxHostFunctionCalls`, optional `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `rapidEnumeration` thresholds and per-operation overrides. Host callbacks receive copied plain-data arguments; their results are copied and bounded before the script sees them. The runner refuses unsupported VM-only options and pre-scan overrides at construction.
 
-`PortableEnclaveOptions` extends `CreateEnclaveOptions` with an `interpreter` object for `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `maxAllocationBytes`. `PortableEnclave.run(code, toolHandler?, runOptions?)` accepts `PortableRunOptions.maxToolResultBytes` and `onToolBridgeFailure`. The interpreter charges copied host-function results and tool responses against its cumulative allocation budget. `maxSteps` bounds interpreted CPU work, including built-in operations. `timeout` is checked between steps and at I/O boundaries; on deployed Cloudflare Workers it is not a hard wall-time cutoff during CPU-only work, and synchronous host callbacks cannot be preempted.
+`PortableEnclaveOptions` extends `CreateEnclaveOptions` with an `interpreter` object for `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `maxAllocationBytes`. `PortableEnclave.run(code, toolHandler?, runOptions?)` accepts `PortableRunOptions.maxToolResultBytes`, `onToolBridgeFailure` and `reviewContext`; the `review` option works there as with `Enclave`. The interpreter charges copied host-function results and tool responses against its cumulative allocation budget. `maxSteps` bounds interpreted CPU work, including built-in operations. `timeout` is checked between steps and at I/O boundaries; on deployed Cloudflare Workers it is not a hard wall-time cutoff during CPU-only work, and synchronous host callbacks cannot be preempted.
 
 ## Enclave Class
 
@@ -79,6 +79,7 @@ The constructor throws a `TypeError` for an option outside its type or range (a 
 | `toolBridge` | `{ mode?, maxPayloadBytes?, acknowledgeInsecureDirect? }` | `{ mode: 'string', maxPayloadBytes: 5MB }` | How tool calls cross the sandbox boundary |
 | `sidecar` | `ReferenceSidecarOptions` | `undefined` | Reference sidecar configuration |
 | `scoringGate` | `ScoringGateConfig` | `undefined` | AI scoring configuration |
+| `review` | `ReviewOptions` | `undefined` | Host hooks before and after the run and each tool call, failing closed (see [Review Hooks](/core-libraries/enclave-vm/review-hooks)) |
 | `doubleVm` | `PartialDoubleVmConfig` | `{ enabled: true }` | Double VM configuration |
 | `adapter` | `'vm' \| 'worker_threads'` | `'vm'` | Where the sandbox runs: in this process, or in a pool of worker threads. In both cases the script runs in the double VM (a single VM with `doubleVm: { enabled: false }`) |
 
@@ -99,7 +100,7 @@ Execute code in the sandbox.
 async run<T = unknown>(
   code: string,
   toolHandler?: ToolHandler,
-  options?: { onToolBridgeFailure?: () => void; maxToolResultBytes?: number },
+  options?: { onToolBridgeFailure?: () => void; maxToolResultBytes?: number; reviewContext?: Record<string, unknown> },
 ): Promise<ExecutionResult<T>>
 ```
 
@@ -108,6 +109,7 @@ async run<T = unknown>(
 - `toolHandler` - Optional tool handler for this run; replaces the one from the constructor
 - `options.onToolBridgeFailure` - Optional observer called when a successful tool result is refused by the bridge before it reaches the script. An error thrown by the observer does not change the bridge result.
 - `options.maxToolResultBytes` - Optional limit on the JSON bytes of a sanitized tool result before sidecar storage. A larger result fails its tool call.
+- `options.reviewContext` - Optional object passed to every review hook of this run as `input.context` (with the `review` option)
 
 **Returns:** `ExecutionResult`. `run()` does not reject for a failing script: the failure is in the result.
 
@@ -118,6 +120,7 @@ interface ExecutionResult<T = unknown> {
   error?: ExecutionError;
   stats: ExecutionStats;
   scoringResult?: ScoringGateResult;
+  review?: { decisions: ReviewRecord[] }; // once review has started: every answer of the hooks (absent when validation or the scoring gate refused the script first)
 }
 ```
 
@@ -304,6 +307,8 @@ interface ExecutionError {
 | `VALIDATION_ERROR` | AST validation failed, or the script is too large or not a string |
 | `SECURITY_VIOLATION` | A dynamic import, or a blocked operation recorded at `STRICT` or `SECURE` |
 | `SCORING_BLOCKED` | Refused by the scoring gate; `data` holds `totalScore`, `riskLevel`, `signals` |
+| `REVIEW_NEEDS_CHANGES`, `REVIEW_NEEDS_APPROVAL`, `REVIEW_DENIED` | A review hook refused the script, held a call for approval, or `post` stopped the run; `data` holds the decision and findings (see [Review Hooks](/core-libraries/enclave-vm/review-hooks)) |
+| `REVIEW_FAILED` | A review hook threw, did not answer within `review.timeoutMs`, or answered out of shape |
 | `DOUBLE_VM_EXECUTION_ERROR` | The script failed in the double VM: an error it did not catch, a failed tool call, the tool-call or iteration limit, a timeout |
 | `VM_EXECUTION_ERROR` | The same in the single VM; with either VM, the timeout of a script that was only waiting |
 | `MEMORY_LIMIT_EXCEEDED` | `memoryLimit` exceeded; `data` holds `usedBytes`, `limitBytes` |

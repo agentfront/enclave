@@ -31,6 +31,14 @@ import { ReferenceSidecar, REFERENCE_CONFIGS, type ReferenceConfig } from './sid
 import { DEFAULT_SUSPICIOUS_PATTERNS } from './double-vm/suspicious-patterns';
 import type { OperationHistory, ParentValidationConfig } from './double-vm/types';
 import { refuseDynamicImport } from './dynamic-import';
+import {
+  assertReviewContext,
+  normalizeReviewOptions,
+  REVIEW_HALTED,
+  ReviewSession,
+  type NormalizedReviewOptions,
+} from './review/review-session';
+import type { ReviewContext } from './review/types';
 
 const MAX_SCRIPT_LENGTH = 5 * 1024 * 1024;
 const MAX_PORTABLE_ALLOCATION_BYTES = 64 * 1024 * 1024;
@@ -47,6 +55,8 @@ export interface PortableEnclaveOptions extends CreateEnclaveOptions {
 export interface PortableRunOptions {
   maxToolResultBytes?: number;
   onToolBridgeFailure?: () => void;
+  /** Passed to the review hooks of this run */
+  reviewContext?: ReviewContext;
 }
 
 function boundedInteger(name: string, value: unknown, max: number): void {
@@ -170,6 +180,7 @@ export class PortableEnclave {
   private readonly references?: ReferenceConfig;
   private readonly policyConfig: ParentValidationConfig;
   private readonly customNames: string[];
+  private readonly review?: NormalizedReviewOptions;
   private disposed = false;
 
   constructor(rawOptions: PortableEnclaveOptions = {}) {
@@ -295,6 +306,7 @@ export class PortableEnclave {
       maxPendingCalls: interpreter?.maxPendingCalls,
       maxAllocationBytes: interpreter?.maxAllocationBytes,
     });
+    this.review = normalizeReviewOptions(options.review);
     this.options = options;
   }
 
@@ -305,6 +317,7 @@ export class PortableEnclave {
   ): Promise<ExecutionResult<T>> {
     if (this.disposed) throw new Error('PortableEnclave has been disposed');
     boundedInteger('maxToolResultBytes', runOptions.maxToolResultBytes, MAX_PORTABLE_ALLOCATION_BYTES);
+    assertReviewContext(runOptions.reviewContext);
     const startTime = Date.now();
     const stats: ExecutionStats = { duration: 0, startTime, endTime: startTime, toolCallCount: 0, iterationCount: 0 };
     const failure = (name: string, message: string, code: string, issues?: ValidationIssue[]): ExecutionResult<T> => ({
@@ -358,6 +371,13 @@ export class PortableEnclave {
     if (refuseDynamicImport(transformed)) {
       return failure('SecurityError', 'Dynamic imports are unavailable', 'SECURITY_VIOLATION');
     }
+    const review = this.review ? new ReviewSession(this.review, runOptions.reviewContext) : undefined;
+    if (
+      review &&
+      (await review.reviewScript(code, { toolNamespaces: this.namespaces, callBudget: this.config.maxToolCalls }))
+    ) {
+      return review.finish<T>(REVIEW_HALTED, stats);
+    }
 
     const sidecar = this.references ? new ReferenceSidecar(this.references) : undefined;
     try {
@@ -385,7 +405,9 @@ export class PortableEnclave {
         set aborted(value: boolean) {
           if (value) abortController.abort();
         },
-        toolHandler: toolHandler ?? this.options.toolHandler,
+        toolHandler: review
+          ? review.wrapToolHandler(toolHandler ?? this.options.toolHandler)
+          : (toolHandler ?? this.options.toolHandler),
         toolNamespaces: this.namespaces,
         beforeToolCall: (name, args) => {
           policy.toolCall(name, args);
@@ -402,18 +424,24 @@ export class PortableEnclave {
         consoleHandler: this.options.consoleHandler,
       };
       try {
-        return await this.adapter.execute<T>(transformed, context);
+        const execution = this.adapter.execute<T>(transformed, context);
+        if (!review) return await execution;
+        const outcome = await Promise.race([execution, review.halted]);
+        closed = true;
+        abortController.abort();
+        return await review.finish(outcome, stats);
       } finally {
         closed = true;
         abortController.abort();
       }
     } catch (error: unknown) {
       const message = (error as { message?: unknown } | null)?.message;
-      return failure(
+      const failed = failure(
         'ExecutionError',
         typeof message === 'string' ? message.slice(0, 2048) : 'Portable execution failed',
         'EXECUTION_ERROR',
       );
+      return review ? review.finish(failed, stats) : failed;
     } finally {
       sidecar?.dispose();
     }
@@ -448,6 +476,7 @@ export class AgentScriptRunner extends PortableEnclave {
     'sidecar',
     'console',
     'rapid-enumeration',
+    'review',
   ]);
 
   constructor(options: AgentScriptRunnerOptions) {

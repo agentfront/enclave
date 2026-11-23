@@ -1,0 +1,152 @@
+---
+title: 'Review Hooks'
+description: 'Host hooks that decide whether a script may run, and whether each tool call may go ahead with its real arguments'
+---
+
+The `review` option lets the host decide whether a script may run, and whether each tool call may go ahead with the arguments it really has. It is off by default; without it nothing changes. A hook that throws, does not answer in time, or answers out of shape ends the run: review fails closed.
+
+```ts
+import { Enclave, type ReviewOptions } from '@enclave-vm/core';
+
+const review: ReviewOptions = {
+  pre: async (input) => {
+    if (input.phase === 'script') {
+      // input.code, input.analysis (see analyzeScript), input.context
+      return { decision: 'allow' };
+    }
+    // input.phase === 'call': input.toolName, input.args, input.callIndex
+    if (input.toolName === 'payments.send') return { decision: 'needs_approval', reason: 'Payments need a person' };
+    return { decision: 'allow' };
+  },
+  post: async (input) => {
+    if (input.phase === 'call-result') return { action: 'replace', value: redact(input.result) };
+    return { action: 'pass' };
+  },
+  timeoutMs: 10_000,
+};
+
+const enclave = new Enclave({ toolHandler, review });
+const result = await enclave.run(code, undefined, { reviewContext: { userId: 'u-1' } });
+```
+
+## The Option
+
+```ts
+interface ReviewOptions {
+  pre?: (input: PreReviewInput) => ReviewDecision | Promise<ReviewDecision>;
+  post?: (input: PostReviewInput) => PostReviewAction | Promise<PostReviewAction>;
+  timeoutMs?: number; // how long one hook may take, 1 to 2147483647 ms (default 30000)
+}
+```
+
+An unknown key, a `pre` or `post` that is not a function, or a `timeoutMs` out of range is a `TypeError` at construction. The option works the same on the double VM, the worker pool (`adapter: 'worker_threads'`), a `sandboxAdapter` such as `InterpreterAdapter`, and `PortableEnclave` / `AgentScriptRunner` of `@enclave-vm/core/worker` (`AgentScriptRunner.capabilities` includes `'review'`).
+
+## Phases
+
+```ts
+type PreReviewInput =
+  | { phase: 'script'; code: string; analysis: ScriptAnalysis; context?: ReviewContext }
+  | { phase: 'call'; toolName: string; args: unknown; callIndex: number; analysis: ScriptAnalysis; context?: ReviewContext };
+
+type PostReviewInput =
+  | { phase: 'call-result'; toolName: string; args: unknown; callIndex: number; result: unknown; context?: ReviewContext }
+  | { phase: 'return'; value: unknown; context?: ReviewContext }
+  | { phase: 'error'; error: { name: string; message: string; code?: string }; context?: ReviewContext };
+```
+
+| Hook and phase | When | What it can answer |
+|----------------|------|--------------------|
+| `pre`, `script` | After validation (and the scoring gate), before the first statement, with the script as written and its [`analyzeScript`](/api-reference/enclave-vm) analysis | `allow`; anything else and no statement runs |
+| `pre`, `call` | Before each tool call, with the arguments the handler would receive (sidecar references resolved) | `allow`; `denied` or `needs_changes`: the handler is not called and the call throws a `ReviewError` the script can catch (`throwOnError: false` returns it like any tool error); `needs_approval`: the run stops, whatever the script catches |
+| `post`, `call-result` | After each tool call, before the script sees the result | `pass`; `replace` (the script receives `value`, copied as JSON like every tool result); `stop` |
+| `post`, `return` | On the value the run returns | `pass`; `replace` (`result.value` becomes `value`); `stop` |
+| `post`, `error` | On the error the run fails with once the script has started | `pass`; `replace` (`value`, `{ name, message, code? }`, is the whole error: nothing else of the script's error is kept); `stop` |
+
+`callIndex` counts the calls that reached review in this run, from 0. A hook sees a call only after the tool policy and the limits let it through, and a script only after validation: it can narrow what runs, never widen it.
+
+## Decisions
+
+```ts
+type ReviewDecision =
+  | { decision: 'allow'; findings?: ReviewFinding[] }
+  | { decision: 'needs_changes'; findings: ReviewFinding[] } // at least one finding
+  | { decision: 'needs_approval'; findings?: ReviewFinding[]; reason: string }
+  | { decision: 'denied'; findings?: ReviewFinding[]; reason: string };
+
+type PostReviewAction =
+  | { action: 'pass' }
+  | { action: 'replace'; value: unknown }
+  | { action: 'stop'; reason: string; findings?: ReviewFinding[] };
+
+interface ReviewFinding {
+  rule: string;
+  message: string;
+  location?: { line: number; column: number };
+  suggestion?: string;
+  toolName?: string;
+}
+```
+
+An answer out of shape ends the run with `REVIEW_FAILED`: an unknown decision or action, `needs_changes` without findings, a missing `reason`, more than 100 findings, or a text longer than 4,096 characters (256 for `rule` and `toolName`). There is no `failOpen` for review.
+
+## Per-Run Context
+
+```ts
+await enclave.run(code, toolHandler, { reviewContext: { userId, sessionId } });
+await portableEnclave.run(code, toolHandler, { reviewContext: { userId, sessionId } });
+```
+
+`reviewContext` reaches every hook of that run as `input.context`, so one enclave can serve many callers from one configuration. A value that is not an object is a `TypeError`.
+
+## Result
+
+Once review has started, the result has `review.decisions`, one record per answer. A run refused before that (the size check, the pre-scanner, the transform, validation, a dynamic import, the scoring gate) returns without a `review` field: read it as `result.review?.decisions`.
+
+```ts
+interface ExecutionResult<T> {
+  // ...
+  review?: { decisions: ReviewRecord[] };
+}
+
+interface ReviewRecord {
+  phase: 'script' | 'call' | 'call-result' | 'return' | 'error';
+  toolName?: string;
+  callIndex?: number;
+  decision: 'allow' | 'needs_changes' | 'needs_approval' | 'denied' | 'pass' | 'replace' | 'stop' | 'review_failed';
+  findings?: ReviewFinding[];
+  reason?: string;
+  durationMs: number;
+}
+```
+
+When review stops a run, `result.error` is a `ReviewError` with one of the codes below, and `error.data` holds `phase`, `decision`, `reason`, `findings`, and for a call `toolName` and `callIndex` (and `args` for `needs_approval`, so the host can show what waits for approval).
+
+## Error Codes
+
+| Code | When |
+|------|------|
+| `REVIEW_NEEDS_CHANGES` | `pre` asks for changes to the script before it runs (at a call, it is the code of the error the script sees) |
+| `REVIEW_NEEDS_APPROVAL` | `pre` asks for approval of the script, or of a call |
+| `REVIEW_DENIED` | `pre` denied the script, or `post` stopped the run (at a call, a denial is the error the script sees) |
+| `REVIEW_FAILED` | A hook threw, did not answer within `timeoutMs`, or answered out of shape; no handler is called after it |
+
+## Timing
+
+The script's `timeout` does not run during `pre` on the script or `post` on the result. The hooks at a call run inside it, like the tool call they belong to.
+
+## Limits
+
+- **Read `review.decisions`, not only the error code.** A refused call the script does not catch fails the run with the `ReviewError` the script saw. On the double VM that error has the double VM's own code, `DOUBLE_VM_EXECUTION_ERROR`; the interpreter paths keep `REVIEW_DENIED` or `REVIEW_NEEDS_CHANGES`. `review.decisions` holds the decision on every path.
+- **A slow hook at a call can end the run as a run timeout.** A hook still answering at the deadline counts as a tool call in flight, and the run ends with the timeout error (after `toolCallGraceMs` at the latest), not `REVIEW_FAILED`. Nothing more runs either way.
+- **`post` does not see everything.** An error a tool handler throws reaches the script without `post`, and console output goes to `consoleHandler` without it. Redact those in the handler and the console handler.
+- **A call already allowed may still start.** When calls run in parallel, a call whose `pre` has answered `allow` can start its handler in the moment before a concurrent `needs_approval` stops the run. No call starts after the stop, including one whose review was still pending.
+
+## The Scoring Gate as a Reviewer
+
+`scoringReviewer(scoringGateConfig)` is the [scoring gate](/core-libraries/enclave-vm/ai-scoring) as a `pre` hook. It scores the script with the gate's scorers (rule-based unless configured) and answers `allow` below `warnThreshold`, `needs_approval` from it and `denied` from `blockThreshold`, with the signals as findings. `scorer: 'disabled'` allows every script. A scorer that cannot answer fails the review. It allows every call. The `scoringGate` option works as before.
+
+```ts
+import { Enclave, scoringReviewer } from '@enclave-vm/core';
+
+const enclave = new Enclave({ review: { pre: scoringReviewer({ warnThreshold: 40, blockThreshold: 70 }) } });
+```

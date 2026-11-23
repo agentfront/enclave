@@ -58,6 +58,22 @@ export type {
   ScriptToolCall,
 } from './analysis/script-analysis';
 
+// Review hooks: types, error codes, and the scoring gate as a reviewer
+export { scoringReviewer } from './review/scoring-reviewer';
+export { REVIEW_ERROR_CODES } from './review/types';
+export type {
+  PostReviewAction,
+  PostReviewInput,
+  PreReviewInput,
+  ReviewContext,
+  ReviewDecision,
+  ReviewFinding,
+  ReviewOptions,
+  ReviewPhase,
+  ReviewRecord,
+  ReviewReport,
+} from './review/types';
+
 // AI Scoring Gate
 export {
   // Main orchestrator
