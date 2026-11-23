@@ -16,6 +16,7 @@ import {
 } from './protocol.js';
 import { EventType, RuntimeChannelMessageType } from './events.js';
 import { SupportedCurve, EncryptionAlgorithm, KeyDerivation, EncryptionMode } from './encryption.js';
+import { FilterMode, PatternType } from './filter.js';
 
 // ============================================================================
 // Base Schemas
@@ -524,13 +525,55 @@ export const RuntimeChannelMessageSchema = z.discriminatedUnion('type', [
 // ============================================================================
 
 /**
- * Session creation request schema.
+ * Content pattern schema of an event filter.
+ */
+const ContentPatternSchema = z.object({
+  type: z.enum(PatternType),
+  pattern: z.string(),
+  field: z.string().optional(),
+  caseInsensitive: z.boolean().optional(),
+});
+
+/**
+ * Rule schema of an event filter.
+ */
+const FilterRuleSchema = z.object({
+  types: z.object({ types: z.array(z.enum(EventType)) }).optional(),
+  content: z
+    .object({
+      patterns: z.array(ContentPatternSchema),
+      match: z.enum(['any', 'all']).optional(),
+    })
+    .optional(),
+});
+
+/**
+ * Event filter schema.
+ */
+export const EventFilterConfigSchema = z.object({
+  mode: z.enum(FilterMode),
+  rules: z.array(FilterRuleSchema),
+  alwaysAllow: z.array(z.enum(EventType)).optional(),
+  regexTimeoutMs: z.number().int().positive().optional(),
+});
+
+/**
+ * Schema of the limits a session creation request asks for.
+ */
+export const CreateSessionConfigSchema = z.object({
+  maxExecutionMs: z.number().int().positive().optional(),
+  maxToolCalls: z.number().int().positive().optional(),
+  heartbeatIntervalMs: z.number().int().positive().optional(),
+});
+
+/**
+ * Session creation request schema: the body of `POST /sessions`.
  */
 export const CreateSessionRequestSchema = z.object({
-  protocolVersion: ProtocolVersionSchema,
-  code: z.string().min(1),
-  limits: SessionLimitsSchema.optional(),
-  encryption: EncryptionRequestSchema.optional(),
+  code: z.string(),
+  sessionId: SessionIdSchema.optional(),
+  config: CreateSessionConfigSchema.optional(),
+  filter: EventFilterConfigSchema.optional(),
 });
 
 // ============================================================================

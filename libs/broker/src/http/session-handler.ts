@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import type { EventFilterConfig, SessionId, SessionLimits, StreamEvent } from '@enclave-vm/types';
+import type { CreateSessionConfig, EventFilterConfig, SessionId, SessionLimits, StreamEvent } from '@enclave-vm/types';
 import { DEFAULT_SESSION_LIMITS } from '@enclave-vm/types';
 import type { Broker } from '../broker';
 import type { BrokerSession } from '../broker-session';
@@ -15,7 +15,6 @@ import type { BrokerRequest, BrokerResponse, SessionInfoResponse, ListSessionsRe
 import { EventFilter, createEventFilter } from '../event-filter';
 import { BrokerError, BrokerErrorCode } from '../errors';
 import { parseCreateSessionRequest, parseFilterParameter, REQUEST_FILTER_LIMITS } from './request-validation';
-import type { RequestedLimits } from './request-validation';
 
 /**
  * The shortest and the longest heartbeat interval a request can get. A broker configured with
@@ -644,7 +643,7 @@ export class SessionHandler {
    * The limits a request gets: what it asks for, never above what the broker is configured
    * with. A request may lower a limit; it cannot raise one.
    */
-  private boundLimits(requested: RequestedLimits): Partial<SessionLimits> {
+  private boundLimits(requested: CreateSessionConfig): Partial<SessionLimits> {
     const ceiling: Required<SessionLimits> = this.broker.sessionLimits ?? DEFAULT_SESSION_LIMITS;
     const limits: Partial<SessionLimits> = {};
 

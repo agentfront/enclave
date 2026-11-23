@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import type { SessionId, SessionLimits, StreamEvent, FinalEvent } from '@enclave-vm/types';
+import type { CreateSessionRequest, SessionId, SessionLimits, StreamEvent, FinalEvent } from '@enclave-vm/types';
 import {
   DEFAULT_SESSION_LIMITS,
   SESSION_ID_PREFIX,
@@ -502,8 +502,7 @@ export class EnclaveClient {
   private async startSession(session: ActiveSession, code: string, limits?: Partial<SessionLimits>): Promise<void> {
     const url = `${this.config.baseUrl}/sessions`;
 
-    // Build request body
-    const body: Record<string, unknown> = {
+    const body: CreateSessionRequest = {
       sessionId: session.sessionId,
       code,
     };

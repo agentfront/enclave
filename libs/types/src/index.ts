@@ -32,6 +32,8 @@ export type {
   CallId,
   RefId,
   SessionLimits,
+  CreateSessionConfig,
+  CreateSessionRequest,
   ToolConfig,
   RefToken,
   ErrorInfo,
@@ -184,6 +186,8 @@ export {
   CancelMessageSchema,
   RuntimeChannelMessageSchema,
   // Session request schemas
+  EventFilterConfigSchema,
+  CreateSessionConfigSchema,
   CreateSessionRequestSchema,
   // Validation helpers
   parseStreamEvent,

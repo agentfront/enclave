@@ -133,7 +133,7 @@ SessionState.Running; // 'running'
 - **Runtime channel messages**: `ToolResultSubmitMessage`, `CancelMessage` and `RuntimeChannelMessage`, with schemas and `parseRuntimeChannelMessage`.
 - **Event filters**: `EventFilterConfig`, `FilterRule`, `ContentPattern`, `FilterMode`, `PatternType` and `DEFAULT_ALWAYS_ALLOW` (`['session_init', 'final']`). `@enclave-vm/broker` implements filters from these definitions.
 - **Validation helpers**: `parseStreamEvent`, `parseEncryptedEnvelope`, `parseRuntimeChannelMessage`, `parseCreateSessionRequest` and `parseStreamEventOrEncrypted`. Each returns the result of Zod's `safeParse`.
-- **Create-session request**: `CreateSessionRequestSchema` (`protocolVersion`, `code`, `limits`, `encryption`). The `POST /sessions` route of `@enclave-vm/broker` does not use this schema; it accepts a different body (`code`, `sessionId`, `config`, `filter`), described in the broker's README.
+- **Create-session request**: `CreateSessionRequest` and `CreateSessionRequestSchema` (`code`, `sessionId?`, `config?`, `filter?`), with `CreateSessionConfig` / `CreateSessionConfigSchema` (`maxExecutionMs`, `maxToolCalls`, `heartbeatIntervalMs`) and `EventFilterConfigSchema`. This is the body of `POST /sessions`: `@enclave-vm/client` sends it and `@enclave-vm/broker` reads it. The broker accepts less than the schema allows (its bounds are in the broker's README).
 
 ## Security notes
 

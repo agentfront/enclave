@@ -277,9 +277,9 @@ const event = StreamEventSchema.parse(data);
 | `parseEncryptedEnvelope(data)` | An encrypted envelope |
 | `parseStreamEventOrEncrypted(data)` | Either of the two |
 | `parseRuntimeChannelMessage(data)` | A runtime channel message |
-| `parseCreateSessionRequest(data)` | `CreateSessionRequestSchema`: `{ protocolVersion, code, limits?, encryption? }` |
+| `parseCreateSessionRequest(data)` | `CreateSessionRequestSchema`: the body of `POST /sessions`, `{ code, sessionId?, config?, filter? }` (`CreateSessionRequest`) |
 
-Each returns the result of `safeParse`. The schemas describe the wire format; a component may accept less. The body the broker accepts for `POST /sessions` is described with the [broker](/enclavejs/broker#the-request-body-of-post-sessions).
+Each returns the result of `safeParse`. The schemas describe the wire format; a component may accept less. The client sends `CreateSessionRequest` to `POST /sessions`, and the broker reads it within the bounds described with the [broker](/enclavejs/broker#the-request-body-of-post-sessions).
 
 ## Session Types
 

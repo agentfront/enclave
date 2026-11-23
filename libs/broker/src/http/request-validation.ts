@@ -8,7 +8,15 @@
  * @packageDocumentation
  */
 
-import type { SessionId, EventFilterConfig, FilterRule, ContentPattern, EventType } from '@enclave-vm/types';
+import type {
+  CreateSessionConfig,
+  CreateSessionRequest,
+  EventFilterConfig,
+  FilterRule,
+  ContentPattern,
+  EventType,
+  SessionId,
+} from '@enclave-vm/types';
 import { FilterMode, PatternType } from '@enclave-vm/types';
 
 /**
@@ -17,22 +25,10 @@ import { FilterMode, PatternType } from '@enclave-vm/types';
 export type Validated<T> = { ok: true; value: T } | { ok: false; code: string; message: string };
 
 /**
- * The limits a request may ask for, as they arrived (checked, not yet bounded).
+ * A checked body of `POST /sessions`. The limits it asks for are checked, not yet bounded.
  */
-export interface RequestedLimits {
-  maxExecutionMs?: number;
-  maxToolCalls?: number;
-  heartbeatIntervalMs?: number;
-}
-
-/**
- * A checked body of `POST /sessions`.
- */
-export interface ParsedCreateSessionRequest {
-  code: string;
-  sessionId?: SessionId;
-  config: RequestedLimits;
-  filter?: EventFilterConfig;
+export interface ParsedCreateSessionRequest extends CreateSessionRequest {
+  config: CreateSessionConfig;
 }
 
 /**
@@ -130,7 +126,7 @@ export function parseCreateSessionRequest(body: unknown): Validated<ParsedCreate
     filter = parsedFilter.value;
   }
 
-  const config: RequestedLimits = {};
+  const config: CreateSessionConfig = {};
   const rawConfig = field(body, 'config');
   if (rawConfig !== undefined) {
     if (!isPlainObject(rawConfig)) {
