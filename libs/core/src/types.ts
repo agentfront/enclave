@@ -364,6 +364,9 @@ export interface ExecutionResult<T = unknown> {
    * AI scoring result (if scoring gate is enabled)
    */
   scoringResult?: ScoringGateResult;
+
+  /** Every decision of the review hooks (with the `review` option) */
+  review?: ReviewReport;
 }
 
 /**
@@ -685,6 +688,7 @@ export interface SafeRuntimeContext {
 import type { ReferenceSidecar } from './sidecar/reference-sidecar';
 import type { ReferenceConfig } from './sidecar/reference-config';
 import type { ScoringGateConfig, ScoringGateResult } from './scoring/types';
+import type { ReviewOptions, ReviewReport } from './review/types';
 import type { WorkerPoolConfig } from './adapters/worker-pool/config';
 import type { DoubleVmConfig, PartialDoubleVmConfig, ParentValidationConfig } from './double-vm/types';
 import type {
@@ -1201,6 +1205,9 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
    * ```
    */
   scoringGate?: ScoringGateConfig;
+
+  /** Review hooks of the host, off by default, failing closed (see "Review Hooks" in the README) */
+  review?: ReviewOptions;
 
   /**
    * Worker Pool Adapter configuration

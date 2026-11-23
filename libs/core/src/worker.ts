@@ -26,3 +26,16 @@ export type {
   ScriptLoopBound,
   ScriptToolCall,
 } from './analysis/script-analysis';
+export { REVIEW_ERROR_CODES } from './review/types';
+export type {
+  PostReviewAction,
+  PostReviewInput,
+  PreReviewInput,
+  ReviewContext,
+  ReviewDecision,
+  ReviewFinding,
+  ReviewOptions,
+  ReviewPhase,
+  ReviewRecord,
+  ReviewReport,
+} from './review/types';
