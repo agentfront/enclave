@@ -332,6 +332,73 @@ describe.each(PATHS)('review hooks on the %s', (_path, create) => {
   });
 });
 
+describe('review hooks on the worker pool', () => {
+  const enclaves: Enclave[] = [];
+  const workerPool = (review: ReviewOptions): Enclave => {
+    const enclave = new Enclave({
+      review,
+      timeout: 3000,
+      adapter: 'worker_threads',
+      workerPoolConfig: { minWorkers: 1, maxWorkers: 1 },
+    });
+    enclaves.push(enclave);
+    return enclave;
+  };
+  afterAll(() => {
+    for (const enclave of enclaves.splice(0)) enclave.dispose();
+  });
+
+  it('runs pre at each call with its arguments, and never calls the handler of a denied call', async () => {
+    const handler = recordingHandler();
+    const calls: PreReviewInput[] = [];
+    const pre = (input: PreReviewInput): ReviewDecision => {
+      if (input.phase === 'call') calls.push(input);
+      return input.phase === 'call' && input.toolName === 'delete'
+        ? { decision: 'denied', reason: 'Not here' }
+        : allow();
+    };
+    const code = `
+      const soft = await callTool('delete', { id: 1 }, { throwOnError: false });
+      const kept = await callTool('keep', { id: 2 });
+      return { soft, kept };
+    `;
+
+    const result = await workerPool({ pre }).run(code, handler);
+
+    expect(calls.map(({ phase, ...call }) => call)).toEqual([
+      expect.objectContaining({ toolName: 'delete', args: { id: 1 }, callIndex: 0 }),
+      expect.objectContaining({ toolName: 'keep', args: { id: 2 }, callIndex: 1 }),
+    ]);
+    expect(handler.mock.calls).toEqual([['keep', { id: 2 }]]);
+    expect(result.value).toEqual({
+      soft: { success: false, error: expect.objectContaining({ name: 'ReviewError', code: 'REVIEW_DENIED' }) },
+      kept: { toolName: 'keep', args: { id: 2 } },
+    });
+  });
+
+  it('ends the run with REVIEW_FAILED when a hook throws, and no further handler runs', async () => {
+    const handler = recordingHandler();
+    const pre = (input: PreReviewInput): ReviewDecision => {
+      if (input.phase === 'call' && input.toolName === 'second') throw new Error('reviewer down');
+      return allow();
+    };
+    const code = `
+      await callTool('first', {});
+      try { await callTool('second', {}); } catch (error) {}
+      await callTool('third', {});
+      return 1;
+    `;
+
+    const result = await workerPool({ pre }).run(code, handler);
+
+    expect(handler.mock.calls.map(([toolName]) => toolName)).toEqual(['first']);
+    expect(result.error).toEqual(expect.objectContaining({ name: 'ReviewError', code: 'REVIEW_FAILED' }));
+    expect(result.review?.decisions.at(-1)).toEqual(
+      expect.objectContaining({ phase: 'call', toolName: 'second', callIndex: 1, decision: 'review_failed' }),
+    );
+  });
+});
+
 describe('scoringReviewer', () => {
   const LIST_THEN_SEND = `
     const users = await callTool('users.list', { limit: 50 });

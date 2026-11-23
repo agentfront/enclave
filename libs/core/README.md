@@ -804,9 +804,15 @@ const result = await enclave.run(code, undefined, { reviewContext: { userId: 'u-
 - **Per run.** `reviewContext`, the third argument of `run()`, reaches every hook of that run as `input.context`, so one enclave can serve many callers.
 - **Audit.** `result.review.decisions` lists every answer: `phase`, `toolName`, `callIndex`, `decision` (or the `post` action, or `review_failed`), `findings`, `reason`, `durationMs`.
 - **Time.** The script's `timeout` does not run during `pre` on the script or `post` on the result; the hooks at a call run inside it, like the tool call they belong to.
-- A refused call the script does not catch fails the run with the `ReviewError` the script saw; the double VM reports it with its own code (`DOUBLE_VM_EXECUTION_ERROR`). The decision is in `review.decisions` on every path.
 
-A finding is `{ rule, message, location?: { line, column }, suggestion?, toolName? }`. The hooks run the same way with the double VM, a `sandboxAdapter` such as `InterpreterAdapter`, and `PortableEnclave` / `AgentScriptRunner` (`run(code, toolHandler, { reviewContext })`; `AgentScriptRunner.capabilities` includes `'review'`).
+Limits to plan for:
+
+- **Read `review.decisions`, not only the error code.** A refused call the script does not catch fails the run with the `ReviewError` the script saw. On the double VM that error has the double VM's own code, `DOUBLE_VM_EXECUTION_ERROR`; the interpreter paths keep `REVIEW_DENIED` or `REVIEW_NEEDS_CHANGES`. `review.decisions` holds the decision on every path.
+- **A slow hook at a call can end the run as a run timeout.** The hooks at a call share the script's `timeout`: a hook still answering at the deadline counts as a tool call in flight, and the run ends with the timeout error (after `toolCallGraceMs` at the latest), not `REVIEW_FAILED`. Nothing more runs either way.
+- **`post` does not see everything.** An error a tool handler throws reaches the script without `post`, and console output goes to `consoleHandler` without it. Redact those in the handler and the console handler.
+- **A call already allowed may still start.** When calls run in parallel, a call whose `pre` has answered `allow` can start its handler in the moment before a concurrent `needs_approval` stops the run. No call starts after the stop, including one whose review was still pending.
+
+A finding is `{ rule, message, location?: { line, column }, suggestion?, toolName? }`. The hooks run the same way with the double VM, the worker pool (`adapter: 'worker_threads'`), a `sandboxAdapter` such as `InterpreterAdapter`, and `PortableEnclave` / `AgentScriptRunner` (`run(code, toolHandler, { reviewContext })`; `AgentScriptRunner.capabilities` includes `'review'`).
 
 `scoringReviewer(scoringGateConfig)` is the scoring gate as a `pre` hook: it scores the script with the gate's scorers (rule-based unless configured) and answers `allow` below `warnThreshold`, `needs_approval` from it and `denied` from `blockThreshold`, with the signals as findings. A scorer that cannot answer fails the review. It allows every call. The `scoringGate` option works as before.
 
