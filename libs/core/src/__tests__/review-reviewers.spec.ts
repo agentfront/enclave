@@ -290,6 +290,56 @@ describe('reviewers', () => {
     }
   });
 
+  it('sends the key over https only, or over http to a loopback host', () => {
+    for (const baseUrl of [
+      'http://localhost:8080/v1',
+      'http://127.0.0.1:11434/v1',
+      'http://127.5.6.7',
+      'http://[::1]:1234',
+    ]) {
+      expect(() => openAi({ baseUrl })).not.toThrow();
+    }
+    for (const baseUrl of [
+      'http://api.example.com/v1',
+      'http://127.evil.example',
+      'http://10.0.0.1',
+      'http://localhost.example',
+    ]) {
+      expect(() => openAi({ baseUrl })).toThrow('baseUrl must be https; http is allowed for a loopback host only');
+    }
+  });
+
+  it('keys a cached decision by the script and the analysis it came with', async () => {
+    fetchSpy.mockImplementation(async () => modelReply({ decision: 'allow', reason: '', findings: [] }));
+    const review = openAi();
+    const code = "await mail.send({ to: 'a@example.com' });";
+    const withNamespaces = (toolNamespaces: Record<string, string[]>): PreReviewInput => ({
+      phase: 'script',
+      code,
+      analysis: analyzeScript(code, { toolNamespaces }),
+    });
+
+    await review(withNamespaces({ mail: ['send'] }));
+    await review(withNamespaces({ mail: ['send'] }));
+    await review(withNamespaces({}));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses an answer that holds the API key behind a JSON escape', async () => {
+    const escaped = `\\u0073${API_KEY.slice(1)}`;
+    fetchSpy.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: `{"decision":"denied","reason":"${escaped}","findings":[]}` } }],
+          }),
+        ),
+    );
+
+    await expect(openAi({ cache: false })(scriptInput())).rejects.toThrow('The model answer holds the API key');
+  });
+
   it('refuses options it cannot use', () => {
     expect(() => openAi({ model: '' })).toThrow('model is required');
     expect(() => openAi({ apiKey: undefined as unknown as string })).toThrow('apiKey is required');

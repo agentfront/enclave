@@ -818,7 +818,7 @@ A finding is `{ rule, message, location?: { line, column }, suggestion?, toolNam
 
 ### Reviewers
 
-Two reviewers plug into `pre`. Both review the script (`phase: 'script'`) and allow every call, get the same input, time out (`timeoutMs`, default 20 s; a late answer is refused), and keep a decision by the SHA-256 digest of the script (`cache: { maxEntries, ttlMs }`, default 1,000 for 5 minutes; `false` for none). A failure is not kept.
+Two reviewers plug into `pre`. Both review the script (`phase: 'script'`) and allow every call, get the same input, time out (`timeoutMs`, default 20 s; a late answer is refused), and keep a decision by the SHA-256 digest of the script and of the analysis it came with (the analysis depends on the enclave's tool namespaces and call budget) (`cache: { maxEntries, ttlMs }`, default 1,000 for 5 minutes; `false` for none). A failure is not kept.
 
 ```typescript
 import { Enclave, functionReviewer, providerReviewer } from '@enclave-vm/core';
@@ -844,7 +844,7 @@ const byFunction = functionReviewer(async ({ code, analysis, policy, tools }) =>
 const enclave = new Enclave({ toolHandler, review: { pre: byModel } });
 ```
 
-- **The same input.** A function reviewer receives `{ code, analysis, policy, tools }`: what the provider reviewer sends. `model` is required; `baseUrl` points it at another OpenAI-compatible endpoint.
+- **The same input.** A function reviewer receives `{ code, analysis, policy, tools }`: what the provider reviewer sends. `model` is required; `baseUrl` points it at another OpenAI-compatible endpoint: https, or http on a loopback host (`localhost`, `127.0.0.0/8`, `::1`) for local development; anything else is a `TypeError` at construction.
 - **Untrusted data.** The policy is in the system message. The script, with its strings and comments, its analysis and the tool descriptions go in the user message as one JSON document that the prompt marks as untrusted data, never as instructions.
 - **Exact answers.** The model answers in a strict JSON schema (`decision`, `reason`, `findings`). An answer that is not JSON, does not match the schema (an unknown key included) or holds the API key fails the review: `REVIEW_FAILED`, with the reason in the message (`Review failed: The model answer is not JSON`).
 - **The key.** It goes only into the `authorization` header. No error, result or log holds it; the reviewers log nothing.
@@ -896,7 +896,7 @@ A call through a tool namespace (`mail.send(args)`) is scored as the tool call i
 | `local-llm`    | Your `customAnalyzer`, or the rule-based rules or a keyword heuristic over the extracted features (no model) |
 | `external-api` | The answer of your scoring service, which receives the extracted features                                    |
 
-The `local-llm` scorer loads no model: without a `customAnalyzer` it scores with the rule-based scorer (`fallbackToRules`, the default) or with the keyword heuristic (`fallbackToRules: false`). Up to 2.20 it loaded a Hugging Face model when `@huggingface/transformers` was installed and never called it; `cacheDir` and `modelDir` have no effect. Its `mode: 'similarity'` searches a VectoriaDB index that is created empty and that the configuration cannot fill, so it scores like the default mode. Call `await enclave.initialize()` before the first `run()` when a scorer needs initialization.
+The `local-llm` scorer loads no model: without a `customAnalyzer` it scores with the rule-based scorer (`fallbackToRules`, the default) or with the keyword heuristic (`fallbackToRules: false`). Up to 2.20 it loaded a Hugging Face model when `@huggingface/transformers` was installed and never called it; `cacheDir` and `modelDir` have no effect. Its `mode: 'similarity'` searches a VectoriaDB index that is created empty and that the configuration cannot fill, and without a `customAnalyzer` it always scores with the keyword heuristic: `fallbackToRules` applies to classification mode only, so the two modes can score the same script differently. Call `await enclave.initialize()` before the first `run()` when a scorer needs initialization.
 
 ### Custom Analyzer
 

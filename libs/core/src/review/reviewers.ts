@@ -39,7 +39,7 @@ export interface ProviderReviewerOptions extends ReviewerOptions {
   apiKey: string;
   model: string;
   policy: string;
-  /** An OpenAI-compatible endpoint (default https://api.openai.com/v1) */
+  /** An OpenAI-compatible endpoint (default https://api.openai.com/v1): https, or http on a loopback host only */
   baseUrl?: string;
 }
 
@@ -109,15 +109,34 @@ async function sha256Hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+/** JSON with the keys of every object in sorted order, so equal values give equal text */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const members = Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
+    return `{${members.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function containsText(value: unknown, text: string): boolean {
+  if (typeof value === 'string') return value.includes(text);
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value).some((member) => containsText(member, text));
+}
+
 function decisionCache(
   options: ReviewerOptions['cache'],
-): (code: string, review: () => Promise<ReviewDecision>) => Promise<ReviewDecision> {
-  if (options === false) return (_code, review) => review();
+): (keyMaterial: unknown, review: () => Promise<ReviewDecision>) => Promise<ReviewDecision> {
+  if (options === false) return (_keyMaterial, review) => review();
   const maxEntries = options?.maxEntries ?? DEFAULT_CACHE_ENTRIES;
   const ttlMs = options?.ttlMs ?? DEFAULT_CACHE_TTL_MS;
   const entries = new Map<string, { decision: Promise<ReviewDecision>; expiresAt: number }>();
-  return async (code, review) => {
-    const key = await sha256Hex(code);
+  return async (keyMaterial, review) => {
+    const key = await sha256Hex(canonicalJson(keyMaterial));
     const cached = entries.get(key);
     if (cached && cached.expiresAt > Date.now()) return cached.decision;
     const decision = review();
@@ -151,17 +170,28 @@ async function withTimeout<T>(timeoutMs: number, work: (signal: AbortSignal) => 
   }
 }
 
+function isLoopbackHost(hostname: string): boolean {
+  if (hostname === 'localhost' || hostname === '[::1]') return true;
+  const octets = hostname.split('.');
+  return octets.length === 4 && octets[0] === '127' && octets.every((octet) => /^\d{1,3}$/.test(octet));
+}
+
 /** The base URL of an http(s) endpoint without its trailing slashes */
 function endpointBase(baseUrl: unknown): string {
   const invalid = new TypeError('baseUrl must be an http(s) URL');
   if (typeof baseUrl !== 'string' || /\s/.test(baseUrl)) throw invalid;
-  let protocol: string;
+  let url: URL;
   try {
-    protocol = new URL(baseUrl).protocol;
+    url = new URL(baseUrl);
   } catch {
     throw invalid;
   }
-  if (protocol !== 'https:' && protocol !== 'http:') throw invalid;
+  if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
+    throw new TypeError(
+      'baseUrl must be https; http is allowed for a loopback host only (localhost, 127.0.0.0/8, ::1)',
+    );
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw invalid;
   let end = baseUrl.length;
   while (end > 0 && baseUrl[end - 1] === '/') end--;
   return baseUrl.slice(0, end);
@@ -183,7 +213,7 @@ function createReviewer(options: ReviewerOptions, answer: Answer): PreReviewer {
   return async (input) => {
     if (input.phase !== 'script') return { decision: 'allow' };
     const request: ReviewerRequest = { code: input.code, analysis: input.analysis, policy, tools: tools.data };
-    return cached(input.code, async () => {
+    return cached([input.code, input.analysis], async () => {
       const decision = parseReviewDecision(await withTimeout(timeoutMs, (signal) => answer(request, signal)));
       if (!decision) throw new ReviewerError('The reviewer gave a decision of the wrong shape');
       return decision;
@@ -255,6 +285,7 @@ function openAiAnswer(apiKey: string, model: string, baseUrl: string): Answer {
     }
     const parsed = modelAnswerSchema.safeParse(answer);
     if (!parsed.success) throw new ReviewerError('The model answer does not match the review schema');
+    if (containsText(parsed.data, apiKey)) throw new ReviewerError('The model answer holds the API key');
     return toDecision(parsed.data);
   };
 }

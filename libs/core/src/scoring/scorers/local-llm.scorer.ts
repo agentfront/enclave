@@ -95,7 +95,8 @@ export class LocalLlmScorer extends BaseScorer {
       return this.initPromise;
     }
 
-    this.initPromise = this._initialize();
+    // Stored before the setup starts, so a setup that throws at once is not kept and a later call retries
+    this.initPromise = Promise.resolve().then(() => this._initialize());
     return this.initPromise;
   }
 

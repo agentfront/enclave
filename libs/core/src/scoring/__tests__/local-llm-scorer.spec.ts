@@ -243,6 +243,26 @@ describe('LocalLlmScorer', () => {
       expect(scorer.isReady()).toBe(true);
     });
 
+    it('retries a setup whose custom analyzer threw at once', async () => {
+      let attempts = 0;
+      const scorer = new LocalLlmScorer({
+        modelId: 'Xenova/all-MiniLM-L6-v2',
+        customAnalyzer: {
+          initialize: () => {
+            attempts++;
+            if (attempts === 1) throw new Error('not yet');
+            return Promise.resolve();
+          },
+          analyze: async () => ({ score: 0, signals: [] }),
+        },
+      });
+
+      await expect(scorer.initialize()).rejects.toThrow('not yet');
+      await expect(scorer.initialize()).resolves.toBeUndefined();
+      expect(attempts).toBe(2);
+      expect(scorer.isReady()).toBe(true);
+    });
+
     it('should not reinitialize if already ready', async () => {
       const config: LocalLlmConfig = {
         modelId: 'Xenova/all-MiniLM-L6-v2',

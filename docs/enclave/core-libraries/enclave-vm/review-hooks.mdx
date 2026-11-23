@@ -143,7 +143,7 @@ The script's `timeout` does not run during `pre` on the script or `post` on the 
 
 ## Reviewers
 
-Two reviewers plug into `pre`. Both review the script (`phase: 'script'`) and allow every call, get the same input, time out (`timeoutMs`, default 20 s; a late answer is refused), and keep a decision by the SHA-256 digest of the script (`cache: { maxEntries, ttlMs }`, default 1,000 for 5 minutes; `false` for none). A failure is not kept. Both are also exported from `@enclave-vm/core/worker`.
+Two reviewers plug into `pre`. Both review the script (`phase: 'script'`) and allow every call, get the same input, time out (`timeoutMs`, default 20 s; a late answer is refused), and keep a decision by the SHA-256 digest of the script and of the analysis it came with (the analysis depends on the enclave's tool namespaces and call budget) (`cache: { maxEntries, ttlMs }`, default 1,000 for 5 minutes; `false` for none). A failure is not kept. Both are also exported from `@enclave-vm/core/worker`.
 
 ```ts
 import { Enclave, functionReviewer, providerReviewer } from '@enclave-vm/core';
@@ -180,14 +180,14 @@ interface ProviderReviewerOptions extends ReviewerOptions {
   apiKey: string;
   model: string; // required
   policy: string;
-  baseUrl?: string; // an OpenAI-compatible endpoint, default https://api.openai.com/v1
+  baseUrl?: string; // an OpenAI-compatible endpoint, default https://api.openai.com/v1; https, or http on a loopback host only
 }
 ```
 
 - **The same input.** A function reviewer receives the `ReviewerRequest` the provider reviewer sends.
 - **Untrusted data.** The policy is in the system message. The script, with its strings and comments, its analysis and the tool descriptions go in the user message as one JSON document that the prompt marks as untrusted data, never as instructions.
 - **Exact answers.** The model answers in a strict JSON schema (`decision`, `reason`, `findings`). An answer that is not JSON, does not match the schema (an unknown key included) or holds the API key fails the review with `REVIEW_FAILED`, and the reason is in the message (`Review failed: The model answer is not JSON`).
-- **The key.** It goes only into the `authorization` header. No error, result or log holds it; the reviewers log nothing.
+- **The key.** It goes only into the `authorization` header, and only over https: `baseUrl` must be https, or http on a loopback host (`localhost`, `127.0.0.0/8`, `::1`) for local development; anything else is a `TypeError` at construction. No error, result or log holds it; the reviewers log nothing.
 
 ## The Scoring Gate as a Reviewer
 
