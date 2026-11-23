@@ -22,6 +22,7 @@ import { realmTickSource } from '../deadline-guard';
 import { booleanLiteral, numericLiteral } from '../enclave-options';
 import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
 import { realmArrayAccountingSource } from '../realm-memory';
+import { realmSafeGlobalsSource } from '../realm-safe-globals';
 
 /**
  * Recursion backstop for the in-VM secure-proxy membranes.
@@ -3475,6 +3476,10 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   // without a memory limit the helpers count nothing.
   new vm.Script(${JSON.stringify(realmArrayAccountingSource(memoryLimit))}, {
     filename: 'inner-array-accounting.js'
+  }).runInContext(innerContext);
+
+  new vm.Script(${JSON.stringify(realmSafeGlobalsSource(memoryLimit))}, {
+    filename: 'inner-safe-globals.js'
   }).runInContext(innerContext);
 
   // ============================================================

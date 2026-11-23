@@ -141,6 +141,23 @@ const CORPUS: Array<[string, string]> = [
     `const data = { users: [{ name: 'a', tags: ['x'] }, { name: 'b', tags: [] }] }; const names = data.users.filter((u) => u.tags.length > 0).map((u) => u.name); data.users[1].tags.push('y'); return [names, data.users[1].tags.length];`,
   ],
   ['a Date', `const d = new Date(86400000); return [d.getTime(), d.toISOString()];`],
+  [
+    'a Set',
+    `const s = new Set(['a', 'b', 'a']); s.add('c'); s.delete('b'); const seen = []; s.forEach((v) => { seen.push(v); }); return [s.size, s.has('a'), [...s], seen, String(s), JSON.stringify(s), s];`,
+  ],
+  [
+    'a Map',
+    `const m = new Map([['a', 1]]); m.set(2, 'b').set('a', 3); const seen = []; m.forEach((v, k) => { seen.push([k, v]); }); return [m.size, m.get('a'), [...m.keys()], m.entries().next().value, seen, Object.fromEntries(m), m];`,
+  ],
+  [
+    'a Set and a Map as tool arguments',
+    `return await callTool('echo:args', { ids: new Set([1, 2]), byId: new Map([['k', 'v']]) });`,
+  ],
+  [
+    'errors',
+    `const e = new TypeError('bad'); let caught; try { throw new RangeError('out'); } catch (x) { caught = [x.name, x.message, x instanceof RangeError, x instanceof Error]; } return [String(e), e.stack === undefined, e instanceof Error, String(new Error()), caught, JSON.stringify(new Error('j')), new Error('r')];`,
+  ],
+  ['an uncaught error', `throw new Error('no overdue invoices');`],
   ['returning a function', `return { label: 'x', run: () => 1 };`],
   ['returning nothing', `const x = 1;`],
 ];

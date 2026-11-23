@@ -20,10 +20,12 @@ import {
   isBlockedKey,
   isScriptData,
   isScriptError,
+  libraryMethod,
   MAX_ARRAY_LENGTH,
   MAX_JOIN_LENGTH,
   takesArraysAsData,
 } from './interpreter';
+import { COLLECTION_ENTRY_BYTES } from '../memory-tracker';
 import { checkSerializedSize } from '../value-sanitizer';
 
 /** The longest text `JSON.stringify` may produce */
@@ -164,7 +166,7 @@ const SafeJSON = frozenRecord({
       throw new TypeError('JSON.stringify does not take a replacer function in the sandbox');
     }
     // A value that holds one large string many times is small in memory and huge as text.
-    const size = checkSerializedSize(value, MAX_JSON_TEXT_BYTES);
+    const size = checkSerializedSize(value, MAX_JSON_TEXT_BYTES, { mapsAsEntries: true });
     if (!size.ok) throw new RangeError(`JSON.stringify: the text would be too large (${size.error})`);
     // With `space` every item and member gets a line of its own, indented by its depth: text
     // the estimate above does not count. Only a number or a text is an indentation here: the
@@ -394,6 +396,114 @@ function errorType(name: string): ErrorType {
 
 const SAFE_ERRORS: ReadonlyArray<[string, ErrorType]> = ERROR_TYPES.map((name) => [name, errorType(name)]);
 
+// ── Set and Map ──────────────────────────────────────────────────────────────
+
+/** What the Set and Map of one execution charge their new entries to and call a callback through. */
+export interface CollectionRuntime {
+  charge(bytes: number): void;
+  call(fn: unknown, args: unknown[]): unknown;
+}
+
+const NOT_RUNNING: CollectionRuntime = {
+  charge: () => {
+    throw new TypeError('The interpreter is not running');
+  },
+  call: () => {
+    throw new TypeError('The interpreter is not running');
+  },
+};
+
+type Collection = Set<unknown> | Map<unknown, unknown>;
+
+interface CollectionType {
+  facade: object;
+  make: (args: unknown[]) => unknown;
+  isInstance: (value: unknown) => boolean;
+}
+
+const SET_READERS = ['has', 'delete', 'clear', 'values', 'keys', 'entries'];
+const MAP_READERS = ['get', 'has', 'delete', 'clear', 'keys', 'values', 'entries'];
+const SetHas = Set.prototype.has;
+const SetAdd = Set.prototype.add;
+const MapHas = Map.prototype.has;
+const MapSet = Map.prototype.set;
+
+for (const method of [
+  ...SET_READERS.map((name) => (Set.prototype as unknown as Record<string, object>)[name]),
+  ...MAP_READERS.map((name) => (Map.prototype as unknown as Record<string, object>)[name]),
+  (Object.getPrototypeOf(new Set().values()) as { next: object }).next,
+  (Object.getPrototypeOf(new Map().entries()) as { next: object }).next,
+]) {
+  libraryMethod(takesArraysAsData(method));
+}
+
+function collectionType(
+  BuiltIn: SetConstructor | MapConstructor,
+  name: string,
+  readerNames: string[],
+  grow: (this: Collection, ...args: unknown[]) => Collection,
+  runtime: CollectionRuntime,
+): CollectionType {
+  const builtInPrototype = BuiltIn.prototype as unknown as Record<PropertyKey, unknown>;
+  const iterate = builtInPrototype[Symbol.iterator] as (this: Collection) => Iterable<unknown>;
+  const entries = builtInPrototype['entries'] as (this: Collection) => Iterable<[unknown, unknown]>;
+  const methods: Record<string, unknown> = {
+    [grow.name]: libraryMethod(takesArraysAsData(grow)),
+    toJSON: libraryMethod(function toJSON(this: Collection): unknown[] {
+      return Array.from(Reflect.apply(iterate, this, []));
+    }),
+    forEach: libraryMethod(async function forEach(this: Collection, callback: unknown): Promise<undefined> {
+      if (typeof callback !== 'function') {
+        throw new TypeError(`The callback of ${name}.forEach is not a function`);
+      }
+      for (const [key, value] of Reflect.apply(entries, this, [])) {
+        await runtime.call(callback, [value, key, this]);
+      }
+      return undefined;
+    }),
+  };
+  for (const reader of readerNames) {
+    methods[reader] = builtInPrototype[reader];
+  }
+  const prototype = {};
+  for (const key of Object.keys(methods)) {
+    Object.defineProperty(prototype, key, { value: methods[key] });
+  }
+  Object.defineProperty(prototype, Symbol.iterator, { value: iterate });
+  Object.defineProperty(prototype, Symbol.toStringTag, { value: name });
+  Object.defineProperty(prototype, 'size', { get: Object.getOwnPropertyDescriptor(builtInPrototype, 'size')?.get });
+  const facade = function (): never {
+    throw new TypeError(`Constructor ${name} requires 'new'`);
+  };
+  Object.defineProperty(facade, 'name', { value: name });
+  facade.prototype = Object.freeze(prototype);
+  return {
+    facade: takesArraysAsData(Object.freeze(facade)),
+    make: (args) => Reflect.construct(BuiltIn, args[0] === undefined || args[0] === null ? [] : [args[0]], facade),
+    isInstance: (value) => typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === prototype,
+  };
+}
+
+function setType(runtime: CollectionRuntime): CollectionType {
+  const add = function add(this: Collection, value: unknown): Collection {
+    if (!Reflect.apply(SetHas, this, [value])) {
+      runtime.charge(COLLECTION_ENTRY_BYTES);
+    }
+    return Reflect.apply(SetAdd, this, [value]);
+  };
+  return collectionType(Set, 'Set', SET_READERS, add, runtime);
+}
+
+function mapType(runtime: CollectionRuntime): CollectionType {
+  const set = function set(this: Collection, key: unknown, value: unknown): Collection {
+    if (!Reflect.apply(MapHas, this, [key])) {
+      runtime.charge(COLLECTION_ENTRY_BYTES);
+    }
+    return Reflect.apply(MapSet, this, [key, value]);
+  };
+  return collectionType(Map, 'Map', MAP_READERS, set, runtime);
+}
+
 const SAFE_GLOBALS: Readonly<Record<string, unknown>> = Object.freeze({
   Math: SafeMath,
   JSON: SafeJSON,
@@ -494,21 +604,37 @@ for (const name of Object.keys(MATH_PARAMETERS)) {
 
 /**
  * The standard globals for one interpreter. The values are shared between interpreters: all of
- * them are frozen and none of them keeps state.
+ * them are frozen and none of them keeps state, except `Set` and `Map`, made for `runtime`.
+ *
+ * @param runtime The execution the Set and Map charge and call through; without one they hold nothing
  */
-export function createSafeGlobals(): SafeGlobals {
+export function createSafeGlobals(runtime: CollectionRuntime = NOT_RUNNING): SafeGlobals {
+  const collections: Array<[string, CollectionType]> = [
+    ['Set', setType(runtime)],
+    ['Map', mapType(runtime)],
+  ];
   return {
-    globals: { ...SAFE_GLOBALS },
+    globals: {
+      ...SAFE_GLOBALS,
+      ...Object.fromEntries(collections.map(([name, type]) => [name, type.facade])),
+      ...Object.fromEntries(collections.map(([name, type]) => [`__safe_${name}`, type.facade])),
+    },
     constructors: new Map<unknown, (args: unknown[]) => unknown>([
       [SafeDate, makeDate],
       [SafeArray, makeArray],
-      ...SAFE_ERRORS.map(([, type]): [unknown, (args: unknown[]) => unknown] => [type.facade, type.make]),
+      ...[...SAFE_ERRORS, ...collections].map(([, type]): [unknown, (args: unknown[]) => unknown] => [
+        type.facade,
+        type.make,
+      ]),
     ]),
     instanceChecks: new Map<unknown, (value: unknown) => boolean>([
       [SafeDate, (value) => value instanceof Date],
       [SafeArray, (value) => Array.isArray(value)],
       [SafeObject, (value) => (typeof value === 'object' && value !== null) || typeof value === 'function'],
-      ...SAFE_ERRORS.map(([, type]): [unknown, (value: unknown) => boolean] => [type.facade, type.isInstance]),
+      ...[...SAFE_ERRORS, ...collections].map(([, type]): [unknown, (value: unknown) => boolean] => [
+        type.facade,
+        type.isInstance,
+      ]),
     ]),
   };
 }

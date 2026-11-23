@@ -181,7 +181,8 @@ The constructor checks its options and throws a `TypeError` for a value outside 
 
 - **Text**: concatenation (`a + b`, and `x += y`, which is charged like `x + y`) and the methods that multiply their input (`repeat`, `padStart`, `padEnd`, `join`).
 - **Arrays**: no single array is larger than the limit holds, at 8 bytes per element, and what an operation adds is charged: `push`, `unshift`, `splice`, `fill`, the elements `concat`, `flat`, `flatMap` and a spread literal add, and what `Array.from` makes out of something that is not an array.
-- **Not counted by the VM adapter**: a copy is free, so a script can hold many arrays that are each within the limit; object literals, Maps and Sets are not counted.
+- **Sets and Maps**: every new entry of a script's `Set` or `Map` is charged (16 bytes) before it is added, in both VMs and in the interpreter.
+- **Not counted by the VM adapter**: a copy is free, so a script can hold many arrays that are each within the limit; object literals are not counted.
 
 The portable interpreter additionally charges copied host-function results and tool responses by their serialized size to the cumulative allocation budget.
 
@@ -228,9 +229,17 @@ Both AST validation and the runtime sandbox use the same allowed globals:
 | `undefined`, `NaN`, `Infinity`                                       | Yes    | Yes    | Yes      | Yes        |
 | `parseInt`, `parseFloat`, `isNaN`, `isFinite`                        | No     | Yes    | Yes      | Yes        |
 | `encodeURI`, `decodeURI`, `encodeURIComponent`, `decodeURIComponent` | No     | Yes    | Yes      | Yes        |
+| `Set`, `Map`                                                         | No     | Yes    | Yes      | Yes        |
+| `Error`, `TypeError`, `RangeError`                                   | No     | Yes    | Yes      | Yes        |
 | `console`                                                            | No     | No     | No       | Yes        |
 
 With a `consoleHandler`, `console` is allowed at every level (see [Console Handler](#console-handler)).
+
+`Set`, `Map` and the three error types are the runtime's own, the same in the double VM, the single VM and the interpreter:
+
+- A new entry of a `Set` or `Map` is charged against `memoryLimit` as it is added, so a growing `Set` fails with `MEMORY_LIMIT_EXCEEDED` like a growing array. `WeakMap`, `WeakSet` and `WeakRef` stay refused.
+- An error has `name` and `message` and no `stack`, and is frozen: `String(new Error('x'))` is `"Error: x"`, and a `catch` reads `error.message`.
+- Where a value leaves the script (the arguments of `callTool`, the returned value), a `Set` becomes an array and a `Map` an array of `[key, value]` pairs. So does `JSON.stringify` inside the script.
 
 ### Refused Globals
 
@@ -246,9 +255,9 @@ With the default `agentscript` preset, every global that is not in the table abo
 | **Async**          | `Promise`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`       |
 | **Network**        | `fetch`, `XMLHttpRequest`, `WebSocket`                                         |
 | **Workers**        | `Worker`, `SharedWorker`, `ServiceWorker`                                      |
-| **Collections**    | `Map`, `Set`, `WeakMap`, `WeakSet`, `WeakRef`, `FinalizationRegistry`          |
+| **Collections**    | `WeakMap`, `WeakSet`, `WeakRef`, `FinalizationRegistry`; STRICT: `Map`, `Set`  |
 | **Binary/Wasm**    | `WebAssembly`, `ArrayBuffer`, `SharedArrayBuffer`, `Atomics`                   |
-| **Error Types**    | `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError`            |
+| **Error Types**    | `ReferenceError`, `SyntaxError`; STRICT: `Error`, `TypeError`, `RangeError`    |
 | **Symbols/Regex**  | `Symbol`, `RegExp`                                                             |
 
 ### What the Script's Realm Holds

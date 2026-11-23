@@ -71,7 +71,7 @@ const DEFAULT_MAX_TOOL_PAYLOAD_BYTES = 5 * 1024 * 1024;
  */
 function certainlyLargerThan(value: unknown, bytes: number): boolean {
   if (!Number.isFinite(bytes) || bytes <= 0) return false;
-  return !checkSerializedSize(value, bytes).ok;
+  return !checkSerializedSize(value, bytes, { mapsAsEntries: true }).ok;
 }
 
 /** What the runtime helpers know of the execution they belong to */
@@ -233,7 +233,10 @@ export class InterpreterAdapter implements SandboxAdapter {
       },
     };
     try {
-      const safe = createSafeGlobals();
+      const safe = createSafeGlobals({
+        charge: (bytes) => chargeForHelper(bytes),
+        call: (fn, args) => callbacks.call(fn, args),
+      });
       // The helpers, namespaces and custom globals of this execution; none of them replaces a
       // standard global.
       const runtime = this.runtimeGlobals(context, (bytes) => chargeForHelper(bytes), callbacks);
@@ -728,7 +731,9 @@ export class InterpreterAdapter implements SandboxAdapter {
     const stats = this.stats(startTime, toolCallCount, stepCount);
 
     if (typeof config.memoryLimit === 'number' && config.memoryLimit > 0 && value !== undefined) {
-      const sizeCheck = checkSerializedSize(value, Math.min(config.memoryLimit, MAX_SERIALIZED_RESULT_BYTES));
+      const sizeCheck = checkSerializedSize(value, Math.min(config.memoryLimit, MAX_SERIALIZED_RESULT_BYTES), {
+        mapsAsEntries: true,
+      });
       if (!sizeCheck.ok) {
         return {
           success: false,
@@ -749,7 +754,13 @@ export class InterpreterAdapter implements SandboxAdapter {
     const maxProperties = config.maxSanitizeProperties;
     return {
       success: true,
-      value: sanitizeValue(value, { maxDepth, maxProperties, allowDates: true, allowErrors: true }) as T,
+      value: sanitizeValue(value, {
+        maxDepth,
+        maxProperties,
+        allowDates: true,
+        allowErrors: true,
+        mapsAsEntries: true,
+      }) as T,
       stats,
     };
   }

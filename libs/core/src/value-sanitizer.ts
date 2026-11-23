@@ -45,6 +45,9 @@ export interface SanitizeOptions {
    * unwrapped object; everything else is still read through `value`.
    */
   unwrap?: (value: object) => object;
+
+  /** Copy a Map as its `[key, value]` pairs, every key kept, instead of an object of its string keys. */
+  mapsAsEntries?: boolean;
 }
 
 /**
@@ -354,8 +357,19 @@ function sanitizeObjectValue(
   // `value.entries()`, so the value cannot hijack the iteration. The returned iterator is a
   // genuine host Map Iterator, safe to `for..of`.
   if (!isPlain && hasBrand(MapProtoSizeGetter, inspected)) {
-    const sanitizedMap: Record<string, unknown> = ObjectCreate(null);
     const entries = ReflectApply(MapProtoEntries, inspected, []) as IterableIterator<[unknown, unknown]>;
+    if (options.mapsAsEntries) {
+      const pairs: unknown[] = [];
+      for (const [key, val] of entries) {
+        context.propCount.count++;
+        if (context.propCount.count > maxProperties) {
+          throw new Error(`Tool handler return value exceeds maximum properties (${maxProperties}).`);
+        }
+        pairs.push([sanitizeValue(key, options, depth + 2, context), sanitizeValue(val, options, depth + 2, context)]);
+      }
+      return pairs;
+    }
+    const sanitizedMap: Record<string, unknown> = ObjectCreate(null);
     for (const [key, val] of entries) {
       // Every entry counts, also one that is not copied: walking it is work all the same
       context.propCount.count++;
@@ -521,6 +535,7 @@ function estimateStringSize(str: string): number {
  * @param depth Current recursion depth (internal)
  * @param maxDepth Maximum recursion depth (default 2000 to handle deep structures)
  * @param currentPath Set tracking the current ancestor path (for circular detection only)
+ * @param mapsAsEntries Count a Map as the array of its `[key, value]` pairs (see SanitizeOptions)
  * @returns Estimated serialized size in bytes
  * @throws Error if estimated size exceeds maxBytes or depth limit
  */
@@ -530,6 +545,7 @@ export function estimateSerializedSize(
   depth = 0,
   maxDepth = 2000,
   currentPath: Set<object> = new Set(),
+  mapsAsEntries = false,
 ): number {
   // SECURITY: `value` is what the script returned, BEFORE it is sanitized: it may be an object of
   // another realm, or a script-made Proxy. This walk therefore follows the same discipline as
@@ -604,7 +620,14 @@ export function estimateSerializedSize(
       let size = 2; // brackets []
       for (let i = 0; i < length; i++) {
         if (i > 0) size += 1; // comma
-        let elementSize = estimateSerializedSize(readProperty(value, i), maxBytes, depth + 1, maxDepth, currentPath);
+        let elementSize = estimateSerializedSize(
+          readProperty(value, i),
+          maxBytes,
+          depth + 1,
+          maxDepth,
+          currentPath,
+          mapsAsEntries,
+        );
         // JSON.stringify turns undefined/function/symbol array elements into null (4 bytes)
         if (elementSize === 0) elementSize = 4;
         size += elementSize;
@@ -660,14 +683,26 @@ export function estimateSerializedSize(
               );
             }
           };
-          if (isMap) {
+          const estimateMember = (member: unknown, levels: number): number =>
+            estimateSerializedSize(member, maxBytes, depth + levels, maxDepth, currentPath, mapsAsEntries);
+          if (isMap && mapsAsEntries) {
+            const entries = ReflectApply(MapProtoEntries, object, []) as IterableIterator<[unknown, unknown]>;
+            for (const [key, entryValue] of entries) {
+              if (!first) size += 1; // comma
+              first = false;
+              // [key,value], where undefined, a function or a symbol is null
+              add(3);
+              add(estimateMember(key, 2) || 4);
+              add(estimateMember(entryValue, 2) || 4);
+            }
+          } else if (isMap) {
             const entries = ReflectApply(MapProtoEntries, object, []) as IterableIterator<[unknown, unknown]>;
             for (const [key, entryValue] of entries) {
               if (typeof key !== 'string' || DANGEROUS_KEYS.has(key)) continue;
               if (!first) size += 1; // comma
               first = false;
               add(estimateStringSize(key) + 1); // "key":
-              add(estimateSerializedSize(entryValue, maxBytes, depth + 1, maxDepth, currentPath));
+              add(estimateMember(entryValue, 1));
             }
           } else {
             const items = ReflectApply(SetProtoValues, object, []) as IterableIterator<unknown>;
@@ -675,7 +710,7 @@ export function estimateSerializedSize(
               if (!first) size += 1; // comma
               first = false;
               // undefined, a function or a symbol becomes null in an array (4 bytes)
-              add(estimateSerializedSize(item, maxBytes, depth + 1, maxDepth, currentPath) || 4);
+              add(estimateMember(item, 1) || 4);
             }
           }
           return size;
@@ -712,7 +747,7 @@ export function estimateSerializedSize(
         size += estimateStringSize(key) + 1; // "key":
 
         // Value
-        size += estimateSerializedSize(propValue, maxBytes, depth + 1, maxDepth, currentPath);
+        size += estimateSerializedSize(propValue, maxBytes, depth + 1, maxDepth, currentPath, mapsAsEntries);
 
         // Check limit incrementally to fail fast
         if (maxBytes > 0 && size > maxBytes) {
@@ -749,14 +784,16 @@ function readProperty(target: object, key: string | number): unknown {
  *
  * @param value Value to check
  * @param maxBytes Maximum allowed serialized bytes
+ * @param options How a Map is counted (see SanitizeOptions)
  * @returns Object with ok status and estimated size or error message
  */
 export function checkSerializedSize(
   value: unknown,
   maxBytes: number,
+  options: Pick<SanitizeOptions, 'mapsAsEntries'> = {},
 ): { ok: true; estimatedBytes: number } | { ok: false; error: string } {
   try {
-    const estimatedBytes = estimateSerializedSize(value, maxBytes);
+    const estimatedBytes = estimateSerializedSize(value, maxBytes, 0, undefined, undefined, options.mapsAsEntries);
     return { ok: true, estimatedBytes };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };

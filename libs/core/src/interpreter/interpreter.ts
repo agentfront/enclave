@@ -343,6 +343,12 @@ const ARRAY_ITERATOR_NEXT: unknown = (Object.getPrototypeOf([][Symbol.iterator](
 /** Functions this library puts on a value it hands to a script, rather than under a global name */
 const LIBRARY_FUNCTIONS = new WeakSet<object>();
 
+/** Declare that a script may call `fn` as a method of a value it holds (a method of its Set or Map). */
+export function libraryMethod<F extends object>(fn: F): F {
+  LIBRARY_FUNCTIONS.add(fn);
+  return fn;
+}
+
 /**
  * The arguments an array method keeps as they are. Every other argument is a number or a text to
  * the engine, which converts whatever it is given.
