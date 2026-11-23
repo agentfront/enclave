@@ -751,6 +751,8 @@ const analysis = analyzeScript(
 | `bounds`    | Every loop over a tool result (`for...of`, an array callback, `parallel(items, fn)`): `limit`, the literal bound (`.slice(0, 20)`); `maxCalls`, the most calls it makes; `withinBudget`, whether that is within `callBudget`                                                                |
 | `complete`  | `false` when the script has more than 1,000 tool calls and the rest are not listed                                                                                                                                                                                                          |
 
+An unknown origin (`from: null`) is a function parameter, a caught error, `this`, or a name the script does not declare and AgentScript does not provide: a custom global such as `context` (`via` names it). The standard globals AgentScript allows (`undefined`, `NaN`, `Infinity`, `Math`, `JSON`, ...), `callTool`, `parallel` and `console` are no origin, and literal arguments make no flow. A loop's `limit` is dropped when the array is changed after it was cut (`push`, `splice`, an assignment to an element or to `length`, `length++`), also through another variable that holds the same array.
+
 The analysis is a hint for review, best effort, not a boundary: a script can compute what the source does not show, and the checks of each call's real arguments at run time stay in charge. A script that does not parse throws `ScriptAnalysisError`.
 
 ## AI Scoring Gate

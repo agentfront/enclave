@@ -199,6 +199,54 @@ Create an enclave, run one script and dispose the enclave.
 function runAgentScript<T = unknown>(code: string, options?: CreateEnclaveOptions): Promise<ExecutionResult<T>>
 ```
 
+## analyzeScript(code, options?)
+
+A static analysis of a script for a host that reviews it before it runs: its tool calls with their literal arguments, the flows from a call's result to later calls' arguments, and the loops over tool results with their literal bounds. It parses the script and runs nothing, so its answer does not depend on the adapter. It is also exported from `@enclave-vm/core/worker`. It is a hint, best effort, not a boundary.
+
+```ts
+function analyzeScript(code: string, options?: ScriptAnalysisOptions): ScriptAnalysis
+
+interface ScriptAnalysisOptions {
+  toolNamespaces?: ToolNamespaces | ReadonlyArray<NormalizedToolNamespace>; // calls through them are the tools they stand for
+  callBudget?: number; // the calls one run may make (maxToolCalls); sets withinBudget on each bound
+}
+
+interface ScriptAnalysis {
+  toolCalls: ScriptToolCall[];
+  flows: ScriptFlow[];
+  bounds: ScriptLoopBound[];
+  complete: boolean; // false when the script has more than 1,000 tool calls and the rest are not listed
+}
+
+interface ScriptToolCall {
+  toolName: string | null; // null when the script computes it
+  args: Record<string, unknown> | null; // the properties written as literals; null when the arguments are not an object literal
+  computedArgs: string[]; // the properties only known at run time ('...' for a spread, '[computed]' for a computed key)
+  location: ScriptLocation; // { line, column }, 1-based line, 0-based column
+  loopDepth: number; // loop statements (their body, test, update and loop variable), array callbacks and parallel(items, fn)
+  insideParallel: boolean;
+}
+
+interface ScriptFlow {
+  from: number | null; // index in toolCalls of the call whose result flows, or null when the origin is unknown
+  to: number; // index in toolCalls of the call whose arguments receive the value
+  via: string[]; // the variables followed, from the result to the arguments
+}
+
+interface ScriptLoopBound {
+  location: ScriptLocation;
+  over: number[]; // the calls whose results the loop goes over
+  limit: number | null; // the literal bound (.slice(0, 20)), or null
+  calls: number[]; // the calls the loop repeats
+  maxCalls: number | null; // the most calls the loop makes; nested bounds multiply
+  withinBudget?: boolean; // only with callBudget
+}
+```
+
+- **Unknown origins.** `from: null` marks a value the analysis cannot follow: a function parameter, a caught error, `this`, or a name the script does not declare and AgentScript does not provide (a custom global such as `context`; `via` names it). The standard globals AgentScript allows (`undefined`, `NaN`, `Math`, `JSON`, ...), `callTool`, `parallel` and `console` are no origin. Literal arguments make no flow.
+- **Bounds.** A bound is dropped when the array is changed after it was cut (`push`, `splice`, an assignment to an element or to `length`, `length++`), also when the change goes through another variable that holds the same array.
+- A script that does not parse throws `ScriptAnalysisError`; a `callBudget` that is not a non-negative integer throws a `TypeError`.
+
 ## Types
 
 ### SecurityLevel

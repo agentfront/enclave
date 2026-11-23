@@ -1,5 +1,6 @@
 import * as acorn from 'acorn';
 import {
+  AGENTSCRIPT_PERMISSIVE_GLOBALS,
   analyzeScopes,
   normalizeToolNamespaces,
   type NormalizedToolNamespace,
@@ -82,8 +83,8 @@ const NOT_LITERAL = Symbol('not literal');
 
 const REPEATED_LOOP_PARTS: Readonly<Record<string, readonly string[]>> = {
   ForStatement: ['test', 'update', 'body'],
-  ForInStatement: ['body'],
-  ForOfStatement: ['body'],
+  ForInStatement: ['left', 'body'],
+  ForOfStatement: ['left', 'body'],
   WhileStatement: ['test', 'body'],
   DoWhileStatement: ['body', 'test'],
 };
@@ -104,6 +105,8 @@ const ITERATION_METHODS = new Set([
 const ITEM_KEEPING_METHODS = new Set(['map', 'filter', 'reverse', 'toReversed', 'sort', 'toSorted']);
 const MUTATING_METHODS = new Set(['push', 'unshift', 'splice', 'fill', 'set', 'add']);
 const PARALLEL_NAMES = new Set(['parallel', '__safe_parallel']);
+const BUILT_IN_NAMES = new Set([...AGENTSCRIPT_PERMISSIVE_GLOBALS, ...PARALLEL_NAMES]);
+const RUNTIME_PREFIXES = ['__safe_', '__ag_'];
 const FUNCTION_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
 
 interface PathStep {
@@ -122,6 +125,16 @@ interface LoopEntry {
 interface Collected {
   origins: Set<number>;
   deps: Set<ScopeBinding>;
+  freeNames: Set<string>;
+}
+
+function emptyCollected(): Collected {
+  return { origins: new Set(), deps: new Set(), freeNames: new Set() };
+}
+
+/** A name the language or the AgentScript runtime provides: its value comes from no outside source */
+function isBuiltInName(name: string): boolean {
+  return BUILT_IN_NAMES.has(name) || RUNTIME_PREFIXES.some((prefix) => name.startsWith(prefix));
 }
 
 function isNode(value: unknown): value is AnyNode {
@@ -284,6 +297,7 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
     declarationOf.get(identifier) ?? referenceOf.get(identifier)?.binding;
 
   const sourcesOf = new Map<ScopeBinding, AnyNode[]>();
+  const mutatedBindings = new Set<ScopeBinding>();
   const unknownBindings = new Set<ScopeBinding>(
     scopes.bindings.filter((binding) => binding.redeclarations?.length || binding.startsAs || binding.initializes),
   );
@@ -294,6 +308,7 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
       case 'ChainExpression': {
         const binding = bindingOf(pattern.type === 'Identifier' ? pattern : rootIdentifier(pattern));
         if (!binding) return;
+        if (pattern.type !== 'Identifier') mutatedBindings.add(binding);
         if (source === null) unknownBindings.add(binding);
         else appendTo(sourcesOf, binding, source);
         return;
@@ -356,6 +371,8 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
       bindPattern(node.id, node.init);
     } else if (node.type === 'AssignmentExpression') {
       bindPattern(node.left, node.right);
+    } else if (node.type === 'UpdateExpression') {
+      bindPattern(node.argument, node);
     } else if (node.type === 'CatchClause' && node.param) {
       bindPattern(node.param, null);
     } else if (FUNCTION_TYPES.has(node.type)) {
@@ -365,6 +382,8 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
     } else if (node.type === 'CallExpression') {
       const method = staticMethodName(node.callee);
       if (method !== undefined && MUTATING_METHODS.has(method)) {
+        const receiver = bindingOf(rootIdentifier(node.callee.object));
+        if (receiver) mutatedBindings.add(receiver);
         for (const argument of node.arguments) bindPattern(node.callee.object, argument);
       }
       const [first, second] = node.arguments;
@@ -426,6 +445,7 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
       case 'Identifier': {
         const reference = referenceOf.get(node);
         if (reference?.read && reference.binding) into.deps.add(reference.binding);
+        else if (reference?.read && !reference.resolved && !isBuiltInName(node.name)) into.freeNames.add(node.name);
         return;
       }
       case 'ThisExpression':
@@ -458,8 +478,9 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
   };
   for (const binding of unknownBindings) addOrigin(binding, UNKNOWN_ORIGIN, null);
   for (const [binding, sources] of sourcesOf) {
-    const into: Collected = { origins: new Set(), deps: new Set() };
+    const into = emptyCollected();
     for (const source of sources) collect(source, into);
+    if (into.freeNames.size > 0) addOrigin(binding, UNKNOWN_ORIGIN, null);
     for (const origin of into.origins) addOrigin(binding, origin, null);
     for (const dep of into.deps) appendTo(dependents, dep, binding);
   }
@@ -477,9 +498,10 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
     return names;
   };
   const originsOf = (nodes: AnyNode[]): Map<number, string[]> => {
-    const into: Collected = { origins: new Set(), deps: new Set() };
+    const into = emptyCollected();
     for (const node of nodes) collect(node, into);
     const origins = new Map<number, string[]>([...into.origins].map((origin): [number, string[]] => [origin, []]));
+    if (into.freeNames.size > 0 && !origins.has(UNKNOWN_ORIGIN)) origins.set(UNKNOWN_ORIGIN, [...into.freeNames]);
     for (const dep of into.deps) {
       for (const origin of resolved.get(dep)?.keys() ?? []) {
         if (!origins.has(origin)) origins.set(origin, pathTo(dep, origin));
@@ -496,6 +518,18 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
     }
   });
 
+  const aliasesOf = new Map<ScopeBinding, ScopeBinding[]>();
+  for (const [binding, sources] of sourcesOf) {
+    for (const source of sources) {
+      const aliased = source.type === 'Identifier' ? referenceOf.get(source)?.binding : undefined;
+      if (aliased) appendTo(aliasesOf, aliased, binding);
+    }
+  }
+  const isModified = (binding: ScopeBinding, seen = new Set<ScopeBinding>()): boolean => {
+    if (mutatedBindings.has(binding)) return true;
+    seen.add(binding);
+    return (aliasesOf.get(binding) ?? []).some((alias) => !seen.has(alias) && isModified(alias, seen));
+  };
   const limitOf = (node: AnyNode, depth = 0): number | null => {
     if (!isNode(node) || depth > MAX_LIMIT_DEPTH) return null;
     if (node.type === 'ArrayExpression') {
@@ -506,7 +540,8 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
     if (node.type === 'ChainExpression') return limitOf(node.expression, depth + 1);
     if (node.type === 'Identifier') {
       const binding = referenceOf.get(node)?.binding;
-      const sources = binding && !unknownBindings.has(binding) ? sourcesOf.get(binding) : undefined;
+      const followable = binding && !unknownBindings.has(binding) && !isModified(binding);
+      const sources = followable ? sourcesOf.get(binding) : undefined;
       return sources?.length === 1 ? limitOf(sources[0], depth + 1) : null;
     }
     const method = node.type === 'CallExpression' ? staticMethodName(node.callee) : undefined;

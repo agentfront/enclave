@@ -148,6 +148,51 @@ describe('analyzeScript', () => {
     ]);
   });
 
+  it('counts a call in the loop variable of for...of as repeated, and not one in what it goes over', () => {
+    const analysis = analyzeScript(`
+      for (const { id = await callTool('ids.next', {}) } of await callTool('items.list', {})) {
+        await callTool('items.read', { id });
+      }
+    `);
+
+    expect(analysis.toolCalls.map(({ toolName, loopDepth }) => [toolName, loopDepth])).toEqual([
+      ['ids.next', 1],
+      ['items.list', 0],
+      ['items.read', 1],
+    ]);
+  });
+
+  it('drops a bound when the array is changed, also through an alias, and keeps it otherwise', () => {
+    const loopOver = (setup: string) =>
+      analyzeScript(`
+        const users = await callTool('users.list', {});
+        const limited = users.slice(0, 5);
+        ${setup}
+        for (const user of limited) { await callTool('users.notify', { id: user.id }); }
+      `).bounds[0].limit;
+
+    expect(loopOver('')).toBe(5);
+    expect(loopOver('const alias = limited;')).toBe(5);
+    expect(loopOver('limited.length++;')).toBeNull();
+    expect(loopOver('limited.length = 100;')).toBeNull();
+    expect(loopOver('const alias = limited; alias.push(...users);')).toBeNull();
+    expect(loopOver('let alias = limited; alias[50] = users[0];')).toBeNull();
+  });
+
+  it('marks a value read from a name the script does not declare as unknown, but not a built-in or a literal', () => {
+    const analysis = analyzeScript(`
+      await callTool('mail.send', { to: context.email });
+      await callTool('mail.send', { to: 'a@example.com', copies: Math.max(1, 2), cc: undefined, n: NaN });
+      const address = context.backup;
+      await callTool('mail.send', { to: address });
+    `);
+
+    expect(analysis.flows).toEqual([
+      { from: null, to: 0, via: ['context'] },
+      { from: null, to: 2, via: ['address'] },
+    ]);
+  });
+
   it('reads a script that is already wrapped in its main function', () => {
     const analysis = analyzeScript(`async function __ag_main() {${OVERDUE_INVOICES}}`);
 

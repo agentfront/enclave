@@ -254,6 +254,43 @@ Pass the result as `config` of `new PreScanner({ preset, config })`, not in the 
 
 Validates a `toolNamespaces` specification (`{ mail: ['list', 'send'] }` or `{ users: { get: 'users:get' } }`) and returns it as plain data. It throws a `TypeError` whose message starts with `Invalid toolNamespaces:` for a name no runtime may bind, among them the names the language calls on an object by itself: `then`, `toString`, `valueOf`, `toLocaleString` and `toJSON`, as a method name and as a namespace name.
 
+### analyzeScopes(ast)
+
+Resolves every identifier of a parsed program (an acorn or ESTree tree) to the declaration it refers to. The validator's rules and `analyzeScript` of `@enclave-vm/core` use it.
+
+```ts
+function analyzeScopes(ast: unknown): ScopeAnalysis
+
+interface ScopeAnalysis {
+  bindings: ScopeBinding[]; // every declaration
+  references: ScopeReference[]; // every identifier that reads or writes a variable
+  freeReferences: ScopeReference[]; // the references with resolved === false: they name a global
+}
+
+type BindingKind = 'var' | 'let' | 'const' | 'function' | 'class' | 'param' | 'catch' | 'import';
+
+interface ScopeBinding {
+  node: object; // the declaring identifier
+  name: string;
+  kind: BindingKind;
+  redeclarations?: ScopeBinding[]; // other declarations of the same variable in one scope
+  startsAs?: ScopeBinding; // a body `var` named like a parameter of a list with expressions: that parameter
+  initializes?: ScopeBinding; // a `var` declared under the name of a catch parameter: that parameter
+}
+
+interface ScopeReference {
+  node: object;
+  name: string;
+  read: boolean;
+  write: boolean;
+  resolved: boolean; // false: the name reaches a global
+  binding?: ScopeBinding; // the declaration it resolves to (the first one, where a name is declared twice)
+  parent?: object;
+}
+```
+
+Resolution is conservative: where two readings of the language disagree (sloppy-mode function hoisting out of blocks), the narrower one is used, so a name is only treated as local where it certainly is. A variable with `redeclarations`, `startsAs` or `initializes` has more than one source of its value; a consumer that needs the value treats it as one it cannot follow.
+
 ## ValidationRule
 
 ```ts
