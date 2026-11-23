@@ -235,7 +235,7 @@ Both AST validation and the runtime sandbox use the same allowed globals:
 
 With a `consoleHandler`, `console` is allowed at every level (see [Console Handler](#console-handler)).
 
-`Set`, `Map` and the three error types are the runtime's own, the same in the double VM, the single VM and the interpreter:
+`Set`, `Map` and the three error types are the runtime's own, the same in the double VM, the single VM, the interpreter and `@enclave-vm/browser`:
 
 - A new entry of a `Set` or `Map` is charged against `memoryLimit` as it is added, so a growing `Set` fails with `MEMORY_LIMIT_EXCEEDED` like a growing array. `WeakMap`, `WeakSet` and `WeakRef` stay refused.
 - An error has `name` and `message` and no `stack`, and is frozen: `String(new Error('x'))` is `"Error: x"`, and a `catch` reads `error.message`.
