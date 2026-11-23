@@ -19,6 +19,7 @@ import {
   getBlockedPropertiesForLevel,
 } from '../secure-proxy';
 import { createSafeError } from '../safe-error';
+import { CLOCK_FAILED, RANDOM_FAILED, REALM_CLOCK_SOURCE } from '../realm-clock';
 import { MemoryTracker, MemoryLimitError } from '../memory-tracker';
 import { createHostToolBridge, encodeToolBridgeFailure, toolCallLimitMessage } from '../tool-bridge';
 import { checkSerializedSize, sanitizeValue } from '../value-sanitizer';
@@ -291,6 +292,8 @@ const SANDBOX_REALM_BRIDGE_SCRIPT = new ReusableSandboxScript(`
 
 /** The sandbox realm's half of the membrane (see INNER_REALM_GUARD_SOURCE). */
 const REALM_GUARD_SCRIPT = new ReusableSandboxScript(INNER_REALM_GUARD_SOURCE, { filename: 'realm-membrane.js' });
+
+const REALM_CLOCK_SCRIPT = new ReusableSandboxScript(REALM_CLOCK_SOURCE, { filename: 'realm-clock.js' });
 
 /** `Symbol.for` refuses the host's own namespace (see INNER_REALM_SYMBOL_REGISTRY_SOURCE). */
 const REALM_SYMBOL_REGISTRY_SCRIPT = new ReusableSandboxScript(INNER_REALM_SYMBOL_REGISTRY_SOURCE, {
@@ -937,6 +940,19 @@ export class VmAdapter implements SandboxAdapter {
       endDeadlineChecks = compileSandboxScript(realmTickSource(config.timeout), {
         filename: 'deadline.js',
       }).runInContext(baseSandbox) as () => void;
+      if (executionContext.clock || executionContext.random) {
+        const hostReading = (read: (() => number | undefined) | undefined, failure: string) =>
+          read &&
+          realmMembrane.wrap(() => {
+            const value = read();
+            if (value === undefined) throw createSafeError(failure);
+            return value;
+          }, false);
+        (REALM_CLOCK_SCRIPT.runInContext(baseSandbox) as (clock: unknown, random: unknown) => void)(
+          hostReading(executionContext.clock, CLOCK_FAILED),
+          hostReading(executionContext.random, RANDOM_FAILED),
+        );
+      }
       const installToolNamespaces = executionContext.toolNamespaces?.length
         ? (TOOL_NAMESPACE_FACTORY_SCRIPT.runInContext(baseSandbox) as unknown)
         : undefined;

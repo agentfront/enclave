@@ -53,6 +53,7 @@ import type {
   ExecutionStats,
   SandboxAdapter,
   ToolHandler,
+  ToolResultOrder,
   SecurityLevel,
   AstPreset,
   ReferenceSidecarOptions,
@@ -79,6 +80,8 @@ import { describeThrown, normalizeErrorText } from './thrown-value';
 import { refuseDynamicImport } from './dynamic-import';
 import { separateAsyncContexts } from './async-context';
 import { ARRAY_ELEMENT_BYTES } from './realm-memory';
+import { hostClockReaders } from './realm-clock';
+import { numberToolCalls } from './tool-call-order';
 import {
   assertReviewContext,
   normalizeReviewOptions,
@@ -254,6 +257,8 @@ export class Enclave {
   private readonly referenceConfig?: ReferenceConfig;
   private readonly scoringGate?: ScoringGate;
   private readonly review?: NormalizedReviewOptions;
+  private readonly toolResultOrder?: ToolResultOrder;
+  private readonly hostClock: Pick<CreateEnclaveOptions, 'clock' | 'random'>;
   private readonly doubleVmConfig: DoubleVmConfig;
   private readonly customGlobalNames: string[];
   private readonly toolNamespaces: readonly NormalizedToolNamespace[];
@@ -478,6 +483,11 @@ export class Enclave {
     }
 
     this.review = normalizeReviewOptions(options.review);
+    this.toolResultOrder = options.toolResultOrder;
+    this.hostClock = { clock: options.clock, random: options.random };
+    if ((options.clock || options.random) && options.adapter === 'worker_threads' && !options.sandboxAdapter) {
+      throw new TypeError('clock and random cannot reach a worker thread: use the vm adapter or a sandboxAdapter');
+    }
 
     // Build double VM config (default enabled for all adapters)
     this.doubleVmConfig = this.buildDoubleVmConfig(options.doubleVm);
@@ -850,8 +860,12 @@ export class Enclave {
           abortRequested = value;
         },
         toolHandler: hostToolHandler
-          ? trackToolCalls(review?.wrapToolHandler(hostToolHandler) ?? hostToolHandler, hostActivity)
+          ? numberToolCalls(
+              trackToolCalls(review?.wrapToolHandler(hostToolHandler) ?? hostToolHandler, hostActivity),
+              this.toolResultOrder,
+            )
           : undefined,
+        ...hostClockReaders(this.hostClock, asyncContexts.inHostContext),
         maxToolResultBytes: options.maxToolResultBytes,
         onToolBridgeFailure: options.onToolBridgeFailure
           ? () => {

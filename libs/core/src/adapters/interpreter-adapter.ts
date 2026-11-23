@@ -41,6 +41,8 @@ import { ReferenceResolver } from '../sidecar/reference-resolver';
 import { sanitizeStackTrace } from '../stack-trace';
 import { MAX_THROWN_MESSAGE_LENGTH } from '../thrown-value';
 import { createHostToolBridge, encodeToolBridgeRequest } from '../tool-bridge';
+import { numberToolCalls } from '../tool-call-order';
+import { CLOCK_FAILED, RANDOM_FAILED } from '../realm-clock';
 import { stringifyWithin, utf8Length } from '../bounded-json';
 import type { ExecutionContext, ExecutionError, ExecutionResult, ExecutionStats, SandboxAdapter } from '../types';
 import { checkSerializedSize, sanitizeValue } from '../value-sanitizer';
@@ -123,6 +125,14 @@ function sandboxError(message: string, name = 'Error', code?: string): Error {
 
 function ignoreRejection(): void {
   // Deliberately empty: see observed
+}
+
+function hostReading(read: () => number | undefined, failure: string): () => number {
+  return () => {
+    const value = read();
+    if (value === undefined) throw sandboxError(failure);
+    return value;
+  };
 }
 
 /**
@@ -239,10 +249,16 @@ export class InterpreterAdapter implements SandboxAdapter {
       },
     };
     try {
-      const safe = createSafeGlobals({
-        charge: (bytes) => chargeForHelper(bytes),
-        call: (fn, args) => callForCollection(fn, args),
-      });
+      const safe = createSafeGlobals(
+        {
+          charge: (bytes) => chargeForHelper(bytes),
+          call: (fn, args) => callForCollection(fn, args),
+        },
+        {
+          clock: context.clock && hostReading(context.clock, CLOCK_FAILED),
+          random: context.random && hostReading(context.random, RANDOM_FAILED),
+        },
+      );
       // The helpers, namespaces and custom globals of this execution; none of them replaces a
       // standard global, except a custom global named Set or Map, as in the VM adapters.
       const runtime = this.runtimeGlobals(context, (bytes) => chargeForHelper(bytes), callbacks);
@@ -636,7 +652,7 @@ export class InterpreterAdapter implements SandboxAdapter {
     const configured = (context.config as { toolHandler?: ExecutionContext['toolHandler'] }).toolHandler;
     const bridgeContext =
       context.toolHandler === undefined && typeof configured === 'function'
-        ? (Object.create(context, { toolHandler: { value: configured } }) as ExecutionContext)
+        ? (Object.create(context, { toolHandler: { value: numberToolCalls(configured) } }) as ExecutionContext)
         : context;
     const bridge = createHostToolBridge(bridgeContext, { updateStats: true });
     const maxPayloadBytes = context.config.toolBridge?.maxPayloadBytes ?? DEFAULT_MAX_TOOL_PAYLOAD_BYTES;

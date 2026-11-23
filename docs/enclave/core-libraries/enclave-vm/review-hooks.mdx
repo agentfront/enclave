@@ -62,7 +62,7 @@ type PostReviewInput =
 | `post`, `return` | On the value the run returns | `pass`; `replace` (`result.value` becomes `value`); `stop` |
 | `post`, `error` | On the error the run fails with once the script has started | `pass`; `replace` (`value`, `{ name, message, code? }`, is the whole error: nothing else of the script's error is kept); `stop` |
 
-`callIndex` counts the calls that reached review in this run, from 0. A hook sees a call only after the tool policy and the limits let it through, and a script only after validation: it can narrow what runs, never widen it.
+`callIndex` counts the calls that reached review in this run, from 0: it is the `callIndex` the tool handler gets for the same call (see [Call Positions and Replay](/core-libraries/enclave-vm/tool-system#call-positions-and-replay)). A hook sees a call only after the tool policy and the limits let it through, and a script only after validation: it can narrow what runs, never widen it.
 
 ## Decisions
 

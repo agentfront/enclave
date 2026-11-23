@@ -19,6 +19,7 @@ import { TOOL_NAMESPACE_FACTORY_SOURCE } from '../tool-namespaces';
 import { CONSOLE_FACTORY_SOURCE } from '../console-handler';
 import { REALM_REGEX_BACKSTOP_SOURCE as INNER_REALM_REGEX_BACKSTOP_SOURCE } from '../realm-regex-backstop';
 import { realmTickSource } from '../deadline-guard';
+import { CLOCK_FAILED, RANDOM_FAILED, REALM_CLOCK_SOURCE } from '../realm-clock';
 import { booleanLiteral, numericLiteral } from '../enclave-options';
 import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
 import { realmArrayAccountingSource } from '../realm-memory';
@@ -1274,6 +1275,8 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     // undefined for a method that does not answer with it.
     const hostFunctionText = typeof __host_functionText__ === 'function' ? __host_functionText__ : function() { return undefined; };
     const hostConsoleSink = typeof __host_consoleSink__ === 'function' ? __host_consoleSink__ : null;
+    const hostClock = typeof __host_clock__ === 'function' ? __host_clock__ : null;
+    const hostRandom = typeof __host_random__ === 'function' ? __host_random__ : null;
     // Writes one line to the host console at a level. The host console OBJECT is never in this realm.
     const hostConsoleWrite = typeof __host_console_write__ === 'function' ? __host_console_write__ : function() {};
     const toolBridgeMode = ${JSON.stringify(toolBridgeMode)};
@@ -1293,6 +1296,8 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     try { delete globalThis.__host_isMutatingBuiltin__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_functionText__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_consoleSink__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_clock__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_random__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_console_write__; } catch (e) { /* ignore */ }
 
     // The function that freezes this realm's intrinsics right before the script runs (see
@@ -3326,6 +3331,21 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   var __ag_endDeadlineChecks = new vm.Script(${JSON.stringify(realmTickSource(innerTimeout))}, {
     filename: 'inner-deadline.js'
   }).runInContext(innerContext);
+
+  // After the deadline check took the realm's own Date.now: the script's Date and Math.random read the host's
+  if (hostClock || hostRandom) {
+    var hostReading = function(read, failure) {
+      return read && __ag_innerMembrane.wrap(function() {
+        var value = read();
+        if (typeof value !== 'number') throw createSafeError(failure);
+        return value;
+      }, false);
+    };
+    new vm.Script(${JSON.stringify(REALM_CLOCK_SOURCE)}, { filename: 'inner-clock.js' }).runInContext(innerContext)(
+      hostReading(hostClock, ${JSON.stringify(CLOCK_FAILED)}),
+      hostReading(hostRandom, ${JSON.stringify(RANDOM_FAILED)})
+    );
+  }
 
   // STRICT/SECURE: record code-generation attempts (Function/eval) even if user code catches them.
   if (${securityLevel === 'STRICT' || securityLevel === 'SECURE'}) {

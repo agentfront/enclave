@@ -386,6 +386,13 @@ export class DoubleVmWrapper implements SandboxAdapter {
       configurable: true, // Allow deletion after capture for defense-in-depth
     });
 
+    for (const [name, read] of [
+      ['__host_clock__', executionContext.clock],
+      ['__host_random__', executionContext.random],
+    ] as const) {
+      if (read) Object.defineProperty(parentContext, name, { value: read, writable: false, configurable: true });
+    }
+
     if (executionContext.consoleHandler) {
       Object.defineProperty(parentContext, '__host_consoleSink__', {
         value: createConsoleSink(executionContext.consoleHandler, config),

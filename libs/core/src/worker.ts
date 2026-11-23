@@ -16,7 +16,15 @@ export { PortableEnclave, AgentScriptRunner } from './portable-enclave';
 export type { PortableEnclaveOptions, PortableRunOptions, AgentScriptRunnerOptions } from './portable-enclave';
 export { Interpreter, InterpreterError, StepLimitError } from './interpreter/interpreter';
 export type { InterpreterOptions } from './interpreter/interpreter';
-export type { ExecutionContext, ExecutionResult, ExecutionError, ExecutionStats, ToolHandler } from './types';
+export type {
+  ExecutionContext,
+  ExecutionResult,
+  ExecutionError,
+  ExecutionStats,
+  ToolHandler,
+  ToolCall,
+  ToolResultOrder,
+} from './types';
 export { analyzeScript, ScriptAnalysisError } from './analysis/script-analysis';
 export type {
   ScriptAnalysis,

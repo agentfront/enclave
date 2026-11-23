@@ -152,13 +152,17 @@ const SECURE_PROXY_BOOLEANS = ['blockConstructor', 'blockPrototype', 'blockLegac
 
 const PARENT_VALIDATION_BOOLEANS = ['validateOperationNames', 'blockSuspiciousSequences'] as const;
 
+const TOOL_RESULT_ORDERS = ['completion', 'call'] as const;
+
+const FUNCTION_OPTIONS = ['clock', 'random'] as const;
+
 /**
  * Check the options of an `Enclave` and return them without the keys that are `undefined`
  * (nested: `secureProxyConfig`, `toolBridge`, `doubleVm` and its `parentValidation`).
  *
- * Only the scalar options are checked here: the ones that select or bound a control. Handlers,
- * globals, tool namespaces, adapters, `maxGlobalFunctionCalls`, `toolCallGraceMs` and the tool
- * bridge's mode and payload size have their own checks in the constructor.
+ * Only the scalar options, `clock` and `random` are checked here. Handlers, globals, tool
+ * namespaces, adapters, `maxGlobalFunctionCalls`, `toolCallGraceMs` and the tool bridge's mode
+ * and payload size have their own checks in the constructor.
  *
  * @throws TypeError when an option has a value outside its documented type or range
  */
@@ -175,6 +179,16 @@ export function normalizeEnclaveOptions(options: CreateEnclaveOptions): CreateEn
   }
   for (const name of BOOLEAN_OPTIONS) {
     if (result[name] !== undefined) assertBooleanOption(name, result[name]);
+  }
+  for (const name of FUNCTION_OPTIONS) {
+    if (result[name] !== undefined && typeof result[name] !== 'function') {
+      throw new TypeError(`${name} must be a function, got ${describe(result[name])}`);
+    }
+  }
+  if (result.toolResultOrder !== undefined && !isOneOf(TOOL_RESULT_ORDERS, result.toolResultOrder)) {
+    throw new TypeError(
+      `toolResultOrder must be one of ${TOOL_RESULT_ORDERS.join(', ')}, got ${describe(result.toolResultOrder)}`,
+    );
   }
 
   if (result.secureProxyConfig !== undefined) {

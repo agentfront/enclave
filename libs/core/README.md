@@ -153,6 +153,11 @@ interface CreateEnclaveOptions {
   // Review hooks
   review?: ReviewOptions; // Host hooks before and after the run and each tool call (see "Review Hooks")
 
+  // Replay (see "Call Positions and Replay")
+  toolResultOrder?: 'completion' | 'call'; // When a tool result reaches the script (default: 'completion')
+  clock?: () => number; // What Date.now(), new Date() and Date() read (default: the system clock)
+  random?: () => number; // What Math.random() returns (default: the engine's)
+
   // Double VM security layer
   doubleVm?: PartialDoubleVmConfig; // See "Double VM"
 }
@@ -302,10 +307,43 @@ const enclave = new Enclave({
 ### Tool Handler
 
 ```typescript
-type ToolHandler = (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+type ToolHandler = (toolName: string, args: Record<string, unknown>, call: ToolCall) => Promise<unknown>;
+
+interface ToolCall {
+  callIndex: number; // The call's position in the run, from 0
+}
 ```
 
 Called for every `callTool()` and `toolNamespaces` method call that passes the enclave's checks. Arguments reach it as copied plain data, and its result is sanitized before the script sees it. The script's `callTool` options (`CallToolOptions`) are applied inside the sandbox and are not passed to the handler.
+
+### Call Positions and Replay
+
+`call.callIndex` numbers the calls of a run from 0, in the order they reach the host: the calls the enclave's checks let through, the same calls the review hooks see, with the same number (`callIndex` in `PreReviewInput`, `PostReviewInput` and `ReviewRecord`). The script cannot set or change it.
+
+Calls start in the order the script makes them, but their results come back as each tool finishes, and which result a script gets first can change what it does next: in a `parallel()` whose callbacks make more than one call, or that read `Date.now()` after an `await`. With `toolResultOrder: 'call'` the results reach the script in call order, one per turn of the event loop, so everything a result leads to in the script has run before the next result arrives. A run of the same script that gets the same results then makes the same calls, with the same `callIndex`, in the same order:
+
+```typescript
+import { isDeepStrictEqual } from 'node:util';
+
+const enclave = new Enclave({
+  toolResultOrder: 'call',
+  clock: () => journal.nextTime(), // what Date.now(), new Date() and Date() read
+  random: () => journal.nextRandom(), // what Math.random() returns
+  toolHandler: async (name, args, { callIndex }) => {
+    const recorded = journal.call(callIndex);
+    if (!recorded) return journal.record(callIndex, name, args, await callMyTool(name, args));
+    if (recorded.name !== name || !isDeepStrictEqual(recorded.args, args)) throw new Error('The run diverged');
+    return recorded.result;
+  },
+});
+```
+
+This is what a host needs to resume a run without keeping a process alive: record each call and its result, and later run the same script again, answering the recorded calls from the record (matched by `callIndex`; a different tool or different arguments at a recorded position is a divergence) until the first call that has none. A call inside `parallel()` has a position of its own like any other.
+
+- **`toolResultOrder`**: `'completion'` (default) delivers each result as its handler settles; `'call'` delivers them in call order. A slow call then holds back the results of the calls made after it, never the calls themselves: every handler still starts as soon as its call is made.
+- **`clock`** is called at every read of `Date.now()`, `new Date()` (without arguments) and `Date()`, and must return a finite number of milliseconds; **`random`** is called at every `Math.random()` and must return a number from 0 up to 1. A value out of range, or a throw, fails the script's read with an error the script can catch (`The host clock failed`, `The host random source failed`). The enclave's own deadline and rate limit keep reading the system clock. Supported by the double VM, the `vm` adapter, `InterpreterAdapter` and `PortableEnclave`; the `worker_threads` adapter refuses them at construction. A custom `sandboxAdapter` receives them, checked, as `context.clock` and `context.random`, which return `undefined` when the host's function failed.
+- Results of functions in `globals` that return promises are not ordered.
+- `PortableEnclave` and `AgentScriptRunner` take the same options; `AgentScriptRunner.capabilities` includes `'replay'`.
 
 ### Tool Namespaces
 
