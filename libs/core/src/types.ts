@@ -1250,7 +1250,7 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
   /** Review hooks of the host, off by default, failing closed (see "Review Hooks" in the README) */
   review?: ReviewOptions;
 
-  /** `'call'` makes a run that gets the same results make the same calls with the same `callIndex` (default 'completion'); sidecar tokens are new in every run */
+  /** Experimental in 2.21: `'call'` gives the same calls for the same results in the same positions (see "Call Positions and Replay" in the README for its limits); default 'completion' */
   toolResultOrder?: ToolResultOrder;
 
   /** What the script's `Date.now()`, `new Date()` and `Date()` read, at every read (default: the system clock) */

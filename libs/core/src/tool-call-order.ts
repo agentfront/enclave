@@ -22,24 +22,28 @@ export type BridgeReply = string | { bytes: number; finish: () => string };
 interface OrderLimits {
   /** The most the replies waiting behind an earlier call may hold together, in UTF-8 bytes */
   maxHeldBytes: number;
-  /** The reply of a call that was refused room to wait */
-  overflow: string;
+  /** The short reply that takes the place of a refused one, holding nothing of it */
+  refusal: (reply: BridgeReply) => string;
   /** The reply of a call whose bridge or whose finishing failed */
   failed: string;
-  /** Told of each reply that is refused room to wait */
-  onRefused: (reply: BridgeReply) => void;
 }
 
-interface Waiting {
-  reply: BridgeReply;
-  heldBytes: number;
-  refused: boolean;
+function insertionIndex(sorted: number[], value: number): number {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (sorted[middle] < value) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
 /**
  * The tool bridge with its replies delivered in call order, one per turn of the event loop. What
- * waits is the bridge's reply, bounded and sanitized; when the waiting replies would hold more than
- * their budget, the latest positions are refused. Once the run is aborted nothing waits.
+ * waits is the bridge's reply, bounded and sanitized. When the replies waiting behind a blocked
+ * call would hold more than their budget, the latest positions are refused, and every position
+ * after a refused one is refused while that call stays blocked. Once the run is aborted nothing waits.
  */
 export function inCallOrder(
   bridge: (requestJson: string) => Promise<BridgeReply>,
@@ -47,31 +51,32 @@ export function inCallOrder(
   limits: OrderLimits,
 ): (requestJson: string) => Promise<string> {
   const answers = new Map<number, (response: string) => void>();
-  const settled = new Map<number, Waiting>();
+  const settled = new Map<number, { reply: BridgeReply; heldBytes: number }>();
+  const charged: number[] = [];
   let heldBytes = 0;
+  let cutoff = Number.POSITIVE_INFINITY;
   let nextCall = 0;
   let nextDelivery = 0;
   let delivering = false;
   const sizeOf = (reply: BridgeReply): number => (typeof reply === 'string' ? utf8Length(reply) : reply.bytes);
-  const responseOf = (entry: Waiting): string => {
-    if (entry.refused) return limits.overflow;
+  const answer = (call: number, reply: BridgeReply): void => {
+    let response: string;
     try {
-      return typeof entry.reply === 'string' ? entry.reply : entry.reply.finish();
+      response = typeof reply === 'string' ? reply : reply.finish();
     } catch {
-      return limits.failed;
+      response = limits.failed;
     }
-  };
-  const answer = (call: number, entry: Waiting): void => {
-    answers.get(call)?.(responseOf(entry));
+    answers.get(call)?.(response);
     answers.delete(call);
   };
   signal.addEventListener(
     'abort',
     () => {
       for (const call of [...settled.keys()].sort((left, right) => left - right)) {
-        answer(call, settled.get(call) as Waiting);
+        answer(call, (settled.get(call) as { reply: BridgeReply }).reply);
       }
       settled.clear();
+      charged.length = 0;
     },
     { once: true },
   );
@@ -82,24 +87,34 @@ export function inCallOrder(
       return;
     }
     settled.delete(nextDelivery);
-    heldBytes -= entry.heldBytes;
-    answer(nextDelivery++, entry);
+    if (entry.heldBytes > 0) {
+      heldBytes -= entry.heldBytes;
+      charged.shift();
+    }
+    cutoff = Number.POSITIVE_INFINITY;
+    answer(nextDelivery++, entry.reply);
     nextTurn(deliverNext);
   };
-  const refuseLatest = (): void => {
-    const latest = Math.max(...[...settled.keys()].filter((call) => (settled.get(call) as Waiting).heldBytes > 0));
-    const entry = settled.get(latest) as Waiting;
-    heldBytes -= entry.heldBytes;
-    limits.onRefused(entry.reply);
-    settled.set(latest, { reply: entry.reply, heldBytes: 0, refused: true });
+  const refuse = (call: number, reply: BridgeReply): void => {
+    cutoff = Math.min(cutoff, call);
+    settled.set(call, { reply: limits.refusal(reply), heldBytes: 0 });
   };
   const hold = (call: number, reply: BridgeReply): void => {
-    const waits = call !== nextDelivery && !signal.aborted;
-    const entry = { reply, heldBytes: waits ? sizeOf(reply) : 0, refused: false };
-    if (signal.aborted) return answer(call, entry);
-    settled.set(call, entry);
-    heldBytes += entry.heldBytes;
-    while (heldBytes > limits.maxHeldBytes) refuseLatest();
+    if (signal.aborted) return answer(call, reply);
+    if (call > cutoff) refuse(call, reply);
+    else if (call === nextDelivery) settled.set(call, { reply, heldBytes: 0 });
+    else {
+      const bytes = sizeOf(reply);
+      settled.set(call, { reply, heldBytes: bytes });
+      charged.splice(insertionIndex(charged, call), 0, call);
+      heldBytes += bytes;
+      while (heldBytes > limits.maxHeldBytes) {
+        const latest = charged.pop() as number;
+        const entry = settled.get(latest) as { reply: BridgeReply; heldBytes: number };
+        heldBytes -= entry.heldBytes;
+        refuse(latest, entry.reply);
+      }
+    }
     if (!delivering) {
       delivering = true;
       nextTurn(deliverNext);

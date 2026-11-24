@@ -82,6 +82,7 @@ import { separateAsyncContexts } from './async-context';
 import { ARRAY_ELEMENT_BYTES } from './realm-memory';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
+import { MIN_CALL_ORDER_PAYLOAD_BYTES } from './tool-bridge';
 import { boundedStatementHook, type StatementEventOptions } from './statement-events';
 import {
   assertKeptReferenceOptions,
@@ -503,6 +504,11 @@ export class Enclave {
     this.toolResultOrder = options.toolResultOrder;
     if (this.toolResultOrder === 'call' && normalizedToolBridge.mode === 'direct') {
       throw new TypeError("toolResultOrder: 'call' needs the string tool bridge");
+    }
+    if (this.toolResultOrder === 'call' && normalizedToolBridge.maxPayloadBytes < MIN_CALL_ORDER_PAYLOAD_BYTES) {
+      throw new TypeError(
+        `toolResultOrder: 'call' needs toolBridge.maxPayloadBytes of at least ${MIN_CALL_ORDER_PAYLOAD_BYTES}`,
+      );
     }
     this.hostClock = { clock: options.clock, random: options.random };
     const inWorker = options.sandboxAdapter

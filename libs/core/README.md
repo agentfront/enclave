@@ -339,6 +339,11 @@ Called for every `callTool()` and `toolNamespaces` method call that passes the e
 
 `call.callIndex` numbers the calls of a run from 0, in the order they reach the host: the calls the enclave's checks let through, the same calls the review hooks see, with the same number (`callIndex` in `PreReviewInput`, `PostReviewInput` and `ReviewRecord`). The script cannot set or change it.
 
+**`toolResultOrder: 'call'` is experimental in 2.21.** What it guarantees: a run of the same script that gets the same results in the same positions makes the same calls, with the same `callIndex`, in the same order, and, with `clock` and `random`, reads the same time and randomness. Its limits:
+
+- Whether a reply waiting behind a slow call is refused for lack of room (`TOOL_RESULTS_WAITING_TOO_LARGE`) depends on how long that earlier call stalls, so a replay that answers fast may deliver what the first run refused.
+- With the sidecar on, a reference token's text differs between runs: a token passed to a tool resolves to the same data, but a script whose path depends on a token's text does not replay.
+
 Calls start in the order the script makes them, but their results come back as each tool finishes, and which result a script gets first can change what it does next: in a `parallel()` whose callbacks make more than one call, or that read `Date.now()` after an `await`. With `toolResultOrder: 'call'` the results reach the script in call order, one per turn of the event loop, so everything a result leads to in the script has run before the next result arrives. A run of the same script that gets the same results then makes the same calls, with the same `callIndex`, in the same order:
 
 ```typescript

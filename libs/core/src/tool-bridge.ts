@@ -359,36 +359,44 @@ export function createHostToolBridge(
     {
       maxHeldBytes: maxPayloadBytes,
       failed: encodeToolBridgeFailure('ToolBridgeError', 'Tool bridge failure', 'TOOL_BRIDGE_FAILURE', maxPayloadBytes),
-      overflow: serializeResponse(
-        {
-          v: TOOL_BRIDGE_PROTOCOL_VERSION,
-          ok: false,
-          error: {
-            name: 'ToolBridgeError',
-            message: `Tool results waiting for their turn exceed ${maxPayloadBytes} bytes`,
-            code: 'TOOL_RESULTS_WAITING_TOO_LARGE',
-            toolError: true,
-          },
-        },
-        maxPayloadBytes,
-      ),
-      onRefused: (reply) => {
-        if (typeof reply === 'string' && !isSuccessReply(reply)) return;
-        try {
-          executionContext.onToolBridgeFailure?.();
-        } catch {
-          // An observer cannot change the bridge result.
+      refusal: (reply) => {
+        const outcome = typeof reply === 'string' ? replyOutcome(reply) : 'succeeded';
+        if (outcome === 'succeeded') {
+          try {
+            executionContext.onToolBridgeFailure?.();
+          } catch {
+            // An observer cannot change the bridge result.
+          }
         }
+        return outcome === 'refused' ? WAITING_REFUSAL : WAITING_TOOL_FAILURE;
       },
     },
   );
 }
 
-function isSuccessReply(responseJson: string): boolean {
+const WAITING_LIMIT = {
+  name: 'ToolBridgeError',
+  message: 'Waiting results exceed their limit',
+  code: 'TOOL_RESULTS_WAITING_TOO_LARGE',
+};
+/** The reply of a waiting call refused room: a failure of the tool, or a refusal of the enclave when the call was one */
+const WAITING_TOOL_FAILURE = JSON.stringify({
+  v: TOOL_BRIDGE_PROTOCOL_VERSION,
+  ok: false,
+  error: { ...WAITING_LIMIT, toolError: true },
+});
+const WAITING_REFUSAL = JSON.stringify({ v: TOOL_BRIDGE_PROTOCOL_VERSION, ok: false, error: WAITING_LIMIT });
+
+/** The smallest `toolBridge.maxPayloadBytes` that holds every reply of call-order delivery */
+export const MIN_CALL_ORDER_PAYLOAD_BYTES = WAITING_TOOL_FAILURE.length;
+
+function replyOutcome(responseJson: string): 'succeeded' | 'failed' | 'refused' {
   try {
-    return (JSON.parse(responseJson) as { ok?: unknown }).ok === true;
+    const reply = JSON.parse(responseJson) as { ok?: unknown; error?: { toolError?: unknown } };
+    if (reply.ok === true) return 'succeeded';
+    return reply.error?.toolError === true ? 'failed' : 'refused';
   } catch {
-    return false;
+    return 'refused';
   }
 }
 

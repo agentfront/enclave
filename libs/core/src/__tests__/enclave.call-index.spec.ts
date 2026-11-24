@@ -321,32 +321,35 @@ describe('call positions and the host clock, from the host side', () => {
     }
   });
 
-  it('refuses a waiting reply that has no room as a failure of its call, whatever the observer throws', async () => {
-    const enclave = new PortableEnclave({
-      toolResultOrder: 'call',
-      toolBridge: { maxPayloadBytes: 2048 },
-      toolHandler: async (_toolName, args) => {
-        if (args['n'] === 0) await delay(40);
-        return 'r'.repeat(1500);
-      },
-    });
-    try {
-      const result = await enclave.run(
-        `return await parallel([0, 1, 2], async (n) => {
-          const r = await callTool('t', { n }, { throwOnError: false });
-          return r.success ? 'delivered' : r.error.code;
-        });`,
-        undefined,
-        {
-          onToolBridgeFailure: () => {
-            throw new Error('observer down');
-          },
+  it('refuses the latest waiting positions, and every one after them while the first call is blocked', async () => {
+    const releases = new Map<string, (reply: string) => void>();
+    const refused: unknown[] = [];
+    const bridge = inCallOrder(
+      (request) => new Promise<string>((resolve) => releases.set(request, resolve)),
+      new AbortController().signal,
+      {
+        maxHeldBytes: 10,
+        failed: 'failed',
+        refusal: (reply) => {
+          refused.push(reply);
+          return 'refused';
         },
-      );
-      expect(result.value).toEqual(['delivered', 'delivered', 'TOOL_RESULTS_WAITING_TOO_LARGE']);
-    } finally {
-      enclave.dispose();
-    }
+      },
+    );
+    const replies = ['head', 'a', 'b', 'c'].map((request) => bridge(request));
+    releases.get('b')?.('6'.repeat(6));
+    releases.get('c')?.('2'.repeat(2));
+    releases.get('a')?.('8'.repeat(8));
+    releases.get('head')?.('head-reply');
+    expect(await Promise.all(replies)).toEqual(['head-reply', '8'.repeat(8), 'refused', 'refused']);
+    expect(refused).toEqual(['2'.repeat(2), '6'.repeat(6)]);
+  });
+
+  it("needs a bridge payload that holds call order's own replies", () => {
+    expect(() => new Enclave({ toolResultOrder: 'call', toolBridge: { maxPayloadBytes: 100 } })).toThrow(
+      "toolResultOrder: 'call' needs toolBridge.maxPayloadBytes of at least",
+    );
+    expect(() => new Enclave({ toolResultOrder: 'call', toolBridge: { maxPayloadBytes: 160 } })).not.toThrow();
   });
 
   it('delivers the replies that wait as soon as the run is aborted', async () => {
@@ -358,7 +361,7 @@ describe('call positions and the host clock, from the host side', () => {
           ? new Promise<string>((resolve) => (releaseFirst = resolve))
           : Promise.resolve('second-reply'),
       abortController.signal,
-      { maxHeldBytes: 1024, overflow: 'overflow', failed: 'failed', onRefused: () => undefined },
+      { maxHeldBytes: 1024, failed: 'failed', refusal: () => 'refused' },
     );
     const first = bridge('first');
     const second = bridge('second');

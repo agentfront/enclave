@@ -48,6 +48,13 @@ The script's `callTool` options (below) are applied inside the sandbox and are n
 
 `call.callIndex` numbers the calls of a run from 0, in the order they reach the host. It is the `callIndex` the review hooks get for the same call, and the script cannot set or change it.
 
+<Note>`toolResultOrder: 'call'` is experimental in 2.21.</Note>
+
+What it guarantees: a run of the same script that gets the same results in the same positions makes the same calls, with the same `callIndex`, in the same order, and, with `clock` and `random`, reads the same time and randomness. Its limits:
+
+- Whether a reply waiting behind a slow call is refused for lack of room (`TOOL_RESULTS_WAITING_TOO_LARGE`) depends on how long that earlier call stalls, so a replay that answers fast may deliver what the first run refused.
+- With the sidecar on, a reference token's text differs between runs: a token passed to a tool resolves to the same data, but a script whose path depends on a token's text does not replay.
+
 Calls start in the order the script makes them, but their results come back as each tool finishes, and which result a script gets first can change what it does next. With `toolResultOrder: 'call'` the results reach the script in call order, one per turn of the event loop. A run of the same script that gets the same results then makes the same calls with the same `callIndex`, also inside `parallel()`. With `clock` and `random`, the script's `Date` and `Math.random()` read the host's values too:
 
 ```ts

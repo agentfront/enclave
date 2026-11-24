@@ -80,7 +80,7 @@ The constructor throws a `TypeError` for an option outside its type or range (a 
 | `sidecar` | `ReferenceSidecarOptions` | `undefined` | Reference sidecar configuration |
 | `scoringGate` | `ScoringGateConfig` | `undefined` | AI scoring configuration |
 | `review` | `ReviewOptions` | `undefined` | Host hooks before and after the run and each tool call, failing closed (see [Review Hooks](/core-libraries/enclave-vm/review-hooks)) |
-| `toolResultOrder` | `'completion' \| 'call'` | `'completion'` | When a tool result reaches the script; `'call'` makes a run with the same results make the same calls (see [Call Positions and Replay](/core-libraries/enclave-vm/tool-system#call-positions-and-replay)) |
+| `toolResultOrder` | `'completion' \| 'call'` | `'completion'` | When a tool result reaches the script; `'call'` (experimental in 2.21) makes a run with the same results make the same calls (see [Call Positions and Replay](/core-libraries/enclave-vm/tool-system#call-positions-and-replay)) |
 | `clock` | `() => number` | system clock | What the script's `Date.now()`, `new Date()` and `Date()` read |
 | `random` | `() => number` | the engine's | What the script's `Math.random()` returns, from 0 up to 1 |
 | `doubleVm` | `PartialDoubleVmConfig` | `{ enabled: true }` | Double VM configuration |

@@ -40,6 +40,7 @@ import type { OperationHistory, ParentValidationConfig } from './double-vm/types
 import { refuseDynamicImport } from './dynamic-import';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
+import { MIN_CALL_ORDER_PAYLOAD_BYTES } from './tool-bridge';
 import { boundedStatementHook, type StatementEventOptions } from './statement-events';
 import {
   assertKeptReferenceOptions,
@@ -244,6 +245,11 @@ export class PortableEnclave {
     boundedInteger('memoryLimit', memoryLimit, MAX_PORTABLE_ALLOCATION_BYTES);
     const maxPayloadBytes = options.toolBridge?.maxPayloadBytes ?? DEFAULT_BRIDGE_BYTES;
     boundedInteger('toolBridge.maxPayloadBytes', maxPayloadBytes, MAX_PORTABLE_ALLOCATION_BYTES);
+    if (options.toolResultOrder === 'call' && maxPayloadBytes < MIN_CALL_ORDER_PAYLOAD_BYTES) {
+      throw new TypeError(
+        `toolResultOrder: 'call' needs toolBridge.maxPayloadBytes of at least ${MIN_CALL_ORDER_PAYLOAD_BYTES}`,
+      );
+    }
     const security = SECURITY_LEVEL_CONFIGS[level];
     const maxToolCalls = options.maxToolCalls ?? security.maxToolCalls;
     if (maxToolCalls > 100_000) throw new TypeError('maxToolCalls cannot exceed 100000 in PortableEnclave');
