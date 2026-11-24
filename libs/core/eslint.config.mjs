@@ -12,6 +12,7 @@ export default [
           ignoredDependencies: [
             'vectoriadb', // Optional peer dependency loaded dynamically
             '@jest/reporters', // Test-only dependency used by benchmark reporter
+            'esbuild', // Test-only dependency used by the worker bundle spec
           ],
         },
       ],
