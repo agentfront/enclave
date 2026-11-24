@@ -227,6 +227,59 @@ describe('call positions on the worker pool', () => {
   });
 });
 
+describe('call positions and the host clock, from the host side', () => {
+  it('keeps a subclass of Date a subclass with a host clock', async () => {
+    const enclave = new Enclave({ preset: 'standard', clock: () => 86_400_000 });
+    try {
+      const result = await enclave.run(`
+        class Stamp extends Date {
+          day() { return this.getTime() / 86400000; }
+        }
+        return [new Stamp().day(), new Stamp(0).day(), new Stamp() instanceof Stamp];
+      `);
+      expect(result.value).toEqual([1, 0, true]);
+    } finally {
+      enclave.dispose();
+    }
+  });
+
+  it('delivers a result in call order as it was when the handler returned it', async () => {
+    const shared = { n: 0 };
+    const enclave = new Enclave({
+      toolResultOrder: 'call',
+      toolHandler: async (_toolName, args) => {
+        if (args['name'] === 'slow') await delay(30);
+        shared.n++;
+        return shared;
+      },
+    });
+    try {
+      const result = await enclave.run(
+        "return await parallel(['slow', 'fast'], async (name) => { const r = await callTool('t', { name }); return r.n; });",
+      );
+      expect(result.value).toEqual([2, 1]);
+    } finally {
+      enclave.dispose();
+    }
+  });
+
+  it('records the callIndex the review saw, whatever the handler does to its ToolCall', async () => {
+    const enclave = new Enclave({
+      toolHandler: async (_toolName, _args, call) => {
+        call.callIndex = 99;
+        return 1;
+      },
+      review: { post: () => ({ action: 'pass' }) },
+    });
+    try {
+      const result = await enclave.run("return await callTool('t', {});");
+      expect(result.review?.decisions.map((decision) => decision.callIndex)).toEqual([0, undefined]);
+    } finally {
+      enclave.dispose();
+    }
+  });
+});
+
 describe('call position and clock options', () => {
   it('refuses a clock, a random source or an order of the wrong type', () => {
     expect(() => new Enclave({ clock: 5 as never })).toThrow('clock must be a function');

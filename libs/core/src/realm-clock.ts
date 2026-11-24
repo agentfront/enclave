@@ -1,3 +1,5 @@
+import { hasHostStackReserve } from './stack-reserve';
+
 /** Evaluated in a sandbox realm after its deadline check is installed: replaces its Date and Math.random with the host's */
 export const REALM_CLOCK_SOURCE = `
 (function () {
@@ -13,8 +15,7 @@ export const REALM_CLOCK_SOURCE = `
     if (readClock) {
       var ClockDate = function Date() {
         if (new.target === undefined) return String(new RealDate(readClock()));
-        if (arguments.length === 0) return new RealDate(readClock());
-        return construct(RealDate, arguments);
+        return construct(RealDate, arguments.length === 0 ? [readClock()] : arguments, new.target);
       };
       defineProperty(ClockDate, 'prototype', { value: RealDate.prototype, writable: false });
       hidden(ClockDate, 'now', function now() {
@@ -34,13 +35,20 @@ export const REALM_CLOCK_SOURCE = `
 })()
 `.trim();
 
+interface ReaderScope {
+  inHostContext?: <R>(fn: () => R) => R;
+  /** Whether the run has returned or was aborted: from then on nothing reads the host's clock */
+  isOver: () => boolean;
+}
+
 /** The host's `clock` or `random` as the sandbox reads it: the value when the check passes, otherwise `undefined` */
 function checkedReader(
   read: () => number,
   isValid: (value: number) => boolean,
-  inHostContext: <R>(fn: () => R) => R,
+  { inHostContext = (fn) => fn(), isOver }: ReaderScope,
 ): () => number | undefined {
   return () => {
+    if (isOver() || !hasHostStackReserve()) return undefined;
     try {
       const value = inHostContext(read);
       return typeof value === 'number' && isValid(value) ? value : undefined;
@@ -53,11 +61,11 @@ function checkedReader(
 /** The `clock` and `random` of an execution context, from the options of the enclave */
 export function hostClockReaders(
   options: { clock?: () => number; random?: () => number },
-  inHostContext: <R>(fn: () => R) => R = (fn) => fn(),
+  scope: ReaderScope,
 ): { clock?: () => number | undefined; random?: () => number | undefined } {
   return {
-    clock: options.clock && checkedReader(options.clock, Number.isFinite, inHostContext),
-    random: options.random && checkedReader(options.random, (value) => value >= 0 && value < 1, inHostContext),
+    clock: options.clock && checkedReader(options.clock, Number.isFinite, scope),
+    random: options.random && checkedReader(options.random, (value) => value >= 0 && value < 1, scope),
   };
 }
 

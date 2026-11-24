@@ -193,7 +193,8 @@ export class ReviewSession {
     if (!handler) return undefined;
     return async (toolName, args, call) => {
       if (this.isOver()) return pending();
-      const target: ReviewTarget = { phase: 'call', toolName, callIndex: call.callIndex };
+      const callIndex = call.callIndex;
+      const target: ReviewTarget = { phase: 'call', toolName, callIndex };
       const pre = this.options.pre;
       if (pre) {
         const analysis = this.analysis as ScriptAnalysis;
@@ -204,7 +205,7 @@ export class ReviewSession {
               phase: 'call',
               toolName,
               args,
-              callIndex: call.callIndex,
+              callIndex,
               analysis,
               context: this.context,
             }),
@@ -233,7 +234,7 @@ export class ReviewSession {
             phase: 'call-result',
             toolName,
             args,
-            callIndex: call.callIndex,
+            callIndex,
             result,
             context: this.context,
           }),

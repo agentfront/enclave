@@ -81,7 +81,7 @@ import { refuseDynamicImport } from './dynamic-import';
 import { separateAsyncContexts } from './async-context';
 import { ARRAY_ELEMENT_BYTES } from './realm-memory';
 import { hostClockReaders } from './realm-clock';
-import { numberToolCalls } from './tool-call-order';
+import { boundedSnapshot, numberToolCalls } from './tool-call-order';
 import {
   assertReviewContext,
   normalizeReviewOptions,
@@ -863,9 +863,13 @@ export class Enclave {
           ? numberToolCalls(
               trackToolCalls(review?.wrapToolHandler(hostToolHandler) ?? hostToolHandler, hostActivity),
               this.toolResultOrder,
+              boundedSnapshot(this.config, () => context.onToolBridgeFailure?.()),
             )
           : undefined,
-        ...hostClockReaders(this.hostClock, asyncContexts.inHostContext),
+        ...hostClockReaders(this.hostClock, {
+          inHostContext: asyncContexts.inHostContext,
+          isOver: () => context.aborted,
+        }),
         maxToolResultBytes: options.maxToolResultBytes,
         onToolBridgeFailure: options.onToolBridgeFailure
           ? () => {
