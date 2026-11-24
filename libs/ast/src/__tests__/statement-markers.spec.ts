@@ -51,8 +51,13 @@ describe('statement markers', () => {
     ]);
   });
 
-  it('puts no marker without the option', () => {
+  it('puts no marker without the option, and reads locations with it whatever the parse options say', () => {
     expect(transformAgentScript('const a = 1;')).not.toContain('__ag_statement');
+    const transformed = transformAgentScript('const a = 1;\nreturn a;', {
+      statementMarkers: true,
+      parseOptions: { locations: false },
+    });
+    expect(transformed).toContain('__ag_statement:2:0:ReturnStatement');
   });
 
   it('marks a var declaration that is the body of an if or a loop, in its own scope', () => {

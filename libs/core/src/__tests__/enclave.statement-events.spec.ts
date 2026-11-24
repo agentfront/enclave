@@ -4,16 +4,16 @@ import { InterpreterAdapter } from '../adapters/interpreter-adapter';
 import { Enclave } from '../enclave';
 import { PortableEnclave } from '../portable-enclave';
 import type { StatementEventOptions } from '../statement-events';
-import type { ExecutionResult, StatementEvent } from '../types';
+import type { CreateEnclaveOptions, ExecutionResult, StatementEvent } from '../types';
 
 interface Runner {
   run(code: string, handler: undefined, options: StatementEventOptions): Promise<ExecutionResult>;
   dispose(): void;
 }
 
-const RUNTIMES: Array<[string, () => Runner]> = [
-  ['InterpreterAdapter', () => new Enclave({ sandboxAdapter: new InterpreterAdapter() })],
-  ['PortableEnclave', () => new PortableEnclave()],
+const RUNTIMES: Array<[string, (options?: CreateEnclaveOptions) => Runner]> = [
+  ['InterpreterAdapter', (options = {}) => new Enclave({ ...options, sandboxAdapter: new InterpreterAdapter() })],
+  ['PortableEnclave', (options = {}) => new PortableEnclave(options)],
 ];
 
 describe.each(RUNTIMES)('statement events on the %s', (_name, create) => {
@@ -83,6 +83,41 @@ describe.each(RUNTIMES)('statement events on the %s', (_name, create) => {
     expect(lines.filter((line) => line === '3:ExpressionStatement')).toHaveLength(2);
     expect(lines.filter((line) => line === '6:ReturnStatement').length).toBeGreaterThanOrEqual(2);
     expect(lines).toContain('5:VariableDeclaration');
+  });
+
+  it('keeps a var that is the body of an if in the scope it has without the hook', async () => {
+    const { result, events } = await trace('if (true) var a = 1;\nreturn a;');
+    expect(result.value).toBe(1);
+    expect(events.map(({ line, column, type }) => `${line}:${column}:${type}`)).toEqual([
+      '1:0:IfStatement',
+      '1:10:VariableDeclaration',
+      '2:0:ReturnStatement',
+    ]);
+  });
+
+  it('ends the run with the hook error at once, while another parallel() task still waits for a tool', async () => {
+    const runner = create({ toolHandler: () => new Promise((resolve) => setTimeout(resolve, 3000)) });
+    const started = Date.now();
+    try {
+      const result = await runner.run(
+        [
+          'return await parallel([1, 2], async (n) => {',
+          "  if (n === 1) return await callTool('slow', {});",
+          '  return n;',
+          '});',
+        ].join('\n'),
+        undefined,
+        {
+          onStatement: (event) => {
+            if (event.line === 3) throw new Error('tracer down');
+          },
+        },
+      );
+      expect(result.error).toMatchObject({ name: 'StatementHookError', code: 'STATEMENT_HOOK_FAILED' });
+      expect(Date.now() - started).toBeLessThan(1500);
+    } finally {
+      runner.dispose();
+    }
   });
 
   it('reports no more than maxStatementEvents statements and still runs the script to its end', async () => {

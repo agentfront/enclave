@@ -107,7 +107,7 @@ const result = await runner.run(code, toolHandler, {
 
 - An event is `{ line, column, type, step }`: where the statement starts in the script as it was written (line from 1, column from 0), its ESTree type (`VariableDeclaration`, `IfStatement`, ...), and the interpreter steps taken so far. It carries no value of the script, so it can go to an operator's tracing as it is.
 - The hook is called as each statement starts, synchronously, in the async context of the caller of `run()`. A run reports at most `maxStatementEvents` statements (an integer of at least 1) and then runs on without reporting.
-- A hook that throws, or returns a promise, ends the run with a `StatementHookError` (`code: 'STATEMENT_HOOK_FAILED'`, message `The onStatement hook threw`), also from inside a `parallel()` task.
+- A hook that throws, or returns a promise, ends the run at once with a `StatementHookError` (`code: 'STATEMENT_HOOK_FAILED'`, message `The onStatement hook threw`), also from inside a `parallel()` task whose siblings still wait.
 - It needs the enclave's transform: with `transform: false`, `run()` with `onStatement` throws a `TypeError`.
 - Off by default; without the hook the script is transformed and run as before, at the cost of one check per statement.
 - `AgentScriptRunner.capabilities` includes `'statement-events'`.

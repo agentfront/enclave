@@ -864,6 +864,11 @@ export class Interpreter {
   private workDone = 0;
   /** The error that ended the run (step budget, deadline, abort, allocation budget); set once, never caught */
   private fatal: unknown;
+  private reportFatal: (error: unknown) => void = () => undefined;
+  /** Settles with the error that ended the run as soon as it does, while tasks of a parallel() may still wait */
+  readonly fatalError = new Promise<unknown>((settle) => {
+    this.reportFatal = settle;
+  });
   private readonly interpretedFunctions = new WeakSet<object>();
   /** The functions the host provides: the globals, their members, and what `bind` made of them */
   private readonly provided = new WeakSet<object>();
@@ -983,7 +988,10 @@ export class Interpreter {
 
   /** End the run with an error no `catch` of the script can stop. */
   private end(error: unknown): never {
-    if (this.fatal === undefined) this.fatal = error;
+    if (this.fatal === undefined) {
+      this.fatal = error;
+      this.reportFatal(error);
+    }
     throw this.fatal;
   }
 

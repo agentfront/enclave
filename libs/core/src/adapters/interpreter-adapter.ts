@@ -341,7 +341,10 @@ export class InterpreterAdapter implements SandboxAdapter {
       // Swallow a late rejection from the abandoned run after a timeout so it
       // can't surface as an unhandled rejection.
       run.catch(() => undefined);
-      const outcome = deadline ? await Promise.race([run, deadline]) : await run;
+      const ended = interpreter.fatalError.then((error): never => {
+        throw error;
+      });
+      const outcome = await Promise.race(deadline ? [run, deadline, ended] : [run, ended]);
       if (outcome === TIMED_OUT) return timedOut();
       return this.succeed<T>(outcome, context, startTime, stats.toolCallCount, interpreter.stepCount);
     } catch (error) {

@@ -124,6 +124,7 @@ export function transformAgentScript(code: string, config: AgentScriptTransformC
     sourceType: 'script',
     locations: true,
     ...parseOptions,
+    ...(statementMarkers ? { locations: true } : {}),
   };
 
   let ast: acorn.Node;
