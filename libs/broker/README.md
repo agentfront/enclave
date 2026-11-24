@@ -162,7 +162,7 @@ An unknown option is ignored and reported with a warning.
 }
 ```
 
-The body is validated as a whole, and a request that does not pass is answered with `400` before a session exists:
+`CreateSessionRequest` and `CreateSessionRequestSchema` of `@enclave-vm/types` describe this body; `@enclave-vm/client` sends it. The broker checks the body against bounds of its own: narrower than the schema for the session id, the limits and the filter (below), and more lenient where a field is `null` (it counts as left out), where a filter names an event type the protocol does not define (no event has it), and for fields it does not read, which it ignores. It validates the body as a whole and answers a request that does not pass with `400` before a session exists:
 
 - `config` values are positive integers. A request can **lower** `maxToolCalls` and `maxExecutionMs` (the session's lifetime, `sessionTtlMs`) and can never raise them above the broker's `limits` (or the package defaults when you set none). `heartbeatIntervalMs` is kept between 1 second and 5 minutes.
 - `sessionId` is `s_` followed by 1 to 128 characters of `A-Z a-z 0-9 . _ : ~ -`. An id that is in use is answered with `409 SESSION_EXISTS`.

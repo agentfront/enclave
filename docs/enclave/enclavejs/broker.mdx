@@ -296,7 +296,7 @@ const request: CreateSessionRequest = {
 };
 ```
 
-The body is validated as a whole; a request that does not pass is answered with `400` and creates no session.
+`CreateSessionRequest` is the type of `@enclave-vm/types`, re-exported; `CreateSessionRequestSchema` there is its schema, and `@enclave-vm/client` sends this body. The broker checks the body against bounds of its own: narrower than the schema for the session id, the limits and the filter (below), and more lenient where a field is `null` (it counts as left out), where a filter names an event type the protocol does not define (no event has it), and for fields it does not read, which it ignores. It validates the body as a whole; a request that does not pass is answered with `400` and creates no session.
 
 - `config` values are positive integers. `maxToolCalls` and `maxExecutionMs` cannot exceed the broker's limits (a larger value is lowered to them), and `heartbeatIntervalMs` is kept between 1 second and 5 minutes.
 - `sessionId` is `s_` followed by 1 to 128 characters of `A-Z a-z 0-9 . _ : ~ -`. An id in use is answered with `409`.

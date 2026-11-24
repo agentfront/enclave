@@ -5,7 +5,7 @@
 import { EnclaveClient, EnclaveClientError } from './index';
 import type { SessionResult, SessionEventHandlers } from './index';
 import type { StreamEvent, SessionId, CallId } from '@enclave-vm/types';
-import { EventType, PROTOCOL_VERSION } from '@enclave-vm/types';
+import { CreateSessionRequestSchema, EventType, PROTOCOL_VERSION } from '@enclave-vm/types';
 
 // Helper to create a mock ReadableStream from NDJSON events
 function createMockStream(events: StreamEvent[]): ReadableStream<Uint8Array> {
@@ -1281,6 +1281,31 @@ describe('EnclaveClient', () => {
       );
       expect(body.sessionId).toBe('s_mySession');
       expect(body.code).toBe('const x = 1; return x;');
+    });
+
+    it('should send a body that CreateSessionRequestSchema accepts', async () => {
+      const mockFetch = jest
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            createMockStream([createSessionInitEvent(TEST_SESSION_ID), createFinalSuccessEvent(TEST_SESSION_ID, 1)]),
+            { status: 200 },
+          ),
+        );
+
+      const client = new EnclaveClient({
+        baseUrl: 'https://api.example.com',
+        fetch: mockFetch,
+      });
+
+      await client.execute('return 1', {
+        limits: { sessionTtlMs: 30000, maxToolCalls: 5, heartbeatIntervalMs: 10000 },
+      });
+
+      const [, options] = mockFetch.mock.calls[0];
+      const body = JSON.parse(options.body);
+
+      expect(CreateSessionRequestSchema.parse(body)).toEqual(body);
     });
 
     it('should not include config when no limits provided', async () => {

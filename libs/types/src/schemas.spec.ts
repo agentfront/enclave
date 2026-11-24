@@ -1,13 +1,16 @@
+import { z } from 'zod';
 import {
   parseStreamEvent,
   parseEncryptedEnvelope,
   parseCreateSessionRequest,
+  CreateSessionRequestSchema,
   SessionIdSchema,
   CallIdSchema,
   RefIdSchema,
   StreamEventSchema,
 } from './schemas';
 import { PROTOCOL_VERSION } from './protocol';
+import type { CreateSessionRequest } from './protocol';
 
 describe('Schemas', () => {
   describe('ID Schemas', () => {
@@ -148,31 +151,76 @@ describe('Schemas', () => {
   });
 
   describe('parseCreateSessionRequest', () => {
-    it('should parse valid session creation request', () => {
-      const request = {
-        protocolVersion: PROTOCOL_VERSION,
+    it('should parse the body the client sends', () => {
+      const request: CreateSessionRequest = {
+        sessionId: 's_abc123',
         code: 'const x = await callTool("test", {});',
-        limits: {
-          sessionTtlMs: 30000,
-          maxToolCalls: 10,
+        config: { maxExecutionMs: 30000, maxToolCalls: 10, heartbeatIntervalMs: 15000 },
+      };
+      const result = parseCreateSessionRequest(request);
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(request);
+    });
+
+    it('should parse a body with an event filter', () => {
+      const request: CreateSessionRequest = {
+        code: 'return 42;',
+        filter: {
+          mode: 'exclude',
+          rules: [
+            { types: { types: ['heartbeat'] } },
+            { content: { patterns: [{ type: 'prefix', pattern: 'debug', field: 'payload.message' }], match: 'any' } },
+          ],
         },
       };
       const result = parseCreateSessionRequest(request);
       expect(result.success).toBe(true);
+      expect(result.data).toEqual(request);
     });
 
     it('should parse minimal session creation request', () => {
-      const request = {
+      expect(parseCreateSessionRequest({ code: 'return 42;' }).success).toBe(true);
+    });
+
+    it('should give back a CreateSessionRequest', () => {
+      const request: CreateSessionRequest = CreateSessionRequestSchema.parse({
+        code: 'return 42;',
+        sessionId: 's_abc123',
+        encryption: { mode: 'disabled' },
+      });
+      expect(request.sessionId).toBe('s_abc123');
+    });
+
+    it('should convert to JSON Schema', () => {
+      const jsonSchema = z.toJSONSchema(CreateSessionRequestSchema);
+      expect(jsonSchema.properties?.['sessionId']).toEqual({ type: 'string', pattern: '^s_[\\s\\S]{1,}$' });
+    });
+
+    it('should keep the encryption a request asks for', () => {
+      const result = parseCreateSessionRequest({ code: 'return 42;', encryption: { mode: 'required' } });
+      expect(result.success).toBe(true);
+      expect(result.data?.encryption).toEqual({ mode: 'required' });
+    });
+
+    it('should refuse the earlier shape instead of dropping its limits', () => {
+      const result = parseCreateSessionRequest({
         protocolVersion: PROTOCOL_VERSION,
         code: 'return 42;',
-      };
-      const result = parseCreateSessionRequest(request);
-      expect(result.success).toBe(true);
+        limits: { sessionTtlMs: 30000, maxToolCalls: 10 },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues.map((issue) => issue.message)).toEqual([
+        expect.stringContaining('send the limits as config'),
+        expect.stringContaining('send the limits as config'),
+      ]);
     });
 
     it('should reject invalid session creation requests', () => {
-      expect(parseCreateSessionRequest({ code: '' }).success).toBe(false);
-      expect(parseCreateSessionRequest({ protocolVersion: 99, code: 'test' }).success).toBe(false);
+      expect(parseCreateSessionRequest({}).success).toBe(false);
+      expect(parseCreateSessionRequest({ code: 'x', sessionId: 'c_abc' }).success).toBe(false);
+      expect(parseCreateSessionRequest({ code: 'x', config: { maxToolCalls: 0 } }).success).toBe(false);
+      expect(parseCreateSessionRequest({ code: 'x', config: { maxExecutionMs: 1.5 } }).success).toBe(false);
+      expect(parseCreateSessionRequest({ code: 'x', filter: { mode: 'some', rules: [] } }).success).toBe(false);
     });
   });
 });

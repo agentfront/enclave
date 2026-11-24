@@ -243,6 +243,7 @@ if (parsed.success) {
 | `PartialResultEventSchema`, `ToolProgressEventSchema`, `DeadlineExceededEventSchema`, `CatalogChangedEventSchema` | The events added in protocol version 2 |
 | `EncryptedEnvelopeSchema`, `ClientHelloSchema`, `ServerHelloSchema` | The encryption types below |
 | `RuntimeChannelMessageSchema` | Tool result and cancel messages of a runtime channel |
+| `CreateSessionRequestSchema` | The body of `POST /sessions` (`CreateSessionRequest`): `code`, `sessionId?`, `config?` (`CreateSessionConfigSchema`), `filter?` (`EventFilterConfigSchema`), `encryption?`. A body in the shape before 2.21 (`protocolVersion`, `limits`) is refused |
 
 These schemas describe the wire format. A component may accept less than a schema allows: the broker, for example, accepts session ids of a fixed alphabet and length only.
 

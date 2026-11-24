@@ -383,7 +383,7 @@ A broker that sends encrypted events cannot be used with this client: an encrypt
 
 | Request | Sent |
 |---------|------|
-| `POST {baseUrl}/sessions` | To start a session. The body is `{ sessionId, code, config? }`, the answer a stream of events as NDJSON |
+| `POST {baseUrl}/sessions` | To start a session. The body is a `CreateSessionRequest` of `@enclave-vm/types`, `{ sessionId, code, config? }`; the answer is a stream of events as NDJSON |
 | `GET {baseUrl}/sessions/:sessionId` | By `getSession()` |
 | `GET {baseUrl}/sessions/:sessionId/stream?fromSeq=N` | To reconnect. `N` is the sequence number after the last event delivered |
 | `DELETE {baseUrl}/sessions/:sessionId` | To cancel a session |

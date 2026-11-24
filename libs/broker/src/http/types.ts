@@ -104,45 +104,9 @@ export interface BrokerResponse {
 }
 
 /**
- * Create session request body
+ * Create session request body, as `@enclave-vm/types` defines it
  */
-export interface CreateSessionRequest {
-  /**
-   * Code to execute
-   */
-  code: string;
-
-  /**
-   * Optional session ID (generated if not provided)
-   */
-  sessionId?: SessionId;
-
-  /**
-   * Session configuration
-   */
-  config?: {
-    /**
-     * Maximum execution time in milliseconds
-     */
-    maxExecutionMs?: number;
-
-    /**
-     * Maximum tool calls
-     */
-    maxToolCalls?: number;
-
-    /**
-     * Heartbeat interval in milliseconds
-     */
-    heartbeatIntervalMs?: number;
-  };
-
-  /**
-   * Event filter configuration (server-side filtering).
-   * Controls which events are sent to the client.
-   */
-  filter?: EventFilterConfig;
-}
+export type { CreateSessionRequest } from '@enclave-vm/types';
 
 /**
  * Session info response

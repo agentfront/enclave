@@ -4,6 +4,9 @@
  * Core protocol constants and base types for the EnclaveJS streaming runtime.
  */
 
+import type { EncryptionRequest } from './encryption.js';
+import type { EventFilterConfig } from './filter.js';
+
 /**
  * Current protocol version.
  * v2: Added partial_result, tool_progress, deadline_exceeded, catalog_changed events,
@@ -171,6 +174,56 @@ export const DEFAULT_SESSION_LIMITS: Required<SessionLimits> = {
   perToolDeadlineMs: 30000,
   cancelOnFirstError: false,
 };
+
+/**
+ * The limits a `POST /sessions` request asks for. The broker may lower them.
+ */
+export interface CreateSessionConfig {
+  /**
+   * Lifetime of the session in milliseconds (its `sessionTtlMs`).
+   */
+  maxExecutionMs?: number;
+
+  /**
+   * Maximum number of tool calls.
+   */
+  maxToolCalls?: number;
+
+  /**
+   * Heartbeat interval in milliseconds.
+   */
+  heartbeatIntervalMs?: number;
+}
+
+/**
+ * The body of `POST /sessions`: what `@enclave-vm/client` sends and `@enclave-vm/broker` reads.
+ */
+export interface CreateSessionRequest {
+  /**
+   * Code to execute.
+   */
+  code: string;
+
+  /**
+   * Session ID; the broker generates one when it is left out.
+   */
+  sessionId?: SessionId;
+
+  /**
+   * Limits the session asks for.
+   */
+  config?: CreateSessionConfig;
+
+  /**
+   * Which events the broker streams.
+   */
+  filter?: EventFilterConfig;
+
+  /**
+   * Encryption the caller asks for. The broker does not encrypt: it refuses `mode: 'required'`.
+   */
+  encryption?: EncryptionRequest;
+}
 
 /**
  * Session state enumeration.
