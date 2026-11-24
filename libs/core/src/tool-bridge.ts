@@ -359,14 +359,37 @@ export function createHostToolBridge(
     {
       maxHeldBytes: maxPayloadBytes,
       failed: encodeToolBridgeFailure('ToolBridgeError', 'Tool bridge failure', 'TOOL_BRIDGE_FAILURE', maxPayloadBytes),
-      overflow: encodeToolBridgeFailure(
-        'ToolBridgeError',
-        `Tool results waiting for their turn exceed ${maxPayloadBytes} bytes`,
-        'TOOL_RESULTS_WAITING_TOO_LARGE',
+      overflow: serializeResponse(
+        {
+          v: TOOL_BRIDGE_PROTOCOL_VERSION,
+          ok: false,
+          error: {
+            name: 'ToolBridgeError',
+            message: `Tool results waiting for their turn exceed ${maxPayloadBytes} bytes`,
+            code: 'TOOL_RESULTS_WAITING_TOO_LARGE',
+            toolError: true,
+          },
+        },
         maxPayloadBytes,
       ),
+      onRefused: (reply) => {
+        if (typeof reply === 'string' && !isSuccessReply(reply)) return;
+        try {
+          executionContext.onToolBridgeFailure?.();
+        } catch {
+          // An observer cannot change the bridge result.
+        }
+      },
     },
   );
+}
+
+function isSuccessReply(responseJson: string): boolean {
+  try {
+    return (JSON.parse(responseJson) as { ok?: unknown }).ok === true;
+  } catch {
+    return false;
+  }
 }
 
 function createUnorderedToolBridge(

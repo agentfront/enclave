@@ -453,7 +453,15 @@ export class PortableEnclave {
           return true;
         },
         maxToolResultBytes: runOptions.maxToolResultBytes,
-        onToolBridgeFailure: runOptions.onToolBridgeFailure,
+        onToolBridgeFailure: runOptions.onToolBridgeFailure
+          ? () => {
+              try {
+                runOptions.onToolBridgeFailure?.();
+              } catch {
+                // An observer cannot change the bridge result.
+              }
+            }
+          : undefined,
         sidecar,
         referenceConfig: this.references,
         consoleHandler: this.options.consoleHandler,

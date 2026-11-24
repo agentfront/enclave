@@ -295,23 +295,55 @@ describe('call positions and the host clock, from the host side', () => {
     }
   });
 
-  it('stores large results in the sidecar in call order, so the order decides which call meets a full sidecar', async () => {
+  it('stores large results in the sidecar at their turn, and both reach the next tool whole', async () => {
+    const received: unknown[] = [];
     const enclave = new Enclave({
       toolResultOrder: 'call',
-      sidecar: { enabled: true, extractionThreshold: 100, maxReferenceCount: 1 },
-      toolHandler: async (_toolName, args) => {
+      sidecar: { enabled: true, extractionThreshold: 100 },
+      toolHandler: async (toolName, args) => {
+        if (toolName === 'save') {
+          received.push(args['texts']);
+          return 'saved';
+        }
         if (args['n'] === 0) await delay(40);
-        return 'x'.repeat(200);
+        return String(args['n']).repeat(200);
       },
     });
     try {
       const result = await enclave.run(`
-        return await parallel([0, 1], async (n) => {
-          const r = await callTool('t', { n }, { throwOnError: false });
-          return r.success ? 'stored' : r.error.code;
-        });
+        const texts = await parallel([0, 1], (n) => callTool('fetch', { n }));
+        return await callTool('save', { texts });
       `);
-      expect(result.value).toEqual(['stored', 'TOOL_RESULT_NOT_STORED']);
+      expect(result.value).toBe('saved');
+      expect(received).toEqual([['0'.repeat(200), '1'.repeat(200)]]);
+    } finally {
+      enclave.dispose();
+    }
+  });
+
+  it('refuses a waiting reply that has no room as a failure of its call, whatever the observer throws', async () => {
+    const enclave = new PortableEnclave({
+      toolResultOrder: 'call',
+      toolBridge: { maxPayloadBytes: 2048 },
+      toolHandler: async (_toolName, args) => {
+        if (args['n'] === 0) await delay(40);
+        return 'r'.repeat(1500);
+      },
+    });
+    try {
+      const result = await enclave.run(
+        `return await parallel([0, 1, 2], async (n) => {
+          const r = await callTool('t', { n }, { throwOnError: false });
+          return r.success ? 'delivered' : r.error.code;
+        });`,
+        undefined,
+        {
+          onToolBridgeFailure: () => {
+            throw new Error('observer down');
+          },
+        },
+      );
+      expect(result.value).toEqual(['delivered', 'delivered', 'TOOL_RESULTS_WAITING_TOO_LARGE']);
     } finally {
       enclave.dispose();
     }
@@ -326,7 +358,7 @@ describe('call positions and the host clock, from the host side', () => {
           ? new Promise<string>((resolve) => (releaseFirst = resolve))
           : Promise.resolve('second-reply'),
       abortController.signal,
-      { maxHeldBytes: 1024, overflow: 'overflow', failed: 'failed' },
+      { maxHeldBytes: 1024, overflow: 'overflow', failed: 'failed', onRefused: () => undefined },
     );
     const first = bridge('first');
     const second = bridge('second');

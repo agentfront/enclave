@@ -63,11 +63,13 @@ function asTemplate(statement: Node): Node {
   };
 }
 
-function markedList(statements: unknown[], lineOffset: number): unknown[] {
+/** `implicitReturn`: the script's own statements, whose last one becomes its return value, a directive or not */
+function markedList(statements: unknown[], lineOffset: number, implicitReturn: boolean): unknown[] {
   const marked: unknown[] = [];
-  for (const statement of statements) {
+  for (const [index, statement] of statements.entries()) {
     const kept = readStatementMarker(statement) ? asTemplate(statement as Node) : statement;
-    const directive = typeof kept === 'object' && kept !== null && 'directive' in kept;
+    const returned = implicitReturn && index === statements.length - 1;
+    const directive = typeof kept === 'object' && kept !== null && 'directive' in kept && !returned;
     if (isNode(kept) && kept.loc && !directive && !UNMARKED_TYPES.has(kept.type)) marked.push(marker(kept, lineOffset));
     marked.push(kept);
   }
@@ -82,7 +84,7 @@ export function markStatements(node: Node, lineOffset = 0): void {
   for (const key of Object.keys(node)) {
     const value = node[key];
     if (Array.isArray(value)) {
-      if (isStatementList(node, key)) node[key] = markedList(value, lineOffset);
+      if (isStatementList(node, key)) node[key] = markedList(value, lineOffset, node.type === 'Program');
       for (const child of node[key] as unknown[]) if (isNode(child)) markStatements(child, lineOffset);
     } else if (isNode(value)) {
       const statementInPlace =
