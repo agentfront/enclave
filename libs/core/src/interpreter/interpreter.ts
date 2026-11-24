@@ -163,6 +163,9 @@ const BINDING_BYTES = 16;
  */
 const WORK_PER_STEP = 16_384;
 
+/** The work of a slot of an array that the interpreter itself goes through: an eighth of a step */
+const SLOT_WORK = WORK_PER_STEP / 8;
+
 /** A char a built-in writes counts as this many chars read: it is copied, often converted first */
 const WRITE_WORK = 8;
 
@@ -2686,13 +2689,16 @@ export class Interpreter {
         const sortsInPlace = method === 'sort';
         if (sortsInPlace) this.assertChangeable(arr);
         const length = arr.length;
+        // The items and the merge buffer are charged before they are filled; every slot read is work
+        this.charge(length * 16);
+        this.work(length * SLOT_WORK);
         const items: unknown[] = [];
         for (let i = 0; i < length; i++) {
           if (!sortsInPlace || i in arr) items.push(arr[i]);
         }
-        if (!sortsInPlace) this.charge(items.length * 8);
+        const scratch: unknown[] = new Array(items.length);
         const compare = cb as unknown as (left: unknown, right: unknown) => Promise<unknown>;
-        const sorted = await mergeSorted(items, async (left, right) => {
+        const sorted = await mergeSorted(items, scratch, async (left, right) => {
           this.tick();
           if (left === undefined) return right !== undefined;
           if (right === undefined) return false;
@@ -2700,6 +2706,7 @@ export class Interpreter {
         });
         if (!sortsInPlace) return sorted;
         this.assertChangeable(arr);
+        this.work(length * SLOT_WORK);
         for (let i = 0; i < sorted.length; i++) {
           arr[i] = sorted[i];
         }
@@ -2914,38 +2921,47 @@ export class Interpreter {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────--
-/** The items in order, stable, in O(n log n) comparisons: a bottom-up merge sort. */
+/** The items in order, stable, in O(n log n) comparisons: a bottom-up merge sort between two buffers. */
 async function mergeSorted(
   items: unknown[],
+  scratch: unknown[],
   comesAfter: (left: unknown, right: unknown) => Promise<boolean>,
 ): Promise<unknown[]> {
-  let sorted = items;
-  for (let width = 1; width < sorted.length; width *= 2) {
-    const merged: unknown[] = [];
-    for (let start = 0; start < sorted.length; start += 2 * width) {
-      const middle = Math.min(start + width, sorted.length);
-      const end = Math.min(start + 2 * width, sorted.length);
+  let source = items;
+  let target = scratch;
+  for (let width = 1; width < source.length; width *= 2) {
+    for (let start = 0; start < source.length; start += 2 * width) {
+      const middle = Math.min(start + width, source.length);
+      const end = Math.min(start + 2 * width, source.length);
       let left = start;
       let right = middle;
+      let next = start;
       while (left < middle && right < end) {
-        if (await comesAfter(sorted[left], sorted[right])) {
-          merged.push(sorted[right]);
+        if (await comesAfter(source[left], source[right])) {
+          target[next] = source[right];
           right++;
         } else {
-          merged.push(sorted[left]);
+          target[next] = source[left];
           left++;
         }
+        next++;
       }
-      for (; left < middle; left++) {
-        merged.push(sorted[left]);
+      while (left < middle) {
+        target[next] = source[left];
+        left++;
+        next++;
       }
-      for (; right < end; right++) {
-        merged.push(sorted[right]);
+      while (right < end) {
+        target[next] = source[right];
+        right++;
+        next++;
       }
     }
-    sorted = merged;
+    const merged = target;
+    target = source;
+    source = merged;
   }
-  return sorted;
+  return source;
 }
 
 function truthy(v: unknown): boolean {
