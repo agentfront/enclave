@@ -1,6 +1,6 @@
 {
   "name": "@enclave-vm/ast",
-  "version": "2.21.0-rc.3",
+  "version": "2.21.0",
   "description": "A static validator for JavaScript: parses a script and reports what its rules refuse",
   "author": "AgentFront <info@agentfront.dev>",
   "homepage": "https://github.com/agentfront/enclave/tree/main/libs/ast",
