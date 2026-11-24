@@ -412,7 +412,10 @@ export class PortableEnclave {
           ? numberToolCalls(
               review?.wrapToolHandler(hostToolHandler) ?? hostToolHandler,
               this.options.toolResultOrder,
-              boundedSnapshot(this.config, runOptions.onToolBridgeFailure),
+              boundedSnapshot(
+                { ...this.config, maxToolResultBytes: runOptions.maxToolResultBytes },
+                runOptions.onToolBridgeFailure,
+              ),
             )
           : undefined,
         ...hostClockReaders(this.options, { isOver: () => context.aborted }),

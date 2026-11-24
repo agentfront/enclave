@@ -50,8 +50,12 @@ function checkedReader(
   return () => {
     if (isOver() || !hasHostStackReserve()) return undefined;
     try {
-      const value = inHostContext(read);
-      return typeof value === 'number' && isValid(value) ? value : undefined;
+      const value: unknown = inHostContext(read);
+      if (typeof value === 'number') return isValid(value) ? value : undefined;
+      if (typeof (value as PromiseLike<unknown> | null)?.then === 'function') {
+        Promise.resolve(value).then(undefined, () => undefined);
+      }
+      return undefined;
     } catch {
       return undefined;
     }

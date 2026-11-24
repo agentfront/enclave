@@ -1,4 +1,5 @@
 import { InterpreterAdapter } from '../adapters/interpreter-adapter';
+import { WorkerPoolAdapter } from '../adapters/worker-pool';
 import { Enclave } from '../enclave';
 import { PortableEnclave } from '../portable-enclave';
 import type { CreateEnclaveOptions, ExecutionResult, ToolCall, ToolHandler, ToolResultOrder } from '../types';
@@ -263,6 +264,52 @@ describe('call positions and the host clock, from the host side', () => {
     }
   });
 
+  it('refuses an ordered result over maxToolResultBytes when it settles, and delivers a failure as it was', async () => {
+    const failure = new Error('first message');
+    const enclave = new Enclave({
+      toolResultOrder: 'call',
+      toolHandler: async (_toolName, args) => {
+        if (args['kind'] === 'large') return 'x'.repeat(5000);
+        await delay(20);
+        throw failure;
+      },
+    });
+    try {
+      const pending = enclave.run(
+        `return await parallel(['slow', 'large'], async (kind) => {
+          const r = await callTool('t', { kind }, { throwOnError: false });
+          return r.success ? 'delivered' : [r.error.code, r.error.message];
+        });`,
+        undefined,
+        { maxToolResultBytes: 1000 },
+      );
+      await delay(60);
+      failure.message = 'changed later';
+      expect((await pending).value).toEqual([
+        ['TOOL_CALL_FAILED', 'first message'],
+        ['TOOL_RESULT_TOO_LARGE', 'Tool result exceeds the limit of 1000 bytes'],
+      ]);
+    } finally {
+      enclave.dispose();
+    }
+  });
+
+  it('fails a read of an async clock that rejects, and leaves no unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', listener);
+    const enclave = new Enclave({ clock: (async () => Promise.reject(new Error('down'))) as never });
+    try {
+      const result = await enclave.run('try { return Date.now(); } catch (e) { return e.message; }');
+      await delay(20);
+      expect(result.value).toBe('The host clock failed');
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', listener);
+      enclave.dispose();
+    }
+  });
+
   it('records the callIndex the review saw, whatever the handler does to its ToolCall', async () => {
     const enclave = new Enclave({
       toolHandler: async (_toolName, _args, call) => {
@@ -287,7 +334,13 @@ describe('call position and clock options', () => {
     expect(() => new Enclave({ toolResultOrder: 'arrival' as never })).toThrow('toolResultOrder must be one of');
   });
 
-  it('refuses a clock for the worker_threads adapter', () => {
+  it('refuses a clock for the worker_threads adapter, also given as a sandboxAdapter', () => {
     expect(() => new Enclave({ adapter: 'worker_threads', clock: () => 0 })).toThrow('cannot reach a worker thread');
+    const pool = new WorkerPoolAdapter({ minWorkers: 0, maxWorkers: 1 }, 'STANDARD');
+    try {
+      expect(() => new Enclave({ sandboxAdapter: pool, random: () => 0 })).toThrow('cannot reach a worker thread');
+    } finally {
+      pool.dispose();
+    }
   });
 });

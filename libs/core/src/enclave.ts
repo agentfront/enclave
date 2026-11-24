@@ -485,7 +485,10 @@ export class Enclave {
     this.review = normalizeReviewOptions(options.review);
     this.toolResultOrder = options.toolResultOrder;
     this.hostClock = { clock: options.clock, random: options.random };
-    if ((options.clock || options.random) && options.adapter === 'worker_threads' && !options.sandboxAdapter) {
+    const inWorker = options.sandboxAdapter
+      ? options.sandboxAdapter.supportsHostClock === false
+      : options.adapter === 'worker_threads';
+    if ((options.clock || options.random) && inWorker) {
       throw new TypeError('clock and random cannot reach a worker thread: use the vm adapter or a sandboxAdapter');
     }
 
@@ -863,7 +866,9 @@ export class Enclave {
           ? numberToolCalls(
               trackToolCalls(review?.wrapToolHandler(hostToolHandler) ?? hostToolHandler, hostActivity),
               this.toolResultOrder,
-              boundedSnapshot(this.config, () => context.onToolBridgeFailure?.()),
+              boundedSnapshot({ ...this.config, maxToolResultBytes: options.maxToolResultBytes }, () =>
+                context.onToolBridgeFailure?.(),
+              ),
             )
           : undefined,
         ...hostClockReaders(this.hostClock, {

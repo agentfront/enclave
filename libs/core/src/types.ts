@@ -836,6 +836,9 @@ export interface SandboxAdapter {
    * Cleanup the sandbox
    */
   dispose(): void;
+
+  /** `false` when the adapter cannot call the host's `clock` and `random`: the enclave refuses them then */
+  readonly supportsHostClock?: boolean;
 }
 
 /**

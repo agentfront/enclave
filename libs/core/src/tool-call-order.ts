@@ -1,4 +1,5 @@
 import type { HostToolHandler, ToolHandler, ToolResultOrder } from './types';
+import { resultLimitRefusal } from './tool-bridge';
 import { sanitizeValue } from './value-sanitizer';
 
 const nextTurn: (task: () => void) => void =
@@ -10,14 +11,19 @@ const nextTurn: (task: () => void) => void =
         setTimeout(task, 0);
       };
 
-/** A copy of a result to hold for its turn, within the sanitize limits; a result the copy refuses fails the call */
+function refusal(message: string, code: string): Error {
+  return Object.assign(new Error(message), { name: 'ToolBridgeError', code });
+}
+
+/** A copy of a result to hold for its turn, within the run's limits; a result over them fails the call at once */
 export function boundedSnapshot(
-  limits: { maxSanitizeDepth?: number; maxSanitizeProperties?: number },
+  limits: { maxSanitizeDepth?: number; maxSanitizeProperties?: number; maxToolResultBytes?: number },
   onRefused?: () => void,
 ): (value: unknown) => unknown {
   return (value) => {
+    let copy: unknown;
     try {
-      return sanitizeValue(value, {
+      copy = sanitizeValue(value, {
         maxDepth: limits.maxSanitizeDepth,
         maxProperties: limits.maxSanitizeProperties,
         allowDates: true,
@@ -25,10 +31,27 @@ export function boundedSnapshot(
       });
     } catch (error: unknown) {
       onRefused?.();
-      const refusal = new Error(error instanceof Error ? error.message : 'Tool returned an unsupported value');
-      throw Object.assign(refusal, { name: 'ToolBridgeError', code: 'TOOL_RESULT_NOT_SAFE' });
+      throw refusal(
+        error instanceof Error ? error.message : 'Tool returned an unsupported value',
+        'TOOL_RESULT_NOT_SAFE',
+      );
     }
+    const overLimit = resultLimitRefusal(copy, limits.maxToolResultBytes);
+    if (overLimit) {
+      onRefused?.();
+      throw refusal(overLimit.message, overLimit.code);
+    }
+    return copy;
   };
+}
+
+/** The fields of a failure the bridge reads, taken when the call settles */
+function settledFailure(error: unknown): unknown {
+  if (typeof error !== 'object' || error === null) return error;
+  const { name, message, code } = error as { name?: unknown; message?: unknown; code?: unknown };
+  const copy = new Error(typeof message === 'string' ? message : '');
+  if (typeof name === 'string') copy.name = name;
+  return typeof code === 'string' ? Object.assign(copy, { code }) : copy;
 }
 
 /** Numbers each call in the order it reaches the host; in 'call' order, holds a snapshot of each result for its turn */
@@ -69,7 +92,10 @@ export function numberToolCalls(
     return new Promise((resolve, reject) => {
       new Promise<unknown>((started) => started(handler(toolName, args, { callIndex }))).then(snapshot).then(
         (value) => hold(callIndex, () => resolve(value)),
-        (error: unknown) => hold(callIndex, () => reject(error)),
+        (error: unknown) => {
+          const failure = settledFailure(error);
+          hold(callIndex, () => reject(failure));
+        },
       );
     });
   };
