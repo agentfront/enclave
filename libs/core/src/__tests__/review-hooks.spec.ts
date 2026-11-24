@@ -112,7 +112,7 @@ describe.each(PATHS)('review hooks on the %s', (_path, create) => {
 
     const result = await runner({ review: { pre } }).run(code, handler);
 
-    expect(handler.mock.calls).toEqual([['keep', { id: 3 }]]);
+    expect(handler.mock.calls).toEqual([['keep', { id: 3 }, { callIndex: 2 }]]);
     expect(result.success).toBe(true);
     expect(result.value).toEqual({
       caught: { name: 'ReviewError', message: 'Review denied the call to delete: Not here' },
@@ -407,7 +407,7 @@ describe('review hooks on the worker pool', () => {
       expect.objectContaining({ toolName: 'delete', args: { id: 1 }, callIndex: 0 }),
       expect.objectContaining({ toolName: 'keep', args: { id: 2 }, callIndex: 1 }),
     ]);
-    expect(handler.mock.calls).toEqual([['keep', { id: 2 }]]);
+    expect(handler.mock.calls).toEqual([['keep', { id: 2 }, { callIndex: 1 }]]);
     expect(result.value).toEqual({
       soft: { success: false, error: expect.objectContaining({ name: 'ReviewError', code: 'REVIEW_DENIED' }) },
       kept: { toolName: 'keep', args: { id: 2 } },

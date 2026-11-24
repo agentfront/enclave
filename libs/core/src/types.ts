@@ -574,6 +574,12 @@ export interface EnclaveConfig {
   maxConsoleCalls?: number;
 }
 
+/** What the handler is told about a tool call besides its name and arguments */
+export interface ToolCall {
+  /** The call's position in the run, from 0, in the order calls reach the host; the review hooks' `callIndex` */
+  callIndex: number;
+}
+
 /**
  * Tool call handler function
  *
@@ -581,7 +587,13 @@ export interface EnclaveConfig {
  * enclave's checks. The script's `callTool` options (see {@link CallToolOptions}) are applied
  * inside the enclave and are not passed to the handler.
  */
-export type ToolHandler = (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+export type ToolHandler = (toolName: string, args: Record<string, unknown>, call: ToolCall) => Promise<unknown>;
+
+/** The tool handler as an adapter calls it: the enclave numbers the calls itself */
+export type HostToolHandler = (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+
+/** When a tool result reaches the script: as the handler settles, or in call order, one per event-loop turn */
+export type ToolResultOrder = 'completion' | 'call';
 
 /**
  * Options a script may pass as the third argument of `callTool(name, args, options)`, or as the
@@ -749,7 +761,16 @@ export interface ExecutionContext {
   /**
    * Tool handler
    */
-  toolHandler?: ToolHandler;
+  toolHandler?: HostToolHandler;
+
+  /** When the bridge delivers tool results to the script (see `CreateEnclaveOptions.toolResultOrder`) */
+  toolResultOrder?: ToolResultOrder;
+
+  /** The host's `clock`, checked: a finite number, or `undefined` when it failed */
+  clock?: () => number | undefined;
+
+  /** The host's `random`, checked: a number from 0 up to 1, or `undefined` when it failed */
+  random?: () => number | undefined;
 
   /** Synchronous policy: return true to allow the copied request, or throw/return false to refuse. */
   beforeToolCall?: (name: string, args: Record<string, unknown>) => boolean;
@@ -818,6 +839,9 @@ export interface SandboxAdapter {
    * Cleanup the sandbox
    */
   dispose(): void;
+
+  /** `false` when the adapter cannot call the host's `clock` and `random`: the enclave refuses them then */
+  readonly supportsHostClock?: boolean;
 }
 
 /**
@@ -1208,6 +1232,15 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
 
   /** Review hooks of the host, off by default, failing closed (see "Review Hooks" in the README) */
   review?: ReviewOptions;
+
+  /** `'call'` makes a run that gets the same results make the same calls with the same `callIndex` (default 'completion'); sidecar tokens are new in every run */
+  toolResultOrder?: ToolResultOrder;
+
+  /** What the script's `Date.now()`, `new Date()` and `Date()` read, at every read (default: the system clock) */
+  clock?: () => number;
+
+  /** What the script's `Math.random()` returns, at every call: from 0 up to 1 (default: the engine's) */
+  random?: () => number;
 
   /**
    * Worker Pool Adapter configuration

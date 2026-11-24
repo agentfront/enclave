@@ -31,6 +31,8 @@ import { ReferenceSidecar, REFERENCE_CONFIGS, type ReferenceConfig } from './sid
 import { DEFAULT_SUSPICIOUS_PATTERNS } from './double-vm/suspicious-patterns';
 import type { OperationHistory, ParentValidationConfig } from './double-vm/types';
 import { refuseDynamicImport } from './dynamic-import';
+import { hostClockReaders } from './realm-clock';
+import { numberToolCalls } from './tool-call-order';
 import {
   assertReviewContext,
   normalizeReviewOptions,
@@ -392,6 +394,7 @@ export class PortableEnclave {
         transformed = generate(ast);
       }
       const policy = new PortableOperationPolicy(this.policyConfig);
+      const hostToolHandler = toolHandler ?? this.options.toolHandler;
       let closed = false;
       const deadline = Date.now() + this.config.timeout;
       const abortController = new AbortController();
@@ -405,9 +408,11 @@ export class PortableEnclave {
         set aborted(value: boolean) {
           if (value) abortController.abort();
         },
-        toolHandler: review
-          ? review.wrapToolHandler(toolHandler ?? this.options.toolHandler)
-          : (toolHandler ?? this.options.toolHandler),
+        toolHandler: hostToolHandler
+          ? numberToolCalls(review?.wrapToolHandler(hostToolHandler) ?? hostToolHandler)
+          : undefined,
+        toolResultOrder: this.options.toolResultOrder,
+        ...hostClockReaders(this.options, { isOver: () => context.aborted }),
         toolNamespaces: this.namespaces,
         beforeToolCall: (name, args) => {
           policy.toolCall(name, args);
@@ -477,6 +482,7 @@ export class AgentScriptRunner extends PortableEnclave {
     'console',
     'rapid-enumeration',
     'review',
+    'replay',
   ]);
 
   constructor(options: AgentScriptRunnerOptions) {

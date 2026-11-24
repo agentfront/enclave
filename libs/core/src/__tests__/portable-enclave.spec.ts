@@ -20,7 +20,7 @@ describe('PortableEnclave AgentScript', () => {
       expect(result.success).toBe(true);
       expect(result.value).toEqual({ total: 7 });
       expect(result.stats.toolCallCount).toBe(1);
-      expect(handler).toHaveBeenCalledWith('add', { a: 3 });
+      expect(handler).toHaveBeenCalledWith('add', { a: 3 }, { callIndex: 0 });
     } finally {
       enclave.dispose();
     }

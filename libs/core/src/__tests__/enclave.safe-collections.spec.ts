@@ -70,7 +70,7 @@ describe.each(PATHS)('Set, Map and errors on the %s', (_path, createRunner) => {
       { toolHandler },
     );
 
-    expect(toolHandler).toHaveBeenCalledWith('echo', { ids: ['x', 'y'], byId: [[1, 'one']] });
+    expect(toolHandler).toHaveBeenCalledWith('echo', { ids: ['x', 'y'], byId: [[1, 'one']] }, { callIndex: 0 });
     expect(result.value).toEqual({ ids: ['x', 'y'], byId: [[1, 'one']] });
   });
 

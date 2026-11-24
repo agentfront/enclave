@@ -153,7 +153,6 @@ export class ReviewSession {
   private analysis?: ScriptAnalysis;
   private stopError?: ExecutionError;
   private closed = false;
-  private nextCallIndex = 0;
   private signalHalt: () => void = () => undefined;
 
   constructor(
@@ -192,9 +191,10 @@ export class ReviewSession {
   /** The tool handler with `pre` before and `post` after each call */
   wrapToolHandler(handler: ToolHandler | undefined): ToolHandler | undefined {
     if (!handler) return undefined;
-    return async (toolName, args) => {
+    return async (toolName, args, call) => {
       if (this.isOver()) return pending();
-      const target: ReviewTarget = { phase: 'call', toolName, callIndex: this.nextCallIndex++ };
+      const callIndex = call.callIndex;
+      const target: ReviewTarget = { phase: 'call', toolName, callIndex };
       const pre = this.options.pre;
       if (pre) {
         const analysis = this.analysis as ScriptAnalysis;
@@ -205,7 +205,7 @@ export class ReviewSession {
               phase: 'call',
               toolName,
               args,
-              callIndex: target.callIndex as number,
+              callIndex,
               analysis,
               context: this.context,
             }),
@@ -222,7 +222,7 @@ export class ReviewSession {
         }
         if (decision.decision !== 'allow') throw refusalError(target, decision);
       }
-      const result = await handler(toolName, args);
+      const result = await handler(toolName, args, call);
       const post = this.options.post;
       if (this.isOver()) return pending();
       if (!post) return result;
@@ -234,7 +234,7 @@ export class ReviewSession {
             phase: 'call-result',
             toolName,
             args,
-            callIndex: target.callIndex as number,
+            callIndex,
             result,
             context: this.context,
           }),

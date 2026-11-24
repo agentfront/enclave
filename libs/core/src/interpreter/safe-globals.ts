@@ -349,6 +349,30 @@ const SafeDate = frozenFunction((): string => new Date().toString(), {
   UTC: (...parts: unknown[]): number => Date.UTC(...(parts as [number])),
 });
 
+/** `Date` and `Math` reading the host's clock and random source; each throws when the host's failed */
+export interface HostClock {
+  clock?: () => number;
+  random?: () => number;
+}
+
+function hostDate(clock: () => number): CollectionType {
+  const members = SafeDate as unknown as Record<string, unknown>;
+  const facade = frozenFunction((): string => new Date(clock()).toString(), {
+    now: convertsArguments((): number => clock(), 0),
+    parse: members['parse'],
+    UTC: members['UTC'],
+  });
+  return {
+    facade: convertsArguments(facade, 0),
+    make: (args) => (args.length === 0 ? new Date(clock()) : makeDate(args)),
+    isInstance: (value) => value instanceof Date,
+  };
+}
+
+function hostMath(random: () => number): Record<string, unknown> {
+  return frozenRecord({ ...SafeMath, random: convertsArguments((): number => random(), 0) });
+}
+
 // ── URI encoding ─────────────────────────────────────────────────────────────
 /**
  * Encode a text for a URI, unless that could make it longer than a script's longest text: a
@@ -635,33 +659,32 @@ for (const name of Object.keys(MATH_PARAMETERS)) {
  *
  * @param runtime The execution the Set and Map charge and call through; without one they hold nothing
  */
-export function createSafeGlobals(runtime: CollectionRuntime = NOT_RUNNING): SafeGlobals {
+export function createSafeGlobals(runtime: CollectionRuntime = NOT_RUNNING, host: HostClock = {}): SafeGlobals {
   const collections: Array<[string, CollectionType]> = [
     ['Set', setType(runtime)],
     ['Map', mapType(runtime)],
   ];
+  const date = host.clock ? hostDate(host.clock) : undefined;
+  const types: Array<[string, CollectionType]> = [...SAFE_ERRORS, ...collections];
+  if (date) types.push(['Date', date]);
   return {
     globals: {
       ...SAFE_GLOBALS,
+      ...(host.random ? { Math: hostMath(host.random) } : {}),
+      ...(date ? { Date: date.facade } : {}),
       ...Object.fromEntries(collections.map(([name, type]) => [name, type.facade])),
       ...Object.fromEntries(collections.map(([name, type]) => [`__safe_${name}`, type.facade])),
     },
     constructors: new Map<unknown, (args: unknown[]) => unknown>([
       [SafeDate, makeDate],
       [SafeArray, makeArray],
-      ...[...SAFE_ERRORS, ...collections].map(([, type]): [unknown, (args: unknown[]) => unknown] => [
-        type.facade,
-        type.make,
-      ]),
+      ...types.map(([, type]): [unknown, (args: unknown[]) => unknown] => [type.facade, type.make]),
     ]),
     instanceChecks: new Map<unknown, (value: unknown) => boolean>([
       [SafeDate, (value) => value instanceof Date],
       [SafeArray, (value) => Array.isArray(value)],
       [SafeObject, (value) => (typeof value === 'object' && value !== null) || typeof value === 'function'],
-      ...[...SAFE_ERRORS, ...collections].map(([, type]): [unknown, (value: unknown) => boolean] => [
-        type.facade,
-        type.isInstance,
-      ]),
+      ...types.map(([, type]): [unknown, (value: unknown) => boolean] => [type.facade, type.isInstance]),
     ]),
   };
 }

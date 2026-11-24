@@ -1,4 +1,5 @@
 import type { ExecutionContext } from './types';
+import { inCallOrder } from './tool-call-order';
 import { sanitizeValue } from './value-sanitizer';
 import { ReferenceResolver, ResolutionLimitError } from './sidecar/reference-resolver';
 import { JsonTooLargeError, JsonTraversalLimitError, stringifyWithin } from './bounded-json';
@@ -262,6 +263,16 @@ function createRelayedToolBridge(
 }
 
 export function createHostToolBridge(
+  executionContext: ExecutionContext,
+  options: HostToolBridgeOptions,
+): (requestJson: string) => Promise<string> {
+  const bridge = createUnorderedToolBridge(executionContext, options);
+  return executionContext.toolResultOrder === 'call'
+    ? inCallOrder(bridge, executionContext.abortController.signal)
+    : bridge;
+}
+
+function createUnorderedToolBridge(
   executionContext: ExecutionContext,
   options: HostToolBridgeOptions,
 ): (requestJson: string) => Promise<string> {

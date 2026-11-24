@@ -117,6 +117,7 @@ function isExecutionMessage(msg: WorkerToMainMessage): boolean {
  * the worker is terminated and the pool goes on with a new one.
  */
 export class WorkerPoolAdapter implements SandboxAdapter {
+  readonly supportsHostClock = false;
   private readonly config: Required<WorkerPoolConfig>;
   private readonly securityLevel: SecurityLevel;
   private readonly doubleVm: SerializedDoubleVmConfig;
