@@ -1022,7 +1022,7 @@ The Reference Sidecar keeps large strings outside the sandbox. The script holds 
 2. **The script holds a token**: Nothing is resolved for the script, lazily or otherwise. The token is an ordinary short string, and the script has no way to read the stored data.
 3. **Resolving at the tool boundary**: A token in the arguments of a tool call, at any depth, is replaced with the stored data before the `toolHandler` is called.
 
-The sidecar belongs to one execution and is disposed when `run()` returns.
+The sidecar belongs to one execution and is disposed when `run()` returns; a host can keep entries for a later run (see [Keeping References Between Runs](#keeping-references-between-runs)).
 
 ```typescript
 const enclave = new Enclave({
@@ -1074,6 +1074,29 @@ const result = await enclave.run(`
 `maxTotalResolvedSize` bounds what one execution resolves in total: a stored value counts once, the first time it is resolved, and a concatenation of references counts every time it is built. A tool call whose arguments would go over it, or over `maxResolvedSize`, is refused (`REFERENCE_RESOLUTION_LIMIT`) and the handler is not called.
 
 With `allowComposites: false` (the default at `STRICT` and `SECURE`), concatenating a reference token with anything throws inside the script: a token can only be passed on as it is. With `allowComposites: true` (the default at `STANDARD` and `PERMISSIVE`), the concatenation yields a composite handle, and a tool that is passed the handle receives the concatenated text.
+
+### Keeping References Between Runs
+
+The sidecar belongs to one run, but a host can keep what is behind a token and give it to a later run, so that a second script can pass on what the first fetched without the data entering either sandbox:
+
+```typescript
+// Run 1: the script returns a token; the host exports the entry behind it
+const first = await enclave.run(code1, undefined, {
+  exportReferences: (value) => [value as string],
+});
+await store.save(sessionId, first.references); // [{ id, data, source, mimeType?, origin? }]
+
+// Run 2: the same token resolves at the tool boundary again
+const second = await enclave.run(code2, undefined, {
+  preloadReferences: await store.load(sessionId),
+});
+```
+
+- **`exportReferences(value)`** is called once the run is over, before its sidecar is dropped, with the value the script returned (`undefined` when the run failed). It returns the tokens whose entries the host wants (a single token string is taken as one), and `result.references` lists the entries the run's sidecar holds for them as `ReferenceEntry` objects: `{ id, data, source, mimeType?, origin? }`, `data` as a string. A token the run does not hold, or holds as data that is not UTF-8 text, is left out.
+- **`preloadReferences`** puts entries into the run's sidecar before the script runs. They resolve at the tool boundary like fresh ones and count toward `maxReferenceCount`, `maxReferenceSize` and `maxTotalSize`. An entry that is not `{ id, data, source, mimeType?, origin? }` with a reference token not loaded before is refused with a `TypeError`, and entries over a limit with a `SidecarLimitError`: `run()` rejects in both cases and no statement runs.
+- Tokens stay opaque to the script, and a token that was not preloaded fails at the tool boundary as before. A token the script writes as a literal stays that token, whatever `extractionThreshold` is: it resolves when the run holds it and fails as unknown otherwise.
+- Ownership is the host's: where it keeps the entries, whom it gives them to, how long, and encrypting them at rest. Preload a session's entries only into that session's runs.
+- Both options need `sidecar: { enabled: true }`; without it they are a `TypeError`. `PortableEnclave` and `AgentScriptRunner` take them in `run()` as well; `AgentScriptRunner.capabilities` includes `'kept-references'`.
 
 ## Runtime Notes
 

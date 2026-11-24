@@ -367,6 +367,9 @@ export interface ExecutionResult<T = unknown> {
 
   /** Every decision of the review hooks (with the `review` option) */
   review?: ReviewReport;
+
+  /** The entries behind the tokens `exportReferences` named, for the host to keep (see `run()` options) */
+  references?: ReferenceEntry[];
 }
 
 /**
@@ -697,7 +700,7 @@ export interface SafeRuntimeContext {
 }
 
 // Forward reference - imported at runtime to avoid circular dependency
-import type { ReferenceSidecar } from './sidecar/reference-sidecar';
+import type { ReferenceEntry, ReferenceSidecar } from './sidecar/reference-sidecar';
 import type { ReferenceConfig } from './sidecar/reference-config';
 import type { ScoringGateConfig, ScoringGateResult } from './scoring/types';
 import type { ReviewOptions, ReviewReport } from './review/types';

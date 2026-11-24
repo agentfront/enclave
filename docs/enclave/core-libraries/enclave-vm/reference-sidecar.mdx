@@ -126,11 +126,34 @@ const result = await enclave.run(`
 
 A string literal in the script that is at least `extractionThreshold` bytes long (also a template literal without substitutions) is stored before the script runs, and the script works with a token in its place. The pre-scanner's limits on a script and on its string literals apply first: with the default `agentscript` preset a string literal is at most 10 KB, all string literals together at most 100 KB, and a line at most 2,000 characters, so a host that embeds larger literals raises those limits with the `preScan` option (`preScan: { config: { maxInputSize, maxLineLength, maxStringLength, maxTotalStringContent } }`, or `preScan: { preset: 'standard' }`). A line is at most 100,000 characters under any configuration, so a literal longer than that has to be a template literal over several lines. A literal that cannot be stored within `maxReferenceSize`, `maxTotalSize` and `maxReferenceCount` fails the run with `ENCLAVE_ERROR`.
 
+## Keeping References Between Runs
+
+The sidecar belongs to one run, but a host can keep what is behind a token and give it to a later run, so that a second script can pass on what the first fetched without the data entering either sandbox:
+
+```typescript
+// Run 1: the script returns a token; the host exports the entry behind it
+const first = await enclave.run(code1, undefined, {
+  exportReferences: (value) => [value as string],
+});
+await store.save(sessionId, first.references); // [{ id, data, source, mimeType?, origin? }]
+
+// Run 2: the same token resolves at the tool boundary again
+const second = await enclave.run(code2, undefined, {
+  preloadReferences: await store.load(sessionId),
+});
+```
+
+- **`exportReferences(value)`** is called once the run is over, before its sidecar is dropped, with the value the script returned (`undefined` when the run failed). It returns the tokens whose entries the host wants (a single token string is taken as one), and `result.references` lists the entries the run's sidecar holds for them as `ReferenceEntry` objects: `{ id, data, source, mimeType?, origin? }`, `data` as a string. A token the run does not hold, or holds as data that is not UTF-8 text, is left out.
+- **`preloadReferences`** puts entries into the run's sidecar before the script runs. They resolve at the tool boundary like fresh ones and count toward `maxReferenceCount`, `maxReferenceSize` and `maxTotalSize`. An entry that is not `{ id, data, source, mimeType?, origin? }` with a reference token not loaded before is refused with a `TypeError`, and entries over a limit with a `SidecarLimitError`: `run()` rejects in both cases and no statement runs.
+- Tokens stay opaque to the script, and a token that was not preloaded fails at the tool boundary as before. A token the script writes as a literal stays that token, whatever `extractionThreshold` is: it resolves when the run holds it and fails as unknown otherwise.
+- Ownership is the host's: where it keeps the entries, whom it gives them to, how long, and encrypting them at rest. Preload a session's entries only into that session's runs.
+- Both options need `sidecar: { enabled: true }`; without it they are a `TypeError`. `PortableEnclave` and `AgentScriptRunner` take them in `run()` as well; `AgentScriptRunner.capabilities` includes `'kept-references'`.
+
 ## Memory Management
 
 1. **Bounded storage** - `maxTotalSize`, `maxReferenceSize` and `maxReferenceCount` bound what one execution can store
 2. **Bounded resolution** - `maxResolvedSize` and `maxTotalResolvedSize` bound what is built for tool calls
-3. **Automatic cleanup** - References are cleared when the execution ends
+3. **Automatic cleanup** - References are cleared when the execution ends; what a host exported with `exportReferences` is the host's to keep and drop
 
 A string tool result at or above `extractionThreshold` reaches the script as a reference or not at all. When it cannot be stored because a storage limit is reached (`maxReferenceSize`, `maxTotalSize`, `maxReferenceCount`), the tool call fails and the script does not receive the string itself. With the default `throwOnError: true` the call throws an error whose message says that the result could not be stored; like the other errors a tool call throws, it carries a `name` and a `message`, not a `code`. With `callTool(name, args, { throwOnError: false })` the call returns `{ success: false, error: { code: 'TOOL_RESULT_NOT_STORED', ... } }`, so a script that decides on the code uses that form. This holds through the string bridge (the default `toolBridge.mode`) and in `toolBridge.mode: 'direct'`, in both VMs. Through the string bridge, a `toolBridge.maxPayloadBytes` too small to hold this error itself makes the call fail with the bridge's payload-size error instead; the script does not receive the string in that case either.
 

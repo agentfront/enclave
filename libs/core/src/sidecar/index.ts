@@ -25,6 +25,7 @@ export {
   ReferenceSidecar,
   ReferenceSource,
   ReferenceMetadata,
+  ReferenceEntry,
   SidecarLimitError,
   ReferenceNotFoundError,
 } from './reference-sidecar';
