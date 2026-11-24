@@ -21,6 +21,7 @@ import { transformAgentScript } from '@enclave-vm/ast';
 
 import { InterpreterAdapter } from '../adapters/interpreter-adapter';
 import { Enclave } from '../enclave';
+import { AgentScriptRunner } from '../portable-enclave';
 import type { ExecutionContext, ExecutionResult, ToolHandler } from '../types';
 
 const CORPUS: Array<[string, string]> = [
@@ -32,6 +33,10 @@ const CORPUS: Array<[string, string]> = [
   ['for...of over an array', `let s = 0; for (const x of [1, 2, 3]) { s = s + x; } return s;`],
   ['for...of over a string', `let out = ''; for (const ch of 'abc') { out = ch + out; } return out;`],
   ['for with i++', `let s = 0; for (let i = 0; i < 4; i++) { s += i; } return s;`],
+  [
+    'closures made in the passes of a for (let …) loop',
+    `const readers = []; for (let i = 0, first = () => i; i < 4; i++) { if (i === 1) continue; readers.push(() => i); readers.push(first); } const late = []; for (let j = 0; j < 2; j++) { late.push(() => j); j += 0; } return [readers.map((read) => read()), late.map((read) => read())];`,
+  ],
   [
     'break and continue',
     `let s = 0; for (let i = 0; i < 10; i++) { if (i === 2) continue; if (i === 5) break; s += i; } return s;`,
@@ -192,6 +197,30 @@ describe('Interpreter Conformance: the interpreter adapter runs AgentScript like
     } finally {
       reference.dispose();
       interpreted.dispose();
+    }
+  });
+
+  it('gives each pass of a for (let …) loop its own variable on the double VM, the interpreter and the portable runner', async () => {
+    const code = `const readers = []; for (let index = 0; index < 3; index++) { readers.push(() => index); } return readers.map((read) => read());`;
+    const doubleVm = new Enclave(OPTIONS);
+    const interpreted = new Enclave({ ...OPTIONS, sandboxAdapter: new InterpreterAdapter() });
+    const portable = new AgentScriptRunner({ hostFunctions: {}, maxHostFunctionCalls: 1 });
+    try {
+      const values = [
+        (await doubleVm.run(code)).value,
+        (await interpreted.run(code)).value,
+        (await portable.run(code)).value,
+      ];
+
+      expect(values).toEqual([
+        [0, 1, 2],
+        [0, 1, 2],
+        [0, 1, 2],
+      ]);
+    } finally {
+      doubleVm.dispose();
+      interpreted.dispose();
+      portable.dispose();
     }
   });
 

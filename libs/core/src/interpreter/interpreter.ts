@@ -152,6 +152,9 @@ export const MAX_ARRAY_LENGTH = 1_000_000;
 /** Steps between two looks at the clock while a script computes */
 const CLOCK_CHECK_STEPS = 256;
 
+/** What a copied variable of a scope is charged, as a property of an object is */
+const BINDING_BYTES = 16;
+
 /**
  * What a built-in may work through for one step of the budget: chars it reads or compares, items
  * it goes through. A step of a script is about a tenth of a microsecond; the engine's own loops
@@ -652,6 +655,8 @@ class Scope {
    * holds it. A block inside has the name around it; a function inside does not.
    */
   accumulator: string | undefined;
+  /** Whether a function made in this scope or one inside it can read its variables later */
+  captured = false;
 
   constructor(
     private readonly parent?: Scope,
@@ -671,6 +676,28 @@ class Scope {
   /** The scope of one call of a function defined in this scope, running `depth` calls deep. */
   activation(depth: number): Scope {
     return new Scope(this, depth);
+  }
+
+  /** Mark this scope, and the scopes around it, as read by a function. */
+  capture(): void {
+    if (this.captured) return;
+    this.captured = true;
+    this.parent?.capture();
+  }
+
+  /** How many variables this scope holds. */
+  get size(): number {
+    return this.vars.size;
+  }
+
+  /** A scope beside this one with a copy of its variables: the next pass of a `for (let …)` loop. */
+  copy(): Scope {
+    const scope = new Scope(this.parent);
+    scope.accumulator = this.accumulator;
+    for (const [name, slot] of this.vars) {
+      scope.vars.set(name, { ...slot });
+    }
+    return scope;
   }
 
   declare(name: string, value: unknown, mutable: boolean): void {
@@ -1193,15 +1220,24 @@ export class Interpreter {
   }
 
   private async execFor(node: ESTree.ForStatement, scope: Scope): Promise<void> {
-    const inner = scope.child();
+    let pass = scope.child();
     if (node.init) {
-      if (node.init.type === 'VariableDeclaration') await this.execStatement(node.init, inner);
-      else await this.evalExpr(node.init, inner);
+      if (node.init.type === 'VariableDeclaration') await this.execStatement(node.init, pass);
+      else await this.evalExpr(node.init, pass);
     }
-    while (node.test ? await this.evalTest(node.test, inner) : true) {
+    // Each pass of a `for (let …)` loop has its own variables: copied before the update once a function holds them
+    const bindsPerPass = node.init?.type === 'VariableDeclaration' && node.init.kind === 'let';
+    const nextPass = (): void => {
+      if (!bindsPerPass || !pass.captured) return;
+      this.charge(pass.size * BINDING_BYTES);
+      pass = pass.copy();
+    };
+    nextPass();
+    while (node.test ? await this.evalTest(node.test, pass) : true) {
       this.tick();
-      if (!(await this.runLoopBody(node.body, inner.child()))) break;
-      if (node.update) await this.evalExpr(node.update, inner);
+      if (!(await this.runLoopBody(node.body, pass.child()))) break;
+      nextPass();
+      if (node.update) await this.evalExpr(node.update, pass);
     }
   }
 
@@ -2783,6 +2819,7 @@ export class Interpreter {
     if (node.generator) throw new InterpreterError('Generator functions are not supported');
     // A named function expression can call itself by its name, which only its own body sees.
     const selfName = node.type === 'FunctionExpression' && node.id ? node.id.name : undefined;
+    closure.capture();
     const outer = selfName === undefined ? closure : closure.child();
     const call = async (
       args: unknown[],
