@@ -172,6 +172,10 @@ const rules = Presets.standard({
 - Async functions and `await`
 - Constructor and prototype access
 
+As in STRICT and SECURE, a computed key held in a variable is followed to the values the script gives it (`resolveVariableKeys`), and the preset does not count on a check after it. A key the validator cannot follow to its end within its budget is therefore refused with `STATIC_KEY_UNRESOLVED`, not accepted unread. This refuses some large scripts with heavy computed-key work: a key built in nested loops over a large table the script holds, or hundreds of keys read through one variable with hundreds of values. Pass large data in (through a tool or a global) instead of writing it into the script, or write the names directly.
+
+Keep `resolveVariableKeys` on unless a check where the script runs covers the same names in every position a key can take. `guardComputedMemberKeys` alone does not: it checks computed members (`obj[key]`) only, not the keys of a destructuring pattern, which `resolveVariableKeys` also reads (STANDARD has no `NoComputedDestructuringRule`), and it checks the names it is given, by default `constructor`, `__proto__`, `prototype` and the legacy accessors, not the names STANDARD refuses. The AgentScript preset turns the option off because it also refuses computed destructuring keys and `@enclave-vm/core` guards member keys with the names of its security level.
+
 ### PERMISSIVE Preset
 
 Minimal restrictions for internal or trusted scripts.

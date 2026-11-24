@@ -23,6 +23,10 @@ import { PresetOptions } from './types';
  * - Async/await
  * - Constructor and prototype access (with caution)
  *
+ * A computed key held in a variable is followed to the values the script gives it. A key it
+ * cannot follow to its end within its budget is refused with `STATIC_KEY_UNRESOLVED`, not left
+ * to run time: for example a key built in nested loops over a large table the script holds.
+ *
  * @param options - Optional customization for the preset
  * @returns Array of configured validation rules
  *
