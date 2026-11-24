@@ -466,6 +466,7 @@ function collectionType(
   BuiltIn: SetConstructor | MapConstructor,
   name: string,
   readerNames: string[],
+  growName: 'add' | 'set',
   grow: (this: Collection, ...args: unknown[]) => Collection,
   runtime: CollectionRuntime,
 ): CollectionType {
@@ -473,7 +474,7 @@ function collectionType(
   const iterate = builtInPrototype[Symbol.iterator] as (this: Collection) => Iterable<unknown>;
   const entries = builtInPrototype['entries'] as (this: Collection) => Iterable<[unknown, unknown]>;
   const methods: Record<string, unknown> = {
-    [grow.name]: libraryMethod(takesArraysAsData(grow)),
+    [growName]: libraryMethod(takesArraysAsData(grow)),
     toJSON: libraryMethod(function toJSON(this: Collection): unknown[] {
       return jsonFormOf(this, Reflect.apply(iterate, this, []));
     }),
@@ -517,7 +518,7 @@ function setType(runtime: CollectionRuntime): CollectionType {
     }
     return Reflect.apply(SetAdd, this, [value]);
   };
-  return collectionType(Set, 'Set', SET_READERS, add, runtime);
+  return collectionType(Set, 'Set', SET_READERS, 'add', add, runtime);
 }
 
 function mapType(runtime: CollectionRuntime): CollectionType {
@@ -527,7 +528,7 @@ function mapType(runtime: CollectionRuntime): CollectionType {
     }
     return Reflect.apply(MapSet, this, [key, value]);
   };
-  return collectionType(Map, 'Map', MAP_READERS, set, runtime);
+  return collectionType(Map, 'Map', MAP_READERS, 'set', set, runtime);
 }
 
 const SAFE_GLOBALS: Readonly<Record<string, unknown>> = Object.freeze({
