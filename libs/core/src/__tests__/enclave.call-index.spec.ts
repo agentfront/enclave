@@ -2,6 +2,7 @@ import { InterpreterAdapter } from '../adapters/interpreter-adapter';
 import { WorkerPoolAdapter } from '../adapters/worker-pool';
 import { Enclave } from '../enclave';
 import { PortableEnclave } from '../portable-enclave';
+import { inCallOrder } from '../tool-call-order';
 import type { CreateEnclaveOptions, ExecutionResult, ToolCall, ToolHandler, ToolResultOrder } from '../types';
 
 interface Runner {
@@ -292,6 +293,48 @@ describe('call positions and the host clock, from the host side', () => {
     } finally {
       enclave.dispose();
     }
+  });
+
+  it('stores large results in the sidecar in call order, so the order decides which call meets a full sidecar', async () => {
+    const enclave = new Enclave({
+      toolResultOrder: 'call',
+      sidecar: { enabled: true, extractionThreshold: 100, maxReferenceCount: 1 },
+      toolHandler: async (_toolName, args) => {
+        if (args['n'] === 0) await delay(40);
+        return 'x'.repeat(200);
+      },
+    });
+    try {
+      const result = await enclave.run(`
+        return await parallel([0, 1], async (n) => {
+          const r = await callTool('t', { n }, { throwOnError: false });
+          return r.success ? 'stored' : r.error.code;
+        });
+      `);
+      expect(result.value).toEqual(['stored', 'TOOL_RESULT_NOT_STORED']);
+    } finally {
+      enclave.dispose();
+    }
+  });
+
+  it('delivers the replies that wait as soon as the run is aborted', async () => {
+    const abortController = new AbortController();
+    let releaseFirst: (reply: string) => void = () => undefined;
+    const bridge = inCallOrder(
+      (request) =>
+        request === 'first'
+          ? new Promise<string>((resolve) => (releaseFirst = resolve))
+          : Promise.resolve('second-reply'),
+      abortController.signal,
+      { maxHeldBytes: 1024, overflow: 'overflow', failed: 'failed' },
+    );
+    const first = bridge('first');
+    const second = bridge('second');
+    await delay(10);
+    abortController.abort();
+    await expect(second).resolves.toBe('second-reply');
+    releaseFirst('first-reply');
+    await expect(first).resolves.toBe('first-reply');
   });
 
   it('delivers the calls after one whose failure cannot be read, in call order', async () => {
