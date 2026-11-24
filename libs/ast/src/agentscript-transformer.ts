@@ -163,8 +163,6 @@ export function transformAgentScript(code: string, config: AgentScriptTransformC
     }
   }
 
-  if (statementMarkers) markStatements(ast as never, needsUnwrapping ? 1 : 0);
-
   // Step 1: Transform identifiers using WHITELIST mode
   // In AgentScript, we whitelist safe globals and transform everything else
   if (transformCallTool) {
@@ -210,6 +208,9 @@ export function transformAgentScript(code: string, config: AgentScriptTransformC
   if (transformLoops) {
     transformLoopsInAst(ast, prefix, maxIterations);
   }
+
+  // After the loop transform: only the statements of the script, which keep their locations, are marked
+  if (statementMarkers) markStatements(ast as never, needsUnwrapping ? 1 : 0);
 
   // Step 3: Wrap in async function __ag_main() if needed
   if (wrapInMain) {

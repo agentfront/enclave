@@ -67,7 +67,7 @@ function markedList(statements: unknown[], lineOffset: number): unknown[] {
   const marked: unknown[] = [];
   for (const statement of statements) {
     const kept = readStatementMarker(statement) ? asTemplate(statement as Node) : statement;
-    if (isNode(kept) && !UNMARKED_TYPES.has(kept.type)) marked.push(marker(kept, lineOffset));
+    if (isNode(kept) && kept.loc && !UNMARKED_TYPES.has(kept.type)) marked.push(marker(kept, lineOffset));
     marked.push(kept);
   }
   return marked;
@@ -89,7 +89,8 @@ export function markStatements(node: Node, lineOffset = 0): void {
         node.type.endsWith('Statement') &&
         node.type !== 'LabeledStatement' &&
         (value.type.endsWith('Statement') || value.type === 'VariableDeclaration') &&
-        !UNMARKED_TYPES.has(value.type);
+        !UNMARKED_TYPES.has(value.type) &&
+        value.loc !== undefined;
       const kept = statementInPlace && readStatementMarker(value) ? asTemplate(value) : value;
       // The block is taken away again before the run (see takeStatementMarkers): it adds no scope
       if (statementInPlace) node[key] = { type: 'BlockStatement', body: [marker(kept, lineOffset, true), kept] };

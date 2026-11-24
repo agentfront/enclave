@@ -60,6 +60,19 @@ describe('statement markers', () => {
     expect(transformed).toContain('__ag_statement:2:0:ReturnStatement');
   });
 
+  it('marks a loop, not the counter the loop transform declares before it', () => {
+    expect(
+      markedLocations('let n = 0;\nwhile (n < 3) n++;\nfor (let i = 0; i < 2; i++) { n += i; }\nreturn n;'),
+    ).toEqual([
+      '1:0:VariableDeclaration',
+      '2:0:WhileStatement',
+      '2:14:ExpressionStatement',
+      '3:0:ForStatement',
+      '3:30:ExpressionStatement',
+      '4:0:ReturnStatement',
+    ]);
+  });
+
   it('marks a var declaration that is the body of an if or a loop, in its own scope', () => {
     expect(markedLocations('if (true) var a = 1;\nreturn a;')).toEqual([
       '1:0:IfStatement',
