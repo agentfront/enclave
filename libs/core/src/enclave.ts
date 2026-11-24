@@ -81,7 +81,7 @@ import { refuseDynamicImport } from './dynamic-import';
 import { separateAsyncContexts } from './async-context';
 import { ARRAY_ELEMENT_BYTES } from './realm-memory';
 import { hostClockReaders } from './realm-clock';
-import { boundedSnapshot, numberToolCalls } from './tool-call-order';
+import { numberToolCalls } from './tool-call-order';
 import {
   assertReviewContext,
   normalizeReviewOptions,
@@ -484,6 +484,9 @@ export class Enclave {
 
     this.review = normalizeReviewOptions(options.review);
     this.toolResultOrder = options.toolResultOrder;
+    if (this.toolResultOrder === 'call' && normalizedToolBridge.mode === 'direct') {
+      throw new TypeError("toolResultOrder: 'call' needs the string tool bridge");
+    }
     this.hostClock = { clock: options.clock, random: options.random };
     const inWorker = options.sandboxAdapter
       ? options.sandboxAdapter.supportsHostClock === false
@@ -863,14 +866,9 @@ export class Enclave {
           abortRequested = value;
         },
         toolHandler: hostToolHandler
-          ? numberToolCalls(
-              trackToolCalls(review?.wrapToolHandler(hostToolHandler) ?? hostToolHandler, hostActivity),
-              this.toolResultOrder,
-              boundedSnapshot({ ...this.config, maxToolResultBytes: options.maxToolResultBytes }, () =>
-                context.onToolBridgeFailure?.(),
-              ),
-            )
+          ? numberToolCalls(trackToolCalls(review?.wrapToolHandler(hostToolHandler) ?? hostToolHandler, hostActivity))
           : undefined,
+        toolResultOrder: this.toolResultOrder,
         ...hostClockReaders(this.hostClock, {
           inHostContext: asyncContexts.inHostContext,
           isOver: () => context.aborted,

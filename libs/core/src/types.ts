@@ -763,6 +763,9 @@ export interface ExecutionContext {
    */
   toolHandler?: HostToolHandler;
 
+  /** When the bridge delivers tool results to the script (see `CreateEnclaveOptions.toolResultOrder`) */
+  toolResultOrder?: ToolResultOrder;
+
   /** The host's `clock`, checked: a finite number, or `undefined` when it failed */
   clock?: () => number | undefined;
 
@@ -1230,7 +1233,7 @@ export interface CreateEnclaveOptions extends EnclaveConfig {
   /** Review hooks of the host, off by default, failing closed (see "Review Hooks" in the README) */
   review?: ReviewOptions;
 
-  /** `'call'` makes a run that gets the same results make the same calls with the same `callIndex` (default 'completion') */
+  /** `'call'` makes a run that gets the same results make the same calls with the same `callIndex` (default 'completion'); sidecar tokens are new in every run */
   toolResultOrder?: ToolResultOrder;
 
   /** What the script's `Date.now()`, `new Date()` and `Date()` read, at every read (default: the system clock) */

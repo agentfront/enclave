@@ -32,7 +32,7 @@ import { DEFAULT_SUSPICIOUS_PATTERNS } from './double-vm/suspicious-patterns';
 import type { OperationHistory, ParentValidationConfig } from './double-vm/types';
 import { refuseDynamicImport } from './dynamic-import';
 import { hostClockReaders } from './realm-clock';
-import { boundedSnapshot, numberToolCalls } from './tool-call-order';
+import { numberToolCalls } from './tool-call-order';
 import {
   assertReviewContext,
   normalizeReviewOptions,
@@ -409,15 +409,9 @@ export class PortableEnclave {
           if (value) abortController.abort();
         },
         toolHandler: hostToolHandler
-          ? numberToolCalls(
-              review?.wrapToolHandler(hostToolHandler) ?? hostToolHandler,
-              this.options.toolResultOrder,
-              boundedSnapshot(
-                { ...this.config, maxToolResultBytes: runOptions.maxToolResultBytes },
-                runOptions.onToolBridgeFailure,
-              ),
-            )
+          ? numberToolCalls(review?.wrapToolHandler(hostToolHandler) ?? hostToolHandler)
           : undefined,
+        toolResultOrder: this.options.toolResultOrder,
         ...hostClockReaders(this.options, { isOver: () => context.aborted }),
         toolNamespaces: this.namespaces,
         beforeToolCall: (name, args) => {

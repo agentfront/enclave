@@ -1,4 +1,5 @@
 import type { ExecutionContext } from './types';
+import { inCallOrder } from './tool-call-order';
 import { sanitizeValue } from './value-sanitizer';
 import { ReferenceResolver, ResolutionLimitError } from './sidecar/reference-resolver';
 import { JsonTooLargeError, JsonTraversalLimitError, stringifyWithin } from './bounded-json';
@@ -84,27 +85,6 @@ function toErrorPayload(
   safe.name = truncateForErrorMessage(String(safe.name || fallbackName), 128);
 
   return safe;
-}
-
-/** Why a sanitized tool result is over the run's `maxToolResultBytes`, or undefined when it is within it */
-export function resultLimitRefusal(
-  result: unknown,
-  limit: number | undefined,
-): { message: string; code: string } | undefined {
-  if (limit === undefined || !Number.isFinite(limit) || limit <= 0) return undefined;
-  let tooLarge = false;
-  let tooComplex = false;
-  try {
-    const resultJson = stringifyWithin(result, limit);
-    tooLarge = resultJson !== undefined && utf8ByteLength(resultJson) > limit;
-  } catch (error: unknown) {
-    tooLarge = error instanceof JsonTooLargeError;
-    tooComplex = error instanceof JsonTraversalLimitError;
-  }
-  if (tooComplex) return { message: 'Tool result exceeds the traversal limit', code: 'TOOL_RESULT_TOO_COMPLEX' };
-  return tooLarge
-    ? { message: `Tool result exceeds the limit of ${limit} bytes`, code: 'TOOL_RESULT_TOO_LARGE' }
-    : undefined;
 }
 
 function serializeResponse(response: ToolBridgeResponse, maxPayloadBytes: number): string {
@@ -283,6 +263,16 @@ function createRelayedToolBridge(
 }
 
 export function createHostToolBridge(
+  executionContext: ExecutionContext,
+  options: HostToolBridgeOptions,
+): (requestJson: string) => Promise<string> {
+  const bridge = createUnorderedToolBridge(executionContext, options);
+  return executionContext.toolResultOrder === 'call'
+    ? inCallOrder(bridge, executionContext.abortController.signal)
+    : bridge;
+}
+
+function createUnorderedToolBridge(
   executionContext: ExecutionContext,
   options: HostToolBridgeOptions,
 ): (requestJson: string) => Promise<string> {
@@ -504,17 +494,35 @@ export function createHostToolBridge(
 
       // A host may impose a result limit below the bridge cap. Measure the sanitized copy:
       // JSON.stringify(Map) is "{}", while the copy delivered to the script can be large.
-      const overLimit = resultLimitRefusal(sanitizedResult, executionContext.maxToolResultBytes);
-      if (overLimit) {
-        executionContext.onToolBridgeFailure?.();
-        return serializeResponse(
-          {
-            v: TOOL_BRIDGE_PROTOCOL_VERSION,
-            ok: false,
-            error: { name: 'ToolBridgeError', ...overLimit, toolError: true },
-          },
-          maxPayloadBytes,
-        );
+      const resultLimit = executionContext.maxToolResultBytes;
+      if (resultLimit !== undefined && Number.isFinite(resultLimit) && resultLimit > 0) {
+        let tooLarge = false;
+        let tooComplex = false;
+        try {
+          const resultJson = stringifyWithin(sanitizedResult, resultLimit);
+          tooLarge = resultJson !== undefined && utf8ByteLength(resultJson) > resultLimit;
+        } catch (error: unknown) {
+          tooLarge = error instanceof JsonTooLargeError;
+          tooComplex = error instanceof JsonTraversalLimitError;
+        }
+        if (tooLarge || tooComplex) {
+          executionContext.onToolBridgeFailure?.();
+          return serializeResponse(
+            {
+              v: TOOL_BRIDGE_PROTOCOL_VERSION,
+              ok: false,
+              error: {
+                name: 'ToolBridgeError',
+                message: tooComplex
+                  ? 'Tool result exceeds the traversal limit'
+                  : `Tool result exceeds the limit of ${resultLimit} bytes`,
+                code: tooComplex ? 'TOOL_RESULT_TOO_COMPLEX' : 'TOOL_RESULT_TOO_LARGE',
+                toolError: true,
+              },
+            },
+            maxPayloadBytes,
+          );
+        }
       }
 
       // Lift large string results to sidecar if configured. Such a result reaches the script as

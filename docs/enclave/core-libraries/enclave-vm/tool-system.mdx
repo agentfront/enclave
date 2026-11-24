@@ -74,7 +74,7 @@ A host resumes a run this way without keeping a process alive: it runs the same 
 | `clock` | system clock | Called at every `Date.now()`, `new Date()` without arguments and `Date()`; returns a finite number of milliseconds |
 | `random` | the engine's | Called at every `Math.random()`; returns a number from 0 up to 1 |
 
-A value out of range, or a throw, fails the script's read with an error it can catch. The enclave's deadline and rate limit keep reading the system clock, and neither function is called once the run has returned or was aborted, nor with less than 128 KB of stack left. In call order the enclave holds a copy of each result, as the handler returned it, until its turn. `clock` and `random` work on the double VM, the `vm` adapter, `InterpreterAdapter` and `PortableEnclave`; the `worker_threads` adapter refuses them. Results of functions in `globals` that return promises are not ordered.
+A value out of range, or a throw, fails the script's read with an error it can catch. The enclave's deadline and rate limit keep reading the system clock, and neither function is called once the run has returned or was aborted, nor with less than 128 KB of stack left. In call order what waits for its turn is the bridge's response, already sanitized and bounded; a result that arrives after the run was aborted is not delivered, and the string tool bridge is required. With the sidecar on, a reference token is new in every run, so a script whose path depends on a token's text does not replay. `clock` and `random` work on the double VM, the `vm` adapter, `InterpreterAdapter` and `PortableEnclave`; the `worker_threads` adapter refuses them. Results of functions in `globals` that return promises are not ordered.
 
 ## Tool Namespaces
 

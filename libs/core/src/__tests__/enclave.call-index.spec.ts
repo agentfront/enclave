@@ -294,6 +294,31 @@ describe('call positions and the host clock, from the host side', () => {
     }
   });
 
+  it('delivers the calls after one whose failure cannot be read, in call order', async () => {
+    const unreadable = {
+      get message(): string {
+        throw new Error('no message');
+      },
+    };
+    const enclave = new Enclave({
+      toolResultOrder: 'call',
+      toolHandler: async (toolName) => {
+        if (toolName === 'broken') throw unreadable;
+        return toolName;
+      },
+    });
+    try {
+      const result = await enclave.run(`
+        let failed = false;
+        try { await callTool('broken', {}); } catch (error) { failed = true; }
+        return [failed, await callTool('after', {})];
+      `);
+      expect(result.value).toEqual([true, 'after']);
+    } finally {
+      enclave.dispose();
+    }
+  });
+
   it('fails a read of an async clock that rejects, and leaves no unhandled rejection', async () => {
     const unhandled: unknown[] = [];
     const listener = (reason: unknown) => unhandled.push(reason);
@@ -332,6 +357,9 @@ describe('call position and clock options', () => {
     expect(() => new Enclave({ clock: 5 as never })).toThrow('clock must be a function');
     expect(() => new PortableEnclave({ random: 'x' as never })).toThrow('random must be a function');
     expect(() => new Enclave({ toolResultOrder: 'arrival' as never })).toThrow('toolResultOrder must be one of');
+    expect(
+      () => new Enclave({ toolResultOrder: 'call', toolBridge: { mode: 'direct', acknowledgeInsecureDirect: true } }),
+    ).toThrow("toolResultOrder: 'call' needs the string tool bridge");
   });
 
   it('refuses a clock for the worker_threads adapter, also given as a sandboxAdapter', () => {
