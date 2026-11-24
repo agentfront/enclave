@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.21.0] - 2026-11-24
+
 ### Security
 
 GHSA-jqf3-vx4j-7p22 and what is like it. The report named two spellings of a computed key the validator did not read, and 2.20.0 closed those two. The class behind them is closed here; the invariants are ATK-PCHAIN, ATK-REFL, ATK-TSTR and ATK-VBOUND in `SECURITY-TESTS.md`.
