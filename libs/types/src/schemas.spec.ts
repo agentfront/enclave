@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import {
   parseStreamEvent,
   parseEncryptedEnvelope,
@@ -188,6 +189,11 @@ describe('Schemas', () => {
         encryption: { mode: 'disabled' },
       });
       expect(request.sessionId).toBe('s_abc123');
+    });
+
+    it('should convert to JSON Schema', () => {
+      const jsonSchema = z.toJSONSchema(CreateSessionRequestSchema);
+      expect(jsonSchema.properties?.['sessionId']).toEqual({ type: 'string', pattern: '^s_[\\s\\S]{1,}$' });
     });
 
     it('should keep the encryption a request asks for', () => {

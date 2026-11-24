@@ -14,7 +14,6 @@ import {
   SessionState,
   LogLevel,
 } from './protocol.js';
-import type { SessionId } from './protocol.js';
 import { EventType, RuntimeChannelMessageType } from './events.js';
 import { SupportedCurve, EncryptionAlgorithm, KeyDerivation, EncryptionMode } from './encryption.js';
 import { FilterMode, PatternType } from './filter.js';
@@ -574,7 +573,7 @@ const LEGACY_CREATE_SESSION_SHAPE =
 /** Session creation request schema: the body of `POST /sessions`; the shape before 2.21 is refused. */
 export const CreateSessionRequestSchema = z.object({
   code: z.string(),
-  sessionId: SessionIdSchema.transform((id) => id as SessionId).optional(),
+  sessionId: z.templateLiteral([SESSION_ID_PREFIX, z.string().min(1)]).optional(),
   config: CreateSessionConfigSchema.optional(),
   filter: EventFilterConfigSchema.optional(),
   encryption: EncryptionRequestSchema.optional(),
