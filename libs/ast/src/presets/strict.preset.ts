@@ -37,12 +37,7 @@ import { STACK_FRAME_OBJECT_KEYS, STACK_FRAME_PROPERTIES } from './stack-frame-p
  * - Strict argument validation (if specified)
  * - Unreachable code detection
  *
- * Protection against:
- * - ✅ All vm2 CVEs (2023-29017, 2023-30547, 2023-32313, 2023-37466)
- * - ✅ isolated-vm escape vectors
- * - ✅ node-vm sandbox escapes
- * - ✅ Constructor chain exploits
- * - ✅ Prototype pollution attacks
+ * A filter on source text: passing it does not make code safe to run.
  *
  * @param options - Optional customization for the preset
  * @returns Array of configured validation rules

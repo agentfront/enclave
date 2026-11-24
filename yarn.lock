@@ -1703,7 +1703,6 @@ __metadata:
   resolution: "@enclave-vm/broker@workspace:libs/broker"
   dependencies:
     "@enclave-vm/core": "npm:2.20.1"
-    "@enclave-vm/stream": "npm:2.20.1"
     "@enclave-vm/types": "npm:2.20.1"
     minimatch: "npm:^11.0.1"
     zod: "npm:^4.6.6"

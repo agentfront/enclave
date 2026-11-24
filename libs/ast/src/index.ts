@@ -1,5 +1,5 @@
 /**
- * AST Guard - A production-ready AST security guard for JavaScript
+ * @enclave-vm/ast - A static validator for JavaScript: parses a script and reports what its rules refuse
  *
  * @packageDocumentation
  */

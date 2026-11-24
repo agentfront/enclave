@@ -1,9 +1,9 @@
 {
   "name": "@enclave-vm/ast",
   "version": "2.20.1",
-  "description": "A production-ready AST security guard for JavaScript - validate, protect, and enforce code safety with extensible rules",
+  "description": "A static validator for JavaScript: parses a script and reports what its rules refuse",
   "author": "AgentFront <info@agentfront.dev>",
-  "homepage": "https://github.com/agentfront/enclave/tree/main/libs/ast-guard",
+  "homepage": "https://github.com/agentfront/enclave/tree/main/libs/ast",
   "license": "Apache-2.0",
   "keywords": [
     "ast",
@@ -21,7 +21,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/agentfront/enclave.git",
-    "directory": "libs/ast-guard"
+    "directory": "libs/ast"
   },
   "bugs": {
     "url": "https://github.com/agentfront/enclave/issues"
