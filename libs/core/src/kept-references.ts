@@ -1,3 +1,4 @@
+import { isReferenceId } from './sidecar/reference-config';
 import type { ReferenceEntry, ReferenceSidecar } from './sidecar/reference-sidecar';
 import type { ExecutionResult } from './types';
 
@@ -36,7 +37,7 @@ export async function withKeptReferences<T>(
   }
 }
 
-/** What a literal of the script becomes in the sidecar: a token the run already holds stays that token */
+/** What a literal of the script becomes in the sidecar: a token stays that token, and resolves only if the run holds it */
 export function keptOrStored(sidecar: ReferenceSidecar, literal: string): string {
-  return sidecar.has(literal) ? literal : sidecar.store(literal, 'extraction');
+  return isReferenceId(literal) ? literal : sidecar.store(literal, 'extraction');
 }
