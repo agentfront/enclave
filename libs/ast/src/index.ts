@@ -13,7 +13,7 @@ export { transformAst, generateCode, transformCode } from './transformer';
 // AgentScript Transformer
 export { transformAgentScript, isWrappedInMain, unwrapFromMain } from './agentscript-transformer';
 export type { AgentScriptTransformConfig } from './agentscript-transformer';
-export { takeStatementMarkers } from './statement-markers';
+export { readStatementMarker, takeStatementMarkers } from './statement-markers';
 export type { StatementLocation } from './statement-markers';
 
 // Interfaces and types

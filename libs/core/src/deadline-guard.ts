@@ -33,6 +33,7 @@
 
 import * as walk from 'acorn-walk';
 import type * as acorn from 'acorn';
+import { readStatementMarker } from '@enclave-vm/ast';
 
 /** Name of the injected local that holds the realm's tick function. */
 export const TICK_FN = '__ag_tick';
@@ -79,7 +80,11 @@ function tickStatement(): any {
 /** Insert the check into a block, after any directive prologue (`'use strict'`). */
 function prependToBlock(block: any): void {
   let index = 0;
-  while (index < block.body.length && typeof block.body[index].directive === 'string') {
+  while (
+    index < block.body.length &&
+    typeof block.body[index].directive === 'string' &&
+    !readStatementMarker(block.body[index])
+  ) {
     index++;
   }
   block.body.splice(index, 0, tickStatement());

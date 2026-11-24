@@ -1008,6 +1008,8 @@ export class Interpreter {
     } catch {
       this.end(new StatementHookError());
     }
+    // The hook's time is the run's: the deadline is read after it, not some steps later
+    this.checkClock();
   }
 
   /** End the run when its deadline has passed. */

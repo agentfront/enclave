@@ -67,7 +67,8 @@ function markedList(statements: unknown[], lineOffset: number): unknown[] {
   const marked: unknown[] = [];
   for (const statement of statements) {
     const kept = readStatementMarker(statement) ? asTemplate(statement as Node) : statement;
-    if (isNode(kept) && kept.loc && !UNMARKED_TYPES.has(kept.type)) marked.push(marker(kept, lineOffset));
+    const directive = typeof kept === 'object' && kept !== null && 'directive' in kept;
+    if (isNode(kept) && kept.loc && !directive && !UNMARKED_TYPES.has(kept.type)) marked.push(marker(kept, lineOffset));
     marked.push(kept);
   }
   return marked;

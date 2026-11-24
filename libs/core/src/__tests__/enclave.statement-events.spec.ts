@@ -1,7 +1,13 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
+import { takeStatementMarkers, transformAgentScript } from '@enclave-vm/ast';
+import * as acorn from 'acorn';
+import { generate } from 'astring';
+
 import { InterpreterAdapter } from '../adapters/interpreter-adapter';
+import { injectDeadlineChecks } from '../deadline-guard';
 import { Enclave } from '../enclave';
+import { ScoringGate } from '../scoring';
 import { PortableEnclave } from '../portable-enclave';
 import type { StatementEventOptions } from '../statement-events';
 import type { CreateEnclaveOptions, ExecutionResult, StatementEvent } from '../types';
@@ -181,7 +187,87 @@ describe.each(RUNTIMES)('statement events on the %s', (_name, create) => {
   });
 });
 
+describe('statement markers through the deadline instrumentation', () => {
+  const parse = (source: string) =>
+    acorn.parse(source, {
+      ecmaVersion: 'latest',
+      sourceType: 'script',
+      allowReturnOutsideFunction: true,
+      allowAwaitOutsideFunction: true,
+    });
+
+  it('keeps each marker on its statement, and a real directive first', () => {
+    const transformed = transformAgentScript(
+      "'use strict';\nconst x = 2;\nconst f = () => { const y = x; return y; };\nreturn f();",
+      {
+        statementMarkers: true,
+        maxIterations: 100,
+      },
+    );
+    const ast = parse(transformed);
+    injectDeadlineChecks(ast, parse);
+    const program = parse(generate(ast));
+    const locations = takeStatementMarkers(program);
+    const marked: string[] = [];
+    const visit = (node: unknown): void => {
+      if (typeof node !== 'object' || node === null) return;
+      const location = locations.get(node);
+      if (location) marked.push(`${location.line}:${location.type}=${(node as { type: string }).type}`);
+      for (const value of Object.values(node)) {
+        if (Array.isArray(value)) value.forEach(visit);
+        else visit(value);
+      }
+    };
+    visit(program);
+    expect(marked).toEqual([
+      '2:VariableDeclaration=VariableDeclaration',
+      '3:VariableDeclaration=VariableDeclaration',
+      '3:VariableDeclaration=VariableDeclaration',
+      '3:ReturnStatement=ReturnStatement',
+      '4:ReturnStatement=ReturnStatement',
+    ]);
+    expect(generate(program)).toMatch(/async function __ag_main\(\) \{\s*["']use strict["'];/);
+  });
+});
+
 describe('statement event options', () => {
+  it('scores the script without its markers', async () => {
+    const scored: string[] = [];
+    const enclave = new Enclave({
+      sandboxAdapter: new InterpreterAdapter(),
+      scoringGate: { scorer: 'rule-based', blockThreshold: 100 },
+    });
+    const spy = jest.spyOn(ScoringGate.prototype, 'evaluate').mockImplementation(async (code: string) => {
+      scored.push(code);
+      return { allowed: true, totalScore: 0, riskLevel: 'none', signals: [], latencyMs: 0, cached: false } as never;
+    });
+    try {
+      await enclave.run('const a = 1;\nreturn a;', undefined, { onStatement: () => undefined });
+      expect(scored).toHaveLength(1);
+      expect(scored[0]).not.toContain('__ag_statement');
+    } finally {
+      spy.mockRestore();
+      enclave.dispose();
+    }
+  });
+
+  it('ends the run at its deadline when the hook used the time', async () => {
+    const enclave = new Enclave({ timeout: 100, sandboxAdapter: new InterpreterAdapter() });
+    try {
+      const result = await enclave.run('return 1;', undefined, {
+        onStatement: () => {
+          const until = Date.now() + 150;
+          while (Date.now() < until) {
+            // busy
+          }
+        },
+      });
+      expect(result.error?.code).toBe('EXECUTION_TIMEOUT');
+    } finally {
+      enclave.dispose();
+    }
+  });
+
   it('calls the hook in the async context of the caller of run()', async () => {
     const storage = new AsyncLocalStorage<string>();
     const seen: Array<string | undefined> = [];
