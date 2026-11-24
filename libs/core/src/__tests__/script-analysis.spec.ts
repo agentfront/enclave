@@ -269,6 +269,59 @@ describe('analyzeScript', () => {
     });
   });
 
+  describe('a cut array the script returns at its end', () => {
+    const SCRIPT = [
+      "const page = await callTool('users.list', { limit: 3 });",
+      'const ids = page.items.slice(0, 3).map((user) => user.id);',
+      'for (const id of ids) {',
+      "  await callTool('users.close', { id });",
+      '}',
+      'return ids;',
+    ].join('\n');
+    const transformed = (code: string) =>
+      transformAgentScript(code, { wrapInMain: true, transformCallTool: true, transformLoops: true });
+    const closingLoop = (code: string) =>
+      analyzeScript(code, { callBudget: 30 }).bounds.find((bound) => bound.calls.includes(1));
+
+    it('keeps the bound of the loop that makes the calls, as written and as the enclave transforms it', () => {
+      expect(closingLoop(SCRIPT)).toEqual({
+        location: { line: 3, column: 0 },
+        over: [0],
+        limit: 3,
+        calls: [1],
+        maxCalls: 3,
+        withinBudget: true,
+      });
+      expect(closingLoop(transformed(SCRIPT))).toEqual(
+        expect.objectContaining({ over: [0], limit: 3, calls: [1], maxCalls: 3, withinBudget: true }),
+      );
+    });
+
+    it.each([
+      ['a return from a nested function', 'const get = () => ids;', 'return ids;'],
+      ['a change before the return', 'ids.push(4);', 'return ids;'],
+      ['a mutated alias', 'const alias = ids; alias.push(4);', 'return ids;'],
+    ])('drops the bound for %s', (_name, before, ending) => {
+      const code = SCRIPT.replace('for (const id of ids) {', `${before}\nfor (const id of ids) {`).replace(
+        'return ids;',
+        ending,
+      );
+      for (const form of [code, transformed(code)]) {
+        expect(closingLoop(form)?.limit).toBeNull();
+      }
+    });
+
+    it.each([
+      ['a callback that takes the array', '(user, index, all) => user.id'],
+      ['a function callback', 'function (user) { return user.id; }'],
+    ])('drops the bound for %s', (_name, callback) => {
+      const code = SCRIPT.replace('(user) => user.id', callback);
+      for (const form of [code, transformed(code)]) {
+        expect(closingLoop(form)?.limit).toBeNull();
+      }
+    });
+  });
+
   it('reads a script that is already wrapped in its main function', () => {
     const analysis = analyzeScript(`async function __ag_main() {${OVERDUE_INVOICES}}`);
 

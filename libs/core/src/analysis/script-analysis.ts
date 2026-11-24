@@ -108,6 +108,7 @@ const ARRAY_CHANGING_METHODS = new Set([...MUTATING_METHODS, 'pop', 'shift', 'so
 const PARALLEL_NAMES = new Set(['parallel', '__safe_parallel']);
 /** The runtime helper a transformed `for...of` goes over its iterable with: `for (x of __safe_forOf(items))` */
 const FOR_OF_HELPER = '__safe_forOf';
+const MAIN_FUNCTION = '__ag_main';
 const BUILT_IN_NAMES = new Set([...AGENTSCRIPT_PERMISSIVE_GLOBALS, ...PARALLEL_NAMES]);
 const RUNTIME_PREFIXES = ['__safe_', '__ag_'];
 const FUNCTION_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
@@ -553,9 +554,19 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
     }
   };
   // A read that leaves the array as it is and keeps it under its name: anything else drops its bound
+  // A return of the script itself hands the value to the host when nothing of the script runs any more
+  const endsTheScript = (statement: AnyNode): boolean => {
+    for (let step = parentOf.get(statement); step?.node; step = parentOf.get(step.node)) {
+      if (!FUNCTION_TYPES.has(step.node.type)) continue;
+      const isMain = step.node.type === 'FunctionDeclaration' && step.node.id?.name === MAIN_FUNCTION;
+      return isMain && parentOf.get(step.node)?.node?.type === 'Program';
+    }
+    return true;
+  };
   const isPlainRead = (identifier: AnyNode): boolean => {
     const { node: holder, key } = parentOf.get(identifier) ?? { node: undefined, key: '' };
     if (holder?.type === 'ForOfStatement' || holder?.type === 'ForInStatement') return key === 'right';
+    if (holder?.type === 'ReturnStatement') return endsTheScript(holder);
     if (holder?.type === 'CallExpression' && key === 'arguments' && isForOfHelperCall(holder)) {
       return holder.arguments[0] === identifier;
     }
