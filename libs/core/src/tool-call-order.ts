@@ -19,13 +19,24 @@ export function numberToolCalls(handler: ToolHandler): HostToolHandler {
 /** A bridge reply, or one whose sidecar write waits for its turn */
 export type BridgeReply = string | { bytes: number; finish: () => string };
 
+/** What a reply was: a result, a failure of the tool, or a refusal of the enclave */
+export type ReplyOutcome = 'succeeded' | 'failed' | 'refused';
+
 interface OrderLimits {
   /** The most the replies waiting behind an earlier call may hold together, in UTF-8 bytes */
   maxHeldBytes: number;
-  /** The short reply that takes the place of a refused one, holding nothing of it */
-  refusal: (reply: BridgeReply) => string;
+  /** What a reply is, read when it is refused room; nothing of it is kept */
+  classify: (reply: BridgeReply) => ReplyOutcome;
+  /** The short reply of a call refused room, built when it is delivered */
+  refused: (outcome: ReplyOutcome) => string;
   /** The reply of a call whose bridge or whose finishing failed */
   failed: string;
+}
+
+interface Settled {
+  reply?: BridgeReply;
+  refused?: ReplyOutcome;
+  heldBytes: number;
 }
 
 function insertionIndex(sorted: number[], value: number): number {
@@ -51,32 +62,46 @@ export function inCallOrder(
   limits: OrderLimits,
 ): (requestJson: string) => Promise<string> {
   const answers = new Map<number, (response: string) => void>();
-  const settled = new Map<number, { reply: BridgeReply; heldBytes: number }>();
+  const settled = new Map<number, Settled>();
   const charged: number[] = [];
   let heldBytes = 0;
   let cutoff = Number.POSITIVE_INFINITY;
   let nextCall = 0;
   let nextDelivery = 0;
   let delivering = false;
+  let answering = false;
+  let drainWhenAnswered = false;
   const sizeOf = (reply: BridgeReply): number => (typeof reply === 'string' ? utf8Length(reply) : reply.bytes);
-  const answer = (call: number, reply: BridgeReply): void => {
-    let response: string;
+  const responseOf = (entry: Settled): string => {
     try {
-      response = typeof reply === 'string' ? reply : reply.finish();
+      if (entry.refused) return limits.refused(entry.refused);
+      return typeof entry.reply === 'string' ? entry.reply : (entry.reply as Exclude<BridgeReply, string>).finish();
     } catch {
-      response = limits.failed;
+      return limits.failed;
     }
-    answers.get(call)?.(response);
+  };
+  const answer = (call: number, entry: Settled): void => {
+    const resolve = answers.get(call);
     answers.delete(call);
+    answering = true;
+    const response = responseOf(entry);
+    answering = false;
+    resolve?.(response);
+    if (drainWhenAnswered) drain();
+  };
+  const drain = (): void => {
+    drainWhenAnswered = false;
+    const calls = [...settled.keys()].sort((left, right) => left - right);
+    const entries = calls.map((call) => settled.get(call) as Settled);
+    settled.clear();
+    charged.length = 0;
+    calls.forEach((call, index) => answer(call, entries[index]));
   };
   signal.addEventListener(
     'abort',
     () => {
-      for (const call of [...settled.keys()].sort((left, right) => left - right)) {
-        answer(call, (settled.get(call) as { reply: BridgeReply }).reply);
-      }
-      settled.clear();
-      charged.length = 0;
+      if (answering) drainWhenAnswered = true;
+      else drain();
     },
     { once: true },
   );
@@ -87,20 +112,22 @@ export function inCallOrder(
       return;
     }
     settled.delete(nextDelivery);
-    if (entry.heldBytes > 0) {
-      heldBytes -= entry.heldBytes;
+    cutoff = Number.POSITIVE_INFINITY;
+    const head = settled.get(++nextDelivery);
+    if (head && head.heldBytes > 0) {
+      heldBytes -= head.heldBytes;
+      head.heldBytes = 0;
       charged.shift();
     }
-    cutoff = Number.POSITIVE_INFINITY;
-    answer(nextDelivery++, entry.reply);
+    answer(nextDelivery - 1, entry);
     nextTurn(deliverNext);
   };
   const refuse = (call: number, reply: BridgeReply): void => {
     cutoff = Math.min(cutoff, call);
-    settled.set(call, { reply: limits.refusal(reply), heldBytes: 0 });
+    settled.set(call, { refused: limits.classify(reply), heldBytes: 0 });
   };
   const hold = (call: number, reply: BridgeReply): void => {
-    if (signal.aborted) return answer(call, reply);
+    if (signal.aborted) return answer(call, { reply, heldBytes: 0 });
     if (call > cutoff) refuse(call, reply);
     else if (call === nextDelivery) settled.set(call, { reply, heldBytes: 0 });
     else {
@@ -110,9 +137,9 @@ export function inCallOrder(
       heldBytes += bytes;
       while (heldBytes > limits.maxHeldBytes) {
         const latest = charged.pop() as number;
-        const entry = settled.get(latest) as { reply: BridgeReply; heldBytes: number };
+        const entry = settled.get(latest) as Settled;
         heldBytes -= entry.heldBytes;
-        refuse(latest, entry.reply);
+        refuse(latest, entry.reply as BridgeReply);
       }
     }
     if (!delivering) {

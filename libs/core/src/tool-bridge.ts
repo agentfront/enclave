@@ -1,5 +1,5 @@
 import type { ExecutionContext } from './types';
-import { inCallOrder, type BridgeReply } from './tool-call-order';
+import { inCallOrder, type BridgeReply, type ReplyOutcome } from './tool-call-order';
 import { sanitizeValue } from './value-sanitizer';
 import { ReferenceResolver, ResolutionLimitError } from './sidecar/reference-resolver';
 import { JsonTooLargeError, JsonTraversalLimitError, stringifyWithin } from './bounded-json';
@@ -188,14 +188,16 @@ function serializeResponse(response: ToolBridgeResponse, maxPayloadBytes: number
 
   if (utf8ByteLength(json) <= maxPayloadBytes) return json;
 
-  // Fail-safe: if even the error payload is too large, return a minimal message.
+  // Fail-safe: if even the error payload is too large, return a minimal message, a failure of the tool when it was one
+  const toolError = !response.ok && response.error.toolError === true;
   const minimal: ToolBridgeErrorResponse = {
     v: TOOL_BRIDGE_PROTOCOL_VERSION,
     ok: false,
     error: {
       name: 'ToolBridgeError',
-      message: 'Tool bridge payload exceeded maximum size',
+      message: 'Payload too large',
       code: 'TOOL_BRIDGE_PAYLOAD_TOO_LARGE',
+      ...(toolError ? { toolError: true } : {}),
     },
   };
   return JSON.stringify(minimal);
@@ -359,8 +361,8 @@ export function createHostToolBridge(
     {
       maxHeldBytes: maxPayloadBytes,
       failed: encodeToolBridgeFailure('ToolBridgeError', 'Tool bridge failure', 'TOOL_BRIDGE_FAILURE', maxPayloadBytes),
-      refusal: (reply) => {
-        const outcome = typeof reply === 'string' ? replyOutcome(reply) : 'succeeded';
+      classify: (reply) => (typeof reply === 'string' ? replyOutcome(reply) : 'succeeded'),
+      refused: (outcome) => {
         if (outcome === 'succeeded') {
           try {
             executionContext.onToolBridgeFailure?.();
@@ -390,7 +392,7 @@ const WAITING_REFUSAL = JSON.stringify({ v: TOOL_BRIDGE_PROTOCOL_VERSION, ok: fa
 /** The smallest `toolBridge.maxPayloadBytes` that holds every reply of call-order delivery */
 export const MIN_CALL_ORDER_PAYLOAD_BYTES = WAITING_TOOL_FAILURE.length;
 
-function replyOutcome(responseJson: string): 'succeeded' | 'failed' | 'refused' {
+function replyOutcome(responseJson: string): ReplyOutcome {
   try {
     const reply = JSON.parse(responseJson) as { ok?: unknown; error?: { toolError?: unknown } };
     if (reply.ok === true) return 'succeeded';

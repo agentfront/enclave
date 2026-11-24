@@ -330,10 +330,11 @@ describe('call positions and the host clock, from the host side', () => {
       {
         maxHeldBytes: 10,
         failed: 'failed',
-        refusal: (reply) => {
+        classify: (reply) => {
           refused.push(reply);
-          return 'refused';
+          return 'succeeded';
         },
+        refused: () => 'refused',
       },
     );
     const replies = ['head', 'a', 'b', 'c'].map((request) => bridge(request));
@@ -343,6 +344,70 @@ describe('call positions and the host clock, from the host side', () => {
     releases.get('head')?.('head-reply');
     expect(await Promise.all(replies)).toEqual(['head-reply', '8'.repeat(8), 'refused', 'refused']);
     expect(refused).toEqual(['2'.repeat(2), '6'.repeat(6)]);
+  });
+
+  it('frees the room of a waiting reply as soon as it is next in line', async () => {
+    const releases = new Map<string, (reply: string) => void>();
+    const bridge = inCallOrder(
+      (request) => new Promise<string>((resolve) => releases.set(request, resolve)),
+      new AbortController().signal,
+      { maxHeldBytes: 10, failed: 'failed', classify: () => 'succeeded', refused: () => 'refused' },
+    );
+    const replies = ['head', 'next', 'small'].map((request) => bridge(request));
+    releases.get('next')?.('8'.repeat(8));
+    releases.get('head')?.('head-reply');
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    releases.get('small')?.('4'.repeat(4));
+    expect(await Promise.all(replies)).toEqual(['head-reply', '8'.repeat(8), '4'.repeat(4)]);
+  });
+
+  it('answers a refused call with its refusal when the observer aborts the run, then the rest', async () => {
+    const abortController = new AbortController();
+    const releases = new Map<string, (reply: string) => void>();
+    const answered: string[] = [];
+    const bridge = inCallOrder(
+      (request) => new Promise<string>((resolve) => releases.set(request, resolve)),
+      abortController.signal,
+      {
+        maxHeldBytes: 10,
+        failed: 'failed',
+        classify: () => 'succeeded',
+        refused: () => {
+          abortController.abort();
+          return 'refused';
+        },
+      },
+    );
+    const replies = ['head', 'a', 'b', 'c'].map((request) =>
+      bridge(request).then((reply) => {
+        answered.push(`${request}:${reply}`);
+        return reply;
+      }),
+    );
+    releases.get('a')?.('8'.repeat(8));
+    releases.get('b')?.('6'.repeat(6));
+    releases.get('c')?.('2'.repeat(2));
+    releases.get('head')?.('head-reply');
+    expect(await Promise.all(replies)).toEqual(['head-reply', '8'.repeat(8), 'refused', 'refused']);
+    expect(answered.slice(0, 2)).toEqual(['head:head-reply', 'a:' + '8'.repeat(8)]);
+  });
+
+  it('keeps a tool failure a tool failure when its error does not fit the bridge payload', async () => {
+    const enclave = new PortableEnclave({
+      toolBridge: { maxPayloadBytes: 200 },
+      toolHandler: async () => {
+        throw new Error('e'.repeat(1000));
+      },
+    });
+    try {
+      const result = await enclave.run(
+        "const r = await callTool('t', {}, { throwOnError: false }); return [r.success, r.error.code];",
+      );
+      expect(result.value).toEqual([false, 'TOOL_BRIDGE_PAYLOAD_TOO_LARGE']);
+    } finally {
+      enclave.dispose();
+    }
   });
 
   it("needs a bridge payload that holds call order's own replies", () => {
@@ -361,7 +426,7 @@ describe('call positions and the host clock, from the host side', () => {
           ? new Promise<string>((resolve) => (releaseFirst = resolve))
           : Promise.resolve('second-reply'),
       abortController.signal,
-      { maxHeldBytes: 1024, failed: 'failed', refusal: () => 'refused' },
+      { maxHeldBytes: 1024, failed: 'failed', classify: () => 'succeeded', refused: () => 'refused' },
     );
     const first = bridge('first');
     const second = bridge('second');
