@@ -1,3 +1,4 @@
+import { transformAgentScript } from '@enclave-vm/ast';
 import { analyzeScript, ScriptAnalysisError } from '../analysis/script-analysis';
 import { analyzeScript as analyzeScriptFromWorkerEntry } from '../worker';
 
@@ -228,6 +229,44 @@ describe('analyzeScript', () => {
       { from: null, to: 0, via: ['context'] },
       { from: null, to: 2, via: ['address'] },
     ]);
+  });
+
+  describe('the bound of an array derived from a cut one', () => {
+    const closeAll = (derive: string, after = '') => `
+      const page = await callTool('users.list', { limit: 3 });
+      const ids = ${derive};
+      ${after}
+      for (const id of ids) { await callTool('users.close', { id }); }
+    `;
+    const forms = (code: string) => [
+      code,
+      transformAgentScript(code, { wrapInMain: true, transformCallTool: true, transformLoops: true }),
+    ];
+    const loopLimit = (code: string) => analyzeScript(code, { callBudget: 10 }).bounds.at(-1)?.limit;
+
+    it.each([
+      ['map', 'page.items.slice(0, 3).map((user) => user.id)', 3],
+      ['filter', 'page.items.slice(0, 3).filter((user) => user.active)', 3],
+      ['slice', 'page.items.slice(0, 3).slice(1)', 3],
+      ['a cut variable', 'page.items.slice(0, 3)', 3],
+    ])('carries the bound through %s, as written and as the enclave transforms it', (_name, derive, limit) => {
+      for (const code of forms(closeAll(derive))) {
+        expect(loopLimit(code)).toBe(limit);
+        expect(analyzeScript(code, { callBudget: 10 }).bounds.at(-1)).toEqual(
+          expect.objectContaining({ maxCalls: limit, withinBudget: true }),
+        );
+      }
+    });
+
+    it.each([
+      ['a callback that takes the array', 'page.items.slice(0, 3).map((user, index, all) => user.id)', ''],
+      ['a function callback', 'page.items.slice(0, 3).map(function (user) { return user.id; })', ''],
+      ['a mutated alias', 'page.items.slice(0, 3).map((user) => user.id)', 'const alias = ids; alias.push(4);'],
+    ])('drops the bound for %s', (_name, derive, after) => {
+      for (const code of forms(closeAll(derive, after))) {
+        expect(loopLimit(code)).toBeNull();
+      }
+    });
   });
 
   it('reads a script that is already wrapped in its main function', () => {

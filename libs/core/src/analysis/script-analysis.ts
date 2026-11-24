@@ -106,6 +106,8 @@ const ITEM_KEEPING_METHODS = new Set(['map', 'filter', 'reverse', 'toReversed', 
 const MUTATING_METHODS = new Set(['push', 'unshift', 'splice', 'fill', 'set', 'add']);
 const ARRAY_CHANGING_METHODS = new Set([...MUTATING_METHODS, 'pop', 'shift', 'sort', 'reverse', 'copyWithin']);
 const PARALLEL_NAMES = new Set(['parallel', '__safe_parallel']);
+/** The runtime helper a transformed `for...of` goes over its iterable with: `for (x of __safe_forOf(items))` */
+const FOR_OF_HELPER = '__safe_forOf';
 const BUILT_IN_NAMES = new Set([...AGENTSCRIPT_PERMISSIVE_GLOBALS, ...PARALLEL_NAMES]);
 const RUNTIME_PREFIXES = ['__safe_', '__ag_'];
 const FUNCTION_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
@@ -165,6 +167,10 @@ function mayReceiveArray(callback: AnyNode, arrayParam: number): boolean {
   if (callback?.type !== 'ArrowFunctionExpression') return true;
   if (callback.params.length > arrayParam) return true;
   return callback.params.some((param: AnyNode) => param.type !== 'Identifier');
+}
+
+function isForOfHelperCall(node: AnyNode): boolean {
+  return node?.type === 'CallExpression' && node.callee.type === 'Identifier' && node.callee.name === FOR_OF_HELPER;
 }
 
 function walkWithPath(root: AnyNode, visit: (node: AnyNode, path: readonly PathStep[]) => void): void {
@@ -550,6 +556,9 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
   const isPlainRead = (identifier: AnyNode): boolean => {
     const { node: holder, key } = parentOf.get(identifier) ?? { node: undefined, key: '' };
     if (holder?.type === 'ForOfStatement' || holder?.type === 'ForInStatement') return key === 'right';
+    if (holder?.type === 'CallExpression' && key === 'arguments' && isForOfHelperCall(holder)) {
+      return holder.arguments[0] === identifier;
+    }
     if (holder?.type === 'CallExpression' && key === 'arguments') {
       const parallelCall = holder.callee.type === 'Identifier' && PARALLEL_NAMES.has(holder.callee.name);
       return parallelCall && holder.arguments[0] === identifier && !mayReceiveArray(holder.arguments[1], 2);
@@ -576,10 +585,12 @@ export function analyzeScript(code: string, options: ScriptAnalysisOptions = {})
       const sources = onlyRead ? sourcesOf.get(binding) : undefined;
       return sources?.length === 1 ? limitOf(sources[0], depth + 1) : null;
     }
+    if (isForOfHelperCall(node)) return limitOf(node.arguments[0], depth + 1);
     const method = node.type === 'CallExpression' ? staticMethodName(node.callee) : undefined;
     if (method === 'slice') return sliceLimit(node.arguments, limitOf(node.callee.object, depth + 1));
-    if (method !== undefined && ITEM_KEEPING_METHODS.has(method)) return limitOf(node.callee.object, depth + 1);
-    return null;
+    if (method === undefined || !ITEM_KEEPING_METHODS.has(method)) return null;
+    if (ITERATION_METHODS.has(method) && mayReceiveArray(node.arguments[0], 2)) return null;
+    return limitOf(node.callee.object, depth + 1);
   };
   const maxCallsMemo = new Map<LoopEntry, number | null>();
   const maxCallsOf = (loop: LoopEntry): number | null => {
