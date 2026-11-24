@@ -166,22 +166,28 @@ export class ReferenceSidecar {
           'A preloaded reference is { id, data, source, mimeType?, origin? } with a new reference id',
         );
       }
-      const buffer = Buffer.from(data, 'utf-8');
-      this.checkLimits(buffer.length);
-      this.add(id, buffer, { source, mimeType, origin });
+      this.checkLimits(Buffer.byteLength(data, 'utf-8'));
+      this.add(id, Buffer.from(data, 'utf-8'), { source, mimeType, origin });
     }
   }
 
-  /** The entries behind the given ids, for the host to keep; an id this sidecar does not hold is left out */
+  /** The entries behind the given ids, for the host to keep; an id this sidecar does not hold, or holds as no UTF-8 text, is left out */
   exportEntries(ids: Iterable<string>): ReferenceEntry[] {
     const entries: ReferenceEntry[] = [];
+    const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
     for (const id of new Set(typeof ids === 'string' ? [ids] : ids)) {
       const data = this.storage.get(id);
       const metadata = this.metadata.get(id);
       if (!data || !metadata) continue;
+      let text: string;
+      try {
+        text = decoder.decode(data);
+      } catch {
+        continue;
+      }
       entries.push({
         id,
-        data: data.toString('utf-8'),
+        data: text,
         source: metadata.source,
         ...(metadata.mimeType !== undefined ? { mimeType: metadata.mimeType } : {}),
         ...(metadata.origin !== undefined ? { origin: metadata.origin } : {}),

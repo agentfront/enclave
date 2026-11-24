@@ -27,11 +27,16 @@ export async function withKeptReferences<T>(
   execute: () => Promise<ExecutionResult<T>>,
 ): Promise<ExecutionResult<T>> {
   try {
-    if (sidecar && options.preloadReferences) sidecar.preload(options.preloadReferences);
+    if (sidecar && options.preloadReferences !== undefined) sidecar.preload(options.preloadReferences);
     const result = await execute();
-    if (!sidecar || !options.exportReferences) return result;
+    if (!sidecar || options.exportReferences === undefined) return result;
     return { ...result, references: sidecar.exportEntries(options.exportReferences(result.value)) };
   } finally {
     sidecar?.dispose();
   }
+}
+
+/** What a literal of the script becomes in the sidecar: a token the run already holds stays that token */
+export function keptOrStored(sidecar: ReferenceSidecar, literal: string): string {
+  return sidecar.has(literal) ? literal : sidecar.store(literal, 'extraction');
 }

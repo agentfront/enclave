@@ -41,7 +41,12 @@ import { refuseDynamicImport } from './dynamic-import';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
 import { boundedStatementHook, type StatementEventOptions } from './statement-events';
-import { assertKeptReferenceOptions, withKeptReferences, type KeptReferenceOptions } from './kept-references';
+import {
+  assertKeptReferenceOptions,
+  keptOrStored,
+  withKeptReferences,
+  type KeptReferenceOptions,
+} from './kept-references';
 import {
   assertReviewContext,
   normalizeReviewOptions,
@@ -411,7 +416,7 @@ export class PortableEnclave {
         const ast = acorn.parse(transformed, { ecmaVersion: 'latest', sourceType: 'script' }) as acorn.Node;
         extractLargeStrings(ast, {
           threshold: this.references.extractionThreshold,
-          onExtract: (value) => sidecar.store(value, 'extraction'),
+          onExtract: (value) => keptOrStored(sidecar, value),
         });
         transformConcatenation(ast, { arraySpread: false });
         transformTemplateLiterals(ast);

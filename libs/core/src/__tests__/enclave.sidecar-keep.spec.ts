@@ -2,7 +2,8 @@ import { InterpreterAdapter } from '../adapters/interpreter-adapter';
 import { Enclave } from '../enclave';
 import type { KeptReferenceOptions } from '../kept-references';
 import { PortableEnclave } from '../portable-enclave';
-import type { ReferenceEntry } from '../sidecar/reference-sidecar';
+import { ReferenceSidecar, type ReferenceEntry } from '../sidecar/reference-sidecar';
+import { REFERENCE_CONFIGS } from '../sidecar/reference-config';
 import type { CreateEnclaveOptions, ExecutionResult, ToolHandler } from '../types';
 
 interface Runner {
@@ -59,34 +60,20 @@ describe.each(RUNTIMES)('references kept between runs on the %s', (_name, create
     expect(received).toEqual([DOCUMENT]);
   });
 
-  it('counts preloaded entries toward maxTotalSize and maxReferenceCount', async () => {
-    const [entry] = await exportDocument();
-    const tight = { ...SIDECAR, maxTotalSize: 80 * 1024, maxReferenceCount: 2 };
-    const crowded = await runOnce(
-      "const r = await callTool('fetch', {}, { throwOnError: false }); return r.success ? 'stored' : r.error.code;",
-      { preloadReferences: [entry] },
-      async () => DOCUMENT,
-      tight,
+  it('resolves a token of an earlier run that a later script writes as a literal, whatever the extraction threshold', async () => {
+    const entries = await exportDocument();
+    const received: unknown[] = [];
+    const second = await runOnce(
+      `return await callTool('save', { text: ${JSON.stringify(entries[0].id)} });`,
+      { preloadReferences: entries },
+      async (_toolName, args) => {
+        received.push(args['text']);
+        return 'saved';
+      },
+      { ...SIDECAR, extractionThreshold: 8 },
     );
-    expect(crowded.value).toBe('TOOL_RESULT_NOT_STORED');
-
-    const second = { ...entry, id: entry.id.replace(/.{3}__$/, 'abc__') };
-    const third = { ...entry, id: entry.id.replace(/.{3}__$/, 'abd__') };
-    const small = [entry, second, third].map((item) => ({ ...item, data: 'x' }));
-    await expect(runOnce('return 1;', { preloadReferences: small }, undefined, tight)).rejects.toThrow(
-      'Maximum reference count exceeded (2)',
-    );
-  });
-
-  it('fails a token that was not preloaded at the tool boundary, as before', async () => {
-    const [entry] = await exportDocument();
-    const result = await runOnce(
-      `return await callTool('save', { text: ${JSON.stringify(entry.id)} });`,
-      {},
-      async () => 'saved',
-    );
-    expect(result.success).toBe(false);
-    expect(result.error?.message).toContain('Unknown reference');
+    expect(second.value).toBe('saved');
+    expect(received).toEqual([DOCUMENT]);
   });
 
   it('exports only the entries the run holds, and refuses the options without a sidecar', async () => {
@@ -103,5 +90,18 @@ describe.each(RUNTIMES)('references kept between runs on the %s', (_name, create
     } finally {
       runner.dispose();
     }
+    for (const preloadReferences of [null, false, 0, '']) {
+      await expect(runOnce('return 1;', { preloadReferences: preloadReferences as never })).rejects.toThrow(TypeError);
+    }
+  });
+});
+
+describe('ReferenceSidecar export', () => {
+  it('leaves out an entry that is not UTF-8 text, and keeps a byte order mark', () => {
+    const sidecar = new ReferenceSidecar({ ...REFERENCE_CONFIGS.STANDARD });
+    const binary = sidecar.store(Buffer.from([0xff, 0xfe, 0x00]), 'tool-result');
+    const marked = sidecar.store('\ufefftext', 'tool-result');
+    expect(sidecar.exportEntries([binary, marked]).map((entry) => entry.data)).toEqual(['\ufefftext']);
+    sidecar.dispose();
   });
 });

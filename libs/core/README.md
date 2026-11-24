@@ -1092,9 +1092,9 @@ const second = await enclave.run(code2, undefined, {
 });
 ```
 
-- **`exportReferences(value)`** is called once the run is over, before its sidecar is dropped, with the value the script returned (`undefined` when the run failed). It returns the tokens whose entries the host wants (a single token string is taken as one), and `result.references` lists the entries the run's sidecar holds for them as `ReferenceEntry` objects: `{ id, data, source, mimeType?, origin? }`, `data` as a string. A token the run does not hold is left out.
+- **`exportReferences(value)`** is called once the run is over, before its sidecar is dropped, with the value the script returned (`undefined` when the run failed). It returns the tokens whose entries the host wants (a single token string is taken as one), and `result.references` lists the entries the run's sidecar holds for them as `ReferenceEntry` objects: `{ id, data, source, mimeType?, origin? }`, `data` as a string. A token the run does not hold, or holds as data that is not UTF-8 text, is left out.
 - **`preloadReferences`** puts entries into the run's sidecar before the script runs. They resolve at the tool boundary like fresh ones and count toward `maxReferenceCount`, `maxReferenceSize` and `maxTotalSize`. An entry that is not `{ id, data, source, mimeType?, origin? }` with a reference token not loaded before is refused with a `TypeError`, and entries over a limit with a `SidecarLimitError`: `run()` rejects in both cases and no statement runs.
-- Tokens stay opaque to the script, and a token that was not preloaded fails at the tool boundary as before.
+- Tokens stay opaque to the script, and a token that was not preloaded fails at the tool boundary as before. A preloaded token the script writes as a literal stays that token, whatever `extractionThreshold` is.
 - Ownership is the host's: where it keeps the entries, whom it gives them to, how long, and encrypting them at rest. Preload a session's entries only into that session's runs.
 - Both options need `sidecar: { enabled: true }`; without it they are a `TypeError`. `PortableEnclave` and `AgentScriptRunner` take them in `run()` as well; `AgentScriptRunner.capabilities` includes `'kept-references'`.
 

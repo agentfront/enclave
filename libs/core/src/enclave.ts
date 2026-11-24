@@ -83,7 +83,12 @@ import { ARRAY_ELEMENT_BYTES } from './realm-memory';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
 import { boundedStatementHook, type StatementEventOptions } from './statement-events';
-import { assertKeptReferenceOptions, withKeptReferences, type KeptReferenceOptions } from './kept-references';
+import {
+  assertKeptReferenceOptions,
+  keptOrStored,
+  withKeptReferences,
+  type KeptReferenceOptions,
+} from './kept-references';
 import {
   assertReviewContext,
   normalizeReviewOptions,
@@ -1155,9 +1160,7 @@ export class Enclave {
     if (this.referenceConfig?.extractionThreshold) {
       extractLargeStrings(ast, {
         threshold: this.referenceConfig.extractionThreshold,
-        onExtract: (value) => {
-          return sidecar.store(value, 'extraction');
-        },
+        onExtract: (value) => keptOrStored(sidecar, value),
       });
     }
 
