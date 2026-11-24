@@ -42,19 +42,30 @@ function marker(statement: Node, lineOffset: number): Node {
   return { type: 'ExpressionStatement', expression: { type: 'Literal', value } };
 }
 
+/** The same string as a template literal: it keeps its value, and reads as no marker */
+function asTemplate(statement: Node): Node {
+  const text = (statement['expression'] as Node)['value'] as string;
+  const quasi = { type: 'TemplateElement', value: { raw: text, cooked: text }, tail: true };
+  return {
+    type: 'ExpressionStatement',
+    loc: statement.loc,
+    expression: { type: 'TemplateLiteral', expressions: [], quasis: [quasi] },
+  };
+}
+
 function markedList(statements: unknown[], lineOffset: number): unknown[] {
   const marked: unknown[] = [];
   for (const statement of statements) {
-    if (readStatementMarker(statement)) continue;
-    if (isNode(statement) && !UNMARKED_TYPES.has(statement.type)) marked.push(marker(statement, lineOffset));
-    marked.push(statement);
+    const kept = readStatementMarker(statement) ? asTemplate(statement as Node) : statement;
+    if (isNode(kept) && !UNMARKED_TYPES.has(kept.type)) marked.push(marker(kept, lineOffset));
+    marked.push(kept);
   }
   return marked;
 }
 
 /**
  * Put a marker with the statement's location in the script before every statement, as an inert
- * string statement, and drop the statements of the script that read as markers
+ * string statement; a statement of the script that reads as a marker becomes a template literal
  */
 export function markStatements(node: Node, lineOffset = 0): void {
   for (const key of Object.keys(node)) {
@@ -67,7 +78,7 @@ export function markStatements(node: Node, lineOffset = 0): void {
         SINGLE_STATEMENT_KEYS.includes(key) &&
         node.type.endsWith('Statement') &&
         node.type !== 'LabeledStatement' &&
-        value.type.endsWith('Statement') &&
+        (value.type.endsWith('Statement') || value.type === 'VariableDeclaration') &&
         value.type !== 'BlockStatement';
       node[key] = statementInPlace ? { type: 'BlockStatement', body: [value] } : value;
       markStatements(node[key] as Node, lineOffset);

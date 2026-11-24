@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { InterpreterAdapter } from '../adapters/interpreter-adapter';
 import { Enclave } from '../enclave';
 import { PortableEnclave } from '../portable-enclave';
@@ -113,6 +115,27 @@ describe.each(RUNTIMES)('statement events on the %s', (_name, create) => {
     }
   });
 
+  it('ends the run with the hook error when the hook throws inside a parallel() task, or returns a promise', async () => {
+    for (const onStatement of [
+      (event: StatementEvent) => {
+        if (event.line === 2) throw new Error('tracer down');
+      },
+      async () => {
+        throw new Error('tracer down');
+      },
+    ]) {
+      const runner = create();
+      try {
+        const result = await runner.run('return await parallel([1, 2], async (n) => {\n  return n;\n});', undefined, {
+          onStatement,
+        });
+        expect(result.error).toMatchObject({ name: 'StatementHookError', code: 'STATEMENT_HOOK_FAILED' });
+      } finally {
+        runner.dispose();
+      }
+    }
+  });
+
   it('reports nothing and changes nothing without the hook', async () => {
     const runner = create();
     try {
@@ -124,6 +147,33 @@ describe.each(RUNTIMES)('statement events on the %s', (_name, create) => {
 });
 
 describe('statement event options', () => {
+  it('calls the hook in the async context of the caller of run()', async () => {
+    const storage = new AsyncLocalStorage<string>();
+    const seen: Array<string | undefined> = [];
+    const enclave = new Enclave({ sandboxAdapter: new InterpreterAdapter() });
+    try {
+      await storage.run('request-1', () =>
+        enclave.run('const a = await callTool("t", {});\nreturn a;', async () => 1, {
+          onStatement: () => seen.push(storage.getStore()),
+        }),
+      );
+      expect(seen).toEqual(['request-1', 'request-1']);
+    } finally {
+      enclave.dispose();
+    }
+  });
+
+  it('refuses onStatement without the transform, which puts the markers in', async () => {
+    const enclave = new Enclave({ transform: false, sandboxAdapter: new InterpreterAdapter() });
+    try {
+      await expect(enclave.run('return 1;', undefined, { onStatement: () => undefined })).rejects.toThrow(
+        'onStatement needs the transform',
+      );
+    } finally {
+      enclave.dispose();
+    }
+  });
+
   it('refuses onStatement on an adapter that does not report statements, and a bound out of range', async () => {
     const enclave = new Enclave();
     try {

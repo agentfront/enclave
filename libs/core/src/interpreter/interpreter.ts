@@ -953,6 +953,8 @@ export class Interpreter {
       }
       return last;
     } catch (thrown) {
+      // What ended the run, wherever it arrived from (a failure inside a parallel() task arrives as the batch's)
+      if (this.fatal !== undefined) throw this.fatal;
       // Outside the interpreter, preserve the normal result of an uncaught script throw.
       if (thrown instanceof ScriptThrown) throw thrown.value;
       throw thrown;

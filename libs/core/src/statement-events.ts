@@ -5,7 +5,7 @@ export const DEFAULT_MAX_STATEMENT_EVENTS = 10_000;
 
 /** The run options that report the statements a script runs (interpreter only) */
 export interface StatementEventOptions {
-  /** Called as each statement starts; carries no value of the script. A throw ends the run */
+  /** Called as each statement starts, synchronously; carries no value of the script. A throw or a promise ends the run */
   onStatement?: (event: StatementEvent) => void;
   /** How many statements a run reports at most; the rest of the run reports none (default 10,000) */
   maxStatementEvents?: number;
@@ -27,6 +27,10 @@ export function boundedStatementHook(
   return (event) => {
     if (reported >= maxStatementEvents) return;
     reported++;
-    onStatement(event);
+    const outcome: unknown = onStatement(event);
+    if (typeof (outcome as PromiseLike<unknown> | undefined)?.then === 'function') {
+      Promise.resolve(outcome).then(undefined, () => undefined);
+      throw new TypeError('onStatement must not return a promise');
+    }
   };
 }

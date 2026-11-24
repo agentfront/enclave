@@ -575,6 +575,9 @@ export class Enclave {
     }
     assertReviewContext(options.reviewContext);
     const onStatement = boundedStatementHook(options, this.sandboxAdapter?.reportsStatements);
+    if (onStatement && !this.transformCode) {
+      throw new TypeError("onStatement needs the transform: its markers carry each statement's place in the script");
+    }
     const result = await this.execute<T>(code, toolHandler, { ...options, onStatement });
     return this.applyStackTracePolicy(result);
   }
@@ -886,7 +889,8 @@ export class Enclave {
           inHostContext: asyncContexts.inHostContext,
           isOver: () => context.aborted,
         }),
-        onStatement: options.onStatement,
+        onStatement:
+          options.onStatement && ((event) => asyncContexts.inHostContext(() => options.onStatement?.(event))),
         maxToolResultBytes: options.maxToolResultBytes,
         onToolBridgeFailure: options.onToolBridgeFailure
           ? () => {

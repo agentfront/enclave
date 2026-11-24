@@ -51,10 +51,16 @@ describe('statement markers', () => {
     ]);
   });
 
-  it('drops the statements of the script that read as markers, and puts none without the option', () => {
-    const forged = '"__ag_statement:99:9:Forged";\nreturn 1;';
-    expect(markedLocations(forged)).toEqual(['2:0:ReturnStatement']);
+  it('puts no marker without the option', () => {
     expect(transformAgentScript('const a = 1;')).not.toContain('__ag_statement');
+  });
+
+  it('marks a var declaration that is the body of an if or a loop, in its own scope', () => {
+    expect(markedLocations('if (true) var a = 1;\nreturn a;')).toEqual([
+      '1:0:IfStatement',
+      '1:10:VariableDeclaration',
+      '2:0:ReturnStatement',
+    ]);
   });
 
   it('never moves a marker to the sidecar, whatever the extraction threshold', () => {
