@@ -14,7 +14,7 @@ export { InterpreterAdapter } from './adapters/interpreter-adapter';
 export type { InterpreterAdapterOptions } from './adapters/interpreter-adapter';
 export { PortableEnclave, AgentScriptRunner } from './portable-enclave';
 export type { PortableEnclaveOptions, PortableRunOptions, AgentScriptRunnerOptions } from './portable-enclave';
-export { Interpreter, InterpreterError, StepLimitError } from './interpreter/interpreter';
+export { Interpreter, InterpreterError, StatementHookError, StepLimitError } from './interpreter/interpreter';
 export type { InterpreterOptions } from './interpreter/interpreter';
 export type {
   ExecutionContext,
@@ -24,7 +24,9 @@ export type {
   ToolHandler,
   ToolCall,
   ToolResultOrder,
+  StatementEvent,
 } from './types';
+export type { StatementEventOptions } from './statement-events';
 export { analyzeScript, ScriptAnalysisError } from './analysis/script-analysis';
 export type {
   ScriptAnalysis,

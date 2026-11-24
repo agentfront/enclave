@@ -20,6 +20,7 @@
 // sidecar references), the returned value is copied into plain host data, and what
 // the script allocates is charged against a budget.
 
+import { takeStatementMarkers } from '@enclave-vm/ast';
 import * as acorn from 'acorn';
 import type * as ESTree from 'estree';
 
@@ -44,7 +45,14 @@ import { createHostToolBridge, encodeToolBridgeRequest } from '../tool-bridge';
 import { numberToolCalls } from '../tool-call-order';
 import { CLOCK_FAILED, RANDOM_FAILED } from '../realm-clock';
 import { stringifyWithin, utf8Length } from '../bounded-json';
-import type { ExecutionContext, ExecutionError, ExecutionResult, ExecutionStats, SandboxAdapter } from '../types';
+import type {
+  ExecutionContext,
+  ExecutionError,
+  ExecutionResult,
+  ExecutionStats,
+  SandboxAdapter,
+  StatementEvent,
+} from '../types';
 import { checkSerializedSize, sanitizeValue } from '../value-sanitizer';
 
 const DEFAULT_MAX_STEPS = 5_000_000;
@@ -127,6 +135,17 @@ function ignoreRejection(): void {
   // Deliberately empty: see observed
 }
 
+function statementReporter(
+  program: ESTree.Program,
+  onStatement: (event: StatementEvent) => void,
+): (statement: ESTree.Statement, step: number) => void {
+  const locations = takeStatementMarkers(program);
+  return (statement, step) => {
+    const location = locations.get(statement);
+    if (location) onStatement({ ...location, step });
+  };
+}
+
 function hostReading(read: () => number | undefined, failure: string): () => number {
   return () => {
     const value = read();
@@ -197,6 +216,8 @@ function consoleText(value: unknown): string {
 }
 
 export class InterpreterAdapter implements SandboxAdapter {
+  readonly reportsStatements = true;
+
   constructor(private readonly options: InterpreterAdapterOptions = {}) {}
 
   async execute<T = unknown>(code: string, context: ExecutionContext): Promise<ExecutionResult<T>> {
@@ -277,6 +298,7 @@ export class InterpreterAdapter implements SandboxAdapter {
         signal: context.abortController.signal,
         deadline: deadlineAt,
         charge,
+        onStatement: context.onStatement && statementReporter(program, context.onStatement),
       });
       const running = interpreter;
       callbacks.call = (fn, args) => running.call(fn, args);
@@ -319,7 +341,10 @@ export class InterpreterAdapter implements SandboxAdapter {
       // Swallow a late rejection from the abandoned run after a timeout so it
       // can't surface as an unhandled rejection.
       run.catch(() => undefined);
-      const outcome = deadline ? await Promise.race([run, deadline]) : await run;
+      const ended = interpreter.fatalError.then((error): never => {
+        throw error;
+      });
+      const outcome = await Promise.race(deadline ? [run, deadline, ended] : [run, ended]);
       if (outcome === TIMED_OUT) return timedOut();
       return this.succeed<T>(outcome, context, startTime, stats.toolCallCount, interpreter.stepCount);
     } catch (error) {

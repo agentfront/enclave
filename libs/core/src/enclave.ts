@@ -82,6 +82,7 @@ import { separateAsyncContexts } from './async-context';
 import { ARRAY_ELEMENT_BYTES } from './realm-memory';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
+import { boundedStatementHook, type StatementEventOptions } from './statement-events';
 import {
   assertReviewContext,
   normalizeReviewOptions,
@@ -90,6 +91,16 @@ import {
   type NormalizedReviewOptions,
 } from './review/review-session';
 import type { ReviewContext } from './review/types';
+
+/** The options of one `run()` */
+export interface EnclaveRunOptions extends StatementEventOptions {
+  /** Called when a successful tool result is refused before it reaches the script */
+  onToolBridgeFailure?: () => void;
+  /** A limit on the JSON bytes of one sanitized tool result */
+  maxToolResultBytes?: number;
+  /** Passed to the review hooks of this run */
+  reviewContext?: ReviewContext;
+}
 
 /**
  * Parse code for one of the transforms that run after validation.
@@ -546,13 +557,13 @@ export class Enclave {
    *
    * @param code AgentScript code to execute
    * @param toolHandler Optional tool handler (overrides constructor config)
-   * @param options `reviewContext` is passed to the review hooks of this run
+   * @param options See {@link EnclaveRunOptions}
    * @returns Execution result
    */
   async run<T = unknown>(
     code: string,
     toolHandler?: ToolHandler,
-    options: { onToolBridgeFailure?: () => void; maxToolResultBytes?: number; reviewContext?: ReviewContext } = {},
+    options: EnclaveRunOptions = {},
   ): Promise<ExecutionResult<T>> {
     if (
       options.maxToolResultBytes !== undefined &&
@@ -563,7 +574,11 @@ export class Enclave {
       throw new TypeError('maxToolResultBytes must be a positive finite number');
     }
     assertReviewContext(options.reviewContext);
-    const result = await this.execute<T>(code, toolHandler, options);
+    const onStatement = boundedStatementHook(options, this.sandboxAdapter?.reportsStatements);
+    if (onStatement && !this.transformCode) {
+      throw new TypeError("onStatement needs the transform: its markers carry each statement's place in the script");
+    }
+    const result = await this.execute<T>(code, toolHandler, { ...options, onStatement });
     return this.applyStackTracePolicy(result);
   }
 
@@ -591,7 +606,7 @@ export class Enclave {
   private async execute<T>(
     code: string,
     toolHandler?: ToolHandler,
-    options: { onToolBridgeFailure?: () => void; maxToolResultBytes?: number; reviewContext?: ReviewContext } = {},
+    options: EnclaveRunOptions = {},
   ): Promise<ExecutionResult<T>> {
     const startTime = Date.now();
 
@@ -678,6 +693,7 @@ export class Enclave {
 
         transformedCode = transformAgentScript(code, {
           wrapInMain: needsWrapping,
+          statementMarkers: options.onStatement !== undefined,
           transformCallTool: true,
           transformLoops: true,
           // The limit is written into each loop's check as a number: nothing a script declares
@@ -873,6 +889,8 @@ export class Enclave {
           inHostContext: asyncContexts.inHostContext,
           isOver: () => context.aborted,
         }),
+        onStatement:
+          options.onStatement && ((event) => asyncContexts.inHostContext(() => options.onStatement?.(event))),
         maxToolResultBytes: options.maxToolResultBytes,
         onToolBridgeFailure: options.onToolBridgeFailure
           ? () => {

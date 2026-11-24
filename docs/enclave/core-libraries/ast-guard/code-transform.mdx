@@ -58,6 +58,7 @@ async function __ag_main() {
 | `additionalIdentifiers` | string[] | `[]` | Names that keep their name: custom globals and tool namespaces of the host |
 | `prefix` | string | `'__safe_'` | Prefix for safe runtime functions |
 | `parseOptions` | object | - | Options passed to the parser |
+| `statementMarkers` | boolean | false | Put an inert string statement with each statement's line, column and type in the script before it, for the interpreter's statement events; `takeStatementMarkers(program)` takes them out of the parsed result again and returns where each marked statement is. A statement of the script that reads as a marker becomes a template literal with the same value |
 
 ## Main Wrapper
 

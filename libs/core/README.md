@@ -94,6 +94,25 @@ try {
 }
 ```
 
+### Statement Events
+
+The interpreter can report each statement a script runs, for tracing and debugging. Pass `onStatement` to `run()` of `PortableEnclave` / `AgentScriptRunner`, or of an `Enclave` whose `sandboxAdapter` is an `InterpreterAdapter`:
+
+```typescript
+const result = await runner.run(code, toolHandler, {
+  onStatement: ({ line, column, type, step }) => span.addEvent('statement', { line, column, type, step }),
+  maxStatementEvents: 1000, // default 10,000
+});
+```
+
+- An event is `{ line, column, type, step }`: where the statement starts in the script as it was written (line from 1, column from 0), its ESTree type (`VariableDeclaration`, `IfStatement`, ...), and the interpreter steps taken so far. It carries no value of the script, so it can go to an operator's tracing as it is.
+- The hook is called as each statement starts, synchronously, in the async context of the caller of `run()`. A run reports at most `maxStatementEvents` statements (an integer of at least 1) and then runs on without reporting.
+- A hook that throws, or returns a promise, ends the run at once with a `StatementHookError` (`code: 'STATEMENT_HOOK_FAILED'`, message `The onStatement hook threw`), also from inside a `parallel()` task whose siblings still wait.
+- It needs the enclave's transform: with `transform: false`, `run()` with `onStatement` throws a `TypeError`.
+- Off by default; without the hook the script is transformed and run as before, at the cost of one check per statement.
+- `AgentScriptRunner.capabilities` includes `'statement-events'`.
+- Interpreter only: `run()` with `onStatement` on the double VM, the `vm` adapter or the worker pool throws a `TypeError`. The enclave's transform puts a marker with each statement's location in the code it hands the adapter (an adapter of your own that sets `reportsStatements: true` gets them, and the events as `context.onStatement`).
+
 The runner supports Node and Cloudflare Workers with `nodejs_compat`. Tool and host-function arguments and results cross as bounded plain data. Steps, call depth, pending calls, allocation, tool calls, console output, bridge payloads and sidecar storage all have finite limits. `maxSteps` bounds interpreted CPU work, including work charged for built-in operations. `timeout` is checked between interpreter steps and at I/O boundaries; deployed Cloudflare Workers do not advance their clocks during CPU-only work, so it is not a hard wall-time cutoff there. Synchronous host callbacks cannot be preempted. Unsupported VM-only options and pre-scan overrides fail at construction.
 
 ## Configuration

@@ -798,6 +798,17 @@ export interface InterpreterOptions {
    * cannot be caught by the script.
    */
   charge?: (bytes: number) => void;
+  /** Called as each statement starts, with the steps taken so far including its own; a throw ends the run */
+  onStatement?: (statement: ESTree.Statement, step: number) => void;
+}
+
+/** Thrown when the `onStatement` hook throws: the run ends with it */
+export class StatementHookError extends Error {
+  readonly code = 'STATEMENT_HOOK_FAILED';
+  constructor() {
+    super('The onStatement hook threw');
+    this.name = 'StatementHookError';
+  }
 }
 
 /** What a member expression resolves to. */
@@ -853,6 +864,11 @@ export class Interpreter {
   private workDone = 0;
   /** The error that ended the run (step budget, deadline, abort, allocation budget); set once, never caught */
   private fatal: unknown;
+  private reportFatal: (error: unknown) => void = () => undefined;
+  /** Settles with the error that ended the run as soon as it does, while tasks of a parallel() may still wait */
+  readonly fatalError = new Promise<unknown>((settle) => {
+    this.reportFatal = settle;
+  });
   private readonly interpretedFunctions = new WeakSet<object>();
   /** The functions the host provides: the globals, their members, and what `bind` made of them */
   private readonly provided = new WeakSet<object>();
@@ -942,6 +958,8 @@ export class Interpreter {
       }
       return last;
     } catch (thrown) {
+      // What ended the run, wherever it arrived from (a failure inside a parallel() task arrives as the batch's)
+      if (this.fatal !== undefined) throw this.fatal;
       // Outside the interpreter, preserve the normal result of an uncaught script throw.
       if (thrown instanceof ScriptThrown) throw thrown.value;
       throw thrown;
@@ -970,7 +988,10 @@ export class Interpreter {
 
   /** End the run with an error no `catch` of the script can stop. */
   private end(error: unknown): never {
-    if (this.fatal === undefined) this.fatal = error;
+    if (this.fatal === undefined) {
+      this.fatal = error;
+      this.reportFatal(error);
+    }
     throw this.fatal;
   }
 
@@ -979,6 +1000,14 @@ export class Interpreter {
     if (this.options.signal?.aborted) this.end(new InterpreterError('Execution aborted'));
     if (++this.steps > this.options.maxSteps) this.end(new StepLimitError(this.options.maxSteps));
     if (this.steps >= this.nextClockCheck) this.checkClock();
+  }
+
+  private reportStatement(node: ESTree.Statement): void {
+    try {
+      this.options.onStatement?.(node, this.steps);
+    } catch {
+      this.end(new StatementHookError());
+    }
   }
 
   /** End the run when its deadline has passed. */
@@ -1095,6 +1124,7 @@ export class Interpreter {
   // ── Statements ─────────────────────────────────────────────────────────────
   private async execStatement(node: ESTree.Statement, scope: Scope): Promise<unknown> {
     this.tick();
+    if (this.options.onStatement) this.reportStatement(node);
     switch (node.type) {
       case 'VariableDeclaration': {
         const mode: PatternMode = node.kind === 'const' ? 'const' : 'let';

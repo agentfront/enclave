@@ -13,6 +13,8 @@
 
 // Main Enclave class
 export { Enclave, runAgentScript } from './enclave';
+export type { EnclaveRunOptions } from './enclave';
+export type { StatementEventOptions } from './statement-events';
 
 // Unhandled promise rejections of scripts (see the module for what it does to the process)
 export { disableSandboxRejectionGuard, isHostPromise } from './sandbox-rejections';
@@ -28,6 +30,7 @@ export type {
   ToolCall,
   HostToolHandler,
   ToolResultOrder,
+  StatementEvent,
   SafeRuntimeContext,
   ExecutionContext,
   SandboxAdapter,
@@ -186,7 +189,13 @@ export {
 // QuickJS / WASM / node:vm); the worker-safe sandbox.
 export { InterpreterAdapter } from './adapters/interpreter-adapter';
 export type { InterpreterAdapterOptions } from './adapters/interpreter-adapter';
-export { Interpreter, InterpreterError, StepLimitError, DeadlineError } from './interpreter/interpreter';
+export {
+  Interpreter,
+  InterpreterError,
+  StatementHookError,
+  StepLimitError,
+  DeadlineError,
+} from './interpreter/interpreter';
 export type { InterpreterOptions } from './interpreter/interpreter';
 
 // Worker Pool Adapter (a worker thread per script, with the engine's heap limit)
