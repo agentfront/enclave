@@ -49,6 +49,8 @@ interface SessionOwner {
   client: EnclaveClient;
   generation: number;
   run: number;
+  /** The latest run `reset()` detached: it and the runs before it no longer reach the hook */
+  detachedRun: number;
   handle: SessionHandle | null;
 }
 
@@ -75,7 +77,7 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
   // The owner of this client. Made while rendering but nothing is changed there: a render React
   // discards leaves the owner that is shown, its runs and its handle as they were.
   const owner = useMemo<SessionOwner>(
-    () => ({ client, generation: ++ownerGenerations, run: 0, handle: null }),
+    () => ({ client, generation: ++ownerGenerations, run: 0, detachedRun: 0, handle: null }),
     [client],
   );
 
@@ -94,9 +96,10 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
   const shown = snapshot.owner === owner ? snapshot : idle;
 
   /**
-   * Reset the hook state
+   * Reset the hook state and detach the running session from it
    */
   const reset = useCallback(() => {
+    owner.detachedRun = owner.run;
     owner.handle = null;
     // Only the owner's own state: a reset kept from an earlier client leaves a newer one's alone
     setSnapshot((current) => (current.owner === owner ? idleSnapshot<T>(owner) : current));
@@ -108,13 +111,14 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
   const execute = useCallback(
     async (code: string): Promise<SessionResult<T>> => {
       const run = ++owner.run;
+      const isAttached = (): boolean => run > owner.detachedRun;
       // The latest run of its owner, and the state is its owner's
       const update = (change: (current: SessionSnapshot<T>) => Partial<SessionSnapshot<T>>): void => {
         setSnapshot((current) =>
-          owner.run === run && current.owner === owner ? { ...current, ...change(current) } : current,
+          owner.run === run && isAttached() && current.owner === owner ? { ...current, ...change(current) } : current,
         );
       };
-      const callbacksApply = (): boolean => owner.generation >= committedOwnerRef.current.generation;
+      const callbacksApply = (): boolean => isAttached() && owner.generation >= committedOwnerRef.current.generation;
 
       // Reset state for new execution: the state becomes this owner's, unless a newer owner has it
       setSnapshot((current) =>
@@ -161,7 +165,8 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
         },
       });
 
-      owner.handle = handle;
+      // A reset or a newer run in onStart leaves cancel() to the run that is shown
+      if (isAttached() && owner.run === run) owner.handle = handle;
       update(() => ({ sessionId: handle.sessionId }));
 
       try {
@@ -180,13 +185,11 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
             error: sessionResult.error ?? { message: 'Unknown error' },
           }));
         }
-        if (callbacksApply()) {
-          if (!sessionResult.success && sessionResult.error?.code !== 'CANCELLED') {
-            options.onError?.(sessionResult.error ?? { message: 'Unknown error' });
-          }
-          // Call onComplete callback
-          options.onComplete?.(sessionResult);
+        if (callbacksApply() && !sessionResult.success && sessionResult.error?.code !== 'CANCELLED') {
+          options.onError?.(sessionResult.error ?? { message: 'Unknown error' });
         }
+        // onError may have reset the hook
+        if (callbacksApply()) options.onComplete?.(sessionResult);
 
         return sessionResult;
       } catch (err) {
@@ -205,10 +208,8 @@ export function useEnclaveSession<T = unknown>(options: UseEnclaveSessionOptions
         };
 
         update(() => ({ state: 'error', error: errorInfo, result: errorResult }));
-        if (callbacksApply()) {
-          options.onError?.(errorInfo);
-          options.onComplete?.(errorResult);
-        }
+        if (callbacksApply()) options.onError?.(errorInfo);
+        if (callbacksApply()) options.onComplete?.(errorResult);
 
         return errorResult;
       } finally {

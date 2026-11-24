@@ -145,7 +145,7 @@ type SessionState = 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
 | `error` | Code and message, when the latest execution failed |
 | `stdout` | The stdout of the execution so far |
 | `events` | The events of the execution so far |
-| `reset` | Puts the hook back to `'idle'` and clears its values. It does not cancel a running session |
+| `reset` | Puts the hook back to `'idle'` and clears its values. A running session is detached: its later output, result and callbacks no longer reach the hook, and `cancel()` no longer reaches it. It is not cancelled; call `cancel()` first to end it |
 
 `stdout`, `events`, `result` and `error` are cleared when the next execution starts. The hook does not cancel a running session when the component unmounts.
 

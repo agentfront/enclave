@@ -443,6 +443,160 @@ describe('useEnclaveSession', () => {
       expect(screen.getByTestId('state')).toHaveTextContent('idle');
       expect(screen.getByTestId('result')).toHaveTextContent('null');
     });
+
+    it('should detach a session that is running when it is reset', async () => {
+      let finishRun: (result: SessionResult) => void = () => undefined;
+      const runningHandle: SessionHandle = {
+        ...createMockHandle(createMockResult(1)),
+        wait: jest.fn(
+          () =>
+            new Promise<SessionResult>((resolve) => {
+              finishRun = resolve;
+            }),
+        ),
+      };
+      let streamOptions: { onStdout?: (chunk: string) => void } = {};
+      mockExecuteStream.mockImplementationOnce((_code, options) => {
+        streamOptions = options;
+        return runningHandle;
+      });
+      mockExecuteStream.mockReturnValueOnce(createMockHandle(createMockResult(2)));
+
+      const onStdout = jest.fn();
+      const onComplete = jest.fn();
+      let detachedResult: Promise<SessionResult> | null = null;
+      let cancelSession: (reason?: string) => Promise<void> = async () => undefined;
+
+      function TestComponent() {
+        const { execute, cancel, reset, state, stdout, result } = useEnclaveSession({ onStdout, onComplete });
+        cancelSession = cancel;
+
+        return (
+          <div>
+            <button onClick={() => (detachedResult = execute('return 1'))}>Run first</button>
+            <button onClick={() => execute('return 2')}>Run second</button>
+            <button onClick={reset}>Reset</button>
+            <span data-testid="state">{state}</span>
+            <span data-testid="stdout">{stdout || 'empty'}</span>
+            <span data-testid="result">{String(result?.value ?? 'null')}</span>
+          </div>
+        );
+      }
+
+      render(
+        <TestWrapper>
+          <TestComponent />
+        </TestWrapper>,
+      );
+
+      await act(async () => {
+        await userEvent.click(screen.getByText('Run first'));
+      });
+      expect(screen.getByTestId('state')).toHaveTextContent('running');
+
+      await act(async () => {
+        await userEvent.click(screen.getByText('Reset'));
+      });
+      await act(async () => {
+        await cancelSession();
+      });
+      expect(runningHandle.cancel).not.toHaveBeenCalled();
+
+      await act(async () => {
+        streamOptions.onStdout?.('late output');
+        finishRun(createMockResult(1));
+        await detachedResult;
+      });
+
+      expect(screen.getByTestId('state')).toHaveTextContent('idle');
+      expect(screen.getByTestId('stdout')).toHaveTextContent('empty');
+      expect(screen.getByTestId('result')).toHaveTextContent('null');
+      expect(onStdout).not.toHaveBeenCalled();
+      expect(onComplete).not.toHaveBeenCalled();
+      await expect(detachedResult).resolves.toEqual(createMockResult(1));
+
+      await act(async () => {
+        await userEvent.click(screen.getByText('Run second'));
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('state')).toHaveTextContent('completed');
+      });
+      expect(screen.getByTestId('result')).toHaveTextContent('2');
+      expect(onComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not let cancel() reach a run that onStart reset', async () => {
+      const mockHandle: SessionHandle = {
+        ...createMockHandle(createMockResult(1)),
+        wait: jest.fn(() => new Promise<SessionResult>(() => undefined)),
+      };
+      mockExecuteStream.mockReturnValue(mockHandle);
+      const session: { reset?: () => void; cancel?: (reason?: string) => Promise<void> } = {};
+
+      function TestComponent() {
+        const { execute, cancel, reset, state } = useEnclaveSession({ onStart: () => session.reset?.() });
+        session.reset = reset;
+        session.cancel = cancel;
+
+        return (
+          <div>
+            <button onClick={() => execute('return 1')}>Execute</button>
+            <span data-testid="state">{state}</span>
+          </div>
+        );
+      }
+
+      render(
+        <TestWrapper>
+          <TestComponent />
+        </TestWrapper>,
+      );
+
+      await act(async () => {
+        await userEvent.click(screen.getByText('Execute'));
+        await session.cancel?.();
+      });
+
+      expect(mockHandle.cancel).not.toHaveBeenCalled();
+      expect(screen.getByTestId('state')).toHaveTextContent('idle');
+    });
+
+    it.each([
+      ['the run fails', (handle: SessionHandle) => handle],
+      [
+        'waiting for the run fails',
+        (handle: SessionHandle) => ({ ...handle, wait: jest.fn().mockRejectedValue(new Error('connection lost')) }),
+      ],
+    ])('should not call onComplete after onError reset the hook when %s', async (_name, shape) => {
+      mockExecuteStream.mockReturnValue(shape(createMockHandle(createMockResult(null, false))));
+      const onComplete = jest.fn();
+      const session: { reset?: () => void } = {};
+
+      function TestComponent() {
+        const { execute, reset, state } = useEnclaveSession({ onError: () => session.reset?.(), onComplete });
+        session.reset = reset;
+
+        return (
+          <div>
+            <button onClick={() => execute('fail()')}>Execute</button>
+            <span data-testid="state">{state}</span>
+          </div>
+        );
+      }
+
+      render(
+        <TestWrapper>
+          <TestComponent />
+        </TestWrapper>,
+      );
+
+      await act(async () => {
+        await userEvent.click(screen.getByText('Execute'));
+      });
+
+      expect(onComplete).not.toHaveBeenCalled();
+      expect(screen.getByTestId('state')).toHaveTextContent('idle');
+    });
   });
 
   describe('events', () => {
