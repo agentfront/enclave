@@ -2,6 +2,7 @@ import { InterpreterAdapter } from '../adapters/interpreter-adapter';
 import { WorkerPoolAdapter } from '../adapters/worker-pool';
 import { Enclave } from '../enclave';
 import { PortableEnclave } from '../portable-enclave';
+import { inCallOrder } from '../tool-call-order';
 import type { CreateEnclaveOptions, ExecutionResult, ToolCall, ToolHandler, ToolResultOrder } from '../types';
 
 interface Runner {
@@ -292,6 +293,148 @@ describe('call positions and the host clock, from the host side', () => {
     } finally {
       enclave.dispose();
     }
+  });
+
+  it('stores large results in the sidecar at their turn, and both reach the next tool whole', async () => {
+    const received: unknown[] = [];
+    const enclave = new Enclave({
+      toolResultOrder: 'call',
+      sidecar: { enabled: true, extractionThreshold: 100 },
+      toolHandler: async (toolName, args) => {
+        if (toolName === 'save') {
+          received.push(args['texts']);
+          return 'saved';
+        }
+        if (args['n'] === 0) await delay(40);
+        return String(args['n']).repeat(200);
+      },
+    });
+    try {
+      const result = await enclave.run(`
+        const texts = await parallel([0, 1], (n) => callTool('fetch', { n }));
+        return await callTool('save', { texts });
+      `);
+      expect(result.value).toBe('saved');
+      expect(received).toEqual([['0'.repeat(200), '1'.repeat(200)]]);
+    } finally {
+      enclave.dispose();
+    }
+  });
+
+  it('refuses the latest waiting positions, and every one after them while the first call is blocked', async () => {
+    const releases = new Map<string, (reply: string) => void>();
+    const refused: unknown[] = [];
+    const bridge = inCallOrder(
+      (request) => new Promise<string>((resolve) => releases.set(request, resolve)),
+      new AbortController().signal,
+      {
+        maxHeldBytes: 10,
+        failed: 'failed',
+        classify: (reply) => {
+          refused.push(reply);
+          return 'succeeded';
+        },
+        refused: () => 'refused',
+      },
+    );
+    const replies = ['head', 'a', 'b', 'c'].map((request) => bridge(request));
+    releases.get('b')?.('6'.repeat(6));
+    releases.get('c')?.('2'.repeat(2));
+    releases.get('a')?.('8'.repeat(8));
+    releases.get('head')?.('head-reply');
+    expect(await Promise.all(replies)).toEqual(['head-reply', '8'.repeat(8), 'refused', 'refused']);
+    expect(refused).toEqual(['2'.repeat(2), '6'.repeat(6)]);
+  });
+
+  it('frees the room of a waiting reply as soon as it is next in line', async () => {
+    const releases = new Map<string, (reply: string) => void>();
+    const bridge = inCallOrder(
+      (request) => new Promise<string>((resolve) => releases.set(request, resolve)),
+      new AbortController().signal,
+      { maxHeldBytes: 10, failed: 'failed', classify: () => 'succeeded', refused: () => 'refused' },
+    );
+    const replies = ['head', 'next', 'small'].map((request) => bridge(request));
+    releases.get('next')?.('8'.repeat(8));
+    releases.get('head')?.('head-reply');
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    releases.get('small')?.('4'.repeat(4));
+    expect(await Promise.all(replies)).toEqual(['head-reply', '8'.repeat(8), '4'.repeat(4)]);
+  });
+
+  it('answers a refused call with its refusal when the observer aborts the run, then the rest', async () => {
+    const abortController = new AbortController();
+    const releases = new Map<string, (reply: string) => void>();
+    const answered: string[] = [];
+    const bridge = inCallOrder(
+      (request) => new Promise<string>((resolve) => releases.set(request, resolve)),
+      abortController.signal,
+      {
+        maxHeldBytes: 10,
+        failed: 'failed',
+        classify: () => 'succeeded',
+        refused: () => {
+          abortController.abort();
+          return 'refused';
+        },
+      },
+    );
+    const replies = ['head', 'a', 'b', 'c'].map((request) =>
+      bridge(request).then((reply) => {
+        answered.push(`${request}:${reply}`);
+        return reply;
+      }),
+    );
+    releases.get('a')?.('8'.repeat(8));
+    releases.get('b')?.('6'.repeat(6));
+    releases.get('c')?.('2'.repeat(2));
+    releases.get('head')?.('head-reply');
+    expect(await Promise.all(replies)).toEqual(['head-reply', '8'.repeat(8), 'refused', 'refused']);
+    expect(answered.slice(0, 2)).toEqual(['head:head-reply', 'a:' + '8'.repeat(8)]);
+  });
+
+  it('keeps a tool failure a tool failure when its error does not fit the bridge payload', async () => {
+    const enclave = new PortableEnclave({
+      toolBridge: { maxPayloadBytes: 200 },
+      toolHandler: async () => {
+        throw new Error('e'.repeat(1000));
+      },
+    });
+    try {
+      const result = await enclave.run(
+        "const r = await callTool('t', {}, { throwOnError: false }); return [r.success, r.error.code];",
+      );
+      expect(result.value).toEqual([false, 'TOOL_BRIDGE_PAYLOAD_TOO_LARGE']);
+    } finally {
+      enclave.dispose();
+    }
+  });
+
+  it("needs a bridge payload that holds call order's own replies", () => {
+    expect(() => new Enclave({ toolResultOrder: 'call', toolBridge: { maxPayloadBytes: 100 } })).toThrow(
+      "toolResultOrder: 'call' needs toolBridge.maxPayloadBytes of at least",
+    );
+    expect(() => new Enclave({ toolResultOrder: 'call', toolBridge: { maxPayloadBytes: 160 } })).not.toThrow();
+  });
+
+  it('delivers the replies that wait as soon as the run is aborted', async () => {
+    const abortController = new AbortController();
+    let releaseFirst: (reply: string) => void = () => undefined;
+    const bridge = inCallOrder(
+      (request) =>
+        request === 'first'
+          ? new Promise<string>((resolve) => (releaseFirst = resolve))
+          : Promise.resolve('second-reply'),
+      abortController.signal,
+      { maxHeldBytes: 1024, failed: 'failed', classify: () => 'succeeded', refused: () => 'refused' },
+    );
+    const first = bridge('first');
+    const second = bridge('second');
+    await delay(10);
+    abortController.abort();
+    await expect(second).resolves.toBe('second-reply');
+    releaseFirst('first-reply');
+    await expect(first).resolves.toBe('first-reply');
   });
 
   it('delivers the calls after one whose failure cannot be read, in call order', async () => {

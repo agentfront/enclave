@@ -82,6 +82,7 @@ import { separateAsyncContexts } from './async-context';
 import { ARRAY_ELEMENT_BYTES } from './realm-memory';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
+import { MIN_CALL_ORDER_PAYLOAD_BYTES } from './tool-bridge';
 import { boundedStatementHook, type StatementEventOptions } from './statement-events';
 import {
   assertKeptReferenceOptions,
@@ -504,6 +505,11 @@ export class Enclave {
     if (this.toolResultOrder === 'call' && normalizedToolBridge.mode === 'direct') {
       throw new TypeError("toolResultOrder: 'call' needs the string tool bridge");
     }
+    if (this.toolResultOrder === 'call' && normalizedToolBridge.maxPayloadBytes < MIN_CALL_ORDER_PAYLOAD_BYTES) {
+      throw new TypeError(
+        `toolResultOrder: 'call' needs toolBridge.maxPayloadBytes of at least ${MIN_CALL_ORDER_PAYLOAD_BYTES}`,
+      );
+    }
     this.hostClock = { clock: options.clock, random: options.random };
     const inWorker = options.sandboxAdapter
       ? options.sandboxAdapter.supportsHostClock === false
@@ -695,13 +701,11 @@ export class Enclave {
       // because AgentScript allows top-level return, await, etc. which are only
       // valid after wrapping in async function __ag_main()
       let transformedCode = code;
-      if (this.transformCode) {
-        // Check if already wrapped
-        const needsWrapping = !isWrappedInMain(code);
-
-        transformedCode = transformAgentScript(code, {
-          wrapInMain: needsWrapping,
-          statementMarkers: options.onStatement !== undefined,
+      const transformScript = (statementMarkers: boolean): string =>
+        transformAgentScript(code, {
+          // Check if already wrapped
+          wrapInMain: !isWrappedInMain(code),
+          statementMarkers,
           transformCallTool: true,
           transformLoops: true,
           // The limit is written into each loop's check as a number: nothing a script declares
@@ -710,6 +714,8 @@ export class Enclave {
           // Pass custom global names so they aren't transformed to __safe_ prefix
           additionalIdentifiers: this.customGlobalNames,
         });
+      if (this.transformCode) {
+        transformedCode = transformScript(options.onStatement !== undefined);
       }
 
       // Step 1.5: Validate (if enabled) - validate BEFORE memory transforms
@@ -742,7 +748,7 @@ export class Enclave {
 
       // What the scoring gate scores (Step 2.5): the script before the sidecar replaces its large
       // literals with references, so the gate sees the text the tools will receive.
-      const codeForScoring = transformedCode;
+      const codeForScoring = options.onStatement && this.scoringGate ? transformScript(false) : transformedCode;
 
       // Step 2: Apply sidecar transforms if enabled
       // These transforms extract large strings and convert concatenation to safe calls

@@ -1,5 +1,5 @@
 import type { ExecutionContext } from './types';
-import { inCallOrder } from './tool-call-order';
+import { inCallOrder, type BridgeReply, type ReplyOutcome } from './tool-call-order';
 import { sanitizeValue } from './value-sanitizer';
 import { ReferenceResolver, ResolutionLimitError } from './sidecar/reference-resolver';
 import { JsonTooLargeError, JsonTraversalLimitError, stringifyWithin } from './bounded-json';
@@ -87,6 +87,89 @@ function toErrorPayload(
   return safe;
 }
 
+/** The rest of a reply to a result: stored in the sidecar when it is a large string, then serialized */
+function finishReply(
+  executionContext: ExecutionContext,
+  maxPayloadBytes: number,
+  tool: string,
+  result: unknown,
+): string {
+  const { sidecar, referenceConfig } = executionContext;
+  let sanitizedResult = result;
+  // Lift large string results to sidecar if configured. Such a result reaches the script as
+  // a reference or not at all: when the sidecar refuses to store it (a quota), the call fails
+  // rather than hand the script the text the sidecar was there to keep from it.
+  if (sidecar && referenceConfig && typeof sanitizedResult === 'string') {
+    const size = utf8ByteLength(sanitizedResult);
+    if (size >= referenceConfig.extractionThreshold) {
+      try {
+        const refId = sidecar.store(sanitizedResult, 'tool-result', { origin: tool });
+        sanitizedResult = refId;
+      } catch {
+        executionContext.onToolBridgeFailure?.();
+        return serializeResponse(
+          {
+            v: TOOL_BRIDGE_PROTOCOL_VERSION,
+            ok: false,
+            error: {
+              name: 'ToolBridgeError',
+              message: 'Tool result could not be stored in the reference sidecar',
+              code: 'TOOL_RESULT_NOT_STORED',
+              toolError: true,
+            },
+          },
+          maxPayloadBytes,
+        );
+      }
+    }
+  }
+
+  const okResponse: ToolBridgeOkResponse =
+    sanitizedResult === undefined
+      ? { v: TOOL_BRIDGE_PROTOCOL_VERSION, ok: true }
+      : { v: TOOL_BRIDGE_PROTOCOL_VERSION, ok: true, value: sanitizedResult };
+
+  let okJson: string;
+  try {
+    okJson = safeJsonStringify(okResponse);
+  } catch (error: unknown) {
+    const safeError = toErrorPayload(
+      error,
+      'ToolBridgeError',
+      'Tool result must be JSON-serializable',
+      'TOOL_RESULT_NOT_JSON',
+    );
+    executionContext.onToolBridgeFailure?.();
+    return serializeResponse(
+      {
+        v: TOOL_BRIDGE_PROTOCOL_VERSION,
+        ok: false,
+        error: { ...safeError, toolError: true },
+      },
+      maxPayloadBytes,
+    );
+  }
+
+  if (utf8ByteLength(okJson) > maxPayloadBytes) {
+    executionContext.onToolBridgeFailure?.();
+    return serializeResponse(
+      {
+        v: TOOL_BRIDGE_PROTOCOL_VERSION,
+        ok: false,
+        error: {
+          name: 'ToolBridgeError',
+          message: `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
+          code: 'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
+          toolError: true,
+        },
+      },
+      maxPayloadBytes,
+    );
+  }
+
+  return okJson;
+}
+
 function serializeResponse(response: ToolBridgeResponse, maxPayloadBytes: number): string {
   let json: string;
   try {
@@ -105,14 +188,16 @@ function serializeResponse(response: ToolBridgeResponse, maxPayloadBytes: number
 
   if (utf8ByteLength(json) <= maxPayloadBytes) return json;
 
-  // Fail-safe: if even the error payload is too large, return a minimal message.
+  // Fail-safe: if even the error payload is too large, return a minimal message, a failure of the tool when it was one
+  const toolError = !response.ok && response.error.toolError === true;
   const minimal: ToolBridgeErrorResponse = {
     v: TOOL_BRIDGE_PROTOCOL_VERSION,
     ok: false,
     error: {
       name: 'ToolBridgeError',
-      message: 'Tool bridge payload exceeded maximum size',
+      message: 'Payload too large',
       code: 'TOOL_BRIDGE_PAYLOAD_TOO_LARGE',
+      ...(toolError ? { toolError: true } : {}),
     },
   };
   return JSON.stringify(minimal);
@@ -266,16 +351,62 @@ export function createHostToolBridge(
   executionContext: ExecutionContext,
   options: HostToolBridgeOptions,
 ): (requestJson: string) => Promise<string> {
-  const bridge = createUnorderedToolBridge(executionContext, options);
-  return executionContext.toolResultOrder === 'call'
-    ? inCallOrder(bridge, executionContext.abortController.signal)
-    : bridge;
+  if (executionContext.toolResultOrder !== 'call') {
+    return createUnorderedToolBridge(executionContext, options, false) as (requestJson: string) => Promise<string>;
+  }
+  const maxPayloadBytes = executionContext.config.toolBridge?.maxPayloadBytes ?? 5 * 1024 * 1024;
+  return inCallOrder(
+    createUnorderedToolBridge(executionContext, options, true),
+    executionContext.abortController.signal,
+    {
+      maxHeldBytes: maxPayloadBytes,
+      failed: encodeToolBridgeFailure('ToolBridgeError', 'Tool bridge failure', 'TOOL_BRIDGE_FAILURE', maxPayloadBytes),
+      classify: (reply) => (typeof reply === 'string' ? replyOutcome(reply) : 'succeeded'),
+      refused: (outcome) => {
+        if (outcome === 'succeeded') {
+          try {
+            executionContext.onToolBridgeFailure?.();
+          } catch {
+            // An observer cannot change the bridge result.
+          }
+        }
+        return outcome === 'refused' ? WAITING_REFUSAL : WAITING_TOOL_FAILURE;
+      },
+    },
+  );
+}
+
+const WAITING_LIMIT = {
+  name: 'ToolBridgeError',
+  message: 'Waiting results exceed their limit',
+  code: 'TOOL_RESULTS_WAITING_TOO_LARGE',
+};
+/** The reply of a waiting call refused room: a failure of the tool, or a refusal of the enclave when the call was one */
+const WAITING_TOOL_FAILURE = JSON.stringify({
+  v: TOOL_BRIDGE_PROTOCOL_VERSION,
+  ok: false,
+  error: { ...WAITING_LIMIT, toolError: true },
+});
+const WAITING_REFUSAL = JSON.stringify({ v: TOOL_BRIDGE_PROTOCOL_VERSION, ok: false, error: WAITING_LIMIT });
+
+/** The smallest `toolBridge.maxPayloadBytes` that holds every reply of call-order delivery */
+export const MIN_CALL_ORDER_PAYLOAD_BYTES = WAITING_TOOL_FAILURE.length;
+
+function replyOutcome(responseJson: string): ReplyOutcome {
+  try {
+    const reply = JSON.parse(responseJson) as { ok?: unknown; error?: { toolError?: unknown } };
+    if (reply.ok === true) return 'succeeded';
+    return reply.error?.toolError === true ? 'failed' : 'refused';
+  } catch {
+    return 'refused';
+  }
 }
 
 function createUnorderedToolBridge(
   executionContext: ExecutionContext,
   options: HostToolBridgeOptions,
-): (requestJson: string) => Promise<string> {
+  deferSidecar: boolean,
+): (requestJson: string) => Promise<BridgeReply> {
   if (typeof executionContext.hostToolBridge === 'function') {
     return createRelayedToolBridge(executionContext, options, executionContext.hostToolBridge);
   }
@@ -285,7 +416,7 @@ function createUnorderedToolBridge(
 
   const resolver = sidecar && referenceConfig ? new ReferenceResolver(sidecar, referenceConfig) : undefined;
 
-  return async (requestJson: string): Promise<string> => {
+  return async (requestJson: string): Promise<BridgeReply> => {
     try {
       if (typeof requestJson !== 'string') {
         return serializeResponse(
@@ -525,78 +656,15 @@ function createUnorderedToolBridge(
         }
       }
 
-      // Lift large string results to sidecar if configured. Such a result reaches the script as
-      // a reference or not at all: when the sidecar refuses to store it (a quota), the call fails
-      // rather than hand the script the text the sidecar was there to keep from it.
-      if (sidecar && referenceConfig && typeof sanitizedResult === 'string') {
+      // In call order a large result is stored at its turn, so the order decides which call meets a full sidecar
+      if (deferSidecar && typeof sanitizedResult === 'string' && referenceConfig) {
         const size = utf8ByteLength(sanitizedResult);
+        const text = sanitizedResult;
         if (size >= referenceConfig.extractionThreshold) {
-          try {
-            const refId = sidecar.store(sanitizedResult, 'tool-result', { origin: tool });
-            sanitizedResult = refId;
-          } catch {
-            executionContext.onToolBridgeFailure?.();
-            return serializeResponse(
-              {
-                v: TOOL_BRIDGE_PROTOCOL_VERSION,
-                ok: false,
-                error: {
-                  name: 'ToolBridgeError',
-                  message: 'Tool result could not be stored in the reference sidecar',
-                  code: 'TOOL_RESULT_NOT_STORED',
-                  toolError: true,
-                },
-              },
-              maxPayloadBytes,
-            );
-          }
+          return { bytes: size, finish: () => finishReply(executionContext, maxPayloadBytes, tool, text) };
         }
       }
-
-      const okResponse: ToolBridgeOkResponse =
-        sanitizedResult === undefined
-          ? { v: TOOL_BRIDGE_PROTOCOL_VERSION, ok: true }
-          : { v: TOOL_BRIDGE_PROTOCOL_VERSION, ok: true, value: sanitizedResult };
-
-      let okJson: string;
-      try {
-        okJson = safeJsonStringify(okResponse);
-      } catch (error: unknown) {
-        const safeError = toErrorPayload(
-          error,
-          'ToolBridgeError',
-          'Tool result must be JSON-serializable',
-          'TOOL_RESULT_NOT_JSON',
-        );
-        executionContext.onToolBridgeFailure?.();
-        return serializeResponse(
-          {
-            v: TOOL_BRIDGE_PROTOCOL_VERSION,
-            ok: false,
-            error: { ...safeError, toolError: true },
-          },
-          maxPayloadBytes,
-        );
-      }
-
-      if (utf8ByteLength(okJson) > maxPayloadBytes) {
-        executionContext.onToolBridgeFailure?.();
-        return serializeResponse(
-          {
-            v: TOOL_BRIDGE_PROTOCOL_VERSION,
-            ok: false,
-            error: {
-              name: 'ToolBridgeError',
-              message: `Tool response exceeds maximum size (${maxPayloadBytes} bytes)`,
-              code: 'TOOL_BRIDGE_RESPONSE_TOO_LARGE',
-              toolError: true,
-            },
-          },
-          maxPayloadBytes,
-        );
-      }
-
-      return okJson;
+      return finishReply(executionContext, maxPayloadBytes, tool, sanitizedResult);
     } catch (error: unknown) {
       const safeError = toErrorPayload(error, 'ToolBridgeError', 'Tool bridge failure', 'TOOL_BRIDGE_FAILURE');
       return serializeResponse(

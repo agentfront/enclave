@@ -60,6 +60,11 @@ describe('statement markers', () => {
     expect(transformed).toContain('__ag_statement:2:0:ReturnStatement');
   });
 
+  it('marks a script that is one string, which becomes its return value, and leaves a directive before code unmarked', () => {
+    expect(markedLocations('"hello"')).toEqual(['1:0:ExpressionStatement']);
+    expect(markedLocations("'use strict';\nreturn 1;")).toEqual(['2:0:ReturnStatement']);
+  });
+
   it('marks a loop, not the counter the loop transform declares before it', () => {
     expect(
       markedLocations('let n = 0;\nwhile (n < 3) n++;\nfor (let i = 0; i < 2; i++) { n += i; }\nreturn n;'),
