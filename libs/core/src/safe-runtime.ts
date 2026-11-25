@@ -149,6 +149,7 @@ export function createSafeRuntime(context: ExecutionContext, options?: SafeRunti
 
     // Check tool call limit
     if (stats.toolCallCount > config.maxToolCalls) {
+      context.onRefusedCall?.({ code: 'MAX_TOOL_CALLS_EXCEEDED' });
       throw createSafeError(
         `Maximum tool call limit exceeded (${config.maxToolCalls}). ` + `This limit prevents runaway script execution.`,
       );

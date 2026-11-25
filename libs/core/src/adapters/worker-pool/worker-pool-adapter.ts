@@ -643,6 +643,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       maxGlobalFunctionCalls: context.config.maxGlobalFunctionCalls,
       realmGlobalAllowlist: context.realmGlobalAllowlist ? [...context.realmGlobalAllowlist] : undefined,
       replayedCalls: context.replayedCalls ? [...context.replayedCalls] : undefined,
+      replayedCallsResumeAtMs: context.replayedCallsResumeAtMs,
       referenceConfig: context.referenceConfig,
       doubleVm: this.doubleVm,
     };
@@ -773,6 +774,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
             // One result per execution: the protocol's own message, not counted against the script
             const duration = Date.now() - startTime;
             outcome = this.buildResult<T>(msg, duration, context.config.sanitizeStackTraces);
+            if (msg.refusedCall) context.onRefusedCall?.(msg.refusedCall);
             awaitIdleConfirmation();
             return;
           }
