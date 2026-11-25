@@ -1229,6 +1229,7 @@ export class VmAdapter implements SandboxAdapter {
             count: realmMembrane.wrap((): boolean => {
               stats.toolCallCount++;
               if (stats.toolCallCount > config.maxToolCalls) {
+                executionContext.onRefusedCall?.({ code: 'MAX_TOOL_CALLS_EXCEEDED' });
                 return false;
               }
               admitted++;

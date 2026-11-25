@@ -30,6 +30,7 @@ export type { StatementEventOptions } from './statement-events';
 export type { KeptReferenceOptions } from './kept-references';
 export { ENCLAVE_RUN_FEATURES } from './replayed-calls';
 export type { ReplayedCall, ReplayedCallOptions } from './replayed-calls';
+export type { RefusedCall, RefusedCallCode } from './refused-call';
 export type { ReferenceEntry } from './sidecar/reference-sidecar';
 export { analyzeScript, ScriptAnalysisError } from './analysis/script-analysis';
 export type {

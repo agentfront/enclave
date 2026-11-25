@@ -18,6 +18,7 @@ export type { StatementEventOptions } from './statement-events';
 export type { KeptReferenceOptions } from './kept-references';
 export { ENCLAVE_RUN_FEATURES } from './replayed-calls';
 export type { ReplayedCall, ReplayedCallOptions } from './replayed-calls';
+export type { RefusedCall, RefusedCallCode } from './refused-call';
 
 // Unhandled promise rejections of scripts (see the module for what it does to the process)
 export { disableSandboxRejectionGuard, isHostPromise } from './sandbox-rejections';

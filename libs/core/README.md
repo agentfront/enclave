@@ -382,21 +382,32 @@ const result = await enclave.run(script, undefined, {
     toolName: call.name,
     elapsedMs: call.reachedHostAt - journal.startedAt,
   })),
+  replayedCallsResumeAtMs: journal.pausedCall.reachedHostAt - journal.startedAt,
 });
 ```
 
 - A listed call skips the rate limit and the suspicious-sequence detectors (the first run passed them there), and on the worker pool `maxMessagesPerSecond`; the operation-name patterns still apply. It enters their history at its original time, moved so that the latest replayed call is now, and the live calls after the replay are judged against that history: a delete right after the replay is a delete after access when the replayed read was less than 30 seconds before the latest replayed call in the first run.
 - A call is replayed only while it is the next one listed: the same `callIndex` and the same tool. The first call that is not, and every call after it, is live and checked in full.
+- `replayedCallsResumeAtMs` (optional) is when the first run reached the call this run continues live with, the call it paused at, in milliseconds from its start. Without it the latest replayed call is placed at now, so the time between it and the paused call is lost: a list, a call that took 5 seconds, then a send that paused, is refused on resume as a list followed at once by a send. With it, that moment is placed at now at the first live operation after the replay (a tool call or a call into a function in `globals`), and the replayed calls keep their original distance to it. It applies only when every listed call was replayed; a run that leaves the list early keeps the latest replayed call at now. It needs `replayedCalls` and must be a finite number not below the last `elapsedMs`, otherwise `run()` throws a `TypeError`.
 - Calls to functions in `globals` are not listed: they run again, under the rate limit.
 - The list is checked when `run()` is called: at most `maxToolCalls` entries, `callIndex` an integer from 0 that increases, `toolName` of 1 to 256 characters, `elapsedMs` a finite number from 0 that does not decrease. Anything else is a `TypeError`, and the script does not run. The script cannot see or change the list.
 - Without the option nothing changes. It applies to the double VM, the worker pool, `PortableEnclave` and `AgentScriptRunner` (`AgentScriptRunner.capabilities` includes `'replayed-calls'`); a sandbox without these checks ignores it.
-- To find out at run time whether the installed version has it, read `ENCLAVE_RUN_FEATURES`, exported by `@enclave-vm/core` and `@enclave-vm/core/worker`: it includes `'replayed-calls'`. An older version has no such export and ignores the option.
+- To find out at run time whether the installed version has it, read `ENCLAVE_RUN_FEATURES`, exported by `@enclave-vm/core` and `@enclave-vm/core/worker`: it includes `'replayed-calls'`, `'replayed-calls-resume'` for `replayedCallsResumeAtMs`, and `'refused-call'` for `result.refusedCall` (below). An older version has no such export and ignores the options.
 
 ```typescript
 import * as enclaveCore from '@enclave-vm/core';
 
 const canReplay = enclaveCore.ENCLAVE_RUN_FEATURES?.includes('replayed-calls') ?? false;
 ```
+
+#### Calls the Enclave Refused
+
+`result.refusedCall` tells the host, without reading error text, that the enclave itself refused a tool call during the run: `{ code, toolName?, pattern? }`. `code` is `MAX_TOOL_CALLS_EXCEEDED`, `RATE_LIMIT_EXCEEDED`, `OPERATION_NOT_ALLOWED` (outside `allowedOperationPattern`), `OPERATION_BLOCKED` (`blockedOperationPatterns`) or `SUSPICIOUS_SEQUENCE`, with the detector's id as `pattern`.
+
+- It holds the first refusal of the run, also when the script caught the error and went on.
+- It is set on the host side only. A script that throws an error with the same message does not set it, and a run without a refusal has no `refusedCall`.
+- A refused call never reached the host, so it has no `callIndex`. `toolName` is absent where the limit is applied before the name is read: the tool-call cap of `PortableEnclave` and of the single VM.
+- Double VM, worker pool, `PortableEnclave` and `AgentScriptRunner`, and the tool-call cap of the single VM in both bridge modes.
 
 ### Tool Namespaces
 
@@ -543,6 +554,7 @@ interface ExecutionResult<T> {
   };
   scoringResult?: ScoringGateResult; // When a scoring gate evaluated the script
   review?: { decisions: ReviewRecord[] }; // Once review has started: every decision of the hooks
+  refusedCall?: { code: string; toolName?: string; pattern?: string }; // The first tool call the enclave refused itself
 }
 ```
 
@@ -1194,6 +1206,7 @@ class Enclave {
       maxToolResultBytes?: number;
       onToolBridgeFailure?: () => void;
       replayedCalls?: readonly { callIndex: number; toolName: string; elapsedMs: number }[];
+      replayedCallsResumeAtMs?: number;
     },
   ): Promise<ExecutionResult<T>>;
 
