@@ -15,6 +15,8 @@ import type { ConsoleLevel } from '../../console-handler';
 import type { SerializableSuspiciousPattern } from '../../double-vm/types';
 import type { SecureProxyLevelConfig } from '../../types';
 import type { ReferenceConfig } from '../../sidecar/reference-config';
+import type { ReplayedCall } from '../../replayed-calls';
+import type { RefusedCall } from '../../refused-call';
 
 /**
  * Serialized error format for cross-thread communication
@@ -124,6 +126,10 @@ export interface SerializedConfig {
   maxGlobalFunctionCalls?: number;
   /** Global names the script's realm may hold (`realmGlobals: 'allowlist'`); absent otherwise */
   realmGlobalAllowlist?: string[];
+  /** The run's checked `replayedCalls` */
+  replayedCalls?: ReplayedCall[];
+  /** The run's checked `replayedCallsResumeAtMs` */
+  replayedCallsResumeAtMs?: number;
   /** Reference (sidecar) configuration: the worker needs it to treat reference ids correctly */
   referenceConfig?: ReferenceConfig;
   /**
@@ -244,6 +250,8 @@ export interface ExecutionResultMessage {
   error?: SerializedError;
   /** Execution statistics */
   stats: WorkerExecutionStats;
+  /** The first tool call the sandbox refused itself */
+  refusedCall?: RefusedCall;
 }
 
 /**
@@ -357,6 +365,20 @@ export const executionResultMessageSchema = z
       startTime: z.number().nonnegative(),
       endTime: z.number().nonnegative(),
     }),
+    refusedCall: z
+      .object({
+        code: z.enum([
+          'MAX_TOOL_CALLS_EXCEEDED',
+          'RATE_LIMIT_EXCEEDED',
+          'OPERATION_NOT_ALLOWED',
+          'OPERATION_BLOCKED',
+          'SUSPICIOUS_SEQUENCE',
+        ]),
+        toolName: z.string().max(256).optional(),
+        pattern: z.string().max(256).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

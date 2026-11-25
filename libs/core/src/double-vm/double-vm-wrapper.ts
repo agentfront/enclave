@@ -35,6 +35,7 @@ import {
 import type { DoubleVmConfig, SerializableParentValidationConfig, SerializableSuspiciousPattern } from './types';
 import { generateParentVmBootstrap } from './parent-vm-bootstrap';
 import { serializePatterns, DEFAULT_SUSPICIOUS_PATTERNS } from './suspicious-patterns';
+import { refusedCallOf } from '../refused-call';
 
 /**
  * The errors the direct tool path raises itself for a result it refuses, with the code a script
@@ -386,6 +387,18 @@ export class DoubleVmWrapper implements SandboxAdapter {
       configurable: true, // Allow deletion after capture for defense-in-depth
     });
 
+    const { onRefusedCall } = executionContext;
+    if (onRefusedCall) {
+      Object.defineProperty(parentContext, '__host_refusedCall__', {
+        value: (code: unknown, toolName: unknown, pattern: unknown) => {
+          const refusal = refusedCallOf(code, toolName, pattern);
+          if (refusal) onRefusedCall(refusal);
+        },
+        writable: false,
+        configurable: true,
+      });
+    }
+
     for (const [name, read] of [
       ['__host_clock__', executionContext.clock],
       ['__host_random__', executionContext.random],
@@ -685,6 +698,8 @@ export class DoubleVmWrapper implements SandboxAdapter {
       maxGlobalFunctionCalls: resolveMaxGlobalFunctionCalls(config),
       toolNamespaces: executionContext.toolNamespaces ?? [],
       realmGlobalAllowlist: executionContext.realmGlobalAllowlist,
+      replayedCalls: executionContext.replayedCalls,
+      replayedCallsResumeAtMs: executionContext.replayedCallsResumeAtMs,
     });
   }
 

@@ -40,7 +40,15 @@ import type { OperationHistory, ParentValidationConfig } from './double-vm/types
 import { refuseDynamicImport } from './dynamic-import';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
+import {
+  checkReplayResumeAt,
+  copyReplayedCalls,
+  ReplayedCallCursor,
+  type ReplayedCall,
+  type ReplayedCallOptions,
+} from './replayed-calls';
 import { MIN_CALL_ORDER_PAYLOAD_BYTES } from './tool-bridge';
+import { refusedCallOf, type RefusedCall, type RefusedCallCode } from './refused-call';
 import { boundedStatementHook, type StatementEventOptions } from './statement-events';
 import {
   assertKeptReferenceOptions,
@@ -69,7 +77,7 @@ export interface PortableEnclaveOptions extends CreateEnclaveOptions {
   interpreter?: InterpreterAdapterOptions;
 }
 
-export interface PortableRunOptions extends StatementEventOptions, KeptReferenceOptions {
+export interface PortableRunOptions extends StatementEventOptions, KeptReferenceOptions, ReplayedCallOptions {
   maxToolResultBytes?: number;
   onToolBridgeFailure?: () => void;
   /** Passed to the review hooks of this run */
@@ -125,48 +133,85 @@ function validateReferenceConfig(config: ReferenceConfig | undefined): void {
 class PortableOperationPolicy {
   private readonly history: OperationHistory[] = [];
   private readonly globalCallTimes: number[] = [];
+  private readonly replay: ReplayedCallCursor;
+  private readonly rateLimitMessage: string;
+  private replayShift = 0;
 
-  constructor(private readonly config: ParentValidationConfig) {}
+  constructor(
+    private readonly config: ParentValidationConfig,
+    private readonly onRefusedCall: (refusal: RefusedCall) => void,
+    replayedCalls?: readonly ReplayedCall[],
+    private replayResumeAtMs?: number,
+  ) {
+    this.replay = new ReplayedCallCursor(replayedCalls);
+    this.rateLimitMessage = `Operation rate limit exceeded (${config.maxOperationsPerSecond} operations/second)`;
+  }
 
-  private rate(now: number): void {
-    while (this.history.length && now - this.history[0].timestamp > 60_000) this.history.shift();
+  private refuse(code: RefusedCallCode, name: string, message: string, pattern?: string): Error {
+    const refusal = refusedCallOf(code, name, pattern);
+    if (refusal) this.onRefusedCall(refusal);
+    return new Error(message);
+  }
+
+  private rateLimitExceeded(now: number): boolean {
+    while (!this.replay.replaying && this.history.length && now - this.history[0].timestamp > 60_000) {
+      this.history.shift();
+    }
     while (this.globalCallTimes.length && now - this.globalCallTimes[0] > 2000) this.globalCallTimes.shift();
     const recentTools = this.history.filter((entry) => now - entry.timestamp < 1000).length;
     const recentGlobals = this.globalCallTimes.filter((at) => now - at < 1000).length;
-    if (recentTools + recentGlobals >= this.config.maxOperationsPerSecond) {
-      throw new Error(`Operation rate limit exceeded (${this.config.maxOperationsPerSecond} operations/second)`);
-    }
+    return recentTools + recentGlobals >= this.config.maxOperationsPerSecond;
+  }
+
+  private resumeLive(now: number): void {
+    if (this.replay.replaying || this.replayResumeAtMs === undefined) return;
+    this.replayShift = now - this.replayResumeAtMs;
+    this.replayResumeAtMs = undefined;
   }
 
   globalCall(): void {
     const now = Date.now();
-    this.rate(now);
+    this.resumeLive(now);
+    if (this.rateLimitExceeded(now)) throw new Error(this.rateLimitMessage);
     this.globalCallTimes.push(now);
   }
 
   toolCall(name: string, args: Record<string, unknown>): void {
     const now = Date.now();
-    this.rate(now);
+    this.resumeLive(now);
+    const replayed = this.replay.match(name);
+    if (!replayed) {
+      this.replayResumeAtMs = undefined;
+      if (this.rateLimitExceeded(now)) throw this.refuse('RATE_LIMIT_EXCEEDED', name, this.rateLimitMessage);
+    }
     if (typeof name !== 'string' || name.length === 0) throw new TypeError('Operation name must be a non-empty string');
     if (this.config.validateOperationNames) {
       const allowed = this.config.allowedOperationPattern;
       if (allowed) {
         allowed.lastIndex = 0;
-        if (!allowed.test(name)) throw new Error(`Operation "${name}" does not match allowed pattern`);
+        if (!allowed.test(name)) {
+          throw this.refuse('OPERATION_NOT_ALLOWED', name, `Operation "${name}" does not match allowed pattern`);
+        }
       }
       for (const blocked of this.config.blockedOperationPatterns ?? []) {
         blocked.lastIndex = 0;
-        if (blocked.test(name)) throw new Error(`Operation "${name}" matches blocked pattern`);
+        if (blocked.test(name))
+          throw this.refuse('OPERATION_BLOCKED', name, `Operation "${name}" matches blocked pattern`);
       }
     }
-    if (this.config.blockSuspiciousSequences) {
+    if (this.config.blockSuspiciousSequences && !replayed) {
       const override = Object.hasOwn(this.config.rapidEnumerationOverrides, name)
         ? this.config.rapidEnumerationOverrides[name]
         : undefined;
       const threshold = override ?? this.config.rapidEnumerationThreshold;
       const recentSame = this.history.filter((entry) => entry.operationName === name && now - entry.timestamp < 5000);
       if (recentSame.length >= threshold) {
-        throw new Error('Suspicious pattern detected: Rapid enumeration of resources [RAPID_ENUMERATION]');
+        throw this.refuse(
+          'SUSPICIOUS_SEQUENCE',
+          name,
+          'Suspicious pattern detected: Rapid enumeration of resources [RAPID_ENUMERATION]',
+          'RAPID_ENUMERATION',
+        );
       }
       for (const pattern of DEFAULT_SUSPICIOUS_PATTERNS) {
         if (pattern.id === 'RAPID_ENUMERATION') continue;
@@ -176,10 +221,34 @@ class PortableOperationPolicy {
         } catch {
           // A detector never grants access; the bridge still validates and bounds the call.
         }
-        if (detected) throw new Error(`Suspicious pattern detected: ${pattern.description} [${pattern.id}]`);
+        if (detected) {
+          throw this.refuse(
+            'SUSPICIOUS_SEQUENCE',
+            name,
+            `Suspicious pattern detected: ${pattern.description} [${pattern.id}]`,
+            pattern.id,
+          );
+        }
       }
     }
-    this.history.push({ operationName: name, timestamp: now, argKeys: Object.keys(args) });
+    this.history.push(
+      replayed
+        ? this.replayedEntry(replayed, args, now)
+        : { operationName: name, timestamp: now, argKeys: Object.keys(args) },
+    );
+    this.replay.pass(replayed);
+  }
+
+  private replayedEntry(listed: ReplayedCall, args: Record<string, unknown>, now: number): OperationHistory {
+    this.replayShift = now - listed.elapsedMs;
+    const currentReplayShift = () => this.replayShift;
+    return {
+      operationName: listed.toolName,
+      argKeys: Object.keys(args),
+      get timestamp() {
+        return listed.elapsedMs + currentReplayShift();
+      },
+    };
   }
 }
 
@@ -339,13 +408,24 @@ export class PortableEnclave {
   ): Promise<ExecutionResult<T>> {
     if (this.disposed) throw new Error('PortableEnclave has been disposed');
     boundedInteger('maxToolResultBytes', runOptions.maxToolResultBytes, MAX_PORTABLE_ALLOCATION_BYTES);
+    const replayedCalls = copyReplayedCalls(runOptions.replayedCalls, this.config.maxToolCalls);
+    const replayedCallsResumeAtMs = checkReplayResumeAt(runOptions.replayedCallsResumeAtMs, replayedCalls);
     assertReviewContext(runOptions.reviewContext);
     const onStatement = boundedStatementHook(runOptions, this.adapter.reportsStatements);
     assertKeptReferenceOptions(runOptions, this.references !== undefined);
     const sidecar = this.references ? new ReferenceSidecar(this.references) : undefined;
-    return withKeptReferences(sidecar, runOptions, () =>
-      this.execute<T>(code, toolHandler, runOptions, onStatement, sidecar),
+    const refusal: { call?: RefusedCall } = {};
+    const result = await withKeptReferences(sidecar, runOptions, () =>
+      this.execute<T>(
+        code,
+        toolHandler,
+        { ...runOptions, replayedCalls, replayedCallsResumeAtMs },
+        onStatement,
+        sidecar,
+        (call) => (refusal.call ??= call),
+      ),
     );
+    return refusal.call ? { ...result, refusedCall: refusal.call } : result;
   }
 
   private async execute<T>(
@@ -354,6 +434,7 @@ export class PortableEnclave {
     runOptions: PortableRunOptions,
     onStatement: ((event: StatementEvent) => void) | undefined,
     sidecar: ReferenceSidecar | undefined,
+    onRefusedCall: (refusal: RefusedCall) => void,
   ): Promise<ExecutionResult<T>> {
     const startTime = Date.now();
     const stats: ExecutionStats = { duration: 0, startTime, endTime: startTime, toolCallCount: 0, iterationCount: 0 };
@@ -428,7 +509,12 @@ export class PortableEnclave {
         transformTemplateLiterals(ast);
         transformed = generate(ast);
       }
-      const policy = new PortableOperationPolicy(this.policyConfig);
+      const policy = new PortableOperationPolicy(
+        this.policyConfig,
+        onRefusedCall,
+        runOptions.replayedCalls,
+        runOptions.replayedCallsResumeAtMs,
+      );
       const hostToolHandler = toolHandler ?? this.options.toolHandler;
       let closed = false;
       const deadline = Date.now() + this.config.timeout;
@@ -447,6 +533,7 @@ export class PortableEnclave {
           ? numberToolCalls(review?.wrapToolHandler(hostToolHandler) ?? hostToolHandler)
           : undefined,
         toolResultOrder: this.options.toolResultOrder,
+        onRefusedCall,
         ...hostClockReaders(this.options, { isOver: () => context.aborted }),
         onStatement,
         toolNamespaces: this.namespaces,
@@ -525,6 +612,9 @@ export class AgentScriptRunner extends PortableEnclave {
     'rapid-enumeration',
     'review',
     'replay',
+    'replayed-calls',
+    'replayed-calls-resume',
+    'refused-call',
     'statement-events',
     'kept-references',
   ]);

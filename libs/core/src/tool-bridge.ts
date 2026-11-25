@@ -322,6 +322,7 @@ function createRelayedToolBridge(
         stats.toolCallCount++;
       }
       if (!options.limitChecked && stats.toolCallCount > config.maxToolCalls) {
+        executionContext.onRefusedCall?.({ code: 'MAX_TOOL_CALLS_EXCEEDED' });
         return encodeToolBridgeFailure(
           'ToolLimitError',
           toolCallLimitMessage(config.maxToolCalls),
@@ -464,6 +465,7 @@ function createUnorderedToolBridge(
       }
 
       if (!options.limitChecked && stats.toolCallCount > config.maxToolCalls) {
+        executionContext.onRefusedCall?.({ code: 'MAX_TOOL_CALLS_EXCEEDED' });
         return serializeResponse(
           {
             v: TOOL_BRIDGE_PROTOCOL_VERSION,
