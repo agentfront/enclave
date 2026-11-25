@@ -38,6 +38,7 @@ import { DoubleVmWrapper } from '../../double-vm/double-vm-wrapper';
 import { VmAdapter } from '../vm-adapter';
 import { decodeToolBridgeRequest, encodeToolBridgeFailure } from '../../tool-bridge';
 import type { DoubleVmConfig } from '../../double-vm/types';
+import type { RefusedCall } from '../../refused-call';
 import type { ConsoleLevel } from '../../console-handler';
 import {
   DEFAULT_DOUBLE_VM_CONFIG,
@@ -232,6 +233,7 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
   }, config.timeout);
 
   let adapter: SandboxAdapter | undefined;
+  let refusedCall: RefusedCall | undefined;
   try {
     const context: ExecutionContext = {
       config: buildAdapterConfig(config),
@@ -256,6 +258,8 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
       realmGlobalAllowlist: config.realmGlobalAllowlist,
       referenceConfig: config.referenceConfig,
       replayedCalls: config.replayedCalls,
+      replayedCallsResumeAtMs: config.replayedCallsResumeAtMs,
+      onRefusedCall: (refusal) => (refusedCall ??= refusal),
     };
 
     adapter = createSandboxAdapter(config);
@@ -275,6 +279,7 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
         value,
         ...(specialValues.length > 0 ? { specialValues } : {}),
         stats: resultStats(stats),
+        refusedCall,
       });
     } else {
       sendMessage({
@@ -283,6 +288,7 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
         success: false,
         error: serializeExecutionError(result.error),
         stats: resultStats(stats),
+        refusedCall,
       });
     }
   } catch (error) {
@@ -295,6 +301,7 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
         success: false,
         error: serializeThrown(error, config.sanitizeStackTraces),
         stats: resultStats(stats),
+        refusedCall,
       });
     } catch {
       // Nothing more can be reported; the host's watchdog ends the execution.

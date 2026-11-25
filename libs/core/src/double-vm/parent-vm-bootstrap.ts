@@ -24,7 +24,7 @@ import { booleanLiteral, numericLiteral } from '../enclave-options';
 import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
 import { realmArrayAccountingSource } from '../realm-memory';
 import { realmSafeGlobalsSource } from '../realm-safe-globals';
-import { copyReplayedCalls, type ReplayedCall } from '../replayed-calls';
+import { checkReplayResumeAt, copyReplayedCalls, type ReplayedCall } from '../replayed-calls';
 
 /**
  * Recursion backstop for the in-VM secure-proxy membranes.
@@ -116,6 +116,9 @@ export interface ParentVmBootstrapOptions {
 
   /** The run's `replayedCalls` */
   replayedCalls?: readonly ReplayedCall[];
+
+  /** The run's `replayedCallsResumeAtMs` */
+  replayedCallsResumeAtMs?: number;
 }
 
 /**
@@ -1022,6 +1025,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     toolNamespaces = [],
     realmGlobalAllowlist,
     replayedCalls,
+    replayedCallsResumeAtMs,
   } = options;
 
   // The limits and switches below are written into the script this function returns. Whatever
@@ -1039,7 +1043,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   if (toolBridgeMode !== 'string' && toolBridgeMode !== 'direct') {
     throw new TypeError(`Invalid toolBridgeMode: ${String(toolBridgeMode)}`);
   }
-  const replayedCallsJson = JSON.stringify(copyReplayedCalls(replayedCalls, maxToolCalls) ?? []);
+  const checkedReplayedCalls = copyReplayedCalls(replayedCalls, maxToolCalls);
+  const replayedCallsJson = JSON.stringify(checkedReplayedCalls ?? []);
+  const replayResumeAtJson = JSON.stringify(checkReplayResumeAt(replayedCallsResumeAtMs, checkedReplayedCalls) ?? null);
 
   // Realm allowlist: the caller's names plus what the runtime itself needs there. Custom globals
   // are added inside the parent VM (it holds them), so the list is right whoever built it.
@@ -1282,6 +1288,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     const hostFunctionText = typeof __host_functionText__ === 'function' ? __host_functionText__ : function() { return undefined; };
     const hostConsoleSink = typeof __host_consoleSink__ === 'function' ? __host_consoleSink__ : null;
     const hostClock = typeof __host_clock__ === 'function' ? __host_clock__ : null;
+    const hostRefusedCall = typeof __host_refusedCall__ === 'function' ? __host_refusedCall__ : null;
     const hostRandom = typeof __host_random__ === 'function' ? __host_random__ : null;
     // Writes one line to the host console at a level. The host console OBJECT is never in this realm.
     const hostConsoleWrite = typeof __host_console_write__ === 'function' ? __host_console_write__ : function() {};
@@ -1303,6 +1310,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     try { delete globalThis.__host_functionText__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_consoleSink__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_clock__; } catch (e) { /* ignore */ }
+    try { delete globalThis.__host_refusedCall__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_random__; } catch (e) { /* ignore */ }
     try { delete globalThis.__host_console_write__; } catch (e) { /* ignore */ }
 
@@ -1496,6 +1504,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   var nextReplayedCall = 0;
   var passedToolCalls = 0;
   var replayShift = 0;
+  var replayResumeAtMs = ${replayResumeAtJson};
 
   // Tool call stats for rate limiting
   let toolCallCount = 0;
@@ -2571,7 +2580,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
    * Operation rate limit, shared by tool calls and calls into host functions.
    * Sliding one-second window; entries older than two seconds are dropped.
    */
-  function enforceRateLimit(now) {
+  function rateLimitExceeded(now) {
     // Kept for as long as the longest look-back of a sequence detector (30 seconds for the
     // built-in ones, twice that here), not only for the rate window below: a detector that
     // asks for the last ten seconds has to find them.
@@ -2588,9 +2597,14 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     for (var g = 0; g < globalFunctionCallTimes.length; g++) {
       if (now - globalFunctionCallTimes[g] < 1000) recent++;
     }
-    if (recent >= validationConfig.maxOperationsPerSecond) {
-      throw createSafeError('Operation rate limit exceeded (' + validationConfig.maxOperationsPerSecond + ' operations/second)');
-    }
+    return recent >= validationConfig.maxOperationsPerSecond;
+  }
+
+  var rateLimitMessage = 'Operation rate limit exceeded (' + validationConfig.maxOperationsPerSecond + ' operations/second)';
+
+  function refuseToolCall(code, toolName, message, pattern) {
+    if (hostRefusedCall) hostRefusedCall(code, typeof toolName === 'string' ? toolName : undefined, pattern);
+    return createSafeError(message);
   }
 
   /**
@@ -2636,7 +2650,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     }
 
     var now = Date.now();
-    enforceRateLimit(now);
+    if (rateLimitExceeded(now)) throw createSafeError(rateLimitMessage);
     globalFunctionCallTimes.push(now);
 
     // The script's 'this' is never passed: a method read off a host object is a forwarder that
@@ -2659,7 +2673,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
    */
   function validateOperation(operationName, args, replayed) {
     // Rate limiting check with sliding window cleanup
-    if (!replayed) enforceRateLimit(Date.now());
+    if (!replayed && rateLimitExceeded(Date.now())) throw refuseToolCall('RATE_LIMIT_EXCEEDED', operationName, rateLimitMessage);
 
     // Operation name format validation
     if (typeof operationName !== 'string' || !operationName) {
@@ -2672,7 +2686,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     if (validationConfig.validateOperationNames && typeof allowedOperationPattern !== 'undefined') {
       allowedOperationPattern.lastIndex = 0;
       if (!allowedOperationPattern.test(operationName)) {
-        throw createSafeError('Operation "' + operationName + '" does not match allowed pattern');
+        throw refuseToolCall('OPERATION_NOT_ALLOWED', operationName, 'Operation "' + operationName + '" does not match allowed pattern');
       }
     }
 
@@ -2681,7 +2695,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
       for (var i = 0; i < blockedOperationPatterns.length; i++) {
         blockedOperationPatterns[i].lastIndex = 0;
         if (blockedOperationPatterns[i].test(operationName)) {
-          throw createSafeError('Operation "' + operationName + '" matches blocked pattern');
+          throw refuseToolCall('OPERATION_BLOCKED', operationName, 'Operation "' + operationName + '" matches blocked pattern');
         }
       }
     }
@@ -2699,7 +2713,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
           detected = false;
         }
         if (detected) {
-          throw createSafeError('Suspicious pattern detected: ' + pattern.description + ' [' + pattern.id + ']');
+          throw refuseToolCall('SUSPICIOUS_SEQUENCE', operationName, 'Suspicious pattern detected: ' + pattern.description + ' [' + pattern.id + ']', pattern.id);
         }
       }
     }
@@ -2708,6 +2722,8 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   function takeReplayedCall(toolName) {
     var listed = replayedCalls[nextReplayedCall];
     if (listed && listed.callIndex === passedToolCalls && listed.toolName === toolName) return listed;
+    if (nextReplayedCall === replayedCalls.length && replayResumeAtMs !== null) replayShift = Date.now() - replayResumeAtMs;
+    replayResumeAtMs = null;
     nextReplayedCall = replayedCalls.length;
     return null;
   }
@@ -2840,7 +2856,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     // Increment count and check limit
     toolCallCount++;
     if (toolCallCount > ${maxToolCalls}) {
-      throw createSafeError('Maximum tool call limit exceeded (${maxToolCalls}). This limit prevents runaway script execution.');
+      throw refuseToolCall('MAX_TOOL_CALLS_EXCEEDED', toolName, 'Maximum tool call limit exceeded (${maxToolCalls}). This limit prevents runaway script execution.');
     }
 
     // Validate args

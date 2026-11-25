@@ -34,10 +34,11 @@ describe.each(RUNTIMES)('replayed calls on the %s', (_name, create) => {
     code: string,
     replayedCalls?: ReplayedCall[],
     options: CreateEnclaveOptions = {},
+    replayedCallsResumeAtMs?: number,
   ): Promise<ExecutionResult> {
     const enclave = create({ toolHandler: answer, ...options });
     try {
-      return await enclave.run(code, undefined, replayedCalls ? { replayedCalls } : {});
+      return await enclave.run(code, undefined, { replayedCalls, replayedCallsResumeAtMs });
     } finally {
       enclave.dispose();
     }
@@ -96,6 +97,48 @@ describe.each(RUNTIMES)('replayed calls on the %s', (_name, create) => {
     const startingAt1 = pages.map((call) => ({ ...call, callIndex: call.callIndex + 1 }));
     const allPages = `${callsOf('page.next', 40)} return 'done';`;
     expect((await runOnce(allPages, startingAt1)).error?.message).toMatch(/RAPID_ENUMERATION/);
+  });
+
+  it('maps the resume time the host gives to now, and the replayed calls by their distance to it', async () => {
+    const listSlowSend = `
+      await callTool('users.list', {});
+      await callTool('slow.step', {});
+      await callTool('report.send', {});
+      return 'done';
+    `;
+    const listThenSlow = [
+      { callIndex: 0, toolName: 'users.list', elapsedMs: 0 },
+      { callIndex: 1, toolName: 'slow.step', elapsedMs: 10 },
+    ];
+    expect((await runOnce(listSlowSend, listThenSlow, {}, 5210)).value).toBe('done');
+    expect((await runOnce(listSlowSend, listThenSlow)).error?.message).toMatch(/EXFIL_LIST_SEND/);
+
+    const listThenSend = "await callTool('users.list', {}); await callTool('report.send', {}); return 'done';";
+    expect((await runOnce(listThenSend, listThenSlow.slice(0, 1), {}, 5)).error?.message).toMatch(/EXFIL_LIST_SEND/);
+    expect((await runOnce(listThenSend, listThenSlow, {}, 5210)).error?.message).toMatch(/EXFIL_LIST_SEND/);
+  });
+
+  it.each<[string, ReplayedCall[] | undefined, unknown]>([
+    ['without replayedCalls', undefined, 100],
+    ['before the last replayed call', [{ callIndex: 0, toolName: 'a', elapsedMs: 100 }], 99],
+    ['negative', [], -1],
+    ['NaN', [], Number.NaN],
+    ['infinite', [], Number.POSITIVE_INFINITY],
+    ['not a number', [], '100'],
+  ])('refuses a replayedCallsResumeAtMs %s before the script runs', async (_case, replayedCalls, resumeAtMs) => {
+    const handler = jest.fn(answer);
+    const enclave = create({ toolHandler: handler });
+    try {
+      await expect(
+        enclave.run("return await callTool('a', {});", undefined, {
+          replayedCalls,
+          replayedCallsResumeAtMs: resumeAtMs as number,
+        }),
+      ).rejects.toThrow(TypeError);
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      enclave.dispose();
+    }
   });
 
   it('leaves the replay where it was when a request is refused for its size before it reaches the host', async () => {
@@ -208,6 +251,26 @@ describe('replayed calls on the worker pool', () => {
     }
   });
 
+  it('carries the resume time to the double VM in the worker', async () => {
+    const enclave = new Enclave({
+      adapter: 'worker_threads',
+      workerPoolConfig: { minWorkers: 1, maxWorkers: 1 },
+      toolHandler: answer,
+    });
+    const code =
+      "await callTool('users.list', {}); await callTool('slow.step', {}); await callTool('report.send', {}); return 'done';";
+    const replayedCalls = [
+      { callIndex: 0, toolName: 'users.list', elapsedMs: 0 },
+      { callIndex: 1, toolName: 'slow.step', elapsedMs: 10 },
+    ];
+    try {
+      expect((await enclave.run(code, undefined, { replayedCalls })).error?.message).toMatch(/EXFIL_LIST_SEND/);
+      expect((await enclave.run(code, undefined, { replayedCalls, replayedCallsResumeAtMs: 5210 })).value).toBe('done');
+    } finally {
+      enclave.dispose();
+    }
+  });
+
   it('does not count the replayed calls against maxMessagesPerSecond, and counts the live ones', async () => {
     const enclave = new Enclave({
       adapter: 'worker_threads',
@@ -230,8 +293,8 @@ describe('replayed calls on the worker pool', () => {
 });
 
 describe('ENCLAVE_RUN_FEATURES', () => {
-  it('lists replayed-calls, the same frozen list from both entry points', () => {
-    expect(core.ENCLAVE_RUN_FEATURES).toContain('replayed-calls');
+  it('lists the run features, the same frozen list from both entry points', () => {
+    expect(core.ENCLAVE_RUN_FEATURES).toEqual(['replayed-calls', 'replayed-calls-resume', 'refused-call']);
     expect(workerEntry.ENCLAVE_RUN_FEATURES).toBe(core.ENCLAVE_RUN_FEATURES);
     expect(Object.isFrozen(core.ENCLAVE_RUN_FEATURES)).toBe(true);
   });

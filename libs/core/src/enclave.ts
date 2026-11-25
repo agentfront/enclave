@@ -82,7 +82,8 @@ import { separateAsyncContexts } from './async-context';
 import { ARRAY_ELEMENT_BYTES } from './realm-memory';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
-import { copyReplayedCalls, type ReplayedCallOptions } from './replayed-calls';
+import { checkReplayResumeAt, copyReplayedCalls, type ReplayedCallOptions } from './replayed-calls';
+import type { RefusedCall } from './refused-call';
 import { MIN_CALL_ORDER_PAYLOAD_BYTES } from './tool-bridge';
 import { boundedStatementHook, type StatementEventOptions } from './statement-events';
 import {
@@ -588,16 +589,24 @@ export class Enclave {
     }
     assertReviewContext(options.reviewContext);
     const replayedCalls = copyReplayedCalls(options.replayedCalls, this.config.maxToolCalls);
+    const replayedCallsResumeAtMs = checkReplayResumeAt(options.replayedCallsResumeAtMs, replayedCalls);
     const onStatement = boundedStatementHook(options, this.sandboxAdapter?.reportsStatements);
     if (onStatement && !this.transformCode) {
       throw new TypeError("onStatement needs the transform: its markers carry each statement's place in the script");
     }
     assertKeptReferenceOptions(options, this.referenceConfig !== undefined);
     const sidecar = this.referenceConfig ? new ReferenceSidecar(this.referenceConfig) : undefined;
+    const refusal: { call?: RefusedCall } = {};
     const result = await withKeptReferences(sidecar, options, () =>
-      this.execute<T>(code, toolHandler, { ...options, onStatement, replayedCalls }, sidecar),
+      this.execute<T>(
+        code,
+        toolHandler,
+        { ...options, onStatement, replayedCalls, replayedCallsResumeAtMs },
+        sidecar,
+        (call) => (refusal.call ??= call),
+      ),
     );
-    return this.applyStackTracePolicy(result);
+    return this.applyStackTracePolicy(refusal.call ? { ...result, refusedCall: refusal.call } : result);
   }
 
   /**
@@ -626,6 +635,7 @@ export class Enclave {
     toolHandler: ToolHandler | undefined,
     options: EnclaveRunOptions,
     sidecar: ReferenceSidecar | undefined,
+    onRefusedCall: (refusal: RefusedCall) => void,
   ): Promise<ExecutionResult<T>> {
     const startTime = Date.now();
 
@@ -908,6 +918,8 @@ export class Enclave {
         onStatement:
           options.onStatement && ((event) => asyncContexts.inHostContext(() => options.onStatement?.(event))),
         replayedCalls: options.replayedCalls,
+        replayedCallsResumeAtMs: options.replayedCallsResumeAtMs,
+        onRefusedCall,
         maxToolResultBytes: options.maxToolResultBytes,
         onToolBridgeFailure: options.onToolBridgeFailure
           ? () => {

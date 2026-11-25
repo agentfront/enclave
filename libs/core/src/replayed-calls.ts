@@ -9,11 +9,35 @@ export interface ReplayedCall {
 }
 
 /** The `run()` features of this build, for a host to detect at run time */
-export const ENCLAVE_RUN_FEATURES: readonly string[] = Object.freeze(['replayed-calls']);
+export const ENCLAVE_RUN_FEATURES: readonly string[] = Object.freeze([
+  'replayed-calls',
+  'replayed-calls-resume',
+  'refused-call',
+]);
 
 export interface ReplayedCallOptions {
   /** The replayed calls, in call order: exempt from the rate limit and the sequence detectors, kept in their history at their original times */
   replayedCalls?: readonly ReplayedCall[];
+  /** When the first run reached the call this run continues live with, in ms from its start: that moment maps to now */
+  replayedCallsResumeAtMs?: number;
+}
+
+export function checkReplayResumeAt(
+  value: unknown,
+  replayedCalls: readonly ReplayedCall[] | undefined,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const lastElapsedMs = replayedCalls?.[replayedCalls.length - 1]?.elapsedMs ?? 0;
+  if (
+    replayedCalls === undefined ||
+    typeof value !== 'number' ||
+    !(value >= lastElapsedMs && value <= Number.MAX_SAFE_INTEGER)
+  ) {
+    throw new TypeError(
+      `replayedCallsResumeAtMs needs replayedCalls and must be a finite number from the last replayed elapsedMs (${lastElapsedMs})`,
+    );
+  }
+  return value;
 }
 
 export function copyReplayedCalls(value: unknown, maxToolCalls: number): readonly ReplayedCall[] | undefined {

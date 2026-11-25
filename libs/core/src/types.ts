@@ -370,6 +370,9 @@ export interface ExecutionResult<T = unknown> {
 
   /** The entries behind the tokens `exportReferences` named, for the host to keep (see `run()` options) */
   references?: ReferenceEntry[];
+
+  /** The first tool call the enclave itself refused in this run, set on the host side only */
+  refusedCall?: RefusedCall;
 }
 
 /**
@@ -715,6 +718,7 @@ import type {
 import type { ConsoleHandler, ConsoleLevel } from './console-handler';
 import type { HostActivity } from './execution-deadline';
 import type { ReplayedCall } from './replayed-calls';
+import type { RefusedCall } from './refused-call';
 
 /**
  * Internal execution context (tracks state during execution)
@@ -781,6 +785,12 @@ export interface ExecutionContext {
 
   /** The run's checked `replayedCalls` (see `run()` options) */
   replayedCalls?: readonly ReplayedCall[];
+
+  /** The run's checked `replayedCallsResumeAtMs` */
+  replayedCallsResumeAtMs?: number;
+
+  /** Told of each tool call the enclave itself refuses (limits, name rules, sequence detectors) */
+  onRefusedCall?: (refusal: RefusedCall) => void;
 
   /** Synchronous policy: return true to allow the copied request, or throw/return false to refuse. */
   beforeToolCall?: (name: string, args: Record<string, unknown>) => boolean;

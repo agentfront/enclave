@@ -98,6 +98,12 @@ await enclave.run(script, undefined, {
 
 A listed call skips the rate limit and the suspicious-sequence detectors, and enters their history at its original time, moved so that the latest replayed call is now: the live calls after the replay are judged against what the first run did. A call is replayed only while it is the next one listed, with the same `callIndex` and the same tool; the first call that is not, and every call after it, is live. Calls to functions in `globals` run again under the rate limit. The list is checked when `run()` is called (at most `maxToolCalls` entries, `callIndex` increasing from 0, `toolName` of 1 to 256 characters, `elapsedMs` finite, from 0 and not decreasing), otherwise `run()` throws a `TypeError`. It applies to the double VM, the worker pool (where listed calls do not count against `maxMessagesPerSecond` either) and `PortableEnclave`; without it nothing changes. `ENCLAVE_RUN_FEATURES`, exported by `@enclave-vm/core` and `@enclave-vm/core/worker`, includes `'replayed-calls'` where the option is supported.
 
+Without more, the latest replayed call is placed at now, which drops the time between it and the call the run paused at. Pass `replayedCallsResumeAtMs`, when the first run reached that call (in milliseconds from its start), and that moment is placed at now when the first live call arrives; the replayed calls keep their distance to it. It applies only when every listed call was replayed, needs `replayedCalls`, and must not be below the last `elapsedMs` (`ENCLAVE_RUN_FEATURES` includes `'replayed-calls-resume'`).
+
+### Calls the Enclave Refused
+
+`result.refusedCall` is `{ code, toolName?, pattern? }` when the enclave itself refused a tool call in the run: `MAX_TOOL_CALLS_EXCEEDED`, `RATE_LIMIT_EXCEEDED`, `OPERATION_NOT_ALLOWED`, `OPERATION_BLOCKED` or `SUSPICIOUS_SEQUENCE` (the detector's id in `pattern`). It holds the first refusal, also one the script caught, and only the host side sets it: an error the script throws with the same message does not. `ENCLAVE_RUN_FEATURES` includes `'refused-call'`.
+
 ## Tool Namespaces
 
 Expose tools as namespaced functions, the natural API for scripts:
