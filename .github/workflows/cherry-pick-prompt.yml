@@ -66,12 +66,18 @@ jobs:
     needs: detect
     if: needs.detect.outputs.mode == 'single'
     runs-on: ubuntu-latest
+    env:
+      CODEX_ENABLED: ${{ secrets.OPENAI_API_KEY != '' }}
+      HUSKY: "0"
+      NX_DAEMON: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          # Codex may run in this job: only the steps that push get the token
+          persist-credentials: false
 
       - name: Configure git user
         run: |
@@ -89,6 +95,12 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+
+          # The scripts of this revision, kept apart from the branch the pick is made onto
+          TOOLS="$RUNNER_TEMP/cherry-pick-tools"
+          mkdir -p "$TOOLS"
+          cp scripts/cherry-pick-stack.mjs scripts/cherry-pick-commits.mjs scripts/cherry-pick-conflict.mjs "$TOOLS/"
+          echo "tools=$TOOLS" >> "$GITHUB_OUTPUT"
 
           # The commits that hold the change: the merge commit, or, for a stacked PR whose change
           # landed before an empty merge commit, the change's own commit (scripts/cherry-pick-commits.mjs).
@@ -144,6 +156,7 @@ jobs:
         if: steps.target.outputs.release_branch != ''
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ORIGINAL_BRANCH: ${{ github.event.pull_request.head.ref }}
           RELEASE_BRANCH: ${{ steps.target.outputs.release_branch }}
           CHERRY_BASE: ${{ steps.target.outputs.cherry_base }}
@@ -153,6 +166,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
+          gh auth setup-git
 
           # Create cherry-pick branch name
           # Sanitize branch name (remove invalid characters, truncate if needed)
@@ -235,8 +249,76 @@ jobs:
             echo "Cherry-pick failed due to conflicts"
           fi
 
+      # Each step for Codex may fail without failing the job: the conflict then gets its issue
+      - name: Set up Node for Codex
+        id: node
+        if: steps.prepare.outputs.conflict == 'true' && env.CODEX_ENABLED == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version-file: .nvmrc
+
+      - name: Recreate the conflict for Codex
+        id: conflict
+        if: steps.node.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          TOOLS: ${{ steps.target.outputs.tools }}
+          RELEASE_BRANCH: ${{ steps.target.outputs.release_branch }}
+          CHERRY_BASE: ${{ steps.target.outputs.cherry_base }}
+          COMMITS: ${{ steps.target.outputs.commits }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/codex"
+          jq -n \
+            --arg releaseBranch "$RELEASE_BRANCH" \
+            --arg targetBranch "$CHERRY_BASE" \
+            --argjson number "$PR_NUMBER" \
+            --arg title "$PR_TITLE" \
+            --arg author "$PR_AUTHOR" \
+            --argjson authorId "$PR_AUTHOR_ID" \
+            --arg commits "$COMMITS" \
+            '{$releaseBranch, $targetBranch, pullRequest: {$number, $title, $author, $authorId, commits: ($commits | split(" "))}}' \
+            > "$RUNNER_TEMP/codex/conflict.json"
+          node "$TOOLS/cherry-pick-conflict.mjs" start "$RUNNER_TEMP/codex"
+
+      - name: Resolve the conflict with Codex
+        if: steps.conflict.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 30
+        uses: openai/codex-action@306c6a196a99dcc6582530c396a19d2672d5e9ec # v1.14
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          codex-version: 0.170.0
+          model: ${{ vars.CODEX_MODEL }}
+          effort: high
+          permission-profile: ":workspace"
+          prompt-file: ${{ runner.temp }}/codex/prompt.md
+          output-schema-file: ${{ runner.temp }}/codex/schema.json
+          output-file: ${{ runner.temp }}/codex/answer.json
+
+      - name: Check Codex's resolution
+        id: resolution
+        if: steps.conflict.outcome == 'success'
+        shell: bash
+        env:
+          TOOLS: ${{ steps.target.outputs.tools }}
+        run: |
+          if node "$TOOLS/cherry-pick-conflict.mjs" finish "$RUNNER_TEMP/codex" \
+            && node "$TOOLS/cherry-pick-conflict.mjs" verify "$RUNNER_TEMP/codex"; then
+            echo "resolved=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Push branch and create PR
-        if: steps.prepare.outputs.conflict == 'false' && steps.prepare.outputs.already_applied != 'true'
+        id: pr
+        if: >
+          (steps.prepare.outputs.conflict == 'false' && steps.prepare.outputs.already_applied != 'true') ||
+          steps.resolution.outputs.resolved == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CHERRY_BRANCH: ${{ steps.prepare.outputs.cherry_branch }}
@@ -250,6 +332,7 @@ jobs:
           set -euo pipefail
 
           # Push the cherry-pick branch
+          gh auth setup-git
           git push origin "$CHERRY_BRANCH"
 
           STACK_NOTE=""
@@ -289,8 +372,18 @@ jobs:
           echo "Created cherry-pick PR: $PR_URL"
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
 
+      - name: Note Codex's resolution on the cherry-pick PR
+        if: steps.resolution.outputs.resolved == 'true' && steps.pr.outputs.pr_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+        run: |
+          gh label create ai-resolved --color 5319E7 --description "Conflicts resolved by an AI agent" --force
+          gh pr edit "$PR_URL" --add-label ai-resolved
+          gh pr comment "$PR_URL" --body-file "$RUNNER_TEMP/codex/note.md"
+
       - name: Comment on original PR (success)
-        if: steps.prepare.outputs.conflict == 'false' && steps.prepare.outputs.already_applied != 'true'
+        if: steps.pr.outputs.pr_url != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ORIGINAL_PR: ${{ github.event.pull_request.number }}
@@ -325,7 +418,7 @@ jobs:
 
       - name: Create issue for conflict
         id: create_issue
-        if: steps.prepare.outputs.conflict == 'true'
+        if: steps.prepare.outputs.conflict == 'true' && steps.resolution.outputs.resolved != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_BRANCH: ${{ steps.target.outputs.release_branch }}
@@ -408,8 +501,19 @@ jobs:
           ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
           gh issue edit "$ISSUE_NUMBER" --add-assignee "$PR_AUTHOR" || echo "Could not assign to $PR_AUTHOR, skipping assignment"
 
+      - name: Note Codex's attempt on the issue
+        if: steps.create_issue.outputs.issue_url != '' && steps.resolution.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_URL: ${{ steps.create_issue.outputs.issue_url }}
+        run: |
+          NOTE="$RUNNER_TEMP/codex/note.md"
+          if [ -f "$NOTE" ]; then
+            gh issue comment "$ISSUE_URL" --body-file "$NOTE"
+          fi
+
       - name: Comment on original PR (conflict)
-        if: steps.prepare.outputs.conflict == 'true'
+        if: steps.create_issue.outputs.issue_url != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ORIGINAL_PR: ${{ github.event.pull_request.number }}
@@ -459,12 +563,17 @@ jobs:
     env:
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       TOP_PR: ${{ github.event.pull_request.number }}
+      CODEX_ENABLED: ${{ secrets.OPENAI_API_KEY != '' }}
+      HUSKY: "0"
+      NX_DAEMON: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          # Codex may run in this job: only the steps that push get the token
+          persist-credentials: false
 
       - name: Configure git user
         run: |
@@ -487,7 +596,7 @@ jobs:
           # branch, which may have other versions of them, or none
           TOOLS="$RUNNER_TEMP/cherry-pick-tools"
           mkdir -p "$TOOLS"
-          cp scripts/cherry-pick-stack.mjs scripts/cherry-pick-commits.mjs "$TOOLS/"
+          cp scripts/cherry-pick-stack.mjs scripts/cherry-pick-commits.mjs scripts/cherry-pick-conflict.mjs "$TOOLS/"
           PLAN="$RUNNER_TEMP/plan.json"
           node "$TOOLS/cherry-pick-stack.mjs" plan "$STACK_INPUT" --pull-requests "$PULL_REQUESTS" --wait "$WAIT_SECONDS" > "$PLAN"
           jq -c '{stack, releaseBranch, open, closed, pullRequests: [.pullRequests[] | {number, commits}]}' "$PLAN"
@@ -545,7 +654,74 @@ jobs:
           else
             git checkout -B "$CHERRY_BRANCH" "origin/$DEFAULT_BRANCH"
           fi
-          node "$TOOLS/cherry-pick-stack.mjs" apply "$RUNNER_TEMP/plan.json" > "$RESULT"
+          node "$TOOLS/cherry-pick-stack.mjs" apply "$RUNNER_TEMP/plan.json" --base "origin/$DEFAULT_BRANCH" > "$RESULT"
+          echo "conflict=$(jq -r '.conflict.number // ""' "$RESULT")" >> "$GITHUB_OUTPUT"
+
+      # Each step for Codex may fail without failing the job: the conflict then gets its issue
+      - name: Set up Node for Codex
+        id: node
+        if: steps.apply.outputs.conflict != '' && env.CODEX_ENABLED == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version-file: .nvmrc
+
+      - name: Recreate the conflict for Codex
+        id: conflict
+        if: steps.node.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          TOOLS: ${{ steps.plan.outputs.tools }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/codex"
+          jq --arg targetBranch "$DEFAULT_BRANCH" '{releaseBranch, $targetBranch, pullRequest: .conflict}' \
+            "$RUNNER_TEMP/result.json" > "$RUNNER_TEMP/codex/conflict.json"
+          node "$TOOLS/cherry-pick-conflict.mjs" start "$RUNNER_TEMP/codex"
+
+      - name: Resolve the conflict with Codex
+        if: steps.conflict.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 30
+        uses: openai/codex-action@306c6a196a99dcc6582530c396a19d2672d5e9ec # v1.14
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          codex-version: 0.170.0
+          model: ${{ vars.CODEX_MODEL }}
+          effort: high
+          permission-profile: ":workspace"
+          prompt-file: ${{ runner.temp }}/codex/prompt.md
+          output-schema-file: ${{ runner.temp }}/codex/schema.json
+          output-file: ${{ runner.temp }}/codex/answer.json
+
+      - name: Check Codex's resolution
+        id: resolution
+        if: steps.conflict.outcome == 'success'
+        shell: bash
+        env:
+          TOOLS: ${{ steps.plan.outputs.tools }}
+        run: |
+          if node "$TOOLS/cherry-pick-conflict.mjs" finish "$RUNNER_TEMP/codex" \
+            && node "$TOOLS/cherry-pick-conflict.mjs" verify "$RUNNER_TEMP/codex"; then
+            echo "resolved=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # One conflict per run: a later one gets an issue, and a run by hand continues from the branch
+      - name: Cherry-pick the PRs after the one Codex resolved
+        if: steps.resolution.outputs.resolved == 'true'
+        env:
+          TOOLS: ${{ steps.plan.outputs.tools }}
+        run: |
+          node "$TOOLS/cherry-pick-stack.mjs" apply "$RUNNER_TEMP/plan.json" --base "origin/$DEFAULT_BRANCH" \
+            > "$RUNNER_TEMP/result.json"
+
+      - name: Read the result
+        id: result
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESULT="$RUNNER_TEMP/result.json"
           {
             echo "picked=$(jq '.picked | length' "$RESULT")"
             echo "ahead=$(git rev-list --count "origin/$DEFAULT_BRANCH..HEAD")"
@@ -555,7 +731,7 @@ jobs:
 
       - name: Push branch and create PR
         id: pr
-        if: steps.apply.outputs.ahead != '0' && steps.apply.outputs.conflict == ''
+        if: steps.result.outputs.ahead != '0' && steps.result.outputs.conflict == ''
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -565,6 +741,7 @@ jobs:
           set -euo pipefail
           PULL_REQUEST="$RUNNER_TEMP/pull-request.json"
           # (A fast-forward of a branch an earlier run published: never a forced push)
+          gh auth setup-git
           git push origin "$CHERRY_BRANCH"
           EXISTING=$(gh pr list --head "$CHERRY_BRANCH" --base "$DEFAULT_BRANCH" --state open --json url --jq '.[0].url // ""')
           if [ -n "$EXISTING" ]; then
@@ -582,6 +759,16 @@ jobs:
             --label "auto-cherry-pick")
           echo "Created cherry-pick PR: $PR_URL" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Note Codex's resolution on the cherry-pick PR
+        if: steps.resolution.outputs.resolved == 'true' && steps.pr.outputs.pr_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+        run: |
+          gh label create ai-resolved --color 5319E7 --description "Conflicts resolved by an AI agent" --force
+          gh pr edit "$PR_URL" --add-label ai-resolved
+          gh pr comment "$PR_URL" --body-file "$RUNNER_TEMP/codex/note.md"
 
       - name: Comment on the top PR (success)
         if: github.event_name == 'pull_request' && steps.pr.outputs.pr_url != ''
@@ -601,12 +788,12 @@ jobs:
           EOF
 
       - name: Report a stack the target branch already has
-        if: steps.apply.outputs.ahead == '0' && steps.apply.outputs.conflict == ''
+        if: steps.result.outputs.ahead == '0' && steps.result.outputs.conflict == ''
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STACK: ${{ steps.plan.outputs.stack }}
-          ALREADY_APPLIED: ${{ steps.apply.outputs.already_applied }}
+          ALREADY_APPLIED: ${{ steps.result.outputs.already_applied }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
@@ -623,16 +810,17 @@ jobs:
 
       - name: Push what was picked and create an issue for the conflict
         id: issue
-        if: steps.apply.outputs.conflict != ''
+        if: steps.result.outputs.conflict != ''
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CHERRY_BRANCH: ${{ steps.plan.outputs.cherry_branch }}
-          CONFLICT_PR: ${{ steps.apply.outputs.conflict }}
+          CONFLICT_PR: ${{ steps.result.outputs.conflict }}
           TOOLS: ${{ steps.plan.outputs.tools }}
         run: |
           set -euo pipefail
           ISSUE="$RUNNER_TEMP/issue.json"
+          gh auth setup-git
           git push origin "$CHERRY_BRANCH"
           node "$TOOLS/cherry-pick-stack.mjs" render issue "$RUNNER_TEMP/result.json" "$DEFAULT_BRANCH" "$CHERRY_BRANCH" > "$ISSUE"
           ISSUE_URL=$(gh issue create \
@@ -646,12 +834,23 @@ jobs:
           CONFLICT_AUTHOR=$(jq -r .conflict.author "$RUNNER_TEMP/result.json")
           gh issue edit "$ISSUE_URL" --add-assignee "$CONFLICT_AUTHOR" || echo "Could not assign to $CONFLICT_AUTHOR, skipping assignment"
 
+      - name: Note Codex's attempt on the issue
+        if: steps.issue.outputs.issue_url != '' && steps.resolution.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_URL: ${{ steps.issue.outputs.issue_url }}
+        run: |
+          NOTE="$RUNNER_TEMP/codex/note.md"
+          if [ -f "$NOTE" ]; then
+            gh issue comment "$ISSUE_URL" --body-file "$NOTE"
+          fi
+
       - name: Comment on the top PR (conflict)
         if: github.event_name == 'pull_request' && steps.issue.outputs.issue_url != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STACK: ${{ steps.plan.outputs.stack }}
-          CONFLICT_PR: ${{ steps.apply.outputs.conflict }}
+          CONFLICT_PR: ${{ steps.result.outputs.conflict }}
           ISSUE_URL: ${{ steps.issue.outputs.issue_url }}
         run: |
           gh pr comment "$TOP_PR" --body-file - <<EOF
