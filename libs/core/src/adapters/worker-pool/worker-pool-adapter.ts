@@ -48,6 +48,7 @@ import { serializePatterns } from '../../double-vm/suspicious-patterns';
 import type { DoubleVmConfig } from '../../double-vm/types';
 import { DEFAULT_DOUBLE_VM_CONFIG } from '../../types';
 import { MAX_TIMEOUT_MS } from '../../enclave-options';
+import { ReplayedCallCursor } from '../../replayed-calls';
 
 /**
  * The double VM configuration in the form that can be sent to a worker: regular expressions as
@@ -641,6 +642,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       secureProxyConfig: context.secureProxyConfig,
       maxGlobalFunctionCalls: context.config.maxGlobalFunctionCalls,
       realmGlobalAllowlist: context.realmGlobalAllowlist ? [...context.realmGlobalAllowlist] : undefined,
+      replayedCalls: context.replayedCalls ? [...context.replayedCalls] : undefined,
       referenceConfig: context.referenceConfig,
       doubleVm: this.doubleVm,
     };
@@ -657,6 +659,13 @@ export class WorkerPoolAdapter implements SandboxAdapter {
     return new Promise<ExecutionResult<T>>((resolve, reject) => {
       // Pending tool calls for this execution
       const pendingToolCalls = new Map<string, boolean>();
+      const replay = new ReplayedCallCursor(context.replayedCalls);
+      const isReplayedToolCall = (msg: WorkerToMainMessage): boolean => {
+        if (!isToolCallMessage(msg) || msg.requestId !== requestId) return false;
+        const replayed = replay.match(msg.toolName);
+        replay.pass(replayed);
+        return replayed !== undefined;
+      };
 
       /**
        * The script's result, once the worker has sent it. The execution is not over then: the
@@ -768,8 +777,8 @@ export class WorkerPoolAdapter implements SandboxAdapter {
             return;
           }
 
-          // Rate limiting: everything else a worker sends while it runs a script
-          this.rateLimiter.checkLimit(slot.id);
+          // Rate limiting: everything else a worker sends while it runs a script, except the calls it replays
+          if (!isReplayedToolCall(msg)) this.rateLimiter.checkLimit(slot.id);
 
           if (!('requestId' in msg) || msg.requestId !== requestId) {
             // Not a message of this execution. It is not acted on, and this execution is not

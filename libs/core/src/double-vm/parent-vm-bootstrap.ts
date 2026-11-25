@@ -24,6 +24,7 @@ import { booleanLiteral, numericLiteral } from '../enclave-options';
 import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
 import { realmArrayAccountingSource } from '../realm-memory';
 import { realmSafeGlobalsSource } from '../realm-safe-globals';
+import { copyReplayedCalls, type ReplayedCall } from '../replayed-calls';
 
 /**
  * Recursion backstop for the in-VM secure-proxy membranes.
@@ -112,6 +113,9 @@ export interface ParentVmBootstrapOptions {
    * there. Absent: only the security level's dangerous globals are removed.
    */
   realmGlobalAllowlist?: readonly string[];
+
+  /** The run's `replayedCalls` */
+  replayedCalls?: readonly ReplayedCall[];
 }
 
 /**
@@ -1017,6 +1021,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     maxGlobalFunctionCalls = 1000,
     toolNamespaces = [],
     realmGlobalAllowlist,
+    replayedCalls,
   } = options;
 
   // The limits and switches below are written into the script this function returns. Whatever
@@ -1034,6 +1039,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   if (toolBridgeMode !== 'string' && toolBridgeMode !== 'direct') {
     throw new TypeError(`Invalid toolBridgeMode: ${String(toolBridgeMode)}`);
   }
+  const replayedCallsJson = JSON.stringify(copyReplayedCalls(replayedCalls, maxToolCalls) ?? []);
 
   // Realm allowlist: the caller's names plus what the runtime itself needs there. Custom globals
   // are added inside the parent VM (it holds them), so the list is right whoever built it.
@@ -1485,6 +1491,11 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
 
   // Operation history for pattern detection
   const operationHistory = [];
+
+  const replayedCalls = ${replayedCallsJson};
+  var nextReplayedCall = 0;
+  var passedToolCalls = 0;
+  var replayShift = 0;
 
   // Tool call stats for rate limiting
   let toolCallCount = 0;
@@ -2564,7 +2575,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     // Kept for as long as the longest look-back of a sequence detector (30 seconds for the
     // built-in ones, twice that here), not only for the rate window below: a detector that
     // asks for the last ten seconds has to find them.
-    while (operationHistory.length > 0 && now - operationHistory[0].timestamp > 60000) {
+    while (nextReplayedCall >= replayedCalls.length && operationHistory.length > 0 && now - operationHistory[0].timestamp > 60000) {
       operationHistory.shift();
     }
     while (globalFunctionCallTimes.length > 0 && now - globalFunctionCallTimes[0] > 2000) {
@@ -2646,9 +2657,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   /**
    * Validate an operation before forwarding to host
    */
-  function validateOperation(operationName, args) {
+  function validateOperation(operationName, args, replayed) {
     // Rate limiting check with sliding window cleanup
-    enforceRateLimit(Date.now());
+    if (!replayed) enforceRateLimit(Date.now());
 
     // Operation name format validation
     if (typeof operationName !== 'string' || !operationName) {
@@ -2678,7 +2689,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     // Suspicious sequence detection
     // NOTE: User-provided pattern functions can throw; those errors are intentionally ignored to avoid
     // breaking the sandbox due to a buggy detector. If a detector returns true, we always fail closed.
-    if (validationConfig.blockSuspiciousSequences) {
+    if (validationConfig.blockSuspiciousSequences && !replayed) {
       for (var j = 0; j < suspiciousPatterns.length; j++) {
         var pattern = suspiciousPatterns[j];
         var detected = false;
@@ -2692,6 +2703,23 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         }
       }
     }
+  }
+
+  function takeReplayedCall(toolName) {
+    var listed = replayedCalls[nextReplayedCall];
+    if (listed && listed.callIndex === passedToolCalls && listed.toolName === toolName) return listed;
+    nextReplayedCall = replayedCalls.length;
+    return null;
+  }
+
+  function replayedEntry(listed, args) {
+    nextReplayedCall++;
+    replayShift = Date.now() - listed.elapsedMs;
+    return {
+      operationName: listed.toolName,
+      argKeys: Object.keys(args),
+      get timestamp() { return listed.elapsedMs + replayShift; }
+    };
   }
 
   /**
@@ -2834,34 +2862,40 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     }
 
     // Enhanced validation
-    validateOperation(toolName, sanitizedArgs);
+    var replayed = takeReplayedCall(toolName);
+    validateOperation(toolName, sanitizedArgs, replayed !== null);
 
     // Record in history
-    operationHistory.push({
-      operationName: toolName,
-      timestamp: Date.now(),
-      argKeys: Object.keys(sanitizedArgs)
-    });
+    if (!replayed) {
+      operationHistory.push({
+        operationName: toolName,
+        timestamp: Date.now(),
+        argKeys: Object.keys(sanitizedArgs)
+      });
+    }
 
     // Update host stats
     hostStats.toolCallCount = toolCallCount;
+
+    var requestJson;
+    try {
+      requestJson = JSON.stringify({ v: 1, tool: toolName, args: sanitizedArgs });
+    } catch (e) {
+      throw createSafeError('Tool request must be JSON-serializable');
+    }
+
+    // Counted in UTF-8 bytes, as the host counts it, so both sides agree on the limit (direct mode too).
+    if (requestJson && exceedsPayloadLimit(requestJson, toolBridgeMaxPayloadBytes)) {
+      throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
+    }
+
+    if (replayed) operationHistory.push(replayedEntry(replayed, sanitizedArgs));
+    passedToolCalls++;
 
     // Forward to host and wrap the Promise + result in secure proxies
     // This prevents access to Promise.constructor and result object constructors
     var promise;
     if (toolBridgeMode === 'string') {
-      var requestJson;
-      try {
-        requestJson = JSON.stringify({ v: 1, tool: toolName, args: sanitizedArgs });
-      } catch (e) {
-        throw createSafeError('Tool request must be JSON-serializable');
-      }
-
-      // Counted in UTF-8 bytes, as the host counts it, so both sides agree on the limit.
-      if (requestJson && exceedsPayloadLimit(requestJson, toolBridgeMaxPayloadBytes)) {
-        throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
-      }
-
       // The limits and checks above ran at the call; the host bridge itself is started from a
       // microtask (see deferHostCall). Everything chained from here on, including the promise the
       // script receives, is a promise of this realm.
@@ -2921,10 +2955,6 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         throw createSafeError('Tool bridge returned invalid response');
       });
     } else {
-      // Direct mode: the request is held to the payload limit as through the string bridge.
-      if (exceedsPayloadLimit(JSON.stringify({ v: 1, tool: toolName, args: sanitizedArgs }), toolBridgeMaxPayloadBytes)) {
-        throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
-      }
       // The rejection is mapped here rather than by launderThrown alone, which would drop the
       // code the host uses to mark a failure of the tool itself.
       promise = deferHostCall(function() {
