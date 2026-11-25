@@ -118,6 +118,18 @@ describe.each(RUNTIMES)('replayed calls on the %s', (_name, create) => {
     expect((await runOnce(listThenSend, listThenSlow, {}, 5210)).error?.message).toMatch(/EXFIL_LIST_SEND/);
   });
 
+  it('places the resume time at the first live operation, also a call into a host function', async () => {
+    const options = {
+      allowFunctionsInGlobals: true,
+      globals: { ping: () => true },
+      doubleVm: { parentValidation: { maxOperationsPerSecond: 3 } },
+    };
+    const code = "for (let i = 0; i < 3; i++) await callTool('step', { i }); ping(); return 'done';";
+    const replayed = replayOf(repeated('step', 3), 10);
+    expect((await runOnce(code, replayed, options)).error?.message).toMatch(/rate limit exceeded/);
+    expect((await runOnce(code, replayed, options, 5000)).value).toBe('done');
+  });
+
   it.each<[string, ReplayedCall[] | undefined, unknown]>([
     ['without replayedCalls', undefined, 100],
     ['before the last replayed call', [{ callIndex: 0, toolName: 'a', elapsedMs: 100 }], 99],

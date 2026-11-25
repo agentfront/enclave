@@ -163,18 +163,24 @@ class PortableOperationPolicy {
     return recentTools + recentGlobals >= this.config.maxOperationsPerSecond;
   }
 
+  private resumeLive(now: number): void {
+    if (this.replay.replaying || this.replayResumeAtMs === undefined) return;
+    this.replayShift = now - this.replayResumeAtMs;
+    this.replayResumeAtMs = undefined;
+  }
+
   globalCall(): void {
     const now = Date.now();
+    this.resumeLive(now);
     if (this.rateLimitExceeded(now)) throw new Error(this.rateLimitMessage);
     this.globalCallTimes.push(now);
   }
 
   toolCall(name: string, args: Record<string, unknown>): void {
     const now = Date.now();
-    const listedAll = !this.replay.replaying;
+    this.resumeLive(now);
     const replayed = this.replay.match(name);
     if (!replayed) {
-      if (listedAll && this.replayResumeAtMs !== undefined) this.replayShift = now - this.replayResumeAtMs;
       this.replayResumeAtMs = undefined;
       if (this.rateLimitExceeded(now)) throw this.refuse('RATE_LIMIT_EXCEEDED', name, this.rateLimitMessage);
     }

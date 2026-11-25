@@ -92,13 +92,21 @@ describe.each(RUNTIMES)('refusedCall on the %s', (_name, create) => {
 });
 
 describe('refusedCall on the single VM', () => {
-  it('reports a call over maxToolCalls', async () => {
-    const enclave = new Enclave({ toolHandler: answer, doubleVm: { enabled: false }, maxToolCalls: 1 });
-    try {
-      const result = await enclave.run("await callTool('a', {}); await callTool('b', {}); return 'done';");
-      expect(result.refusedCall).toEqual({ code: 'MAX_TOOL_CALLS_EXCEEDED' });
-    } finally {
-      enclave.dispose();
-    }
-  });
+  it.each<['string' | 'direct']>([['string'], ['direct']])(
+    'reports a call over maxToolCalls (%s bridge)',
+    async (mode) => {
+      const enclave = new Enclave({
+        toolHandler: answer,
+        doubleVm: { enabled: false },
+        toolBridge: { mode, acknowledgeInsecureDirect: mode === 'direct' },
+        maxToolCalls: 1,
+      });
+      try {
+        const result = await enclave.run("await callTool('a', {}); await callTool('b', {}); return 'done';");
+        expect(result.refusedCall).toEqual({ code: 'MAX_TOOL_CALLS_EXCEEDED' });
+      } finally {
+        enclave.dispose();
+      }
+    },
+  );
 });

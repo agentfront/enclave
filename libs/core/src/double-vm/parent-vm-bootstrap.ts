@@ -2650,6 +2650,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     }
 
     var now = Date.now();
+    resumeLive(now);
     if (rateLimitExceeded(now)) throw createSafeError(rateLimitMessage);
     globalFunctionCallTimes.push(now);
 
@@ -2719,10 +2720,16 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     }
   }
 
+  function resumeLive(now) {
+    if (nextReplayedCall < replayedCalls.length || replayResumeAtMs === null) return;
+    replayShift = now - replayResumeAtMs;
+    replayResumeAtMs = null;
+  }
+
   function takeReplayedCall(toolName) {
+    resumeLive(Date.now());
     var listed = replayedCalls[nextReplayedCall];
     if (listed && listed.callIndex === passedToolCalls && listed.toolName === toolName) return listed;
-    if (nextReplayedCall === replayedCalls.length && replayResumeAtMs !== null) replayShift = Date.now() - replayResumeAtMs;
     replayResumeAtMs = null;
     nextReplayedCall = replayedCalls.length;
     return null;
