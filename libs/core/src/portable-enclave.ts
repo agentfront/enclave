@@ -40,6 +40,7 @@ import type { OperationHistory, ParentValidationConfig } from './double-vm/types
 import { refuseDynamicImport } from './dynamic-import';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
+import { copyReplayedCalls, type ReplayedCall, type ReplayedCallOptions } from './replayed-calls';
 import { MIN_CALL_ORDER_PAYLOAD_BYTES } from './tool-bridge';
 import { boundedStatementHook, type StatementEventOptions } from './statement-events';
 import {
@@ -69,7 +70,7 @@ export interface PortableEnclaveOptions extends CreateEnclaveOptions {
   interpreter?: InterpreterAdapterOptions;
 }
 
-export interface PortableRunOptions extends StatementEventOptions, KeptReferenceOptions {
+export interface PortableRunOptions extends StatementEventOptions, KeptReferenceOptions, ReplayedCallOptions {
   maxToolResultBytes?: number;
   onToolBridgeFailure?: () => void;
   /** Passed to the review hooks of this run */
@@ -125,8 +126,14 @@ function validateReferenceConfig(config: ReferenceConfig | undefined): void {
 class PortableOperationPolicy {
   private readonly history: OperationHistory[] = [];
   private readonly globalCallTimes: number[] = [];
+  private nextReplayedCall = 0;
+  private passedToolCalls = 0;
+  private replayShift = 0;
 
-  constructor(private readonly config: ParentValidationConfig) {}
+  constructor(
+    private readonly config: ParentValidationConfig,
+    private readonly replayedCalls: readonly ReplayedCall[] = [],
+  ) {}
 
   private rate(now: number): void {
     while (this.history.length && now - this.history[0].timestamp > 60_000) this.history.shift();
@@ -146,7 +153,8 @@ class PortableOperationPolicy {
 
   toolCall(name: string, args: Record<string, unknown>): void {
     const now = Date.now();
-    this.rate(now);
+    const replayed = this.takeReplayedCall(name);
+    if (!replayed) this.rate(now);
     if (typeof name !== 'string' || name.length === 0) throw new TypeError('Operation name must be a non-empty string');
     if (this.config.validateOperationNames) {
       const allowed = this.config.allowedOperationPattern;
@@ -159,7 +167,7 @@ class PortableOperationPolicy {
         if (blocked.test(name)) throw new Error(`Operation "${name}" matches blocked pattern`);
       }
     }
-    if (this.config.blockSuspiciousSequences) {
+    if (this.config.blockSuspiciousSequences && !replayed) {
       const override = Object.hasOwn(this.config.rapidEnumerationOverrides, name)
         ? this.config.rapidEnumerationOverrides[name]
         : undefined;
@@ -179,7 +187,32 @@ class PortableOperationPolicy {
         if (detected) throw new Error(`Suspicious pattern detected: ${pattern.description} [${pattern.id}]`);
       }
     }
-    this.history.push({ operationName: name, timestamp: now, argKeys: Object.keys(args) });
+    this.history.push(
+      replayed
+        ? this.replayedEntry(replayed, args, now)
+        : { operationName: name, timestamp: now, argKeys: Object.keys(args) },
+    );
+    this.passedToolCalls++;
+  }
+
+  private takeReplayedCall(name: string): ReplayedCall | undefined {
+    const listed = this.replayedCalls[this.nextReplayedCall];
+    if (listed && listed.callIndex === this.passedToolCalls && listed.toolName === name) return listed;
+    this.nextReplayedCall = this.replayedCalls.length;
+    return undefined;
+  }
+
+  private replayedEntry(listed: ReplayedCall, args: Record<string, unknown>, now: number): OperationHistory {
+    this.nextReplayedCall++;
+    this.replayShift = now - listed.elapsedMs;
+    const currentReplayShift = () => this.replayShift;
+    return {
+      operationName: listed.toolName,
+      argKeys: Object.keys(args),
+      get timestamp() {
+        return listed.elapsedMs + currentReplayShift();
+      },
+    };
   }
 }
 
@@ -339,12 +372,13 @@ export class PortableEnclave {
   ): Promise<ExecutionResult<T>> {
     if (this.disposed) throw new Error('PortableEnclave has been disposed');
     boundedInteger('maxToolResultBytes', runOptions.maxToolResultBytes, MAX_PORTABLE_ALLOCATION_BYTES);
+    const replayedCalls = copyReplayedCalls(runOptions.replayedCalls, this.config.maxToolCalls);
     assertReviewContext(runOptions.reviewContext);
     const onStatement = boundedStatementHook(runOptions, this.adapter.reportsStatements);
     assertKeptReferenceOptions(runOptions, this.references !== undefined);
     const sidecar = this.references ? new ReferenceSidecar(this.references) : undefined;
     return withKeptReferences(sidecar, runOptions, () =>
-      this.execute<T>(code, toolHandler, runOptions, onStatement, sidecar),
+      this.execute<T>(code, toolHandler, { ...runOptions, replayedCalls }, onStatement, sidecar),
     );
   }
 
@@ -428,7 +462,7 @@ export class PortableEnclave {
         transformTemplateLiterals(ast);
         transformed = generate(ast);
       }
-      const policy = new PortableOperationPolicy(this.policyConfig);
+      const policy = new PortableOperationPolicy(this.policyConfig, runOptions.replayedCalls);
       const hostToolHandler = toolHandler ?? this.options.toolHandler;
       let closed = false;
       const deadline = Date.now() + this.config.timeout;
@@ -525,6 +559,7 @@ export class AgentScriptRunner extends PortableEnclave {
     'rapid-enumeration',
     'review',
     'replay',
+    'replayed-calls',
     'statement-events',
     'kept-references',
   ]);

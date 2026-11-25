@@ -641,6 +641,7 @@ export class WorkerPoolAdapter implements SandboxAdapter {
       secureProxyConfig: context.secureProxyConfig,
       maxGlobalFunctionCalls: context.config.maxGlobalFunctionCalls,
       realmGlobalAllowlist: context.realmGlobalAllowlist ? [...context.realmGlobalAllowlist] : undefined,
+      replayedCalls: context.replayedCalls ? [...context.replayedCalls] : undefined,
       referenceConfig: context.referenceConfig,
       doubleVm: this.doubleVm,
     };

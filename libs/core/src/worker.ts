@@ -28,6 +28,7 @@ export type {
 } from './types';
 export type { StatementEventOptions } from './statement-events';
 export type { KeptReferenceOptions } from './kept-references';
+export type { ReplayedCall, ReplayedCallOptions } from './replayed-calls';
 export type { ReferenceEntry } from './sidecar/reference-sidecar';
 export { analyzeScript, ScriptAnalysisError } from './analysis/script-analysis';
 export type {

@@ -685,6 +685,7 @@ export class DoubleVmWrapper implements SandboxAdapter {
       maxGlobalFunctionCalls: resolveMaxGlobalFunctionCalls(config),
       toolNamespaces: executionContext.toolNamespaces ?? [],
       realmGlobalAllowlist: executionContext.realmGlobalAllowlist,
+      replayedCalls: executionContext.replayedCalls,
     });
   }
 

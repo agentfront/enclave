@@ -24,6 +24,7 @@ import { booleanLiteral, numericLiteral } from '../enclave-options';
 import { STACK_CAPTURE_OFF_SOURCE } from '../realm-stack';
 import { realmArrayAccountingSource } from '../realm-memory';
 import { realmSafeGlobalsSource } from '../realm-safe-globals';
+import { copyReplayedCalls, type ReplayedCall } from '../replayed-calls';
 
 /**
  * Recursion backstop for the in-VM secure-proxy membranes.
@@ -112,6 +113,9 @@ export interface ParentVmBootstrapOptions {
    * there. Absent: only the security level's dangerous globals are removed.
    */
   realmGlobalAllowlist?: readonly string[];
+
+  /** The run's `replayedCalls` */
+  replayedCalls?: readonly ReplayedCall[];
 }
 
 /**
@@ -1017,6 +1021,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     maxGlobalFunctionCalls = 1000,
     toolNamespaces = [],
     realmGlobalAllowlist,
+    replayedCalls,
   } = options;
 
   // The limits and switches below are written into the script this function returns. Whatever
@@ -1034,6 +1039,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   if (toolBridgeMode !== 'string' && toolBridgeMode !== 'direct') {
     throw new TypeError(`Invalid toolBridgeMode: ${String(toolBridgeMode)}`);
   }
+  const replayedCallsJson = JSON.stringify(copyReplayedCalls(replayedCalls, maxToolCalls) ?? []);
 
   // Realm allowlist: the caller's names plus what the runtime itself needs there. Custom globals
   // are added inside the parent VM (it holds them), so the list is right whoever built it.
@@ -1485,6 +1491,11 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
 
   // Operation history for pattern detection
   const operationHistory = [];
+
+  const replayedCalls = ${replayedCallsJson};
+  var nextReplayedCall = 0;
+  var passedToolCalls = 0;
+  var replayShift = 0;
 
   // Tool call stats for rate limiting
   let toolCallCount = 0;
@@ -2646,9 +2657,9 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
   /**
    * Validate an operation before forwarding to host
    */
-  function validateOperation(operationName, args) {
+  function validateOperation(operationName, args, replayed) {
     // Rate limiting check with sliding window cleanup
-    enforceRateLimit(Date.now());
+    if (!replayed) enforceRateLimit(Date.now());
 
     // Operation name format validation
     if (typeof operationName !== 'string' || !operationName) {
@@ -2678,7 +2689,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     // Suspicious sequence detection
     // NOTE: User-provided pattern functions can throw; those errors are intentionally ignored to avoid
     // breaking the sandbox due to a buggy detector. If a detector returns true, we always fail closed.
-    if (validationConfig.blockSuspiciousSequences) {
+    if (validationConfig.blockSuspiciousSequences && !replayed) {
       for (var j = 0; j < suspiciousPatterns.length; j++) {
         var pattern = suspiciousPatterns[j];
         var detected = false;
@@ -2692,6 +2703,23 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         }
       }
     }
+  }
+
+  function takeReplayedCall(toolName) {
+    var listed = replayedCalls[nextReplayedCall];
+    if (listed && listed.callIndex === passedToolCalls && listed.toolName === toolName) return listed;
+    nextReplayedCall = replayedCalls.length;
+    return null;
+  }
+
+  function replayedEntry(listed, args) {
+    nextReplayedCall++;
+    replayShift = Date.now() - listed.elapsedMs;
+    return {
+      operationName: listed.toolName,
+      argKeys: Object.keys(args),
+      get timestamp() { return listed.elapsedMs + replayShift; }
+    };
   }
 
   /**
@@ -2834,14 +2862,16 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     }
 
     // Enhanced validation
-    validateOperation(toolName, sanitizedArgs);
+    var replayed = takeReplayedCall(toolName);
+    validateOperation(toolName, sanitizedArgs, replayed !== null);
 
     // Record in history
-    operationHistory.push({
+    operationHistory.push(replayed ? replayedEntry(replayed, sanitizedArgs) : {
       operationName: toolName,
       timestamp: Date.now(),
       argKeys: Object.keys(sanitizedArgs)
     });
+    passedToolCalls++;
 
     // Update host stats
     hostStats.toolCallCount = toolCallCount;
