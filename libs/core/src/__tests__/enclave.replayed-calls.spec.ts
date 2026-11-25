@@ -1,4 +1,6 @@
 import { Enclave, type EnclaveRunOptions } from '../enclave';
+import * as core from '../index';
+import * as workerEntry from '../worker';
 import { PortableEnclave } from '../portable-enclave';
 import type { ReplayedCall } from '../replayed-calls';
 import type { CreateEnclaveOptions, ExecutionResult, ToolHandler } from '../types';
@@ -96,6 +98,28 @@ describe.each(RUNTIMES)('replayed calls on the %s', (_name, create) => {
     expect((await runOnce(allPages, startingAt1)).error?.message).toMatch(/RAPID_ENUMERATION/);
   });
 
+  it('leaves the replay where it was when a request is refused for its size before it reaches the host', async () => {
+    const code = `
+      let refused = '';
+      await callTool('users.list', {});
+      try {
+        await callTool('audit.note', { pad: 'x'.repeat(990) });
+      } catch (error) {
+        refused = error.message;
+      }
+      await callTool('audit.note', {});
+      await callTool('users.delete', {});
+      return refused;
+    `;
+    const replayedCalls = [
+      { callIndex: 0, toolName: 'users.list', elapsedMs: 0 },
+      { callIndex: 1, toolName: 'audit.note', elapsedMs: 1000 },
+      { callIndex: 2, toolName: 'users.delete', elapsedMs: 60_000 },
+    ];
+    const result = await runOnce(code, replayedCalls, { toolBridge: { maxPayloadBytes: 1024 } });
+    expect(result.value).toMatch(/exceeds maximum size/);
+  });
+
   it.each<[string, unknown]>([
     ['not a list', { callIndex: 0, toolName: 'a', elapsedMs: 0 }],
     ['an entry that is not an object', [null]],
@@ -136,6 +160,37 @@ describe.each(RUNTIMES)('replayed calls on the %s', (_name, create) => {
   });
 });
 
+describe('replayed calls on the PortableEnclave, while the replay lasts', () => {
+  it('keeps the replayed calls in the history until the replay ends, however long it takes', async () => {
+    let clock = Date.now();
+    const dateNow = jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    const enclave = new PortableEnclave({
+      timeout: 600_000,
+      allowFunctionsInGlobals: true,
+      globals: { ping: () => true },
+      doubleVm: { parentValidation: { rapidEnumerationThreshold: 2 } },
+      toolHandler: async (toolName, _args, { callIndex }) => {
+        if (callIndex === 0) clock += 61_000;
+        return toolName;
+      },
+    });
+    const code = `
+      await callTool('page.next', {});
+      ping();
+      await callTool('page.next', {});
+      await callTool('page.next', {});
+      return 'done';
+    `;
+    try {
+      const result = await enclave.run(code, undefined, { replayedCalls: replayOf(repeated('page.next', 2), 100) });
+      expect(result.error?.message).toMatch(/RAPID_ENUMERATION/);
+    } finally {
+      dateNow.mockRestore();
+      enclave.dispose();
+    }
+  });
+});
+
 describe('replayed calls on the worker pool', () => {
   it('carries the replay to the double VM in the worker', async () => {
     const enclave = new Enclave({
@@ -151,5 +206,33 @@ describe('replayed calls on the worker pool', () => {
     } finally {
       enclave.dispose();
     }
+  });
+
+  it('does not count the replayed calls against maxMessagesPerSecond, and counts the live ones', async () => {
+    const enclave = new Enclave({
+      adapter: 'worker_threads',
+      workerPoolConfig: { minWorkers: 1, maxWorkers: 1, maxMessagesPerSecond: 10 },
+      toolHandler: answer,
+    });
+    const replayedCalls = replayOf(repeated('page.next', 20), 1000);
+    const pages = `${callsOf('page.next', 20)} return 'done';`;
+    const pagesThenSteps = `${callsOf('page.next', 20)} ${callsOf('step', 15)} return 'done';`;
+    try {
+      expect((await enclave.run(pages, undefined, { replayedCalls })).value).toBe('done');
+      expect((await enclave.run(pages)).error?.message).toMatch(/Message rate limit exceeded/);
+      expect((await enclave.run(pagesThenSteps, undefined, { replayedCalls })).error?.message).toMatch(
+        /Message rate limit exceeded/,
+      );
+    } finally {
+      enclave.dispose();
+    }
+  });
+});
+
+describe('ENCLAVE_RUN_FEATURES', () => {
+  it('lists replayed-calls, the same frozen list from both entry points', () => {
+    expect(core.ENCLAVE_RUN_FEATURES).toContain('replayed-calls');
+    expect(workerEntry.ENCLAVE_RUN_FEATURES).toBe(core.ENCLAVE_RUN_FEATURES);
+    expect(Object.isFrozen(core.ENCLAVE_RUN_FEATURES)).toBe(true);
   });
 });

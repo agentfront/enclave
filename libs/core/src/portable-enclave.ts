@@ -40,7 +40,7 @@ import type { OperationHistory, ParentValidationConfig } from './double-vm/types
 import { refuseDynamicImport } from './dynamic-import';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
-import { copyReplayedCalls, type ReplayedCall, type ReplayedCallOptions } from './replayed-calls';
+import { copyReplayedCalls, ReplayedCallCursor, type ReplayedCall, type ReplayedCallOptions } from './replayed-calls';
 import { MIN_CALL_ORDER_PAYLOAD_BYTES } from './tool-bridge';
 import { boundedStatementHook, type StatementEventOptions } from './statement-events';
 import {
@@ -126,17 +126,20 @@ function validateReferenceConfig(config: ReferenceConfig | undefined): void {
 class PortableOperationPolicy {
   private readonly history: OperationHistory[] = [];
   private readonly globalCallTimes: number[] = [];
-  private nextReplayedCall = 0;
-  private passedToolCalls = 0;
+  private readonly replay: ReplayedCallCursor;
   private replayShift = 0;
 
   constructor(
     private readonly config: ParentValidationConfig,
-    private readonly replayedCalls: readonly ReplayedCall[] = [],
-  ) {}
+    replayedCalls?: readonly ReplayedCall[],
+  ) {
+    this.replay = new ReplayedCallCursor(replayedCalls);
+  }
 
   private rate(now: number): void {
-    while (this.history.length && now - this.history[0].timestamp > 60_000) this.history.shift();
+    while (!this.replay.replaying && this.history.length && now - this.history[0].timestamp > 60_000) {
+      this.history.shift();
+    }
     while (this.globalCallTimes.length && now - this.globalCallTimes[0] > 2000) this.globalCallTimes.shift();
     const recentTools = this.history.filter((entry) => now - entry.timestamp < 1000).length;
     const recentGlobals = this.globalCallTimes.filter((at) => now - at < 1000).length;
@@ -153,7 +156,7 @@ class PortableOperationPolicy {
 
   toolCall(name: string, args: Record<string, unknown>): void {
     const now = Date.now();
-    const replayed = this.takeReplayedCall(name);
+    const replayed = this.replay.match(name);
     if (!replayed) this.rate(now);
     if (typeof name !== 'string' || name.length === 0) throw new TypeError('Operation name must be a non-empty string');
     if (this.config.validateOperationNames) {
@@ -192,18 +195,10 @@ class PortableOperationPolicy {
         ? this.replayedEntry(replayed, args, now)
         : { operationName: name, timestamp: now, argKeys: Object.keys(args) },
     );
-    this.passedToolCalls++;
-  }
-
-  private takeReplayedCall(name: string): ReplayedCall | undefined {
-    const listed = this.replayedCalls[this.nextReplayedCall];
-    if (listed && listed.callIndex === this.passedToolCalls && listed.toolName === name) return listed;
-    this.nextReplayedCall = this.replayedCalls.length;
-    return undefined;
+    this.replay.pass(replayed);
   }
 
   private replayedEntry(listed: ReplayedCall, args: Record<string, unknown>, now: number): OperationHistory {
-    this.nextReplayedCall++;
     this.replayShift = now - listed.elapsedMs;
     const currentReplayShift = () => this.replayShift;
     return {

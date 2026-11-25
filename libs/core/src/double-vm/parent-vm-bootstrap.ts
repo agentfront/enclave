@@ -2575,7 +2575,7 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     // Kept for as long as the longest look-back of a sequence detector (30 seconds for the
     // built-in ones, twice that here), not only for the rate window below: a detector that
     // asks for the last ten seconds has to find them.
-    while (operationHistory.length > 0 && now - operationHistory[0].timestamp > 60000) {
+    while (nextReplayedCall >= replayedCalls.length && operationHistory.length > 0 && now - operationHistory[0].timestamp > 60000) {
       operationHistory.shift();
     }
     while (globalFunctionCallTimes.length > 0 && now - globalFunctionCallTimes[0] > 2000) {
@@ -2866,32 +2866,36 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
     validateOperation(toolName, sanitizedArgs, replayed !== null);
 
     // Record in history
-    operationHistory.push(replayed ? replayedEntry(replayed, sanitizedArgs) : {
-      operationName: toolName,
-      timestamp: Date.now(),
-      argKeys: Object.keys(sanitizedArgs)
-    });
-    passedToolCalls++;
+    if (!replayed) {
+      operationHistory.push({
+        operationName: toolName,
+        timestamp: Date.now(),
+        argKeys: Object.keys(sanitizedArgs)
+      });
+    }
 
     // Update host stats
     hostStats.toolCallCount = toolCallCount;
+
+    var requestJson;
+    try {
+      requestJson = JSON.stringify({ v: 1, tool: toolName, args: sanitizedArgs });
+    } catch (e) {
+      throw createSafeError('Tool request must be JSON-serializable');
+    }
+
+    // Counted in UTF-8 bytes, as the host counts it, so both sides agree on the limit (direct mode too).
+    if (requestJson && exceedsPayloadLimit(requestJson, toolBridgeMaxPayloadBytes)) {
+      throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
+    }
+
+    if (replayed) operationHistory.push(replayedEntry(replayed, sanitizedArgs));
+    passedToolCalls++;
 
     // Forward to host and wrap the Promise + result in secure proxies
     // This prevents access to Promise.constructor and result object constructors
     var promise;
     if (toolBridgeMode === 'string') {
-      var requestJson;
-      try {
-        requestJson = JSON.stringify({ v: 1, tool: toolName, args: sanitizedArgs });
-      } catch (e) {
-        throw createSafeError('Tool request must be JSON-serializable');
-      }
-
-      // Counted in UTF-8 bytes, as the host counts it, so both sides agree on the limit.
-      if (requestJson && exceedsPayloadLimit(requestJson, toolBridgeMaxPayloadBytes)) {
-        throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
-      }
-
       // The limits and checks above ran at the call; the host bridge itself is started from a
       // microtask (see deferHostCall). Everything chained from here on, including the promise the
       // script receives, is a promise of this realm.
@@ -2951,10 +2955,6 @@ export function generateParentVmBootstrap(options: ParentVmBootstrapOptions): st
         throw createSafeError('Tool bridge returned invalid response');
       });
     } else {
-      // Direct mode: the request is held to the payload limit as through the string bridge.
-      if (exceedsPayloadLimit(JSON.stringify({ v: 1, tool: toolName, args: sanitizedArgs }), toolBridgeMaxPayloadBytes)) {
-        throw createSafeError('Tool request exceeds maximum size (' + toolBridgeMaxPayloadBytes + ' bytes)');
-      }
       // The rejection is mapped here rather than by launderThrown alone, which would drop the
       // code the host uses to mark a failure of the tool itself.
       promise = deferHostCall(function() {

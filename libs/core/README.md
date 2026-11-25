@@ -385,11 +385,18 @@ const result = await enclave.run(script, undefined, {
 });
 ```
 
-- A listed call skips the rate limit and the suspicious-sequence detectors (the first run passed them there); the operation-name patterns still apply. It enters their history at its original time, moved so that the latest replayed call is now, and the live calls after the replay are judged against that history: a delete right after the replay is a delete after access when the replayed read was less than 30 seconds before the latest replayed call in the first run.
+- A listed call skips the rate limit and the suspicious-sequence detectors (the first run passed them there), and on the worker pool `maxMessagesPerSecond`; the operation-name patterns still apply. It enters their history at its original time, moved so that the latest replayed call is now, and the live calls after the replay are judged against that history: a delete right after the replay is a delete after access when the replayed read was less than 30 seconds before the latest replayed call in the first run.
 - A call is replayed only while it is the next one listed: the same `callIndex` and the same tool. The first call that is not, and every call after it, is live and checked in full.
 - Calls to functions in `globals` are not listed: they run again, under the rate limit.
 - The list is checked when `run()` is called: at most `maxToolCalls` entries, `callIndex` an integer from 0 that increases, `toolName` of 1 to 256 characters, `elapsedMs` a finite number from 0 that does not decrease. Anything else is a `TypeError`, and the script does not run. The script cannot see or change the list.
 - Without the option nothing changes. It applies to the double VM, the worker pool, `PortableEnclave` and `AgentScriptRunner` (`AgentScriptRunner.capabilities` includes `'replayed-calls'`); a sandbox without these checks ignores it.
+- To find out at run time whether the installed version has it, read `ENCLAVE_RUN_FEATURES`, exported by `@enclave-vm/core` and `@enclave-vm/core/worker`: it includes `'replayed-calls'`. An older version has no such export and ignores the option.
+
+```typescript
+import * as enclaveCore from '@enclave-vm/core';
+
+const canReplay = enclaveCore.ENCLAVE_RUN_FEATURES?.includes('replayed-calls') ?? false;
+```
 
 ### Tool Namespaces
 

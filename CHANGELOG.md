@@ -9,7 +9,7 @@ For detailed changes to individual packages, see their respective changelogs:
 
 ## [Unreleased]
 
-- `@enclave-vm/core`: new run option `replayedCalls` for a host that resumes a run by replaying its recorded tool calls. Those calls skip the rate limit and the suspicious-sequence detectors and stay in their history at their original times, so a replay is not refused for its speed and the live calls after it are judged against what the first run did. `libs/core/CHANGELOG.md` has the details.
+- `@enclave-vm/core`: new run option `replayedCalls` for a host that resumes a run by replaying its recorded tool calls. Those calls skip the rate limit and the suspicious-sequence detectors and stay in their history at their original times, so a replay is not refused for its speed and the live calls after it are judged against what the first run did. `ENCLAVE_RUN_FEATURES` tells a host at run time that the option is there. `libs/core/CHANGELOG.md` has the details.
 
 ## [2.21.0] - 2026-11-24
 

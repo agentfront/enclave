@@ -8,6 +8,9 @@ export interface ReplayedCall {
   elapsedMs: number;
 }
 
+/** The `run()` features of this build, for a host to detect at run time */
+export const ENCLAVE_RUN_FEATURES: readonly string[] = Object.freeze(['replayed-calls']);
+
 export interface ReplayedCallOptions {
   /** The replayed calls, in call order: exempt from the rate limit and the sequence detectors, kept in their history at their original times */
   replayedCalls?: readonly ReplayedCall[];
@@ -45,4 +48,27 @@ export function copyReplayedCalls(value: unknown, maxToolCalls: number): readonl
     copies.push(Object.freeze({ callIndex, toolName, elapsedMs }));
   }
   return Object.freeze(copies);
+}
+
+export class ReplayedCallCursor {
+  private nextListedCall = 0;
+  private passedCalls = 0;
+
+  constructor(private readonly listedCalls: readonly ReplayedCall[] = []) {}
+
+  get replaying(): boolean {
+    return this.nextListedCall < this.listedCalls.length;
+  }
+
+  match(toolName: string): ReplayedCall | undefined {
+    const listed = this.listedCalls[this.nextListedCall];
+    if (listed && listed.callIndex === this.passedCalls && listed.toolName === toolName) return listed;
+    this.nextListedCall = this.listedCalls.length;
+    return undefined;
+  }
+
+  pass(replayed: ReplayedCall | undefined): void {
+    if (replayed) this.nextListedCall++;
+    this.passedCalls++;
+  }
 }
