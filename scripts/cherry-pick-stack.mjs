@@ -6,7 +6,7 @@
  * Usage:
  *   node scripts/cherry-pick-stack.mjs mode <pr-number>
  *   node scripts/cherry-pick-stack.mjs plan <stack-number> [--pull-requests <numbers>] [--wait <seconds>]
- *   node scripts/cherry-pick-stack.mjs apply <plan.json>
+ *   node scripts/cherry-pick-stack.mjs apply <plan.json> [--base <ref>]
  *   node scripts/cherry-pick-stack.mjs render <pull-request|issue> <result.json> <default-branch> <branch>
  *
  * `mode` prints `mode=`, `stack=` and `top=` lines for $GITHUB_OUTPUT. The mode is `single` for a PR in no stack
@@ -19,7 +19,8 @@
  * seconds for the stack's open PRs to merge. It only reads, so it is also the dry run.
  *
  * `apply` cherry-picks the plan onto HEAD, one commit per PR, and stops at the first conflict. It skips a PR HEAD
- * already has: a commit says "Cherry-picked from #<number>", or picking it changes nothing. It refuses to start on a
+ * already has: a commit says "Cherry-picked from #<number>", or picking it changes nothing. A PR whose commit is in
+ * `--base..HEAD`, picked by an earlier run or resolved by Codex, counts as picked. It refuses to start on a
  * working tree with changes, which a conflict would reset. It prints the result as JSON and never pushes. `render`
  * prints the title and body of the cherry-pick PR, or of the issue for a conflict, as JSON.
  */
@@ -155,23 +156,24 @@ function shellQuote(text) {
   return `'${String(text).replaceAll("'", "'\\''")}'`;
 }
 
-function commitMessage(pullRequest, releaseBranch) {
+export function commitMessage(pullRequest, releaseBranch, notes = []) {
   return [
     `Cherry-pick: ${pullRequest.title}`,
     '',
     markerOf(pullRequest, releaseBranch),
     `Original commit: ${pullRequest.commits.join(' ')}`,
+    ...notes,
     '',
     `Co-Authored-By: ${pullRequest.author} <${pullRequest.authorId}+${pullRequest.author}@users.noreply.github.com>`,
   ].join('\n');
 }
 
-function hasCherryPickOf(prNumber) {
+function hasCherryPickOf(prNumber, revisions = 'HEAD') {
   const grep = `--grep=Cherry-picked from #${prNumber} (`;
-  return run('git', ['log', '-n1', '--format=%H', '--fixed-strings', grep, 'HEAD']) !== '';
+  return run('git', ['log', '-n1', '--format=%H', '--fixed-strings', grep, revisions]) !== '';
 }
 
-export function applyPlan(plan) {
+export function applyPlan(plan, base = '') {
   // A conflict is undone with a hard reset, which would take a change of the working tree with it
   const changes = run('git', ['status', '--porcelain', '--untracked-files=no', '--ignore-submodules=all']);
   if (changes !== '') {
@@ -180,6 +182,11 @@ export function applyPlan(plan) {
   const picked = [];
   const alreadyApplied = [];
   for (const [index, pullRequest] of plan.pullRequests.entries()) {
+    if (base && hasCherryPickOf(pullRequest.number, `${base}..HEAD`)) {
+      console.error(`#${pullRequest.number} was cherry-picked on this branch already`);
+      picked.push(pullRequest);
+      continue;
+    }
     if (hasCherryPickOf(pullRequest.number)) {
       console.error(`#${pullRequest.number} was cherry-picked already`);
       alreadyApplied.push(pullRequest);
@@ -325,7 +332,11 @@ function print(value) {
 async function main() {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
-    options: { 'pull-requests': { type: 'string', default: '' }, wait: { type: 'string', default: '0' } },
+    options: {
+      'pull-requests': { type: 'string', default: '' },
+      wait: { type: 'string', default: '0' },
+      base: { type: 'string', default: '' },
+    },
   });
   const [command, ...args] = positionals;
   if (command === 'mode') {
@@ -334,7 +345,7 @@ async function main() {
     const selected = parsePullRequestList(values['pull-requests']);
     print(await planWithCommits(parseNumber(args[0]), selected, parseNumber(values.wait)));
   } else if (command === 'apply') {
-    print(applyPlan(readJson(args[0])));
+    print(applyPlan(readJson(args[0]), values.base));
   } else if (command === 'render' && (args[0] === 'pull-request' || args[0] === 'issue')) {
     const [kind, resultFile, defaultBranch, branch] = args;
     const result = readJson(resultFile);
