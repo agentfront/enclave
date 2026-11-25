@@ -82,6 +82,7 @@ import { separateAsyncContexts } from './async-context';
 import { ARRAY_ELEMENT_BYTES } from './realm-memory';
 import { hostClockReaders } from './realm-clock';
 import { numberToolCalls } from './tool-call-order';
+import { copyReplayedCalls, type ReplayedCallOptions } from './replayed-calls';
 import { MIN_CALL_ORDER_PAYLOAD_BYTES } from './tool-bridge';
 import { boundedStatementHook, type StatementEventOptions } from './statement-events';
 import {
@@ -100,7 +101,7 @@ import {
 import type { ReviewContext } from './review/types';
 
 /** The options of one `run()` */
-export interface EnclaveRunOptions extends StatementEventOptions, KeptReferenceOptions {
+export interface EnclaveRunOptions extends StatementEventOptions, KeptReferenceOptions, ReplayedCallOptions {
   /** Called when a successful tool result is refused before it reaches the script */
   onToolBridgeFailure?: () => void;
   /** A limit on the JSON bytes of one sanitized tool result */
@@ -586,6 +587,7 @@ export class Enclave {
       throw new TypeError('maxToolResultBytes must be a positive finite number');
     }
     assertReviewContext(options.reviewContext);
+    const replayedCalls = copyReplayedCalls(options.replayedCalls, this.config.maxToolCalls);
     const onStatement = boundedStatementHook(options, this.sandboxAdapter?.reportsStatements);
     if (onStatement && !this.transformCode) {
       throw new TypeError("onStatement needs the transform: its markers carry each statement's place in the script");
@@ -593,7 +595,7 @@ export class Enclave {
     assertKeptReferenceOptions(options, this.referenceConfig !== undefined);
     const sidecar = this.referenceConfig ? new ReferenceSidecar(this.referenceConfig) : undefined;
     const result = await withKeptReferences(sidecar, options, () =>
-      this.execute<T>(code, toolHandler, { ...options, onStatement }, sidecar),
+      this.execute<T>(code, toolHandler, { ...options, onStatement, replayedCalls }, sidecar),
     );
     return this.applyStackTracePolicy(result);
   }
@@ -905,6 +907,7 @@ export class Enclave {
         }),
         onStatement:
           options.onStatement && ((event) => asyncContexts.inHostContext(() => options.onStatement?.(event))),
+        replayedCalls: options.replayedCalls,
         maxToolResultBytes: options.maxToolResultBytes,
         onToolBridgeFailure: options.onToolBridgeFailure
           ? () => {

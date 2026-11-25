@@ -255,6 +255,7 @@ async function handleExecute(msg: ExecuteMessage): Promise<void> {
       toolNamespaces: config.toolNamespaces,
       realmGlobalAllowlist: config.realmGlobalAllowlist,
       referenceConfig: config.referenceConfig,
+      replayedCalls: config.replayedCalls,
     };
 
     adapter = createSandboxAdapter(config);

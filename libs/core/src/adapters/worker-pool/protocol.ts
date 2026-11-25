@@ -15,6 +15,7 @@ import type { ConsoleLevel } from '../../console-handler';
 import type { SerializableSuspiciousPattern } from '../../double-vm/types';
 import type { SecureProxyLevelConfig } from '../../types';
 import type { ReferenceConfig } from '../../sidecar/reference-config';
+import type { ReplayedCall } from '../../replayed-calls';
 
 /**
  * Serialized error format for cross-thread communication
@@ -124,6 +125,8 @@ export interface SerializedConfig {
   maxGlobalFunctionCalls?: number;
   /** Global names the script's realm may hold (`realmGlobals: 'allowlist'`); absent otherwise */
   realmGlobalAllowlist?: string[];
+  /** The run's checked `replayedCalls` */
+  replayedCalls?: ReplayedCall[];
   /** Reference (sidecar) configuration: the worker needs it to treat reference ids correctly */
   referenceConfig?: ReferenceConfig;
   /**

@@ -714,6 +714,7 @@ import type {
 } from '@enclave-vm/ast';
 import type { ConsoleHandler, ConsoleLevel } from './console-handler';
 import type { HostActivity } from './execution-deadline';
+import type { ReplayedCall } from './replayed-calls';
 
 /**
  * Internal execution context (tracks state during execution)
@@ -777,6 +778,9 @@ export interface ExecutionContext {
 
   /** Receives each statement the script runs, up to the run's `maxStatementEvents` (see `run()` options) */
   onStatement?: (event: StatementEvent) => void;
+
+  /** The run's checked `replayedCalls` (see `run()` options) */
+  replayedCalls?: readonly ReplayedCall[];
 
   /** Synchronous policy: return true to allow the copied request, or throw/return false to refuse. */
   beforeToolCall?: (name: string, args: Record<string, unknown>) => boolean;

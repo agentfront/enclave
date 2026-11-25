@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Run option `replayedCalls`.** A host that resumes a run by running the script again and answering the recorded tool calls from its record passes those calls as `replayedCalls: [{ callIndex, toolName, elapsedMs }]`, `elapsedMs` being when the call reached the host in the first run. The operation rate limit and the suspicious-sequence detectors read the system clock and could refuse a replay that answers in milliseconds what took minutes. A listed call skips them and enters their history at its original time, moved so that the latest replayed call is now, so the live calls after the replay are judged against what the first run did. The first call that is not the next one listed (the same `callIndex` and tool), and every call after it, is live. A list that is not ordered, holds a value that is not finite, or is longer than `maxToolCalls` is a `TypeError`. On the worker pool listed calls do not count against `maxMessagesPerSecond` either. Double VM, worker pool and `PortableEnclave`; a host detects support with the new export `ENCLAVE_RUN_FEATURES` (from `@enclave-vm/core` and `@enclave-vm/core/worker`), which includes `'replayed-calls'`, as does `AgentScriptRunner.capabilities`. Without the option nothing changes.
+
 ### Changed
 
 - **Interpreter adapter, call depth.** `maxCallDepth` (default 256) is counted along each chain of calls, not over the whole execution. The tasks of a `parallel` batch each continue the chain that started the batch, so a batch whose tasks call helper functions no longer adds up to the limit. A callback counts as a call of the function that invokes it (an array method, `parallel`, a bound function), and a chain keeps its depth across what it awaits.

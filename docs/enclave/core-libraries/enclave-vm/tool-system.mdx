@@ -83,6 +83,21 @@ A host resumes a run this way without keeping a process alive: it runs the same 
 
 A value out of range, or a throw, fails the script's read with an error it can catch. The enclave's deadline and rate limit keep reading the system clock, and neither function is called once the run has returned or was aborted, nor with less than 128 KB of stack left. In call order what waits for its turn is the bridge's response, already sanitized and bounded; the replies waiting behind an earlier call hold at most `toolBridge.maxPayloadBytes` together (past that the latest positions fail their calls), a large result goes into the sidecar at its turn, and once the run is aborted replies are delivered as they settle. The string tool bridge is required, with `toolBridge.maxPayloadBytes` of at least 157 bytes, the size of the bridge's own refusal reply (`TOOL_RESULTS_WAITING_TOO_LARGE`), or the constructor throws a `TypeError`. With the sidecar on, a reference token is new in every run, so a script whose path depends on a token's text does not replay. `clock` and `random` work on the double VM, the `vm` adapter, `InterpreterAdapter` and `PortableEnclave`; the `worker_threads` adapter refuses them. Results of functions in `globals` that return promises are not ordered.
 
+### Replayed Calls and the Detectors
+
+A replay answers in milliseconds the calls that took minutes in the first run, and the operation rate limit and the suspicious-sequence detectors read the system clock, so they can refuse a replay the first run passed. Pass the calls the host answers from its record as the `replayedCalls` option of `run()`:
+
+```ts
+await enclave.run(script, undefined, {
+  replayedCalls: [
+    { callIndex: 0, toolName: 'users.list', elapsedMs: 0 },     // ms from the start of the first run
+    { callIndex: 1, toolName: 'users.get', elapsedMs: 42_000 },
+  ],
+});
+```
+
+A listed call skips the rate limit and the suspicious-sequence detectors, and enters their history at its original time, moved so that the latest replayed call is now: the live calls after the replay are judged against what the first run did. A call is replayed only while it is the next one listed, with the same `callIndex` and the same tool; the first call that is not, and every call after it, is live. Calls to functions in `globals` run again under the rate limit. The list is checked when `run()` is called (at most `maxToolCalls` entries, `callIndex` increasing from 0, `toolName` of 1 to 256 characters, `elapsedMs` finite, from 0 and not decreasing), otherwise `run()` throws a `TypeError`. It applies to the double VM, the worker pool (where listed calls do not count against `maxMessagesPerSecond` either) and `PortableEnclave`; without it nothing changes. `ENCLAVE_RUN_FEATURES`, exported by `@enclave-vm/core` and `@enclave-vm/core/worker`, includes `'replayed-calls'` where the option is supported.
+
 ## Tool Namespaces
 
 Expose tools as namespaced functions, the natural API for scripts:

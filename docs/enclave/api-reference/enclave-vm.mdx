@@ -37,7 +37,7 @@ try {
 
 `AgentScriptRunnerOptions` extends the supported `PortableEnclaveOptions` and adds `hostFunctions`, required `maxHostFunctionCalls`, optional `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `rapidEnumeration` thresholds and per-operation overrides. Host callbacks receive copied plain-data arguments; their results are copied and bounded before the script sees them. The runner refuses unsupported VM-only options and pre-scan overrides at construction.
 
-`PortableEnclaveOptions` extends `CreateEnclaveOptions` with an `interpreter` object for `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `maxAllocationBytes`. `PortableEnclave.run(code, toolHandler?, runOptions?)` accepts `PortableRunOptions.maxToolResultBytes`, `onToolBridgeFailure`, `reviewContext`, `preloadReferences` / `exportReferences`, and `onStatement` / `maxStatementEvents` (see [Statement events](#statement-events)); the `review` option works there as with `Enclave`, and the worker entry exports `analyzeScript`, `providerReviewer` and `functionReviewer`. The interpreter charges copied host-function results and tool responses against its cumulative allocation budget. `maxSteps` bounds interpreted CPU work, including built-in operations. `timeout` is checked between steps and at I/O boundaries; on deployed Cloudflare Workers it is not a hard wall-time cutoff during CPU-only work, and synchronous host callbacks cannot be preempted.
+`PortableEnclaveOptions` extends `CreateEnclaveOptions` with an `interpreter` object for `maxSteps`, `maxCallDepth`, `maxPendingCalls`, and `maxAllocationBytes`. `PortableEnclave.run(code, toolHandler?, runOptions?)` accepts `PortableRunOptions.maxToolResultBytes`, `onToolBridgeFailure`, `reviewContext`, `preloadReferences` / `exportReferences`, `replayedCalls`, and `onStatement` / `maxStatementEvents` (see [Statement events](#statement-events)); the `review` option works there as with `Enclave`, and the worker entry exports `analyzeScript`, `providerReviewer` and `functionReviewer`. The interpreter charges copied host-function results and tool responses against its cumulative allocation budget. `maxSteps` bounds interpreted CPU work, including built-in operations. `timeout` is checked between steps and at I/O boundaries; on deployed Cloudflare Workers it is not a hard wall-time cutoff during CPU-only work, and synchronous host callbacks cannot be preempted.
 
 ## Enclave Class
 
@@ -114,6 +114,7 @@ interface EnclaveRunOptions {
   maxStatementEvents?: number; // default 10,000
   preloadReferences?: readonly ReferenceEntry[]; // with the sidecar
   exportReferences?: (value: unknown) => Iterable<string>; // with the sidecar
+  replayedCalls?: readonly ReplayedCall[]; // { callIndex, toolName, elapsedMs }
 }
 ```
 
@@ -125,6 +126,7 @@ interface EnclaveRunOptions {
 - `options.reviewContext` - Optional object passed to every review hook of this run as `input.context` (with the `review` option)
 - `options.preloadReferences`, `options.exportReferences` - Carry sidecar entries from one run to a later one: `result.references` lists the entries behind the tokens `exportReferences` returns (see [Keeping References Between Runs](/core-libraries/enclave-vm/reference-sidecar#keeping-references-between-runs))
 - `options.onStatement`, `options.maxStatementEvents` - Report each statement the script runs (see [Statement events](#statement-events)); only with an adapter that reports statements, such as `InterpreterAdapter`, otherwise a `TypeError`
+- `options.replayedCalls` - The calls this run replays from the record of an earlier run, in call order, each with the time it reached the host in milliseconds from the start of that run: they skip the rate limit and the suspicious-sequence detectors and stay in their history at their original times (see [Replayed Calls and the Detectors](/core-libraries/enclave-vm/tool-system#replayed-calls-and-the-detectors)). A list that is not ordered or is longer than `maxToolCalls` is a `TypeError`
 
 **Returns:** `ExecutionResult`. `run()` does not reject for a failing script: the failure is in the result.
 
