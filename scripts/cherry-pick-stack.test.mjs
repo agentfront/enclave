@@ -124,11 +124,14 @@ describe('apply', () => {
     return git('rev-parse', 'HEAD');
   }
 
-  async function apply(pullRequests) {
+  async function apply(pullRequests, ...options) {
     const planPath = path.join(scratch, 'plan.json');
     const plan = { stack: 1084, releaseBranch: 'release/1.11.x', open: [], closed: [], pullRequests };
     await fs.writeFile(planPath, JSON.stringify(plan));
-    const res = spawnSync(process.execPath, [scriptPath, 'apply', planPath], { cwd: repo, encoding: 'utf8' });
+    const res = spawnSync(process.execPath, [scriptPath, 'apply', planPath, ...options], {
+      cwd: repo,
+      encoding: 'utf8',
+    });
     assert.equal(res.status, 0, res.stderr);
     return JSON.parse(res.stdout);
   }
@@ -221,6 +224,23 @@ describe('apply', () => {
       result.picked.map((picked) => picked.number),
       [14],
     );
+  });
+
+  test('given the base branch, counts a PR this branch picked already as picked', async () => {
+    git('checkout', '-q', '-B', 'cherry-pick/stack-1084-main', shas.main);
+    await commit(
+      'Cherry-pick: fix(sdk): change 11\n\nCherry-picked from #11 (merged to release/1.11.x)',
+      'first.txt',
+      'first\n',
+    );
+
+    const result = await apply([pullRequest(11, shas.first), pullRequest(14, shas.fourth)], '--base', shas.main);
+
+    assert.deepEqual(
+      result.picked.map((picked) => picked.number),
+      [11, 14],
+    );
+    assert.deepEqual(result.alreadyApplied, []);
   });
 
   test('stops at a conflict, keeps what it picked, and leaves a clean tree', async () => {
